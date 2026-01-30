@@ -60,3 +60,27 @@ RUN ninja -C build && ninja -C build install
 ENV PATH=$PTO_SOURCE_DIR/build/tools/ptoas:$PATH
 RUN which ptoas
 
+# create python wheel
+ENV PY_PACKAGE_DIR=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core/
+
+# copy pto.py, _pto_ops_gen.py 
+RUN cp $PTO_INSTALL_DIR/mlir/dialects/*.py $PY_PACKAGE_DIR/mlir/dialects/
+# copy libPTOCAPI.a, libPTOIR.a, libPTOTransforms.a 
+RUN cp -r $PTO_INSTALL_DIR/lib/* $PY_PACKAGE_DIR/mlir/_mlir_libs/
+
+COPY ./setup.py $PY_PACKAGE_DIR/
+
+WORKDIR $PY_PACKAGE_DIR
+RUN pip install --no-cache-dir setuptools wheel
+RUN python setup.py bdist_wheel
+RUN pip install ./dist/ptoas*.whl
+
+# test import without adjusting $PYTHONPATH, in some irrelevant dir
+WORKDIR /test
+RUN python -c "import mlir.ir"
+# RUN python -c "from mlir.dialects import pto"
+
+# show the built wheel by default
+WORKDIR $PY_PACKAGE_DIR/dist
+
+CMD ["/bin/bash"]
