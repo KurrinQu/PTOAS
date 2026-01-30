@@ -27,7 +27,7 @@ pto-project/
 │   └── Bindings/Python/   # Python Binding C++ 实现 (Pybind11)
 ├── python/                # Python 模块构建脚本与辅助代码
 ├── test/
-│   └── cutile/            # 测试用例
+│   └── samples/            # 测试用例
 ├── tools/
 │   └── pto-opt/           # ptoas 命令行工具入口 (Target: pto-opt, Output: ptoas)
 └── CMakeLists.txt         # 顶级构建配置
@@ -213,10 +213,10 @@ with Context() as ctx, Location.unknown():
 
 ```bash
 # 运行python binding 测试
-python3 ./test/cutile-samples/MatMul/tmatmulk.py > ./test/cutile-samples/MatMul/tmatmulk.pto
+python3 ./test/samples/MatMul/tmatmulk.py > ./test/samples/MatMul/tmatmulk.pto
 
 # 运行ptoas 测试
-./build/tools/ptoas/ptoas ./test/cutile-samples/Matmul/tmatmulk.pto -o ./test/cutile-samples/Matmul/tmatmulk.cpp
+./build/tools/ptoas/ptoas ./test/samples/Matmul/tmatmulk.pto -o ./test/samples/Matmul/tmatmulk.cpp
 
 ```
 
