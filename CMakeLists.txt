@@ -51,3 +51,16 @@ add_definitions(${LLVM_DEFINITIONS})
 add_subdirectory(include)
 add_subdirectory(lib)
 add_subdirectory(tools)
+
+# 开启 Python 绑定选项
+option(PTO_ENABLE_PYTHON_BINDING "Enable Python bindings" ON)
+
+if(PTO_ENABLE_PYTHON_BINDING)
+  find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+  find_package(pybind11 CONFIG REQUIRED)
+
+  # 设置 Python 扩展的输出目录，方便调试
+  set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/python/pto)
+
+  add_subdirectory(python)
+endif()
