@@ -1,7 +1,10 @@
 ARG ARCH=x86_64
 # ARCH options: x86_64, aarch64
 
-FROM quay.io/pypa/manylinux_2_34_${ARCH}
+# -----------------------------------------------------------------------------
+# Stage 1: build wheel and ptoas in manylinux image
+# -----------------------------------------------------------------------------
+FROM quay.io/pypa/manylinux_2_34_${ARCH} AS builder
 ARG ARCH
 # need to re-declare ARG after FROM
 
@@ -97,7 +100,27 @@ RUN ptoas --enable-insert-sync ./abs.pto -o ./abs.cpp
 
 # NOTE: compilation of the cpp file using `bisheng` needs full CANN image (10 GB)
 
-# show the built wheel by default
-WORKDIR $PY_PACKAGE_DIR/dist
+# -----------------------------------------------------------------------------
+# Stage 2: verify wheel and ptoas in ascend/python image (no build tree)
+# -----------------------------------------------------------------------------
+FROM quay.io/ascend/python:3.11-ubuntu22.04 AS runtime
+
+# Copy only the wheel and ptoas binary from the builder (no access to build dir)
+COPY --from=builder /llvm-workspace/llvm-project/build-shared/tools/mlir/python_packages/mlir_core/wheelhouse/ptoas*.whl /tmp/
+COPY --from=builder /llvm-workspace/PTOAS/build/tools/ptoas/ptoas /usr/local/bin/ptoas
+
+RUN pip install --no-cache-dir /tmp/ptoas*.whl && rm /tmp/ptoas*.whl
+
+# test import without adjusting $PYTHONPATH and $LD_LIBRARY_PATH, in some irrelevant dir
+WORKDIR /test
+RUN python -c "import mlir.ir"
+RUN python -c "from mlir.dialects import pto"
+
+# test ptoas cli
+RUN which ptoas
+
+# NOTE: MatMul/Abs sample tests run only in the builder stage (they need the source tree).
+# show the built wheel location by default
+WORKDIR /tmp
 
 CMD ["/bin/bash"]
