@@ -61,10 +61,6 @@ RUN cmake -G Ninja \
 
 RUN ninja -C build && ninja -C build install
 
-# test ptoas cli
-ENV PATH=$PTO_SOURCE_DIR/build/tools/ptoas:$PATH
-RUN which ptoas
-
 # create python wheel
 ENV PY_PACKAGE_DIR=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core/
 
@@ -87,11 +83,19 @@ WORKDIR /test
 RUN python -c "import mlir.ir"
 RUN python -c "from mlir.dialects import pto"
 
+# test ptoas cli
+ENV PATH=$PTO_SOURCE_DIR/build/tools/ptoas:$PATH
+RUN which ptoas
+
 WORKDIR $PTO_SOURCE_DIR/test/samples/MatMul/
 RUN python ./tmatmulk.py > ./tmatmulk.pto
 RUN ptoas ./tmatmulk.pto -o ./tmatmulk.cpp
-# TODO: test compilation of the cpp file using `bisheng`
-# TODO: also test `ptoas --enable-insert-sync`
+
+WORKDIR $PTO_SOURCE_DIR/test/samples/Abs/
+RUN python ./abs.py > ./abs.pto
+RUN ptoas --enable-insert-sync ./abs.pto -o ./abs.cpp
+
+# NOTE: compilation of the cpp file using `bisheng` needs full CANN image (10 GB)
 
 # show the built wheel by default
 WORKDIR $PY_PACKAGE_DIR/dist
