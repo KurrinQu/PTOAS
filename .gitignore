@@ -66,6 +66,9 @@ dist/
 test/samples/**/npu_validation/
 /tmp_gen*
 
+# Worktrees
+.worktrees/
+
 # IDE/editor
 .vscode/
 .idea/
