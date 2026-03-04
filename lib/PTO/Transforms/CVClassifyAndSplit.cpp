@@ -37,7 +37,62 @@ public:
   }
 
   void runOnOperation() override {
-    // TODO: implement in subsequent tasks
+    func::FuncOp func = getOperation();
+    Block &body = func.front();
+
+    // Step 1: Classify all top-level ops
+    struct OpEntry {
+      Operation *op;
+      ComputeDomain domain;
+    };
+    SmallVector<OpEntry> entries;
+    for (Operation &op : body.without_terminator()) {
+      // Skip existing sections
+      if (isa<SectionCubeOp, SectionVectorOp>(&op)) {
+        entries.push_back({&op, ComputeDomain::SHARED});
+        continue;
+      }
+      // For scf.for, recursively determine domain
+      if (auto forOp = dyn_cast<scf::ForOp>(&op)) {
+        entries.push_back({&op, classifyRegion(forOp.getBody())});
+        continue;
+      }
+      entries.push_back({&op, classifyOp(&op)});
+    }
+
+    // Step 2: Group consecutive same-domain ops and wrap in sections
+    OpBuilder builder(func.getContext());
+    unsigned i = 0;
+    while (i < entries.size()) {
+      ComputeDomain domain = entries[i].domain;
+
+      // SHARED ops stay as-is
+      if (domain == ComputeDomain::SHARED) {
+        ++i;
+        continue;
+      }
+
+      // Find the end of consecutive same-domain ops
+      unsigned j = i + 1;
+      while (j < entries.size() && entries[j].domain == domain)
+        ++j;
+
+      // Create section op before the first op in this run
+      builder.setInsertionPoint(entries[i].op);
+      Operation *sectionOp = nullptr;
+      if (domain == ComputeDomain::CUBE)
+        sectionOp = builder.create<SectionCubeOp>(entries[i].op->getLoc());
+      else
+        sectionOp = builder.create<SectionVectorOp>(entries[i].op->getLoc());
+
+      // Move ops into the section's body
+      Block &sectionBody = sectionOp->getRegion(0).front();
+      for (unsigned k = i; k < j; ++k) {
+        entries[k].op->moveBefore(&sectionBody, sectionBody.end());
+      }
+
+      i = j;
+    }
   }
 
 private:
