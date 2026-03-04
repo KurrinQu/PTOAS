@@ -66,8 +66,10 @@ public:
     while (i < entries.size()) {
       ComputeDomain domain = entries[i].domain;
 
-      // SHARED ops stay as-is
+      // SHARED ops: if it's a mixed-domain scf.for, split it
       if (domain == ComputeDomain::SHARED) {
+        if (auto forOp = dyn_cast<scf::ForOp>(entries[i].op))
+          splitMixedLoop(forOp, builder);
         ++i;
         continue;
       }
@@ -153,6 +155,45 @@ private:
 
     // 3. Fallback
     return ComputeDomain::SHARED;
+  }
+
+  /// Split a mixed-domain scf.for into two loops (cube + vector),
+  /// each wrapped in the appropriate section.
+  void splitMixedLoop(scf::ForOp forOp, OpBuilder &builder) {
+    builder.setInsertionPoint(forOp);
+
+    // Clone the loop twice
+    auto cubeLoop = cast<scf::ForOp>(builder.clone(*forOp));
+    auto vecLoop = cast<scf::ForOp>(builder.clone(*forOp));
+
+    // Remove non-cube ops from cubeLoop body
+    filterLoopBody(cubeLoop, ComputeDomain::CUBE);
+    // Remove non-vector ops from vecLoop body
+    filterLoopBody(vecLoop, ComputeDomain::VECTOR);
+
+    // Wrap in sections
+    auto cubeSec = builder.create<SectionCubeOp>(forOp->getLoc());
+    cubeLoop->moveBefore(&cubeSec.getBody().front(),
+                         cubeSec.getBody().front().end());
+
+    auto vecSec = builder.create<SectionVectorOp>(forOp->getLoc());
+    vecLoop->moveBefore(&vecSec.getBody().front(),
+                        vecSec.getBody().front().end());
+
+    // Erase original loop
+    forOp->erase();
+  }
+
+  /// Remove ops from loop body that don't belong to the target domain.
+  void filterLoopBody(scf::ForOp loop, ComputeDomain keep) {
+    SmallVector<Operation *> toErase;
+    for (Operation &op : loop.getBody()->without_terminator()) {
+      ComputeDomain d = classifyOp(&op);
+      if (d != keep && d != ComputeDomain::SHARED)
+        toErase.push_back(&op);
+    }
+    for (Operation *op : llvm::reverse(toErase))
+      op->erase();
   }
 
   /// Classify a region: if all ops are same domain, return that; else SHARED.
