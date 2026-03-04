@@ -116,6 +116,22 @@ def PTOLoweringSyncToPipe : Pass<"pto-lowering-sync-to-pipe", "func::FuncOp"> {
   ];
 }
 
+def CVInsertBridge : Pass<"pto-cv-insert-bridge", "func::FuncOp"> {
+  let summary = "Insert GM workspace bridges for cross-domain data dependencies";
+  let description = [{
+    After CVClassifyAndSplit, identifies SSA values that cross section boundaries.
+    For each cross-domain dependency, inserts pto.tstore into GM workspace in the
+    producer section, and pto.tload from workspace in the consumer section, plus
+    pto.sync.set / pto.sync.wait for cross-core synchronization.
+  }];
+  let constructor = "mlir::pto::createCVInsertBridgePass()";
+  let dependentDialects = [
+    "mlir::pto::PTODialect",
+    "mlir::func::FuncDialect",
+    "mlir::memref::MemRefDialect"
+  ];
+}
+
 def CVClassifyAndSplit : Pass<"pto-cv-classify-and-split", "func::FuncOp"> {
   let summary = "Classify ops into Cube/Vector domains and split into sections";
   let description = [{
