@@ -116,4 +116,19 @@ def PTOLoweringSyncToPipe : Pass<"pto-lowering-sync-to-pipe", "func::FuncOp"> {
   ];
 }
 
+def CVClassifyAndSplit : Pass<"pto-cv-classify-and-split", "func::FuncOp"> {
+  let summary = "Classify ops into Cube/Vector domains and split into sections";
+  let description = [{
+    Analyzes each operation's compute domain (Cube, Vector, or Shared) based on
+    op type and address space, then wraps consecutive same-domain ops into
+    pto.section.cube / pto.section.vector regions.
+  }];
+  let constructor = "mlir::pto::createCVClassifyAndSplitPass()";
+  let dependentDialects = [
+    "mlir::pto::PTODialect",
+    "mlir::func::FuncDialect",
+    "mlir::scf::SCFDialect"
+  ];
+}
+
 #endif // MLIR_DIALECT_PTO_PASSES

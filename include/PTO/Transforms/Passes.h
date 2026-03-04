@@ -63,6 +63,7 @@ std::unique_ptr<Pass> createPTOConvertToDPSPass();
 std::unique_ptr<Pass> createPTORemoveRedundantBarrierPass();
 std::unique_ptr<Pass> createPTOViewToMemrefPass();
 std::unique_ptr<mlir::Pass> createPTOInsertLoadStoreForMixCVPass();
+std::unique_ptr<Pass> createCVClassifyAndSplitPass();
 std::unique_ptr<Pass> createInferPTOLayoutPass();
 // Declare register function
 void registerPTOPasses();
