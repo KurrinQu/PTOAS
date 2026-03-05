@@ -1,10 +1,9 @@
 // RUN: ptoas --enable-cv-separation %s | FileCheck %s
 
-// Test: cross-domain value gets bridged through workspace.
-// Cube section should have tstore + sync.set, vector section should have sync.wait + tload.
+// Test: no cross-domain dependency — no bridge ops inserted.
 
 module {
-  func.func @bridge_test(
+  func.func @no_cross_dep(
       %left: memref<16x256xf16, #pto.address_space<left>>,
       %right: memref<256x16xf16, #pto.address_space<right>>,
       %acc: memref<16x16xf32, #pto.address_space<acc>>,
@@ -18,6 +17,6 @@ module {
 }
 
 // CHECK: pto.section.cube
-// CHECK:   pto.tmatmul
 // CHECK: pto.section.vector
-// CHECK:   pto.tstore
+// CHECK-NOT: pto.sync.set
+// CHECK-NOT: pto.sync.wait

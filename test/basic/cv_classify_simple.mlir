@@ -1,4 +1,4 @@
-// RUN: ptoas --pto-cv-classify-and-split %s | FileCheck %s
+// RUN: ptoas --enable-cv-separation %s | FileCheck %s
 
 // Test: pure vector ops go into section.vector, pure cube ops into section.cube.
 

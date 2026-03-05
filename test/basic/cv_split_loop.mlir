@@ -1,4 +1,4 @@
-// RUN: ptoas --pto-cv-classify-and-split %s | FileCheck %s
+// RUN: ptoas --enable-cv-separation %s | FileCheck %s
 
 // Test: scf.for containing both cube and vector ops is split into
 // two parallel loops, one in each section.
