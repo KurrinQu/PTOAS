@@ -141,13 +141,14 @@ private:
       return ComputeDomain::CUBE;
 
     // 1. Op type match — Vector ops
-    if (isa<AddFOp, AddFDpsOp, TransOp, TTransOp, TMovOp, MovOp>(op))
+    if (isa<AddFOp, AddFDpsOp, TransOp, TTransOp, MovOp>(op))
       return ComputeDomain::VECTOR;
 
     // 2. Address space match — Cube
     static const pto::AddressSpace cubeSpaces[] = {
         pto::AddressSpace::LEFT, pto::AddressSpace::RIGHT,
-        pto::AddressSpace::ACC};
+        pto::AddressSpace::ACC, pto::AddressSpace::MAT,
+        pto::AddressSpace::BIAS, pto::AddressSpace::SCALING};
     if (hasAddrSpaceIn(op, cubeSpaces))
       return ComputeDomain::CUBE;
 

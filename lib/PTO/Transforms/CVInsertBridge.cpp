@@ -90,9 +90,11 @@ private:
     // tstore: producer value -> workspace
     builder.create<TStoreOp>(loc, TypeRange{}, bp.producerValue, workspace);
 
-    // sync.set on MTE3 pipe (store pipe)
-    auto pipeAttr =
-        PipeAttr::get(builder.getContext(), pto::PIPE::PIPE_MTE3);
+    // sync.set pipe: Cube section (ACC→GM) uses PIPE_FIX, Vector section (UB→GM) uses MTE3
+    auto storePipe = isa<SectionCubeOp>(bp.producerSection)
+                         ? pto::PIPE::PIPE_FIX
+                         : pto::PIPE::PIPE_MTE3;
+    auto pipeAttr = PipeAttr::get(builder.getContext(), storePipe);
     builder.create<SyncSetOp>(loc, pipeAttr, static_cast<uint32_t>(flagId));
 
     // 2. Insert sync.wait + tload at start of consumer section
