@@ -647,10 +647,25 @@ int main(int argc, char **argv) {
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertCVMovPass());
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOConvertToDPSPass());
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertLoadStoreForMixCVPass());
+  // Parse target architecture early (used by CV separation and codegen)
+  std::string arch = ptoTargetArch;
+  for (char &c : arch)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  pto::PTOArch targetArch;
+  if (arch == "a3") {
+    targetArch = pto::PTOArch::A3;
+  } else if (arch == "a5") {
+    targetArch = pto::PTOArch::A5;
+  } else {
+    llvm::errs() << "Error: invalid --pto-arch='" << ptoTargetArch
+                 << "'. Expected 'a3' or 'a5'.\n";
+    return 1;
+  }
+
   // CV Separation: classify ops and split into sections, then insert bridges
   if (enableCVSeparation) {
     pm.addNestedPass<mlir::func::FuncOp>(pto::createCVClassifyAndSplitPass());
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createCVInsertBridgePass());
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createCVInsertBridgePass(targetArch));
   }
 
   pm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
@@ -680,18 +695,7 @@ int main(int argc, char **argv) {
   }
 
   pm.addPass(createCSEPass());
-  std::string arch = ptoTargetArch;
-  for (char &c : arch)
-    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  if (arch == "a3") {
-    pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));
-  } else if (arch == "a5") {
-    pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A5));
-  } else {
-    llvm::errs() << "Error: invalid --pto-arch='" << ptoTargetArch
-                 << "'. Expected 'a3' or 'a5'.\n";
-    return 1;
-  }
+  pm.addPass(pto::createEmitPTOManualPass(targetArch));
   pm.addPass(emitc::createFormExpressionsPass());
   pm.addPass(mlir::createCSEPass());
 

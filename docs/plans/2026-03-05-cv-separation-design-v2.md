@@ -2,7 +2,7 @@
 
 **日期**: 2026-03-05
 **状态**: 已实现
-**基于**: 原始设计 (2026-03-04) + 硬件数据通路修正 (信息补充.md)
+**基于**: 原始设计 (2026-03-04) + 硬件数据通路修正 (信息补充.md) + A5 双Vector核同步 (PTO IR中CV同步指令定义.md)
 
 ---
 
@@ -23,17 +23,19 @@ CVClassifyAndSplit → CVInsertBridge → [下游 pass pipeline]
 
 ### 1.3 Pipeline 位置
 
-通过 `--enable-cv-separation` 标志控制。开启后，两个 CV pass 插入到现有 pipeline 前端，**下游 pass 继续正常执行**（LoweringSyncToPipe → PlanMemory → EmitPTOManual → EmitC）。
+通过 `--enable-cv-separation` 标志控制。开启后，两个 CV pass 插入到现有 pipeline 前端，**下游 pass 继续正常执行**（LoweringSyncToPipe → PlanMemory → EmitPTOManual → EmitC）。`--pto-arch` 提前解析，架构信息传入 CVInsertBridge。
 
 ```cpp
 // ptoas.cpp pipeline
+pto::PTOArch targetArch = /* 解析 --pto-arch */;
 if (enableCVSeparation) {
   pm.addNestedPass<func::FuncOp>(pto::createCVClassifyAndSplitPass());
-  pm.addNestedPass<func::FuncOp>(pto::createCVInsertBridgePass());
+  pm.addNestedPass<func::FuncOp>(pto::createCVInsertBridgePass(targetArch));
 }
 // 下游 pass 始终运行
 pm.addNestedPass<func::FuncOp>(pto::createLoweringSyncToPipePass());
 pm.addPass(pto::createPTOViewToMemrefPass());
+pm.addPass(pto::createEmitPTOManualPass(targetArch));
 // ... EmitC etc.
 ```
 
@@ -62,6 +64,24 @@ GM → UB (via MTE2) → VECTOR 计算 → UB → GM (via MTE3)
 
 **跨域数据交换（当前版本）**：统一通过 GM workspace 中转。
 
+### 1.5 A5 架构：1 Cube + 2 Vector 核
+
+A5 架构下每个 Block 包含 1 个 Cube 核和 2 个 Vector 核（Core0/Core1），同步机制不同于 A3：
+
+| 特性 | A3 | A5 |
+|------|----|----|
+| 同步 API | `ffts_cross_core_sync` / `wait_flag_dev` | `set_intra_block` / `wait_intra_block` |
+| 同步 ID | 0-15 | Cube: 0-31, Vector: 0-15 |
+| Cube→Vector 通知 | 通过 mode=2 广播 | 必须发送到两个核：ID 和 ID+16 |
+
+**A5 ID 映射关系**：
+- Vector Core0 的 `set_intra_block(id)` → Cube ID 0-15
+- Vector Core1 的 `set_intra_block(id)` → Cube ID 16-31
+- Cube 的 `set_intra_block(id 0-15)` → Vector Core0 ID 0-15
+- Cube 的 `set_intra_block(id 16-31)` → Vector Core1 ID 0-15
+
+因此，Cube 通知两个 Vector 核时，必须发送两次 `sync.set`：一次 `id`（通知 Core0），一次 `id+16`（通知 Core1）。此逻辑在 **CVInsertBridge pass 层**处理，通过 `--pto-arch` 传入的 `PTOArch` 参数决定。
+
 ---
 
 ## 2. CVClassifyAndSplit — Op 分类与拆分
@@ -74,8 +94,8 @@ GM → UB (via MTE2) → VECTOR 计算 → UB → GM (via MTE3)
 
 | 域 | Op 类型 |
 |----|--------|
-| CUBE | `MatmulOp, MatmulAccOp, TMatmulOp, TMatmulAccOp, TMatmulBiasOp, TMatmulMxOp, TMatmulMxAccOp, TMatmulMxBiasOp, TGemvOp, TGemvAccOp, TGemvBiasOp` |
-| VECTOR | `AddFOp, AddFDpsOp, TransOp, TTransOp, MovOp` |
+| CUBE | `TMatmulOp, TMatmulAccOp, TMatmulBiasOp, TMatmulMxOp, TMatmulMxAccOp, TMatmulMxBiasOp, TGemvOp, TGemvAccOp, TGemvBiasOp` |
+| VECTOR | `TAddOp, TTransOp, MovOp` |
 
 > **注意**：`TMovOp` 不在上述列表中。TMOV 是灵活指令，其归属由第二级（地址空间）决定。
 
@@ -104,12 +124,12 @@ ComputeDomain classifyOp(Operation *op) {
     return ComputeDomain::SHARED;
 
   // 第一级：Op 类型
-  if (isa<MatmulOp, MatmulAccOp, TMatmulOp, TMatmulAccOp,
+  if (isa<TMatmulOp, TMatmulAccOp,
           TMatmulBiasOp, TMatmulMxOp, TMatmulMxAccOp,
           TMatmulMxBiasOp, TGemvOp, TGemvAccOp, TGemvBiasOp>(op))
     return ComputeDomain::CUBE;
 
-  if (isa<AddFOp, AddFDpsOp, TransOp, TTransOp, MovOp>(op))
+  if (isa<TAddOp, TTransOp, MovOp>(op))
     return ComputeDomain::VECTOR;
 
   // 第二级：地址空间
@@ -263,11 +283,17 @@ void insertBridge(BridgePoint &bp, Value workspace, unsigned flagId,
 
   builder.create<TStoreOp>(loc, TypeRange{}, bp.producerValue, workspace);
 
-  auto storePipe = isa<SectionCubeOp>(bp.producerSection)
-                       ? pto::PIPE::PIPE_FIX
-                       : pto::PIPE::PIPE_MTE3;
+  bool isCubeProducer = isa<SectionCubeOp>(bp.producerSection);
+  auto storePipe = isCubeProducer ? pto::PIPE::PIPE_FIX
+                                  : pto::PIPE::PIPE_MTE3;
   auto pipeAttr = PipeAttr::get(builder.getContext(), storePipe);
   builder.create<SyncSetOp>(loc, pipeAttr, static_cast<uint32_t>(flagId));
+
+  // A5: Cube 有 2 个 Vector 核，必须通知两个核 (id 和 id+16)
+  if (targetArch == PTOArch::A5 && isCubeProducer) {
+    builder.create<SyncSetOp>(loc, pipeAttr,
+                              static_cast<uint32_t>(flagId + 16));
+  }
 
   // 2. Consumer section 开头：sync.wait + tload
   Block &consBody = bp.consumerSection->getRegion(0).front();
@@ -280,6 +306,26 @@ void insertBridge(BridgePoint &bp, Value workspace, unsigned flagId,
   builder.create<TLoadOp>(loc, TypeRange{}, workspace, dst);
 }
 ```
+
+### 3.4 A5 双核通知
+
+当 `--pto-arch=a5` 且生产者是 Cube section 时，CVInsertBridge 会插入两个 `pto.sync.set`：
+
+```mlir
+// 生成的 IR（A5 Cube→Vector 桥接）:
+pto.section.cube {
+  // ... compute ...
+  pto.tstore ins(%acc : ...) outs(%workspace : ...)
+  pto.sync.set #pto.pipe<PIPE_FIX>, 0      // → Vector Core0
+  pto.sync.set #pto.pipe<PIPE_FIX>, 16     // → Vector Core1
+}
+pto.section.vector {
+  pto.sync.wait #pto.pipe<PIPE_MTE2>, 0
+  pto.tload ins(%workspace : ...) outs(%dst : ...)
+}
+```
+
+A3 模式下只插入一个 `sync.set`（mode=2 广播模式覆盖所有 AIV）。
 
 ### 3.4 DPS 格式说明
 
@@ -321,6 +367,7 @@ PTO dialect 中所有 Cube/Vector op（tload, tstore, tmov, tmatmul 等）都是
 | `cv_existing_sections.mlir` | 已有 section 保留 + loose op 归入新 section |
 | `cv_no_cross_dep.mlir` | 无跨域依赖 → 无 set_flag/wait_flag |
 | `cv_bridge_cube_to_vec.mlir` | Cube + Vector 分离（DPS 无 SSA 逃逸）|
+| `cv_a5_sync.mlir` | A5 生成 `set_intra_block`/`wait_intra_block`，A3 生成 `ffts_cross_core_sync`/`wait_flag_dev` |
 
 ### 5.2 示例：cv_tmov_classify.mlir
 
@@ -391,13 +438,14 @@ module {
 | `include/PTO/Transforms/Passes.h` | Pass 工厂函数声明 |
 | `lib/PTO/Transforms/CMakeLists.txt` | 构建配置 |
 | `tools/ptoas/ptoas.cpp` | Pipeline 集成 (`--enable-cv-separation`) |
-| `test/basic/cv_*.mlir` | 7 个 FileCheck 测试 |
+| `test/basic/cv_*.mlir` | 8 个 FileCheck 测试（含 A5 sync 测试）|
 
 ---
 
 ## 7. 后续优化（不在当前版本范围）
 
 - A5 架构片上通路（ACC→VEC, UB→MAT）替代 GM workspace
+- A5 双 Vector 核独立负载分配（Core0/Core1 各处理不同数据分区）
 - Workspace double-buffering
 - 跨域 acc 类型自动 cast（float32 → float16）减少传输量
 - 嵌套循环递归拆分

@@ -135,13 +135,13 @@ private:
       return ComputeDomain::SHARED;
 
     // 1. Op type match — Cube ops
-    if (isa<MatmulOp, MatmulAccOp, TMatmulOp, TMatmulAccOp,
+    if (isa<TMatmulOp, TMatmulAccOp,
             TMatmulBiasOp, TMatmulMxOp, TMatmulMxAccOp,
             TMatmulMxBiasOp, TGemvOp, TGemvAccOp, TGemvBiasOp>(op))
       return ComputeDomain::CUBE;
 
     // 1. Op type match — Vector ops
-    if (isa<AddFOp, AddFDpsOp, TransOp, TTransOp, MovOp>(op))
+    if (isa<TAddOp, TTransOp, MovOp>(op))
       return ComputeDomain::VECTOR;
 
     // 2. Address space match — Cube

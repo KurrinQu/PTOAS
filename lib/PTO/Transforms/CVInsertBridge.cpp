@@ -29,6 +29,11 @@ class CVInsertBridgePass
 public:
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(CVInsertBridgePass)
 
+  PTOArch targetArch;
+
+  CVInsertBridgePass() : targetArch(PTOArch::A3) {}
+  explicit CVInsertBridgePass(PTOArch arch) : targetArch(arch) {}
+
   StringRef getArgument() const override {
     return "pto-cv-insert-bridge";
   }
@@ -91,11 +96,17 @@ private:
     builder.create<TStoreOp>(loc, TypeRange{}, bp.producerValue, workspace);
 
     // sync.set pipe: Cube section (ACC→GM) uses PIPE_FIX, Vector section (UB→GM) uses MTE3
-    auto storePipe = isa<SectionCubeOp>(bp.producerSection)
-                         ? pto::PIPE::PIPE_FIX
-                         : pto::PIPE::PIPE_MTE3;
+    bool isCubeProducer = isa<SectionCubeOp>(bp.producerSection);
+    auto storePipe = isCubeProducer ? pto::PIPE::PIPE_FIX
+                                    : pto::PIPE::PIPE_MTE3;
     auto pipeAttr = PipeAttr::get(builder.getContext(), storePipe);
     builder.create<SyncSetOp>(loc, pipeAttr, static_cast<uint32_t>(flagId));
+
+    // A5: Cube has 2 Vector cores. Cube must notify both (id and id+16).
+    if (targetArch == PTOArch::A5 && isCubeProducer) {
+      builder.create<SyncSetOp>(loc, pipeAttr,
+                                static_cast<uint32_t>(flagId + 16));
+    }
 
     // 2. Insert sync.wait + tload at start of consumer section
     Block &consBody = bp.consumerSection->getRegion(0).front();
@@ -164,8 +175,8 @@ private:
 
 namespace mlir {
 namespace pto {
-std::unique_ptr<Pass> createCVInsertBridgePass() {
-  return std::make_unique<CVInsertBridgePass>();
+std::unique_ptr<Pass> createCVInsertBridgePass(PTOArch arch) {
+  return std::make_unique<CVInsertBridgePass>(arch);
 }
 } // namespace pto
 } // namespace mlir
