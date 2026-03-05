@@ -129,20 +129,39 @@ private:
   }
 
   /// Classify a single operation into its compute domain.
+  ///
+  /// Classification priority:
+  /// 1. Section ops → SHARED (already classified)
+  /// 2. OpPipeInterface → use getPipe() to determine domain:
+  ///    - PIPE_M → CUBE (matmul/gemv)
+  ///    - PIPE_V → VECTOR (element-wise, transpose, etc.)
+  ///    - PIPE_MTE1 → CUBE (L1→L0 data movement)
+  ///    - PIPE_MTE2/MTE3 → address-space fallback (shared DMA)
+  ///    - PIPE_FIX → CUBE (ACC→GM store)
+  /// 3. Address space match as fallback for DMA ops and non-pipe ops
+  /// 4. SHARED for infrastructure ops (arith, scf, etc.)
   ComputeDomain classifyOp(Operation *op) {
     // Already in a section — skip
     if (isa<SectionCubeOp, SectionVectorOp>(op))
       return ComputeDomain::SHARED;
 
-    // 1. Op type match — Cube ops
-    if (isa<TMatmulOp, TMatmulAccOp,
-            TMatmulBiasOp, TMatmulMxOp, TMatmulMxAccOp,
-            TMatmulMxBiasOp, TGemvOp, TGemvAccOp, TGemvBiasOp>(op))
-      return ComputeDomain::CUBE;
-
-    // 1. Op type match — Vector ops
-    if (isa<TAddOp, TTransOp, MovOp>(op))
-      return ComputeDomain::VECTOR;
+    // 1. Use OpPipeInterface for ops that declare their pipe
+    if (auto pipeOp = dyn_cast<pto::OpPipeInterface>(op)) {
+      auto pipe = pipeOp.getPipe();
+      switch (pipe) {
+      case pto::PIPE::PIPE_M:
+        return ComputeDomain::CUBE;
+      case pto::PIPE::PIPE_V:
+      case pto::PIPE::PIPE_V2:
+        return ComputeDomain::VECTOR;
+      case pto::PIPE::PIPE_MTE1:
+      case pto::PIPE::PIPE_FIX:
+        return ComputeDomain::CUBE;
+      default:
+        // PIPE_MTE2, PIPE_MTE3, PIPE_S, etc. — fall through to address space
+        break;
+      }
+    }
 
     // 2. Address space match — Cube
     static const pto::AddressSpace cubeSpaces[] = {
