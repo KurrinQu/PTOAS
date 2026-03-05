@@ -20,8 +20,8 @@ module {
   }
 }
 
-// CHECK: pto.section.cube
-// CHECK:   pto.tmov
-// CHECK:   pto.tmatmul
-// CHECK: pto.section.vector
-// CHECK:   pto.tstore
+// CHECK: __DAV_CUBE__
+// CHECK: TMOV
+// CHECK: TMATMUL
+// CHECK: __DAV_VEC__
+// CHECK: TSTORE

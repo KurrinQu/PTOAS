@@ -25,10 +25,10 @@ module {
   }
 }
 
-// CHECK: pto.section.cube
-// CHECK:   scf.for
-// CHECK:     pto.tmov
-// CHECK:     pto.tmatmul
-// CHECK: pto.section.vector
-// CHECK:   scf.for
-// CHECK:     pto.tstore
+// CHECK: __DAV_CUBE__
+// CHECK: for
+// CHECK: TMOV
+// CHECK: TMATMUL
+// CHECK: __DAV_VEC__
+// CHECK: for
+// CHECK: TSTORE

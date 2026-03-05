@@ -1,6 +1,6 @@
 // RUN: ptoas --enable-cv-separation %s | FileCheck %s
 
-// Test: no cross-domain dependency — no bridge ops inserted.
+// Test: no cross-domain dependency — no sync ops inserted.
 
 module {
   func.func @no_cross_dep(
@@ -22,7 +22,7 @@ module {
   }
 }
 
-// CHECK: pto.section.cube
-// CHECK: pto.section.vector
-// CHECK-NOT: pto.sync.set
-// CHECK-NOT: pto.sync.wait
+// CHECK: __DAV_CUBE__
+// CHECK: __DAV_VEC__
+// CHECK-NOT: set_flag
+// CHECK-NOT: wait_flag

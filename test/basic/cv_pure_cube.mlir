@@ -1,6 +1,6 @@
 // RUN: ptoas --enable-cv-separation %s | FileCheck %s
 
-// Test: complete cube data path — tload GM→MAT, tmov MAT→LEFT/RIGHT, tmatmul, all in section.cube.
+// Test: complete cube data path — tload GM→MAT, tmov MAT→LEFT/RIGHT, tmatmul, all in __DAV_CUBE__.
 
 module {
   func.func @cube_full_path(
@@ -24,10 +24,10 @@ module {
   }
 }
 
-// CHECK: pto.section.cube
-// CHECK:   pto.tload
-// CHECK:   pto.tload
-// CHECK:   pto.tmov
-// CHECK:   pto.tmov
-// CHECK:   pto.tmatmul
-// CHECK-NOT: pto.section.vector
+// CHECK: __DAV_CUBE__
+// CHECK: TLOAD
+// CHECK: TLOAD
+// CHECK: TMOV
+// CHECK: TMOV
+// CHECK: TMATMUL
+// CHECK-NOT: __DAV_VEC__

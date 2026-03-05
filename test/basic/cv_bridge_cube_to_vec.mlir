@@ -1,7 +1,7 @@
 // RUN: ptoas --enable-cv-separation %s | FileCheck %s
 
-// Test: cross-domain value gets bridged through workspace.
-// Cube section should have tstore + sync.set, vector section should have sync.wait + tload.
+// Test: cube and vector ops are separated into different sections.
+// No cross-domain SSA deps because all ops are DPS format.
 
 module {
   func.func @bridge_test(
@@ -17,7 +17,7 @@ module {
   }
 }
 
-// CHECK: pto.section.cube
-// CHECK:   pto.tmatmul
-// CHECK: pto.section.vector
-// CHECK:   pto.tstore
+// CHECK: __DAV_CUBE__
+// CHECK: TMATMUL
+// CHECK: __DAV_VEC__
+// CHECK: TSTORE

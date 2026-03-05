@@ -18,7 +18,7 @@ module {
   }
 }
 
-// CHECK: pto.section.cube
-// CHECK:   pto.tmov
-// CHECK: pto.section.vector
-// CHECK:   pto.tmov
+// CHECK: __DAV_CUBE__
+// CHECK: TMOV
+// CHECK: __DAV_VEC__
+// CHECK: TMOV

@@ -1,6 +1,6 @@
 // RUN: ptoas --enable-cv-separation %s | FileCheck %s
 
-// Test: pure vector ops go into section.vector, pure cube ops into section.cube.
+// Test: pure vector ops go into __DAV_VEC__ section only.
 
 module {
   func.func @pure_vector(%gm_in: memref<16x256xf16, #pto.address_space<gm>>,
@@ -14,5 +14,7 @@ module {
   }
 }
 
-// CHECK: pto.section.vector
-// CHECK-NOT: pto.section.cube
+// CHECK: __DAV_VEC__
+// CHECK: TLOAD
+// CHECK: TSTORE
+// CHECK-NOT: __DAV_CUBE__
