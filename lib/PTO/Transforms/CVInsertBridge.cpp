@@ -47,14 +47,69 @@ public:
     auto bridges = findBridgePoints(func);
 
     if (bridges.empty())
-      return; // no cross-domain deps
+      return;
 
-    // TODO: find workspace param and insert bridges (Task 7)
-    llvm::errs() << "[CVInsertBridge] Found " << bridges.size()
-                 << " bridge points\n";
+    Value workspace = findWorkspaceArg(func);
+    if (!workspace) {
+      func.emitError("cross-domain dependency found but no GM workspace "
+                     "argument in function signature");
+      return signalPassFailure();
+    }
+
+    OpBuilder builder(func.getContext());
+    unsigned flagId = 0;
+    for (auto &bp : bridges)
+      insertBridge(bp, workspace, flagId++, builder);
   }
 
 private:
+  /// Find the GM workspace memref argument in the function signature.
+  /// Convention: last argument with address_space<gm>.
+  Value findWorkspaceArg(func::FuncOp func) {
+    for (auto arg : llvm::reverse(func.getArguments())) {
+      auto mr = dyn_cast<MemRefType>(arg.getType());
+      if (!mr)
+        continue;
+      auto attr =
+          dyn_cast_or_null<pto::AddressSpaceAttr>(mr.getMemorySpace());
+      if (attr && attr.getAddressSpace() == pto::AddressSpace::GM)
+        return arg;
+    }
+    return nullptr;
+  }
+
+  /// Insert bridge ops for a single cross-domain dependency.
+  void insertBridge(BridgePoint &bp, Value workspace, unsigned flagId,
+                    OpBuilder &builder) {
+    // 1. Insert tstore + sync.set at end of producer section
+    Block &prodBody = bp.producerSection->getRegion(0).front();
+    builder.setInsertionPoint(&prodBody, prodBody.end());
+
+    auto loc = bp.producerValue.getLoc();
+
+    // tstore: producer value -> workspace
+    builder.create<TStoreOp>(loc, TypeRange{}, bp.producerValue, workspace);
+
+    // sync.set on MTE3 pipe (store pipe)
+    auto pipeAttr =
+        PipeAttr::get(builder.getContext(), pto::PIPE::PIPE_MTE3);
+    builder.create<SyncSetOp>(loc, pipeAttr, static_cast<uint32_t>(flagId));
+
+    // 2. Insert sync.wait + tload at start of consumer section
+    Block &consBody = bp.consumerSection->getRegion(0).front();
+    builder.setInsertionPointToStart(&consBody);
+
+    // sync.wait on MTE2 pipe (load pipe)
+    auto waitPipe =
+        PipeAttr::get(builder.getContext(), pto::PIPE::PIPE_MTE2);
+    builder.create<SyncWaitOp>(loc, waitPipe, static_cast<uint32_t>(flagId));
+
+    // tload: workspace -> consumer's destination buffer
+    // Use the first consumer use's value as the destination
+    Value dst = bp.consumerUses[0]->get();
+    builder.create<TLoadOp>(loc, TypeRange{}, workspace, dst);
+  }
+
   /// Find the enclosing section op for an operation, or nullptr.
   Operation *getEnclosingSection(Operation *op) {
     Operation *parent = op->getParentOp();
