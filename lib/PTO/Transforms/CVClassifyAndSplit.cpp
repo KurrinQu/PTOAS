@@ -87,8 +87,11 @@ public:
       else
         sectionOp = builder.create<SectionVectorOp>(entries[i].op->getLoc());
 
-      // Move ops into the section's body
-      Block &sectionBody = sectionOp->getRegion(0).front();
+      // Ensure the section has a block (builder doesn't create one)
+      Region &region = sectionOp->getRegion(0);
+      if (region.empty())
+        region.emplaceBlock();
+      Block &sectionBody = region.front();
       for (unsigned k = i; k < j; ++k) {
         entries[k].op->moveBefore(&sectionBody, sectionBody.end());
       }
@@ -171,12 +174,16 @@ private:
     // Remove non-vector ops from vecLoop body
     filterLoopBody(vecLoop, ComputeDomain::VECTOR);
 
-    // Wrap in sections
+    // Wrap in sections (ensure block exists)
     auto cubeSec = builder.create<SectionCubeOp>(forOp->getLoc());
+    if (cubeSec.getBody().empty())
+      cubeSec.getBody().emplaceBlock();
     cubeLoop->moveBefore(&cubeSec.getBody().front(),
                          cubeSec.getBody().front().end());
 
     auto vecSec = builder.create<SectionVectorOp>(forOp->getLoc());
+    if (vecSec.getBody().empty())
+      vecSec.getBody().emplaceBlock();
     vecLoop->moveBefore(&vecSec.getBody().front(),
                         vecSec.getBody().front().end());
 

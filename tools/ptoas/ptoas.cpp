@@ -102,6 +102,11 @@ static llvm::cl::opt<bool> disableInferLayout(
     llvm::cl::desc("Disable PTO layout inference pass (static-only)"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> enableCVSeparation(
+    "enable-cv-separation",
+    llvm::cl::desc("Enable Cube/Vector separation passes"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<bool> emitAddPtrTrace(
     "emit-addptr-trace",
     llvm::cl::desc("Emit addptr trace comments in generated C++ output"),
@@ -538,6 +543,10 @@ int main(int argc, char **argv) {
   registry.insert<emitc::EmitCDialect>();
   registry.insert<mlir::LLVM::LLVMDialect>();
 
+  // Register CV separation passes for CLI usage
+  ::registerCVClassifyAndSplit();
+  ::registerCVInsertBridge();
+
   // Parse command line options
   llvm::cl::ParseCommandLineOptions(argc, argv, "PTO Assembler (ptoas)\n");
 
@@ -638,8 +647,14 @@ int main(int argc, char **argv) {
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertCVMovPass());
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOConvertToDPSPass());
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertLoadStoreForMixCVPass());
+  // CV Separation: classify ops and split into sections, then insert bridges
+  if (enableCVSeparation) {
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createCVClassifyAndSplitPass());
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createCVInsertBridgePass());
+  }
+
   pm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
-  
+
   if (!disableInferLayout)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
   pm.addPass(pto::createPTOViewToMemrefPass());
@@ -663,10 +678,6 @@ int main(int argc, char **argv) {
       pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
     }
   }
-
-  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTORemoveRedundantBarrierPass());
-  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOHighDimLoweringPass());
-  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVFloopGatherPass());
 
   pm.addPass(createCSEPass());
   std::string arch = ptoTargetArch;
