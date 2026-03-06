@@ -45,6 +45,7 @@ public:
     registry.insert<pto::PTODialect>();
     registry.insert<func::FuncDialect>();
     registry.insert<memref::MemRefDialect>();
+    registry.insert<arith::ArithDialect>();
   }
 
   void runOnOperation() override {
@@ -54,11 +55,15 @@ public:
     if (bridges.empty())
       return;
 
-    Value workspace = findWorkspaceArg(func);
-    if (!workspace) {
-      func.emitError("cross-domain dependency found but no GM workspace "
-                     "argument in function signature");
-      return signalPassFailure();
+    // A3 needs GM workspace; A5 uses on-chip path
+    Value workspace = nullptr;
+    if (targetArch != PTOArch::A5) {
+      workspace = findWorkspaceArg(func);
+      if (!workspace) {
+        func.emitError("cross-domain dependency found but no GM workspace "
+                       "argument in function signature");
+        return signalPassFailure();
+      }
     }
 
     OpBuilder builder(func.getContext());
@@ -83,9 +88,19 @@ private:
     return nullptr;
   }
 
-  /// Insert bridge ops for a single cross-domain dependency.
+  /// Dispatch to arch-specific bridge insertion.
   void insertBridge(BridgePoint &bp, Value workspace, unsigned flagId,
                     OpBuilder &builder) {
+    if (targetArch == PTOArch::A5) {
+      insertBridgeA5(bp, flagId, builder);
+    } else {
+      insertBridgeA3(bp, workspace, flagId, builder);
+    }
+  }
+
+  /// A3: bridge via GM workspace (tstore + sync.set → sync.wait + tload).
+  void insertBridgeA3(BridgePoint &bp, Value workspace, unsigned flagId,
+                      OpBuilder &builder) {
     // 1. Insert tstore + sync.set at end of producer section
     Block &prodBody = bp.producerSection->getRegion(0).front();
     builder.setInsertionPoint(&prodBody, prodBody.end());
@@ -95,32 +110,30 @@ private:
     // tstore: producer value -> workspace
     builder.create<TStoreOp>(loc, TypeRange{}, bp.producerValue, workspace);
 
-    // sync.set pipe: Cube section (ACC→GM) uses PIPE_FIX, Vector section (UB→GM) uses MTE3
+    // sync.set pipe: Cube→GM uses PIPE_FIX, Vector→GM uses MTE3
     bool isCubeProducer = isa<SectionCubeOp>(bp.producerSection);
     auto storePipe = isCubeProducer ? pto::PIPE::PIPE_FIX
                                     : pto::PIPE::PIPE_MTE3;
     auto pipeAttr = PipeAttr::get(builder.getContext(), storePipe);
     builder.create<SyncSetOp>(loc, pipeAttr, static_cast<uint32_t>(flagId));
 
-    // A5: Cube has 2 Vector cores. Cube must notify both (id and id+16).
-    if (targetArch == PTOArch::A5 && isCubeProducer) {
-      builder.create<SyncSetOp>(loc, pipeAttr,
-                                static_cast<uint32_t>(flagId + 16));
-    }
-
     // 2. Insert sync.wait + tload at start of consumer section
     Block &consBody = bp.consumerSection->getRegion(0).front();
     builder.setInsertionPointToStart(&consBody);
 
-    // sync.wait on MTE2 pipe (load pipe)
     auto waitPipe =
         PipeAttr::get(builder.getContext(), pto::PIPE::PIPE_MTE2);
     builder.create<SyncWaitOp>(loc, waitPipe, static_cast<uint32_t>(flagId));
 
-    // tload: workspace -> consumer's destination buffer
-    // Use the first consumer use's value as the destination
     Value dst = bp.consumerUses[0]->get();
     builder.create<TLoadOp>(loc, TypeRange{}, workspace, dst);
+  }
+
+  /// A5: bridge via on-chip tmov + row-split subview.
+  void insertBridgeA5(BridgePoint &bp, unsigned flagId,
+                      OpBuilder &builder) {
+    // TODO: implement in next task
+    llvm_unreachable("A5 on-chip bridge not yet implemented");
   }
 
   /// Find the enclosing section op for an operation, or nullptr.
