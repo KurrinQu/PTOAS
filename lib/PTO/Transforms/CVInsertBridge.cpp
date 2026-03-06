@@ -38,7 +38,7 @@ public:
     return "pto-cv-insert-bridge";
   }
   StringRef getDescription() const override {
-    return "Insert GM workspace bridges for cross-domain data dependencies";
+    return "Insert bridges for cross-domain data dependencies";
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
@@ -132,13 +132,31 @@ private:
   /// A5: bridge via on-chip tmov + row-split subview.
   void insertBridgeA5(BridgePoint &bp, unsigned flagId,
                       OpBuilder &builder) {
+    Value dst = bp.consumerUses[0]->get();
+    auto loc = bp.producerValue.getLoc();
+
+    // Validate upfront before mutating IR
+    auto dstType = cast<MemRefType>(dst.getType());
+    if (dstType.getRank() < 2) {
+      bp.consumerSection->emitError(
+          "A5 on-chip path requires at least 2D memref for row-split");
+      return signalPassFailure();
+    }
+    int64_t totalRows = dstType.getShape()[0];
+    int64_t totalCols = dstType.getShape()[1];
+    if (ShapedType::isDynamic(totalRows) || totalRows % 2 != 0) {
+      bp.consumerSection->emitError(
+          "A5 on-chip path requires static even row count, got ")
+          << totalRows;
+      return signalPassFailure();
+    }
+    int64_t halfRows = totalRows / 2;
+
     // --- Producer side ---
     Block &prodBody = bp.producerSection->getRegion(0).front();
     builder.setInsertionPoint(&prodBody, prodBody.end());
-    auto loc = bp.producerValue.getLoc();
 
     // 1. tmov: on-chip direct path (e.g. ACC→VEC)
-    Value dst = bp.consumerUses[0]->get();
     builder.create<TMovOp>(loc, TypeRange{}, bp.producerValue, dst);
 
     // 2. sync.set: notify consumer core(s)
@@ -161,23 +179,6 @@ private:
     auto waitPipe =
         PipeAttr::get(builder.getContext(), pto::PIPE::PIPE_V);
     builder.create<SyncWaitOp>(loc, waitPipe, static_cast<uint32_t>(flagId));
-
-    // Validate: row count must be even for 2-way split
-    auto dstType = cast<MemRefType>(dst.getType());
-    if (dstType.getRank() < 2) {
-      bp.consumerSection->emitError(
-          "A5 on-chip path requires at least 2D memref for row-split");
-      return signalPassFailure();
-    }
-    int64_t totalRows = dstType.getShape()[0];
-    int64_t totalCols = dstType.getShape()[1];
-    if (ShapedType::isDynamic(totalRows) || totalRows % 2 != 0) {
-      bp.consumerSection->emitError(
-          "A5 on-chip path requires static even row count, got ")
-          << totalRows;
-      return signalPassFailure();
-    }
-    int64_t halfRows = totalRows / 2;
 
     // sub_id = get_subblock_idx() : i64  →  index
     auto subId = builder.create<GetSubBlockIdxOp>(
