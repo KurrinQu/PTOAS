@@ -132,8 +132,83 @@ private:
   /// A5: bridge via on-chip tmov + row-split subview.
   void insertBridgeA5(BridgePoint &bp, unsigned flagId,
                       OpBuilder &builder) {
-    // TODO: implement in next task
-    llvm_unreachable("A5 on-chip bridge not yet implemented");
+    // --- Producer side ---
+    Block &prodBody = bp.producerSection->getRegion(0).front();
+    builder.setInsertionPoint(&prodBody, prodBody.end());
+    auto loc = bp.producerValue.getLoc();
+
+    // 1. tmov: on-chip direct path (e.g. ACC→VEC)
+    Value dst = bp.consumerUses[0]->get();
+    builder.create<TMovOp>(loc, TypeRange{}, bp.producerValue, dst);
+
+    // 2. sync.set: notify consumer core(s)
+    bool isCubeProducer = isa<SectionCubeOp>(bp.producerSection);
+    auto storePipe = isCubeProducer ? pto::PIPE::PIPE_FIX
+                                    : pto::PIPE::PIPE_MTE3;
+    auto pipeAttr = PipeAttr::get(builder.getContext(), storePipe);
+    builder.create<SyncSetOp>(loc, pipeAttr, static_cast<uint32_t>(flagId));
+    // Cube must notify both Vector cores (id and id+16)
+    if (isCubeProducer) {
+      builder.create<SyncSetOp>(loc, pipeAttr,
+                                static_cast<uint32_t>(flagId + 16));
+    }
+
+    // --- Consumer side ---
+    Block &consBody = bp.consumerSection->getRegion(0).front();
+    builder.setInsertionPointToStart(&consBody);
+
+    // sync.wait on PIPE_V
+    auto waitPipe =
+        PipeAttr::get(builder.getContext(), pto::PIPE::PIPE_V);
+    builder.create<SyncWaitOp>(loc, waitPipe, static_cast<uint32_t>(flagId));
+
+    // Validate: row count must be even for 2-way split
+    auto dstType = cast<MemRefType>(dst.getType());
+    if (dstType.getRank() < 2) {
+      bp.consumerSection->emitError(
+          "A5 on-chip path requires at least 2D memref for row-split");
+      return signalPassFailure();
+    }
+    int64_t totalRows = dstType.getShape()[0];
+    int64_t totalCols = dstType.getShape()[1];
+    if (ShapedType::isDynamic(totalRows) || totalRows % 2 != 0) {
+      bp.consumerSection->emitError(
+          "A5 on-chip path requires static even row count, got ")
+          << totalRows;
+      return signalPassFailure();
+    }
+    int64_t halfRows = totalRows / 2;
+
+    // sub_id = get_subblock_idx() : i64  →  index
+    auto subId = builder.create<GetSubBlockIdxOp>(
+        loc, builder.getI64Type());
+    auto subIdIdx = builder.create<arith::IndexCastOp>(
+        loc, builder.getIndexType(), subId.getResult());
+
+    // rowOffset = sub_id * halfRows
+    auto halfRowsVal =
+        builder.create<arith::ConstantIndexOp>(loc, halfRows);
+    auto rowOffset =
+        builder.create<arith::MulIOp>(loc, subIdIdx, halfRowsVal);
+
+    // halfView = subview dst[rowOffset, 0] [halfRows, totalCols] [1, 1]
+    auto zeroIdx =
+        builder.create<arith::ConstantIndexOp>(loc, 0);
+    auto colsVal =
+        builder.create<arith::ConstantIndexOp>(loc, totalCols);
+    auto oneIdx =
+        builder.create<arith::ConstantIndexOp>(loc, 1);
+
+    auto halfView = builder.create<memref::SubViewOp>(
+        loc, dst,
+        /*offsets=*/ValueRange{rowOffset, zeroIdx},
+        /*sizes=*/ValueRange{halfRowsVal, colsVal},
+        /*strides=*/ValueRange{oneIdx, oneIdx});
+
+    // Replace all consumer uses of dst with halfView
+    for (auto *use : bp.consumerUses) {
+      use->set(halfView.getResult());
+    }
   }
 
   /// Find the enclosing section op for an operation, or nullptr.
