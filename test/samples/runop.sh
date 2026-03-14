@@ -464,9 +464,24 @@ PY
     fi
 
     if [[ "$base" == "assemble" ]]; then
-      if ! grep -Fq "TINSERT(" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing TINSERT() lowering for pto.tassemble"
+      local golden_file="${dir}/assemble.golden"
+      local assemble_ok=1
+      if [[ ! -f "${golden_file}" ]]; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing golden ref: ${golden_file}"
         overall=1
+        continue
+      fi
+      while IFS= read -r pat || [[ -n "$pat" ]]; do
+        [[ -n "$pat" ]] || continue
+        [[ "$pat" =~ ^# ]] && continue
+        if ! grep -Eq "$pat" "$cpp"; then
+          echo -e "${A}(${base}.py)\tFAIL\tgolden mismatch: missing pattern '$pat'"
+          overall=1
+          assemble_ok=0
+          break
+        fi
+      done < "${golden_file}"
+      if [[ ${assemble_ok} -eq 0 ]]; then
         continue
       fi
     fi
