@@ -3708,6 +3708,154 @@ LogicalResult RlsBufOp::verify() {
   return verifyBufSyncOp(getOperation(), getOpTypeAttr(), getBufIdAttr(),
                          getModeAttr());
 }
+
+//===----------------------------------------------------------------------===//
+// TPUSH/TPOP Op Verifiers
+//===----------------------------------------------------------------------===//
+
+static bool isInsideSection(Operation *op) {
+  return op->getParentOfType<pto::SectionCubeOp>() ||
+         op->getParentOfType<pto::SectionVectorOp>();
+}
+
+static bool isInsideSectionCube(Operation *op) {
+  return op->getParentOfType<pto::SectionCubeOp>() != nullptr;
+}
+
+static bool isInsideSectionVector(Operation *op) {
+  return op->getParentOfType<pto::SectionVectorOp>() != nullptr;
+}
+
+static LogicalResult verifyInitPipeDirMask(Operation *op, int8_t dirMask) {
+  if (isInsideSection(op))
+    return op->emitOpError("must be at function level, not inside a section");
+  if (dirMask != 1 && dirMask != 2)
+    return op->emitOpError("dir_mask must be 1 (C2V) or 2 (V2C)");
+  return success();
+}
+
+LogicalResult InitializeL2G2LPipeOp::verify() {
+  if (failed(verifyInitPipeDirMask(getOperation(), getDirMask())))
+    return failure();
+
+  auto pipeTy = dyn_cast<pto::PipeType>(getPipe().getType());
+  if (!pipeTy)
+    return emitOpError("result type must be !pto.pipe<...>");
+
+  auto memTy = dyn_cast<MemRefType>(getGmAddr().getType());
+  if (!memTy || !isGmAddressSpaceAttr(memTy.getMemorySpace()))
+    return emitOpError("gm_addr must be memref with #pto.address_space<gm>");
+
+  if (Value localAddr = getLocalAddr()) {
+    if (!localAddr.getType().isInteger(32))
+      return emitOpError("local_addr must be i32 when provided");
+  }
+
+  if (auto depthAttr = getLocalFifoDepthAttr()) {
+    if (depthAttr.getInt() <= 0)
+      return emitOpError("local_fifo_depth must be a positive i8 attribute");
+  }
+  return success();
+}
+
+LogicalResult InitializeL2LPipeOp::verify() {
+  if (failed(verifyInitPipeDirMask(getOperation(), getDirMask())))
+    return failure();
+
+  auto pipeTy = dyn_cast<pto::PipeType>(getPipe().getType());
+  if (!pipeTy)
+    return emitOpError("result type must be !pto.pipe<...>");
+
+  OperandRange localAddrs = getLocalAddrs();
+  if (localAddrs.size() > 1)
+    return emitOpError("accepts at most one local_addr operand");
+
+  if (localAddrs.size() == 1) {
+    if (!localAddrs.front().getType().isInteger(32))
+      return emitOpError("local_addr must be i32 when provided");
+  }
+  return success();
+}
+
+static LogicalResult verifyPipeTileType(Operation *op, Type pipeType,
+                                        Type tileType, bool isPush) {
+  auto pipeTy = dyn_cast<pto::PipeType>(pipeType);
+  if (!pipeTy)
+    return op->emitOpError("expects pipe operand type !pto.pipe<...>");
+
+  Type expected = isPush ? pipeTy.getSrcTileType() : pipeTy.getDstTileType();
+  if (tileType != expected) {
+    return op->emitOpError(isPush ? "tile type must match pipe src tile type"
+                                  : "tile type must match pipe dst tile type");
+  }
+  return success();
+}
+
+LogicalResult TPushOp::verify() {
+  if (!isInsideSectionCube(getOperation()) && !isInsideSectionVector(getOperation()))
+    return emitOpError("must be inside a section.cube or section.vector");
+  if (failed(verifyPipeTileType(getOperation(), getPipeHandle().getType(),
+                                getTile().getType(), /*isPush=*/true)))
+    return failure();
+  if (getPipe() == pto::PIPE::PIPE_UNASSIGNED)
+    return emitOpError(
+        "pipe_handle source tile type must map to a supported producer pipe");
+  return success();
+}
+
+LogicalResult TPopOp::verify() {
+  if (!isInsideSectionCube(getOperation()) && !isInsideSectionVector(getOperation()))
+    return emitOpError("must be inside a section.cube or section.vector");
+  return success();
+}
+
+LogicalResult GetFifoTileOp::verify() {
+  if (!isInsideSectionCube(getOperation()) && !isInsideSectionVector(getOperation()))
+    return emitOpError("must be inside a section.cube or section.vector");
+
+  auto tpopOp = getSlotId().getDefiningOp<TPopOp>();
+  if (!tpopOp)
+    return emitOpError("slot_id must be produced by pto.tpop");
+  if (getPipeHandle() != tpopOp.getPipeHandle())
+    return emitOpError("pipe_handle must match the pto.tpop that produced slot_id");
+
+  return verifyPipeTileType(getOperation(), getPipeHandle().getType(),
+                            getTile().getType(), /*isPush=*/false);
+}
+
+LogicalResult TFreeOp::verify() {
+  if (!isInsideSectionCube(getOperation()) && !isInsideSectionVector(getOperation()))
+    return emitOpError("must be inside a section.cube or section.vector");
+
+  auto tpopOp = getSlotId().getDefiningOp<TPopOp>();
+  if (!tpopOp)
+    return emitOpError("slot_id must be produced by pto.tpop");
+  if (getPipeHandle() != tpopOp.getPipeHandle())
+    return emitOpError("pipe_handle must match the pto.tpop that produced slot_id");
+  return success();
+}
+
+LogicalResult TPopInternalOp::verify() {
+  if (!isInsideSectionCube(getOperation()) && !isInsideSectionVector(getOperation()))
+    return emitOpError("must be inside a section.cube or section.vector");
+
+  if (failed(verifyPipeTileType(getOperation(), getPipeHandle().getType(),
+                                getTile().getType(), /*isPush=*/false)))
+    return failure();
+
+  pto::PIPE pipe = getPipe();
+  if (pipe == pto::PIPE::PIPE_ALL || pipe == pto::PIPE::PIPE_UNASSIGNED)
+    return emitOpError(
+        "pipe_handle must be produced by a supported pipe initialization op");
+  return success();
+}
+
+LogicalResult TFreeInternalOp::verify() {
+  if (!isInsideSectionCube(getOperation()) && !isInsideSectionVector(getOperation()))
+    return emitOpError("must be inside a section.cube or section.vector");
+  return success();
+}
+
 // ---- TOp ----
 LogicalResult TGemvBiasOp::verify() {
   auto verifyA2A3 = [&]() -> LogicalResult {
@@ -6904,6 +7052,66 @@ void TMatmulMxBiasOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<Mem
   // 这里的 bias 是必选的 AnyType:$bias，所以是 Singleton
   addEffect(effects, &getBiasMutable(), MemoryEffects::Read::get());
   addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
+}
+
+void InitializeL2G2LPipeOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  addEffect(effects, &getGmAddrMutable(), MemoryEffects::Read::get());
+  if (getLocalAddr())
+    addEffect(effects, &getOperation()->getOpOperand(1), MemoryEffects::Read::get());
+  addEffect(effects, getOperation()->getOpResult(0), MemoryEffects::Write::get());
+}
+
+void InitializeL2LPipeOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  for (unsigned i = 0; i < getLocalAddrs().size(); ++i)
+    addEffect(effects, &getOperation()->getOpOperand(i), MemoryEffects::Read::get());
+  addEffect(effects, getOperation()->getOpResult(0), MemoryEffects::Write::get());
+}
+
+void TPushOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  addEffect(effects, &getTileMutable(), MemoryEffects::Read::get());
+  addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Read::get());
+  addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Write::get());
+}
+
+void TPopOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Read::get());
+  addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Write::get());
+}
+
+void GetFifoTileOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Read::get());
+}
+
+void TFreeOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Read::get());
+  addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Write::get());
+}
+
+void TPopInternalOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Read::get());
+  addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Write::get());
+  addEffect(effects, &getTileMutable(), MemoryEffects::Write::get());
+}
+
+void TFreeInternalOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Read::get());
+  addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Write::get());
 }
 
 // [Include 必须放在最后]
