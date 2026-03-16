@@ -3846,7 +3846,8 @@ def InitializeL2G2LPipeOp : PTO_Op<"initialize_l2g2l_pipe", [
     Called once at kernel startup. Binds a pipe whose producer writes through GM
     and whose consumer exposes a local FIFO slot.
 
-    - gm_addr is required and must be a memref with gm address space.
+    - gm_addr is required and must be !pto.ptr or a memref with gm address
+      space.
     - local_addr is optional; if omitted, plan memory allocates it.
     - local_fifo_depth is optional; if present, it must be positive.
     - dir_mask must be 1 (C2V) or 2 (V2C).

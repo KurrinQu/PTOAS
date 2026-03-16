@@ -3742,9 +3742,9 @@ LogicalResult InitializeL2G2LPipeOp::verify() {
   if (!pipeTy)
     return emitOpError("result type must be !pto.pipe<...>");
 
-  auto memTy = dyn_cast<MemRefType>(getGmAddr().getType());
-  if (!memTy || !isGmAddressSpaceAttr(memTy.getMemorySpace()))
-    return emitOpError("gm_addr must be memref with #pto.address_space<gm>");
+  if (!isScalarPtrOrMemRef(getGmAddr().getType()))
+    return emitOpError(
+        "gm_addr must be !pto.ptr or memref with #pto.address_space<gm>");
 
   if (Value localAddr = getLocalAddr()) {
     if (!localAddr.getType().isInteger(32))
@@ -3779,12 +3779,37 @@ LogicalResult InitializeL2LPipeOp::verify() {
 
 static LogicalResult verifyPipeTileType(Operation *op, Type pipeType,
                                         Type tileType, bool isPush) {
+  auto getTileSignature = [](Type ty)
+      -> std::optional<std::tuple<Type, SmallVector<int64_t>, Attribute>> {
+    if (auto memRefTy = dyn_cast<MemRefType>(ty)) {
+      return std::make_tuple(memRefTy.getElementType(),
+                             SmallVector<int64_t>(memRefTy.getShape().begin(),
+                                                  memRefTy.getShape().end()),
+                             memRefTy.getMemorySpace());
+    }
+    if (auto tileBufTy = dyn_cast<pto::TileBufType>(ty)) {
+      return std::make_tuple(tileBufTy.getElementType(),
+                             SmallVector<int64_t>(tileBufTy.getShape().begin(),
+                                                  tileBufTy.getShape().end()),
+                             tileBufTy.getMemorySpace());
+    }
+    return std::nullopt;
+  };
+
+  auto haveEquivalentTileSemantics = [&](Type lhs, Type rhs) {
+    if (lhs == rhs)
+      return true;
+    auto lhsSig = getTileSignature(lhs);
+    auto rhsSig = getTileSignature(rhs);
+    return lhsSig && rhsSig && *lhsSig == *rhsSig;
+  };
+
   auto pipeTy = dyn_cast<pto::PipeType>(pipeType);
   if (!pipeTy)
     return op->emitOpError("expects pipe operand type !pto.pipe<...>");
 
   Type expected = isPush ? pipeTy.getSrcTileType() : pipeTy.getDstTileType();
-  if (tileType != expected) {
+  if (!haveEquivalentTileSemantics(tileType, expected)) {
     return op->emitOpError(isPush ? "tile type must match pipe src tile type"
                                   : "tile type must match pipe dst tile type");
   }

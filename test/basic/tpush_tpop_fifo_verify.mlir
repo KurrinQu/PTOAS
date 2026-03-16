@@ -2,14 +2,16 @@
 
 module {
   func.func @verify_bidirectional_dir_mask_not_supported(
-      %gm_slot_buffer: memref<64x128xf32, #pto.address_space<gm>>,
-      %acc_tile: memref<64x128xf32, #pto.address_space<acc>>) {
+      %gm_slot_buffer: !pto.ptr<f32>) {
+    %acc_tile = pto.alloc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=64, cols=128, v_row=64, v_col=128, blayout=col_major, slayout=row_major, fractal=1024, pad=0>
     %pipe = pto.initialize_l2g2l_pipe {dir_mask = 3}
-      (%gm_slot_buffer : memref<64x128xf32, #pto.address_space<gm>>)
-      -> !pto.pipe<memref<64x128xf32, #pto.address_space<acc>>, memref<64x128xf32, #pto.address_space<vec>>>
+      (%gm_slot_buffer : !pto.ptr<f32>)
+      -> !pto.pipe<
+           !pto.tile_buf<loc=acc, dtype=f32, rows=64, cols=128, v_row=64, v_col=128, blayout=col_major, slayout=row_major, fractal=1024, pad=0>,
+           !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=128, v_row=64, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>>
 
     pto.section.cube {
-      pto.tpush(%acc_tile, %pipe : memref<64x128xf32, #pto.address_space<acc>>, !pto.pipe<memref<64x128xf32, #pto.address_space<acc>>, memref<64x128xf32, #pto.address_space<vec>>>)
+      pto.tpush(%acc_tile, %pipe : !pto.tile_buf<loc=acc, dtype=f32, rows=64, cols=128, v_row=64, v_col=128, blayout=col_major, slayout=row_major, fractal=1024, pad=0>, !pto.pipe<!pto.tile_buf<loc=acc, dtype=f32, rows=64, cols=128, v_row=64, v_col=128, blayout=col_major, slayout=row_major, fractal=1024, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=128, v_row=64, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>>)
     }
     return
   }

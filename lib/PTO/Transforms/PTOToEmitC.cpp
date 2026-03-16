@@ -324,7 +324,7 @@ static std::string layoutToEmitCString(mlir::pto::Layout layout) {
 
 class PTOToEmitCTypeConverter : public TypeConverter {
 public:
-  PTOToEmitCTypeConverter(MLIRContext *Ctx) {
+  PTOToEmitCTypeConverter(MLIRContext *Ctx, PTOArch targetArch) {
     // ---------------------------------------------------------
     // 1. 基本类型 (f32, i32, index)
     // ---------------------------------------------------------
@@ -407,6 +407,14 @@ public:
       std::string finalTypeStr = qualifier + " " + elemTypeStr;
       return emitc::PointerType::get(
           emitc::OpaqueType::get(Ctx, finalTypeStr));
+    });
+
+    addConversion([Ctx, targetArch](pto::TileBufType type)
+                      -> std::optional<Type> {
+      auto tileTok = getEmitCTileTypeTokenFromType(type, targetArch);
+      if (failed(tileTok))
+        return std::nullopt;
+      return emitc::OpaqueType::get(Ctx, *tileTok);
     });
 
     addConversion([Ctx](pto::PipeType type) -> Type {
@@ -8240,7 +8248,7 @@ struct EmitPTOManualPass
         return signalPassFailure();
     }
 
-    PTOToEmitCTypeConverter typeConverter(ctx);
+    PTOToEmitCTypeConverter typeConverter(ctx, targetArch);
 
     // 2. Pre-convert SCF structural op types (e.g. scf.if/scf.for results)
     // using the same type converter. This avoids creating emitc.variable with

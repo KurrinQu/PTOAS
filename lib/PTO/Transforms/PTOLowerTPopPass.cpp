@@ -97,8 +97,16 @@ struct LowerGetFifoTilePattern : public OpRewritePattern<GetFifoTileOp> {
     if (!tpopOp)
       return rewriter.notifyMatchFailure(op, "slot_id must come from pto.tpop");
 
+    Type internalTileTy = op.getTile().getType();
+    if (auto tileBufTy = dyn_cast<TileBufType>(internalTileTy)) {
+      internalTileTy = MemRefType::get(tileBufTy.getShape(),
+                                       tileBufTy.getElementType(),
+                                       MemRefLayoutAttrInterface(),
+                                       tileBufTy.getMemorySpace());
+    }
+
     auto declaredTile =
-        rewriter.create<DeclareTileOp>(op.getLoc(), op.getTile().getType());
+        rewriter.create<DeclareTileOp>(op.getLoc(), internalTileTy);
     rewriter.create<TPopInternalOp>(op.getLoc(), declaredTile.getTile(),
                                     op.getPipeHandle());
     rewriter.replaceOp(op, declaredTile.getTile());

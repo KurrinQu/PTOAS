@@ -2,14 +2,16 @@
 
 module {
   func.func @tfree_outside_section(
-      %gm_slot_buffer: memref<64x128xf32, #pto.address_space<gm>>) {
+      %gm_slot_buffer: !pto.ptr<f32>) {
     %c0 = arith.constant 0 : index
     %pipe = pto.initialize_l2g2l_pipe {dir_mask = 1}
-      (%gm_slot_buffer : memref<64x128xf32, #pto.address_space<gm>>)
-      -> !pto.pipe<memref<64x128xf32, #pto.address_space<acc>>, memref<32x128xf32, #pto.address_space<vec>>>
+      (%gm_slot_buffer : !pto.ptr<f32>)
+      -> !pto.pipe<
+           !pto.tile_buf<loc=acc, dtype=f32, rows=64, cols=128, v_row=64, v_col=128, blayout=col_major, slayout=row_major, fractal=1024, pad=0>,
+           !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=128, v_row=32, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>>
 
     // tfree outside section — should fail
-    pto.tfree(%pipe, %c0 : !pto.pipe<memref<64x128xf32, #pto.address_space<acc>>, memref<32x128xf32, #pto.address_space<vec>>>, index)
+    pto.tfree(%pipe, %c0 : !pto.pipe<!pto.tile_buf<loc=acc, dtype=f32, rows=64, cols=128, v_row=64, v_col=128, blayout=col_major, slayout=row_major, fractal=1024, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=128, v_row=32, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>>, index)
     return
   }
 }
