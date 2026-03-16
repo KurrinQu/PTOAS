@@ -133,6 +133,28 @@ def PTOLowerTPop : Pass<"pto-lower-tpop", "func::FuncOp"> {
   ];
 }
 
+def PTOWrapFunctionsInSections : Pass<"pto-wrap-functions-in-sections", "func::FuncOp"> {
+  let summary = "Wrap attributed single-core functions in PTO cube/vector sections";
+  let description = [{
+    Rewrites frontend-marked functions into the existing PTO section form:
+    - `pto.kernel_kind = #pto.kernel_kind<cube>` -> wrap the function body in
+      `pto.section.cube`
+    - `pto.kernel_kind = #pto.kernel_kind<vector>` -> wrap the function body
+      in `pto.section.vector`
+
+    The pass keeps `func.return` outside the inserted section, rejects
+    multi-block attributed functions, and rejects attributed functions that
+    already contain PTO section ops. It does not rewrite function attributes.
+  }];
+
+  let constructor = "mlir::pto::createPTOWrapFunctionsInSectionsPass()";
+
+  let dependentDialects = [
+    "mlir::pto::PTODialect",
+    "mlir::func::FuncDialect"
+  ];
+}
+
 def PTOVerifyTFree : Pass<"pto-verify-tfree", "func::FuncOp"> {
   let summary = "Verify lowered pto.tfree_internal placement for explicit tpop/tfree pairs";
   let description = [{

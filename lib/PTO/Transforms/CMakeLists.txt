@@ -18,6 +18,7 @@ add_mlir_dialect_library(PTOTransforms
   PTOHighDimLowering.cpp
   PTOVFloopGather.cpp
   PTOLowerTPopPass.cpp
+  PTOWrapFunctionsInSectionsPass.cpp
   InsertSync/PTOIRTranslator.cpp
   InsertSync/SyncCommon.cpp
   InsertSync/InsertSyncAnalysis.cpp

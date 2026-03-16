@@ -39,6 +39,7 @@ std::unique_ptr<Pass> createPTOHighDimLoweringPass();
 std::unique_ptr<Pass> createPTOVFloopGatherPass();
 std::unique_ptr<Pass> createLoweringSyncToPipePass();
 std::unique_ptr<Pass> createPTOLowerTPopPass();
+std::unique_ptr<Pass> createPTOWrapFunctionsInSectionsPass();
 
 // Creates a pass for ...
 std::unique_ptr<Pass> createPTOInsertSyncPass();
