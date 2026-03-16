@@ -1,9 +1,9 @@
 // RUN: not ptoas %s 2>&1 | FileCheck %s
 
 module {
-  func.func @kernel(%arg0: i32) -> i32 attributes {pto.entry} {
-    %0 = func.call @kernel(%arg0) : (i32) -> i32
-    return %0 : i32
+  func.func @kernel(%arg0: i32) attributes {pto.entry} {
+    func.call @kernel(%arg0) : (i32) -> ()
+    return
   }
 }
 

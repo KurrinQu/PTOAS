@@ -1073,6 +1073,15 @@ LogicalResult mlir::pto::validatePTOEntryFunctions(ModuleOp module) {
              << "` is only valid on function definitions";
     }
   }
+
+  for (auto func : module.getOps<func::FuncOp>()) {
+    if (!isPTOEntryFunction(func))
+      continue;
+    if (func.getFunctionType().getNumResults() != 0) {
+      return func.emitOpError()
+             << "PTO entry functions must return void";
+    }
+  }
   return success();
 }
 
