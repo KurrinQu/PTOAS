@@ -1,640 +1,407 @@
-# PTOAS Pipe & TPUSH/TPOP 接口定义
+# PTOAS Pipe 与 TPUSH/TPOP 对外接口规范
 
----
+## 1. 文档范围
 
-## 1. 概述
+本文定义 PTOAS 中 pipe 通信相关 public PTO IR 的最终接口契约，覆盖：
 
-PTOAS 提供跨 Cube/Vector 单元的 pipe 通信机制，用于 Cube 和 Vector 之间的 tile 数据传递。根据数据流转路径，定义两种 pipe 初始化指令：
+- `pto.initialize_l2g2l_pipe`
+- `pto.initialize_l2l_pipe`
+- `pto.tpush`
+- `pto.tpop`
+- `pto.get_fifo_tile`
+- `pto.tfree`
 
-| 指令 | 数据路径 | 含义 |
-|---|---|---|
-| `pto.initialize_l2g2l_pipe` | local → GM → local | 数据经 GM 中转，适用于 A3 和 A5 |
-| `pto.initialize_l2l_pipe` | local → local | 数据在 local buffer 内直传，仅 A5 |
+本文只描述对外接口语义、参数约束和使用规则，不展开编译过程中 lowering 过程。
 
-两种 pipe 共享统一的操作接口——生产者：`pto.tpush`；消费者：`pto.tpop` → `pto.get_fifo_tile` → `pto.tfree`。
+public PTO IR 在 pipe 接口上采用以下公开数据类型：
 
-其中，`pto.tfree(%pipe, %slot_id)` 是**必写**的资源释放操作：
+- GM 地址使用 `!pto.ptr<elem_ty>`
+- tile 数据使用 `!pto.tile_buf<...>`
+- pipe handle 使用 `!pto.pipe<SrcTileType, DstTileType>`
 
-- `pto.tpop` 借出一个 slot
-- `pto.get_fifo_tile` 暴露该 slot 对应的 tile 视图
-- 用户在 tile 使用结束后，必须显式写出对应的 `pto.tfree`
-- 编译器会对这组接口的配对关系和使用顺序做 verify 检查
+## 2. 核心数据类型
 
-### 编译变换过程
+### 2.1 `!pto.ptr<elem_ty>`
 
-```
-前端 IR                            Lowered IR                      EmitC
-────────                           ──────────                      ─────
-pto.initialize_l2g2l_pipe(...)  ─→                              ─→ TPipe<..., GM_FIFO, ...>(gm, local)
-pto.initialize_l2l_pipe(...)    ─→                              ─→ TPipe<..., VEC/MAT_FIFO, ...>(local)
+`!pto.ptr<elem_ty>` 表示 public PTO IR 中的标量 GM 指针。
 
-pto.tpush(%tile, %pipe)         ─→                              ─→ TPUSH(tile, pipe)
+特点如下：
 
-pto.tpop(%pipe) → %slot_id     ┐
-                                ├→ pto.tpop_internal(%tile, %pipe) → TPOP(tile, pipe)
-pto.get_fifo_tile(%pipe, %sid) ┘       [DPS]
+- 用于表示 pipe 的 GM 基地址
+- 不携带 shape 信息
+- 可配合 `pto.addptr`、`pto.make_tensor_view` 等指令进一步构造视图
 
-pto.tfree(%pipe, %slot_id)     ─→ pto.tfree_internal(%pipe)     ─→ TFREE(pipe)
-```
+在本文定义的 pipe 接口中，`initialize_l2g2l_pipe` 的 `gm_addr` 对外使用 `!pto.ptr<elem_ty>`。
 
----
+### 2.2 `!pto.tile_buf<...>`
 
-## 2. Pipe 初始化指令
+`!pto.tile_buf<...>` 是 public PTO IR 中的 tile 语义载体，描述：
 
-### 2.1 `pto.initialize_l2g2l_pipe`
+- tile 所在地址空间或角色，例如 `loc=acc/vec/mat`
+- 元素类型，例如 `dtype=f32`
+- 逻辑形状，例如 `rows`、`cols`
+- 有效形状，例如 `v_row`、`v_col`
+- 布局、分形尺寸、pad 策略等 tile 元数据
 
-创建经 GM 中转的 pipe。生产者将 tile 写入 GM，消费者 TPOP 时从 GM 搬运到 local FIFO slot，再暴露给用户。
+在 pipe 接口中：
 
-**数据路径：** `local(producer) → GM FIFO → local FIFO(consumer)`
+- `pto.tpush` 的源 tile 使用 `!pto.tile_buf`
+- `pto.get_fifo_tile` 的结果 tile 使用 `!pto.tile_buf`
+- `!pto.pipe<SrcTileType, DstTileType>` 的 `SrcTileType` / `DstTileType` 对外使用 `!pto.tile_buf`
 
-**语法：**
+### 2.3 `!pto.pipe<SrcTileType, DstTileType>`
+
+`!pto.pipe<SrcTileType, DstTileType>` 表示一条 pipe 的 SSA handle。
+
+其 public 语义如下：
+
+- 绑定一条生产者到消费者的数据通路
+- 约束 `tpush` 的源 tile 语义
+- 约束 `get_fifo_tile` 的结果 tile 语义
+
+`!pto.pipe` 是函数内本地初始化并本地使用的 handle，不作为跨 kernel 函数传递的 ABI 类型。
+
+当 producer 和 consumer 写成两个独立 kernel 函数时，双方应各自在本地重新执行对应的 `initialize_*_pipe`，而不是把 `!pto.pipe` 作为函数参数传递。
+
+## 3. 通用接口规则
+
+### 3.1 本地初始化原则
+
+每个使用 pipe 的函数都应在函数内本地执行 `initialize_*_pipe`，得到本函数内的 `!pto.pipe` handle。
+
+适用规则如下：
+
+- 不跨函数传递 `!pto.pipe`
+- producer 函数和 consumer 函数分别各自初始化
+- 如果两边对应同一条逻辑 pipe，则两边初始化参数必须保持一致
+
+### 3.2 `flag_base` 规则
+
+`initialize_l2g2l_pipe` 和 `initialize_l2l_pipe` 都必须显式提供 `flag_base` 属性。
+
+`flag_base` 的接口语义如下：
+
+- 表示该 pipe 对应的同步 flag 对
+- 是编译期整数字面量属性
+- 由用户或前端显式指定
+
+约束如下：
+
+- `flag_base` 必须存在
+- `flag_base` 只能取以下编译期常量之一：`0`、`2`、`4`、`6`、`8`、`10`、`12`
+- 缺失 `flag_base` 时，编译报错
+- 非法 `flag_base` 时，编译报错
+
+当 producer 和 consumer 分别位于两个函数时，如果它们对应同一条逻辑 pipe，则两边必须使用相同的 `flag_base`。
+
+### 3.3 分离 producer / consumer 时的一致性规则
+
+若 producer 和 consumer 在不同 kernel 函数中，本规范要求两边 `initialize_*_pipe` 的以下语义参数一致：
+
+- pipe 初始化种类一致：`initialize_l2g2l_pipe` 或 `initialize_l2l_pipe`
+- `dir_mask` 一致
+- `flag_base` 一致
+- `SrcTileType` 一致
+- `DstTileType` 一致
+- `local_fifo_depth` 一致（若该接口包含该属性）
+
+此外：
+
+- `initialize_l2g2l_pipe` 两边应绑定同一逻辑 GM FIFO 存储
+- `initialize_l2l_pipe` 两边应绑定同一逻辑 local FIFO 存储
+
+### 3.4 执行上下文
+
+pipe 相关操作必须位于正确的 producer / consumer 执行上下文中。
+
+本规范不限定上下文必须通过哪一种 IR 形式表达，允许以下两类组织方式：
+
+- 使用 `pto.section.cube` / `pto.section.vector`
+- 使用带 `pto.kernel_kind` attribute 的独立 kernel 函数
+
+## 4. Pipe 初始化接口
+
+### 4.1 `pto.initialize_l2g2l_pipe`
+
+`pto.initialize_l2g2l_pipe` 创建一条经 GM 中转的 pipe。
+
+数据路径为：
+
+`local(producer) -> GM FIFO -> local FIFO(consumer)`
+
+#### 语法
 
 ```mlir
 %pipe = pto.initialize_l2g2l_pipe {
     dir_mask = <i8>,
-    local_fifo_depth = <i8>           // 可选，默认 2
+    flag_base = <i32>,
+    local_fifo_depth = <i8>           // 可选
 }
-    ( <gm_addr> : memref<..., #pto.address_space<gm>>
-      [, <local_addr> : i32] )
+    ( %gm_addr : !pto.ptr<elem_ty>
+      [, %local_addr : i32] )
     -> !pto.pipe<SrcTileType, DstTileType>
 ```
 
-**参数：**
+#### 参数
 
-| 参数 | 类型 | 说明 |
-|---|---|---|
-| `dir_mask` | `i8`（属性） | 方向：1 = C2V（Cube→Vector），2 = V2C（Vector→Cube） |
-| `local_fifo_depth` | `i8`（属性，可选） | local FIFO 的 slot 深度，默认 2（double-buffering） |
-| `gm_addr` | `memref<..., #pto.address_space<gm>>`（操作数，必须） | GM FIFO 基地址 |
-| `local_addr` | `i32`（操作数，可选） | local FIFO 基地址。省略时由 plan memory 分配 |
+| 参数 | 类型 | 是否必须 | 说明 |
+|---|---|---|---|
+| `dir_mask` | 整数属性 | 必须 | 方向：`1 = C2V`，`2 = V2C` |
+| `flag_base` | 整数属性 | 必须 | 该 pipe 对应的 flag 对基址 |
+| `local_fifo_depth` | 整数属性 | 可选 | local FIFO 深度；未写时默认值为 `2` |
+| `gm_addr` | `!pto.ptr<elem_ty>` | 必须 | GM FIFO 基地址 |
+| `local_addr` | `i32` | 可选 | consumer 侧 local FIFO 基地址；未写时由上游资源规划提供 |
 
-**`local_fifo_depth` 说明：**
-- 指定 TPOP 从 GM 搬运数据到 local buffer 时，local FIFO 的 slot 深度
-- plan memory / analysis pass 根据此值计算 local buffer 分配量（= `local_fifo_depth × slot_size`）
-- `slot_size = max(srcTile.size, dstTile.size)`（见第 9 节）
-- 默认值 2，支持 double-buffering
-
-**结果：** `!pto.pipe<SrcTileType, DstTileType>`
-
-**校验规则：**
-- `dir_mask` 必须为 1 或 2
-- `local_fifo_depth` 如指定须大于 0
-- `gm_addr` 必须带 GM address space
-- `local_addr` 如存在须为 `i32`
-
-**可用架构：** A3、A5
-
-**示例：**
+#### 结果
 
 ```mlir
-// 指定 GM 地址和 local 地址
-%pipe = pto.initialize_l2g2l_pipe {dir_mask = 1}
-    (%gm_addr : memref<64x128xf32, #pto.address_space<gm>>, %local_addr : i32)
-    -> !pto.pipe<memref<64x128xf32, #pto.address_space<acc>>,
-                 memref<32x128xf32, #pto.address_space<vec>>>
-
-// 省略 local 地址，由 plan memory 分配
-%pipe = pto.initialize_l2g2l_pipe {dir_mask = 1}
-    (%gm_addr : memref<64x128xf32, #pto.address_space<gm>>)
-    -> !pto.pipe<memref<64x128xf32, #pto.address_space<acc>>,
-                 memref<32x128xf32, #pto.address_space<vec>>>
-
-// 指定 local_fifo_depth=4
-%pipe = pto.initialize_l2g2l_pipe {dir_mask = 1, local_fifo_depth = 4}
-    (%gm_addr : memref<64x128xf32, #pto.address_space<gm>>, %local_addr : i32)
-    -> !pto.pipe<memref<64x128xf32, #pto.address_space<acc>>,
-                 memref<32x128xf32, #pto.address_space<vec>>>
+!pto.pipe<SrcTileType, DstTileType>
 ```
 
----
+其中：
 
-### 2.2 `pto.initialize_l2l_pipe`
+- `SrcTileType` 对外使用 `!pto.tile_buf<...>`
+- `DstTileType` 对外使用 `!pto.tile_buf<...>`
 
-创建 local 直传 pipe。生产者将 tile 写入 local FIFO slot，消费者 TPOP 时直接暴露该 slot 给用户。数据不经过 GM。
+#### 语义
 
-**数据路径：** `local(producer) → local FIFO(consumer)`
+- producer 侧 `tpush` 将源 tile 写入 GM FIFO
+- consumer 侧 `tpop` 等待 slot 就绪
+- `get_fifo_tile` 暴露 consumer slot 对应的目标 tile 视图
+- consumer 侧 local FIFO 深度由 `local_fifo_depth` 指定；未显式指定时默认深度为 `2`
 
-**语法：**
+#### 架构支持
+
+- A3
+- A5
+
+#### 示例
+
+```mlir
+%pipe = pto.initialize_l2g2l_pipe {dir_mask = 1, flag_base = 0, local_fifo_depth = 4}
+    (%gm_slot_buffer : !pto.ptr<f32>, %local_fifo_addr : i32)
+    -> !pto.pipe<
+         !pto.tile_buf<loc=acc, dtype=f32, rows=64, cols=128, v_row=64, v_col=128, blayout=col_major, slayout=row_major, fractal=1024, pad=0>,
+         !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=128, v_row=32, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>>
+```
+
+### 4.2 `pto.initialize_l2l_pipe`
+
+`pto.initialize_l2l_pipe` 创建一条 local 直传 pipe。
+
+数据路径为：
+
+`local(producer) -> local FIFO(consumer)`
+
+#### 语法
 
 ```mlir
 %pipe = pto.initialize_l2l_pipe {
-    dir_mask = <i8>
+    dir_mask = <i8>,
+    flag_base = <i32>
 }
-    ( [<local_addr> : i32] )
+    ( [%local_addr : i32] )
     -> !pto.pipe<SrcTileType, DstTileType>
 ```
 
-**参数：**
+#### 参数
 
-| 参数 | 类型 | 说明 |
-|---|---|---|
-| `dir_mask` | `i8`（属性） | 方向：1 = C2V（Cube→Vector），2 = V2C（Vector→Cube） |
-| `local_addr` | `i32`（操作数，可选） | local FIFO 基地址。省略时由 plan memory 分配 |
+| 参数 | 类型 | 是否必须 | 说明 |
+|---|---|---|---|
+| `dir_mask` | 整数属性 | 必须 | 方向：`1 = C2V`，`2 = V2C` |
+| `flag_base` | 整数属性 | 必须 | 该 pipe 对应的 flag 对基址 |
+| `local_addr` | `i32` | 可选 | local FIFO 基地址；未写时由上游资源规划提供 |
 
-**结果：** `!pto.pipe<SrcTileType, DstTileType>`
-
-**校验规则：**
-- `dir_mask` 必须为 1 或 2
-- `local_addr` 如存在须为 `i32`
-
-**可用架构：** 仅 A5
-
-**示例：**
+#### 结果
 
 ```mlir
-// C2V，指定 local 地址
-%pipe = pto.initialize_l2l_pipe {dir_mask = 1}
-    (%local_addr : i32)
-    -> !pto.pipe<memref<64x128xf32, #pto.address_space<acc>>,
-                 memref<32x128xf32, #pto.address_space<vec>>>
-
-// V2C，省略地址由 plan memory 分配
-%pipe = pto.initialize_l2l_pipe {dir_mask = 2}
-    -> !pto.pipe<memref<32x128xf32, #pto.address_space<vec>>,
-                 memref<64x128xf32, #pto.address_space<mat>>>
+!pto.pipe<SrcTileType, DstTileType>
 ```
 
----
+其中：
 
-### 2.3 两种 Pipe 的对比
+- `SrcTileType` 对外使用 `!pto.tile_buf<...>`
+- `DstTileType` 对外使用 `!pto.tile_buf<...>`
 
-| 特性 | `initialize_l2g2l_pipe` | `initialize_l2l_pipe` |
-|---|---|---|
-| 数据路径 | local → GM → local | local → local |
-| FIFOType | `GM_FIFO` | `VEC_FIFO`（C2V）/ `MAT_FIFO`（V2C） |
-| 可用架构 | A3 + A5 | 仅 A5 |
-| GM 地址 | 必须 | 无 |
-| local 地址 | 可选（plan memory 可分配） | 可选（plan memory 可分配） |
-| `local_fifo_depth` | 可选，默认 2 | 不适用（深度 = FiFoDepth） |
-| TPOP 行为 | wait → DMA(GM→local) → bind tile | wait → bind tile |
-| TPOP 流水线 | `PIPE_MTE2`（涉及 DMA） | `PIPE_S`（仅地址赋值） |
+#### 语义
 
----
+- `dir_mask = 1` 时，producer 为 Cube，consumer 为 Vector
+- `dir_mask = 2` 时，producer 为 Vector，consumer 为 Cube
+- 数据不经过 GM
+- FIFO 深度固定为 `8`
 
-## 3. 生产者/消费者指令
+#### 架构支持
 
-### 3.1 `pto.tpop`
+- 仅 A5
 
-等待 pipe 消费者 slot 就绪，返回 slot ID。
-
-**语法：**
+#### 示例
 
 ```mlir
-%slot_id = pto.tpop ( %pipe : !pto.pipe<S, D> ) -> index
+%pipe = pto.initialize_l2l_pipe {dir_mask = 1, flag_base = 0}
+    (%c2v_consumer_buf : i32)
+    -> !pto.pipe<
+         !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>,
+         !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>>
 ```
 
-**参数：**
+## 5. 数据传输接口
 
-| 参数 | 类型 | 说明 |
-|---|---|---|
-| `pipe_handle` | `!pto.pipe<S, D>` | 待消费的 pipe |
+### 5.1 `pto.tpush`
 
-**结果：** `index` — 获取到的 ring buffer slot ID。
+`pto.tpush` 表示 producer 侧向 pipe 推送一份 tile。
 
-**Traits / Interfaces：**
-- 不实现 `OpPipeInterface`（lowering 后由 `tpop_internal` 承载流水线信息）
-- `MemoryEffectsOpInterface`：`pipe_handle` Read + Write
-
-**`%slot_id` 使用约束：**
-- 只能被 `pto.get_fifo_tile` 和 `pto.tfree` 使用
-- 必须有且仅有一个 `pto.get_fifo_tile` 消费
-- 必须有且仅有一个 `pto.tfree` 消费
-- `pto.get_fifo_tile` 和 `pto.tfree` 必须使用与 `pto.tpop` 相同的 `pipe_handle`
-- 当前实现要求对应的 `pto.get_fifo_tile` 和 `pto.tfree` 与该 `pto.tpop` 位于同一个 block 中
-
----
-
-### 3.2 `pto.get_fifo_tile`
-
-将 slot ID 解析为指向对应 local FIFO entry 的 tile 视图。纯地址计算，不搬运数据。
-
-**语法：**
-
-```mlir
-%tile = pto.get_fifo_tile ( %pipe, %slot_id : !pto.pipe<S, D>, index )
-    -> DstTileType
-```
-
-**参数：**
-
-| 参数 | 类型 | 说明 |
-|---|---|---|
-| `pipe_handle` | `!pto.pipe<S, D>` | 拥有 FIFO 的 pipe |
-| `slot_id` | `index` | 由 `pto.tpop` 返回的 slot ID |
-
-**结果：** `DstTileType` — 从 `pipe.dstTileType` 推导。结果 tile 指向 FIFO slot 在 local buffer 中的存储。
-
-**Traits / Interfaces：**
-- `ViewLikeOpInterface`
-- `MemoryEffectsOpInterface`：`pipe_handle` Read；结果无 Allocate
-
-**`%tile` 使用约束：**
-- 只读：可作为下游指令的源操作数（`ins`），不可作为目标操作数（`outs`）
-- 不可在对应的 `pto.tfree` / `pto.tfree_internal` 之后使用
-
----
-
-### 3.3 `pto.tfree`
-
-释放 FIFO slot。必写；每个 `pto.tpop` 都必须显式对应一个 `pto.tfree`。
-
-**语法：**
-
-```mlir
-pto.tfree ( %pipe, %slot_id : !pto.pipe<S, D>, index )
-```
-
-**参数：**
-
-| 参数 | 类型 | 说明 |
-|---|---|---|
-| `pipe_handle` | `!pto.pipe<S, D>` | 拥有该 slot 的 pipe |
-| `slot_id` | `index` | 待释放的 slot ID |
-
-**Traits / Interfaces：**
-- 不实现 `OpPipeInterface`
-- `MemoryEffectsOpInterface`：`pipe_handle` Read + Write
-
-**使用约束：**
-- 必须与对应 `pto.tpop` 的 `pipe_handle` 一致
-- 当前实现要求位于与对应 `pto.tpop` 相同的 block 中
-- 必须出现在对应 `pto.get_fifo_tile` 之后
-- 必须晚于该 borrowed tile 的所有使用
-
----
-
-### 3.4 `pto.tpush`
-
-生产者侧推送。生产者写入 pipe 的后备存储（l2g2l_pipe 写 GM，l2l_pipe 写 local buffer）。
+#### 语法
 
 ```mlir
 pto.tpush(%src_tile, %pipe : SrcTileType, !pto.pipe<SrcTileType, DstTileType>)
 ```
 
----
+#### 约束
 
-## 4. 使用示例
+- `%src_tile` 的 public 类型使用 `!pto.tile_buf<...>`
+- `%src_tile` 语义必须与 `pipe.srcTileType` 一致
 
-### 4.1 L2L Pipe（A5 local 直传）
+### 5.2 `pto.tpop`
+
+`pto.tpop` 等待一个 consumer slot 就绪，并返回该 slot 的逻辑编号。
+
+#### 语法
 
 ```mlir
-func.func @c2v_l2l_example(%local_addr: i32) {
-  %pipe = pto.initialize_l2l_pipe {dir_mask = 1}
-      (%local_addr : i32)
-      -> !pto.pipe<memref<64x128xf32, #pto.address_space<acc>>,
-                   memref<32x128xf32, #pto.address_space<vec>>>
+%slot_id = pto.tpop(%pipe : !pto.pipe<SrcTileType, DstTileType>) -> index
+```
 
-  pto.section.cube {
-    pto.tpush(%acc_tile, %pipe : ...)
-  }
+#### 结果
 
-  pto.section.vector {
-    %slot_id = pto.tpop(%pipe : !pto.pipe<...>) -> index
-    %tile = pto.get_fifo_tile(%pipe, %slot_id : !pto.pipe<...>, index)
-        -> memref<32x128xf32, #pto.address_space<vec>>
-    pto.tmov ins(%tile : ...) outs(%dst : ...)
-    pto.tfree(%pipe, %slot_id : !pto.pipe<...>, index)
-  }
+- `%slot_id : index`
+
+`%slot_id` 表示一次 borrow 会话的句柄，只能和对应的 `get_fifo_tile` / `tfree` 配套使用。
+
+### 5.3 `pto.get_fifo_tile`
+
+`pto.get_fifo_tile` 将 `%slot_id` 映射为该 slot 对应的 borrowed FIFO tile 视图。
+
+#### 语法
+
+```mlir
+%tile = pto.get_fifo_tile(%pipe, %slot_id
+    : !pto.pipe<SrcTileType, DstTileType>, index) -> DstTileType
+```
+
+#### 结果
+
+- 结果类型为 `DstTileType`
+- public 类型使用 `!pto.tile_buf<...>`
+
+#### 语义
+
+- `%tile` 是 borrowed FIFO tile
+- `%tile` 的生命周期截止到匹配的 `pto.tfree`
+
+### 5.4 `pto.tfree`
+
+`pto.tfree` 显式归还由 `pto.tpop` 借出的 consumer slot。
+
+#### 语法
+
+```mlir
+pto.tfree(%pipe, %slot_id : !pto.pipe<SrcTileType, DstTileType>, index)
+```
+
+#### 语义
+
+- `pto.tfree` 是必写操作
+- 每个 `pto.tpop` 都必须最终对应一个 `pto.tfree`
+
+### 5.5 生命周期与配对规则
+
+public 接口必须满足以下配对规则：
+
+- `slot_id` 必须来自 `pto.tpop`
+- `get_fifo_tile` 与 `tfree` 必须使用与该 `tpop` 相同的 `pipe`
+- 一个 borrow 会话对应一组：
+  - `tpop`
+  - `get_fifo_tile`
+  - `tfree`
+- `tfree` 必须出现在 borrowed tile 的所有使用之后
+
+## 6. 分离 producer / consumer 的推荐写法
+
+当 producer 和 consumer 位于两个独立 kernel 函数时，推荐写法如下：
+
+### 6.1 Producer
+
+```mlir
+func.func @pipe_producer(%c2v_consumer_buf: i32)
+    attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
+  %acc_tile = pto.alloc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>
+
+  %pipe = pto.initialize_l2l_pipe {dir_mask = 1, flag_base = 0}
+      (%c2v_consumer_buf : i32)
+      -> !pto.pipe<
+           !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>,
+           !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>>
+
+  pto.tpush(%acc_tile, %pipe : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>, !pto.pipe<!pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>>)
   return
 }
 ```
 
-### 4.2 L2G2L Pipe（经 GM 中转）
+### 6.2 Consumer
 
 ```mlir
-func.func @c2v_l2g2l_example(%gm_addr: memref<64x128xf32, #pto.address_space<gm>>,
-                              %local_addr: i32) {
-  %pipe = pto.initialize_l2g2l_pipe {dir_mask = 1}
-      (%gm_addr : memref<64x128xf32, #pto.address_space<gm>>, %local_addr : i32)
-      -> !pto.pipe<memref<64x128xf32, #pto.address_space<acc>>,
-                   memref<32x128xf32, #pto.address_space<vec>>>
+func.func @pipe_consumer(%c2v_consumer_buf: i32)
+    attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+  %vec_tile = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
 
-  pto.section.cube {
-    pto.tpush(%acc_tile, %pipe : ...)
-  }
+  %pipe = pto.initialize_l2l_pipe {dir_mask = 1, flag_base = 0}
+      (%c2v_consumer_buf : i32)
+      -> !pto.pipe<
+           !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>,
+           !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>>
 
-  pto.section.vector {
-    %slot_id = pto.tpop(%pipe : !pto.pipe<...>) -> index
-    %tile = pto.get_fifo_tile(%pipe, %slot_id : !pto.pipe<...>, index)
-        -> memref<32x128xf32, #pto.address_space<vec>>
-    pto.tmov ins(%tile : ...) outs(%dst : ...)
-    pto.tfree(%pipe, %slot_id : !pto.pipe<...>, index)
-  }
+  %slot_id = pto.tpop(%pipe : !pto.pipe<!pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>>) -> index
+  %fifo_tile = pto.get_fifo_tile(%pipe, %slot_id : !pto.pipe<!pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>>, index)
+      -> !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+  pto.tmov ins(%fifo_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%vec_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+  pto.tfree(%pipe, %slot_id : !pto.pipe<!pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>>, index)
   return
 }
 ```
 
----
+该写法的关键点是：
 
-## 5. 内部 Op（Lowered IR）
+- 两边都本地 `initialize_l2l_pipe`
+- 两边使用相同的 `flag_base`
+- 两边使用相同的 pipe 语义参数
+- 不跨函数传递 `!pto.pipe`
 
-以下 Op 仅在 `LowerTPop` pass 后出现，不属于前端 IR。
+## 7. EmitC 对应关系
 
-### 5.1 `pto.declare_tile`
+在 EmitC 阶段，每个 `initialize_*_pipe` 会在 init 点生成具体的 `TPipe<...>` 实例。
 
-声明未绑定地址的 tile，地址在运行时由 `pto.tpop_internal` 赋值。
+对外接口层面的约束如下：
 
-```mlir
-%tile = pto.declare_tile -> TileBufType
-```
+- `flag_base` 直接参与具体 `TPipe<...>` 的实例化
+- 编译器不再为 pipe 自动分配 `flag_base`
+- 缺失 `flag_base` 必须报错
 
-### 5.2 `pto.tpop_internal`
+因此，对分离 producer / consumer 的两边来说，使两边生成匹配的 concrete `TPipe<...>` 的方式是：
 
-统一的 TPOP，DPS 格式。等待 slot 就绪，绑定 tile 地址到 FIFO slot。l2g2l pipe 还会执行 GM → local 搬运。
+- 各自在本地初始化
+- 使用相同的 `flag_base`
+- 使用相同的 pipe 语义参数
 
-```mlir
-pto.tpop_internal ( %tile, %pipe : TileBufType, !pto.pipe<S, D> )
-    { assigned_pipe = #pto.pipe<PIPE_xxx> }
-```
+## 8. 诊断要求
 
-| pipe 类型 | assigned_pipe | 原因 |
-|---|---|---|
-| l2g2l_pipe（GM_FIFO） | `PIPE_MTE2` | 涉及 GM → local DMA 搬运 |
-| l2l_pipe（VEC/MAT_FIFO） | `PIPE_S` | 仅地址赋值 |
+以下情况属于接口级错误，应报错：
 
-**运行时语义：**
-
-```
-1. wait_until(pipe.consumer_slot_ready())
-2. [l2g2l_pipe] dma_copy(pipe.gm_slot_addr() → pipe.local_slot_addr())
-3. tile.rebind_addr(pipe.local_slot_addr())
-4. pipe.advance_consumer_cursor()
-```
-
-### 5.3 `pto.tfree_internal`
-
-释放 pipe slot。由显式 frontend `pto.tfree` lowering 生成。
-
-```mlir
-pto.tfree_internal ( %pipe : !pto.pipe<S, D> )
-```
-
-- `OpPipeInterface`：`PIPE_S`（scalar 操作）
-- EmitC：`TFREE(pipe)`（A3 和 A5 均生成，因为都使用 local FIFO）
-
----
-
-## 6. 编译变换与校验
-
-### 6.1 `LowerTPop` Pass
-
-将前端 `tpop` + `get_fifo_tile` 融合为 `tpop_internal`，并将显式 `tfree` 降级为 `tfree_internal`。
-
-**融合 Pattern：**
-
-```
-输入:                                     输出:
-%sid = pto.tpop(%pipe)                    %tile = pto.declare_tile -> DstTileType
-%tile = pto.get_fifo_tile(%pipe, %sid)    pto.tpop_internal(%tile, %pipe)
-                                              { assigned_pipe = ... }
-```
-
-`assigned_pipe` 根据 pipe 的定义 op 确定：
-- `initialize_l2g2l_pipe` → `PIPE_MTE2`
-- `initialize_l2l_pipe` → `PIPE_S`
-
-**降级 Pattern：**
-
-```
-输入:                                     输出:
-pto.tfree(%pipe, %slot_id)                pto.tfree_internal(%pipe)
-```
-
-在 lowering 之前，编译器会先验证：
-
-- 每个 `pto.tpop` 必须且只能有一个 `pto.get_fifo_tile`
-- 每个 `pto.tpop` 必须且只能有一个显式 `pto.tfree`
-- `pto.get_fifo_tile` / `pto.tfree` 必须与对应 `pto.tpop` 使用相同 `pipe_handle`
-- 当前实现要求三者位于同一个 block 中，且 `pto.tfree` 出现在 `pto.get_fifo_tile` 之后
-
-### 6.2 `VerifyTFree` Pass
-
-对 lowered IR 中的 `tpop_internal` / `tfree_internal` 配对关系做合法性检查。
-
-```
-对每个 pto.tpop_internal:
-  1. 要求后续同 block 中存在匹配的 tfree_internal
-  2. 验证 borrowed tile 不会在 tfree_internal 之后继续使用
-  3. 验证同一 pipe 在匹配 free 之前不会再次 tpop_internal
-```
-
-也就是说，用户负责显式写出 `pto.tfree`，编译器负责检查释放是否存在、是否足够晚、以及是否满足当前的单 outstanding 约束。
-
-### 6.3 Pass Pipeline
-
-```
-前端 IR
-  │
-  ▼
-LowerTPop
-  │  - tpop + get_fifo_tile → declare_tile + tpop_internal
-  │  - tfree → tfree_internal
-  ▼
-VerifyTFree
-  │  - 验证显式 tfree_internal 的位置与 outstanding-pop 约束
-  ▼
-LoweringSyncToPipe
-  │  - 高层 sync op → 低层 pipe sync op
-  ▼
-PTOInsertSync（可选）
-  │  - 自动同步插入
-  ▼
-...（其他 transform）...
-  ▼
-PTOToEmitC
-  │  - initialize_l2g2l_pipe → TPipe<..., GM_FIFO, ...>(gm, local)
-  │  - initialize_l2l_pipe   → TPipe<..., VEC/MAT_FIFO, ...>(local)
-  │  - declare_tile          → Tile<...> varname;
-  │  - tpop_internal         → TPOP(tile, pipe);
-  │  - tfree_internal        → TFREE(pipe)
-  ▼
-C++ 输出
-```
-
----
-
-## 7. EmitC Lowering
-
-### 7.1 Pipe 初始化 → TPipe
-
-**`initialize_l2l_pipe`（A5）：**
-
-```mlir
-%pipe = pto.initialize_l2l_pipe {dir_mask = 1} (%local_addr : i32)
-```
-
-```cpp
-auto v28 = TPipe<0, FIFOType::VEC_FIFO, 8, 8, SrcTile, DstTile>(local_addr);
-```
-
-**`initialize_l2g2l_pipe`（A3 或 A5）：**
-
-```mlir
-%pipe = pto.initialize_l2g2l_pipe {dir_mask = 1}
-    (%gm_addr : memref<...>, %local_addr : i32)
-```
-
-```cpp
-auto v28 = TPipe<0, FIFOType::GM_FIFO, 8, 8, SrcTile, DstTile>(gm_addr, local_addr);
-```
-
-**`initialize_l2g2l_pipe`（指定 local_fifo_depth=4）：**
-
-```mlir
-%pipe = pto.initialize_l2g2l_pipe {dir_mask = 1, local_fifo_depth = 4}
-    (%gm_addr : memref<...>, %local_addr : i32)
-```
-
-```cpp
-auto v28 = TPipe<0, FIFOType::GM_FIFO, 8, 8, SrcTile, DstTile,
-                 false, 4>(gm_addr, local_addr);
-```
-
-**FIFOType 映射：**
-
-| Op | dir_mask | FIFOType |
-|---|---|---|
-| `initialize_l2l_pipe` | 1 (C2V) | `VEC_FIFO` |
-| `initialize_l2l_pipe` | 2 (V2C) | `MAT_FIFO` |
-| `initialize_l2g2l_pipe` | 1 (C2V) | `GM_FIFO` |
-| `initialize_l2g2l_pipe` | 2 (V2C) | `GM_FIFO` |
-
-### 7.2 其他 Op
-
-| Op | EmitC 输出 |
-|---|---|
-| `declare_tile` | `Tile<...> varname;` |
-| `tpop_internal` | `TPOP(tile, pipe);` |
-| `tfree_internal` | `TFREE(pipe);` |
-
----
-
-## 8. Op 定义汇总
-
-### 前端 Op
-
-| Op | 操作数 | 结果 | Pipeline | 可见性 |
-|---|---|---|---|---|
-| `pto.initialize_l2g2l_pipe` | `gm_addr [, local_addr]` + 属性 | `!pto.pipe<S, D>` | — | 前端 |
-| `pto.initialize_l2l_pipe` | `[local_addr]` + 属性 | `!pto.pipe<S, D>` | — | 前端 |
-| `pto.tpop` | `pipe` | `index`（slot_id） | — | 前端 |
-| `pto.get_fifo_tile` | `pipe, slot_id` | `DstTileType` | — | 前端 |
-| `pto.tfree` | `pipe, slot_id` | — | — | 前端 |
-| `pto.tpush` | `tile, pipe` | — | — | 前端 |
-
-### 内部 Op
-
-| Op | 操作数 | 结果 | DPS | Pipeline |
-|---|---|---|---|---|
-| `pto.declare_tile` | — | `TileBufType` | 否 | — |
-| `pto.tpop_internal` | `tile, pipe` + `assigned_pipe` | — | 是 | GM_FIFO: `PIPE_MTE2`；VEC/MAT_FIFO: `PIPE_S` |
-| `pto.tfree_internal` | `pipe` | — | 否 | `PIPE_S` |
-
----
-
-## 9. Tile 大小与 Slot Size
-
-**slot_size 定义：** FIFO 中每个 slot 的大小，取生产者和消费者 tile 中较大的：
-
-```
-slot_size = max(srcTile.size, dstTile.size)
-```
-
-其中 `tile.size = Rows × Cols × sizeof(DType)`。
-
-**srcTile 与 dstTile 的三种关系：**
-
-| 关系 | 条件 | slot_size | 典型场景 |
-|---|---|---|---|
-| 1:1 相等 | `src.size == dst.size` | 任一 | A3（Cube/Vec 算力 1:1），A5 单 Vec 核 |
-| Src 为 Dst 的 2 倍 | `src.size == 2 × dst.size` | src.size | A5 C2V（1 Cube : 2 Vector） |
-| Dst 为 Src 的 2 倍 | `dst.size == 2 × src.size` | dst.size | A5 V2C |
-
-**plan memory 分配量 = `local_fifo_depth × slot_size`**
-
----
-
-## 10. C++ TPipe 模板参考
-
-### 10.1 模板定义（pto-isa）
-
-```cpp
-template <uint8_t FlagID, FIFOType FiFoType, uint8_t FiFoDepth, uint8_t FiFoSyncT,
-          typename TileDataProd, typename TileDataCons,
-          bool EN_UNIT_FLAG = false,
-          uint8_t LocalFiFoDepth = 2,
-          VecCubeRatio VCRatio = VecCubeRatio::V2C1_VECS>
-struct TPipe;
-```
-
-### 10.2 参数说明
-
-| # | 参数 | 类型 | 说明 | PTOAS 来源 |
-|---|---|---|---|---|
-| 1 | `FlagID` | uint8_t | 同步 flag 基地址 | 编译器 flag 分配 pass |
-| 2 | `FiFoType` | FIFOType | FIFO 类型 | 由 Op 类型 + dir_mask 推导 |
-| 3 | `FiFoDepth` | uint8_t | ring buffer slot 数量 | dir_mask 推导（单向=8） |
-| 4 | `FiFoSyncT` | uint8_t | 同步周期 | C++ 默认值（=FiFoDepth） |
-| 5 | `TileDataProd` | typename | 生产者 tile 类型 | pipe result type 的 srcTileType |
-| 6 | `TileDataCons` | typename | 消费者 tile 类型 | pipe result type 的 dstTileType |
-| 7 | `EN_UNIT_FLAG` | bool | unit flag 优化 | C++ 默认值（false） |
-| 8 | `LocalFiFoDepth` | uint8_t | GM_FIFO 的 local buffer 深度 | `local_fifo_depth` 属性，默认 2 |
-| 9 | `VCRatio` | VecCubeRatio | Vector/Cube 核心比率 | C++ 默认值（V2C1_VECS） |
-
-### 10.3 VecCubeRatio 枚举
-
-```cpp
-enum class VecCubeRatio : uint8_t {
-    V1C1_VEC0 = 0,  // 1 Vector : 1 Cube，仅 Vector 0
-    V1C1_VEC1 = 1,  // 1 Vector : 1 Cube，仅 Vector 1
-    V2C1_VECS = 2,  // 2 Vector : 1 Cube（默认）
-};
-```
-
-VCRatio 不可从 tile 大小推导——`src.size == dst.size` 时 V1C1 与 V2C1 均合法。当前使用 C++ 默认值 V2C1_VECS。
-
-### 10.4 FIFOType 与行为
-
-| FIFOType | 对应 Op | 构造函数参数 | TPUSH | TPOP |
-|---|---|---|---|---|
-| `VEC_FIFO` | `initialize_l2l_pipe` (C2V) | local addr | 写入 local VEC slot | 返回 local slot tile |
-| `MAT_FIFO` | `initialize_l2l_pipe` (V2C) | local addr | 写入 local MAT slot | 返回 local slot tile |
-| `GM_FIFO` | `initialize_l2g2l_pipe` | GM addr + local addr | 写入 GM slot | GM → local → 返回 tile |
-
----
-
-## 11. 端到端示例：EmitC 输出
-
-### 11.1 L2L Pipe（A5）
-
-```cpp
-__global__ AICORE void c2v_l2l(int32_t local_addr) {
-  auto v28 = TPipe<0, FIFOType::VEC_FIFO, 8, 8, AccTile, VecTile>(local_addr);
-
-  // section.cube
-  TPUSH(acc_tile, v28);
-
-  // section.vector
-  Tile<TileType::Vec, float, 32, 128, ...> v30;
-  TPOP(v30, v28);
-  TMOV(dst, v30);
-  TFREE(v28);
-}
-```
-
-### 11.2 L2G2L Pipe（A3 或 A5）
-
-```cpp
-__global__ AICORE void c2v_l2g2l(memref gm_addr, int32_t local_addr) {
-  auto v28 = TPipe<0, FIFOType::GM_FIFO, 8, 8, AccTile, VecTile>(gm_addr, local_addr);
-
-  // section.cube
-  TPUSH(acc_tile, v28);
-
-  // section.vector
-  Tile<TileType::Vec, float, 32, 128, ...> v30;
-  TPOP(v30, v28);
-  TMOV(dst, v30);
-  TFREE(v28);
-}
-```
+- `initialize_*_pipe` 缺失 `flag_base`
+- `flag_base` 不在 `{0, 2, 4, 6, 8, 10, 12}` 中
+- `initialize_l2g2l_pipe` 的 `gm_addr` 不是 `!pto.ptr<elem_ty>`
+- `dir_mask` 非法
+- `local_fifo_depth` 非法
+- `get_fifo_tile` / `tfree` 与产生 `slot_id` 的 `tpop` 不匹配
+- `tfree` 缺失
+- borrowed tile 在 `tfree` 之后继续使用
