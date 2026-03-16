@@ -1064,8 +1064,6 @@ LogicalResult mlir::pto::validatePTOEntryFunctions(ModuleOp module) {
   if (!module)
     return success();
 
-  SmallVector<func::FuncOp> defs = getPTOFunctionDefinitions(module);
-  bool hasExplicitEntry = false;
   for (auto func : module.getOps<func::FuncOp>()) {
     if (!hasExplicitPTOEntryAttr(func))
       continue;
@@ -1074,17 +1072,8 @@ LogicalResult mlir::pto::validatePTOEntryFunctions(ModuleOp module) {
              << "`" << kPTOEntryAttrName
              << "` is only valid on function definitions";
     }
-    hasExplicitEntry = true;
   }
-
-  if (defs.size() <= 1)
-    return success();
-  if (hasExplicitEntry)
-    return success();
-
-  return module.emitError()
-         << "module with multiple function definitions requires at least one `"
-         << kPTOEntryAttrName << "` function";
+  return success();
 }
 
 void mlir::pto::annotatePTOEntryFunctions(ModuleOp module) {
