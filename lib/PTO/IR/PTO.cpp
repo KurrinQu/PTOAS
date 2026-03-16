@@ -12,6 +12,7 @@
 #include "mlir/AsmParser/AsmParser.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
@@ -3726,9 +3727,26 @@ static bool isInsideSectionVector(Operation *op) {
   return op->getParentOfType<pto::SectionVectorOp>() != nullptr;
 }
 
+static std::optional<FunctionKernelKind>
+getEnclosingFunctionKernelKind(Operation *op) {
+  auto funcOp = op->getParentOfType<func::FuncOp>();
+  if (!funcOp)
+    return std::nullopt;
+
+  auto kernelKindAttr =
+      funcOp->getAttrOfType<FunctionKernelKindAttr>(
+          FunctionKernelKindAttr::name);
+  if (!kernelKindAttr)
+    return std::nullopt;
+
+  return kernelKindAttr.getKernelKind();
+}
+
+static bool isInsideSectionOrAttributedKernel(Operation *op) {
+  return isInsideSection(op) || getEnclosingFunctionKernelKind(op).has_value();
+}
+
 static LogicalResult verifyInitPipeDirMask(Operation *op, int8_t dirMask) {
-  if (isInsideSection(op))
-    return op->emitOpError("must be at function level, not inside a section");
   if (dirMask != 1 && dirMask != 2)
     return op->emitOpError("dir_mask must be 1 (C2V) or 2 (V2C)");
   return success();
@@ -3817,7 +3835,7 @@ static LogicalResult verifyPipeTileType(Operation *op, Type pipeType,
 }
 
 LogicalResult TPushOp::verify() {
-  if (!isInsideSectionCube(getOperation()) && !isInsideSectionVector(getOperation()))
+  if (!isInsideSectionOrAttributedKernel(getOperation()))
     return emitOpError("must be inside a section.cube or section.vector");
   if (failed(verifyPipeTileType(getOperation(), getPipeHandle().getType(),
                                 getTile().getType(), /*isPush=*/true)))
@@ -3829,13 +3847,13 @@ LogicalResult TPushOp::verify() {
 }
 
 LogicalResult TPopOp::verify() {
-  if (!isInsideSectionCube(getOperation()) && !isInsideSectionVector(getOperation()))
+  if (!isInsideSectionOrAttributedKernel(getOperation()))
     return emitOpError("must be inside a section.cube or section.vector");
   return success();
 }
 
 LogicalResult GetFifoTileOp::verify() {
-  if (!isInsideSectionCube(getOperation()) && !isInsideSectionVector(getOperation()))
+  if (!isInsideSectionOrAttributedKernel(getOperation()))
     return emitOpError("must be inside a section.cube or section.vector");
 
   auto tpopOp = getSlotId().getDefiningOp<TPopOp>();
@@ -3849,7 +3867,7 @@ LogicalResult GetFifoTileOp::verify() {
 }
 
 LogicalResult TFreeOp::verify() {
-  if (!isInsideSectionCube(getOperation()) && !isInsideSectionVector(getOperation()))
+  if (!isInsideSectionOrAttributedKernel(getOperation()))
     return emitOpError("must be inside a section.cube or section.vector");
 
   auto tpopOp = getSlotId().getDefiningOp<TPopOp>();

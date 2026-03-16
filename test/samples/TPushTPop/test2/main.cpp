@@ -4,8 +4,8 @@
 #include <cstdlib>
 #include <vector>
 
-void LaunchMatmulTPushPopLoop4Print(uint8_t *a, uint8_t *b_all, uint8_t *slot,
-                                    int32_t c2vBuf, void *stream);
+void LaunchMatmulTPushPopLoop4Print(uint8_t *a, uint8_t *b_all, int32_t c2vBuf,
+                                    void *stream);
 
 #define ACL_CHECK(expr)                                                        \
   do {                                                                         \
@@ -24,11 +24,9 @@ int main() {
   constexpr int Iter = 4;
   constexpr size_t aBytes = M * K * sizeof(float);
   constexpr size_t bBytes = Iter * K * N * sizeof(float);
-  constexpr size_t slotBytes = M * N * sizeof(float);
 
   std::vector<float> hostA(M * K, 0.0f);
   std::vector<float> hostBAll(Iter * K * N, 0.0f);
-  std::vector<float> hostSlot(M * N, 0.0f);
   for (int i = 0; i < M; ++i) {
     hostA[i * K + i] = 1.0f;
   }
@@ -48,24 +46,19 @@ int main() {
 
   uint8_t *devA = nullptr;
   uint8_t *devBAll = nullptr;
-  uint8_t *devSlot = nullptr;
   ACL_CHECK(aclrtMalloc(reinterpret_cast<void **>(&devA), aBytes,
                         ACL_MEM_MALLOC_HUGE_FIRST));
   ACL_CHECK(aclrtMalloc(reinterpret_cast<void **>(&devBAll), bBytes,
-                        ACL_MEM_MALLOC_HUGE_FIRST));
-  ACL_CHECK(aclrtMalloc(reinterpret_cast<void **>(&devSlot), slotBytes,
                         ACL_MEM_MALLOC_HUGE_FIRST));
 
   ACL_CHECK(aclrtMemcpy(devA, aBytes, hostA.data(), aBytes,
                         ACL_MEMCPY_HOST_TO_DEVICE));
   ACL_CHECK(aclrtMemcpy(devBAll, bBytes, hostBAll.data(), bBytes,
                         ACL_MEMCPY_HOST_TO_DEVICE));
-  ACL_CHECK(aclrtMemcpy(devSlot, slotBytes, hostSlot.data(), slotBytes,
-                        ACL_MEMCPY_HOST_TO_DEVICE));
 
   constexpr int32_t c2vBuf = 0x10000;
 
-  LaunchMatmulTPushPopLoop4Print(devA, devBAll, devSlot, c2vBuf, stream);
+  LaunchMatmulTPushPopLoop4Print(devA, devBAll, c2vBuf, stream);
   ACL_CHECK(aclrtSynchronizeStream(stream));
 
   std::puts("Kernel finished. Expect 4 TPRINT blocks with 8x16 outputs filled "
@@ -73,7 +66,6 @@ int main() {
 
   aclrtFree(devA);
   aclrtFree(devBAll);
-  aclrtFree(devSlot);
   aclrtDestroyStream(stream);
   aclrtResetDevice(0);
   aclFinalize();
