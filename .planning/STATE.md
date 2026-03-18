@@ -19,7 +19,8 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - Roadmap created
 - Phase 1 plans created
 - Plan `01-01` executed and summarized
-- Next execution target: `01-02-PLAN.md`
+- Plan `01-02` executed and summarized
+- Next execution target: `01-03-PLAN.md`
 
 ## Active Milestone
 
@@ -51,12 +52,17 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - Emit textual LLVM HIVM intrinsic IR first, then confirm final intrinsic spellings externally.
 - Use committed MLIR `RUN:`/`FileCheck` fixtures as the Phase 1 backend contract before implementation starts.
 - Use a standalone Bash runner for Phase 1 verification instead of relying on external lit configuration.
+- Use a handwritten A5VM vector type parser/printer to preserve the exact `!a5vm.vec<...>` syntax under the local MLIR toolchain.
+- Let `ptoas` short-circuit raw A5VM textual inputs to a parse-only path until backend-selection work lands in plan `01-03`.
 
 ## Recent Progress
 
 - Committed Phase 1 fixtures for `a5vm` vector types, core ops, backend switching, and shared dialect preservation
 - Added executable `test/phase1/run_phase1_checks.sh` with unresolved-report and intrinsic-tracing coverage
 - Created `.planning/phases/01-a5vm-foundation/01-a5vm-foundation-01-SUMMARY.md`
+- Added first-class A5VM IR headers, TableGen contracts, and `lib/PTO/IR/A5VM.cpp`
+- Registered A5VM in `ptoas` with parse-only textual fixture handling and passing Phase 1 A5VM checks
+- Created `.planning/phases/01-a5vm-foundation/01-a5vm-foundation-02-SUMMARY.md`
 - Marked BACK-01, BACK-02, and A5VM-01 through A5VM-04 complete in `.planning/REQUIREMENTS.md`
 
 ## Open Questions
@@ -67,8 +73,8 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 ## Session Continuity
 
 - Next recommended command: `/gsd:execute-phase 01-a5vm-foundation`
-- Next plan to execute: `01-02-PLAN.md`
+- Next plan to execute: `01-03-PLAN.md`
 - Current blocker status: none
 
 ---
-*Last updated: 2026-03-19 after completing plan 01-01*
+*Last updated: 2026-03-19 after completing plan 01-02*
