@@ -67,6 +67,13 @@ Implement PTO-to-A5VM lowering helpers that preserve existing PTO-side semantic 
 3. `TSTORE` lowers into `a5vm` while preserving the source tile domain and destination layout decisions needed for backend code selection.
 4. The lowering structure is reusable for future PTO ops without replacing the architecture established for `Abs`.
 
+**Plans:** 3 plans
+
+Plans:
+- [ ] `02-01-PLAN.md` — Create the Phase 2 FileCheck fixtures and committed runner for PTO semantic-lowering checks
+- [ ] `02-02-PLAN.md` — Define the shared PTO-to-A5VM lowering contracts, helper layer, and explicit unsupported-branch behavior
+- [ ] `02-03-PLAN.md` — Register the PTO-to-A5VM pass and wire it into the `--pto-backend=a5vm` path in `ptoas`
+
 ### Phase 3: HIVM Emission
 
 **Goal**
