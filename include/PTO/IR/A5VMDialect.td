@@ -13,7 +13,7 @@ include "mlir/IR/OpBase.td"
 
 def A5VM_Dialect : Dialect {
   let name = "a5vm";
-  let cppNamespace = "::mlir::pto::a5vm";
+  let cppNamespace = "::mlir::a5vm";
 
   let useDefaultTypePrinterParser = 1;
   let useDefaultAttributePrinterParser = 1;
