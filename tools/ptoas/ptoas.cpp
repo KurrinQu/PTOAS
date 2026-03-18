@@ -8,6 +8,7 @@
 
 #include "PTO/IR/A5VM.h"
 #include "PTO/IR/PTO.h"
+#include "PTO/Transforms/A5VMTextEmitter.h"
 #include "PTO/Transforms/Passes.h"
 #include "PTO/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/IR/MLIRContext.h"
@@ -132,10 +133,42 @@ static llvm::cl::opt<std::string> ptoBuildLevel(
     llvm::cl::value_desc("level1|level2|level3"),
     llvm::cl::init("level2"));
 
+static llvm::cl::opt<std::string> ptoBackend(
+    "pto-backend",
+    llvm::cl::desc("Final PTOAS backend: emitc or a5vm (default: emitc)"),
+    llvm::cl::value_desc("emitc|a5vm"),
+    llvm::cl::init("emitc"));
+
+static llvm::cl::opt<bool> a5vmPrintIR(
+    "a5vm-print-ir",
+    llvm::cl::desc("Print post-pass A5VM backend IR to stderr"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> a5vmPrintIntrinsics(
+    "a5vm-print-intrinsics",
+    llvm::cl::desc("Print A5VM intrinsic selection decisions to stderr"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> a5vmAllowUnresolved(
+    "a5vm-allow-unresolved",
+    llvm::cl::desc("Emit explicit unresolved A5VM comments instead of failing"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<std::string> a5vmUnresolvedReport(
+    "a5vm-unresolved-report",
+    llvm::cl::desc("Write unresolved A5VM mappings to a sidecar report"),
+    llvm::cl::value_desc("path"),
+    llvm::cl::init(""));
+
 enum class PTOBuildLevel {
   Level1,
   Level2,
   Level3,
+};
+
+enum class PTOBackend {
+  EmitC,
+  A5VM,
 };
 
 static PTOBuildLevel defaultBuildLevel() {
@@ -159,6 +192,35 @@ static bool parseBuildLevel(llvm::StringRef levelStr, PTOBuildLevel &out) {
     return true;
   }
   return false;
+}
+
+static bool parseBackend(llvm::StringRef backendStr, PTOBackend &out) {
+  std::string s = backendStr.str();
+  for (char &c : s)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (s == "emitc") {
+    out = PTOBackend::EmitC;
+    return true;
+  }
+  if (s == "a5vm") {
+    out = PTOBackend::A5VM;
+    return true;
+  }
+  return false;
+}
+
+static void printA5VMIROpSummary(ModuleOp module, llvm::raw_ostream &os) {
+  for (func::FuncOp func : module.getOps<func::FuncOp>()) {
+    for (Operation &op : func.getBody().front().getOperations()) {
+      os << "A5VM IR op: " << op.getName().getStringRef() << "\n";
+      for (Region &region : op.getRegions()) {
+        for (Block &block : region) {
+          for (Operation &nested : block.getOperations())
+            os << "A5VM IR op: " << nested.getName().getStringRef() << "\n";
+        }
+      }
+    }
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -677,6 +739,13 @@ int main(int argc, char **argv) {
   // Parse command line options
   llvm::cl::ParseCommandLineOptions(argc, argv, "PTO Assembler (ptoas)\n");
 
+  PTOBackend effectiveBackend = PTOBackend::EmitC;
+  if (!parseBackend(ptoBackend, effectiveBackend)) {
+    llvm::errs() << "Error: invalid --pto-backend='" << ptoBackend
+                 << "'. Expected 'emitc' or 'a5vm'.\n";
+    return 1;
+  }
+
   // Read whole input first (so we can auto-detect .ptobc by magic).
   auto fileOrErr = llvm::MemoryBuffer::getFileOrSTDIN(inputFilename);
   if (!fileOrErr) {
@@ -702,6 +771,7 @@ int main(int argc, char **argv) {
   OwningOpRef<ModuleOp> module;
   llvm::StringRef buf = (*fileOrErr)->getBuffer();
   const bool isPTOBC = (buf.size() >= 6 && std::memcmp(buf.data(), "PTOBC\0", 6) == 0);
+  const bool inputIsA5VMIR = containsA5VMIR(buf);
 
   if (isPTOBC) {
     // Decode PTO bytecode directly into an MLIR module.
@@ -721,7 +791,7 @@ int main(int argc, char **argv) {
       return 1;
     }
   } else {
-    if (containsA5VMIR(buf)) {
+    if (effectiveBackend == PTOBackend::EmitC && inputIsA5VMIR) {
       std::error_code ec;
       llvm::ToolOutputFile outputFile(outputFilename, ec, llvm::sys::fs::OF_None);
       if (ec) {
@@ -790,37 +860,41 @@ int main(int argc, char **argv) {
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertCVMovPass());
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOConvertToDPSPass());
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertLoadStoreForMixCVPass());
-  pm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
-  
-  if (!disableInferLayout)
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
-  pm.addPass(pto::createPTOViewToMemrefPass());
-  // bufferizationPipeline(pm);
-  //pm.addPass(createInferPTOMemScopePass());
+  const bool skipPreBackendPasses =
+      effectiveBackend == PTOBackend::A5VM && inputIsA5VMIR;
+  if (!skipPreBackendPasses) {
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
 
-  if (effectiveLevel != PTOBuildLevel::Level3) {
-    PlanMemoryOptions planMemoryOption;
-    planMemoryOption.memMode = MemPlanMode::LOCAL_MEM_PLAN;
-    planMemoryOption.enableGlobalReuse = false;
-    planMemoryOption.enablePrintMemoryAllocatedSize = false;
-    pm.addPass(pto::createPlanMemoryPass(planMemoryOption));
-  }
+    if (!disableInferLayout)
+      pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
+    pm.addPass(pto::createPTOViewToMemrefPass());
+    // bufferizationPipeline(pm);
+    //pm.addPass(createInferPTOMemScopePass());
 
-  // Conditionally add Sync pass based on flag
-  if (enableInsertSync) {
-    if (effectiveLevel == PTOBuildLevel::Level3) {
-      llvm::errs()
-          << "Warning: --enable-insert-sync is ignored because --pto-level=level3.\n";
-    } else {
-      pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
+    if (effectiveLevel != PTOBuildLevel::Level3) {
+      PlanMemoryOptions planMemoryOption;
+      planMemoryOption.memMode = MemPlanMode::LOCAL_MEM_PLAN;
+      planMemoryOption.enableGlobalReuse = false;
+      planMemoryOption.enablePrintMemoryAllocatedSize = false;
+      pm.addPass(pto::createPlanMemoryPass(planMemoryOption));
     }
+
+    // Conditionally add Sync pass based on flag
+    if (enableInsertSync) {
+      if (effectiveLevel == PTOBuildLevel::Level3) {
+        llvm::errs() << "Warning: --enable-insert-sync is ignored because "
+                        "--pto-level=level3.\n";
+      } else {
+        pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
+      }
+    }
+
+    // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTORemoveRedundantBarrierPass());
+    // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOHighDimLoweringPass());
+    // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVFloopGatherPass());
+
+    pm.addPass(createCSEPass());
   }
-
-  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTORemoveRedundantBarrierPass());
-  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOHighDimLoweringPass());
-  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVFloopGatherPass());
-
-  pm.addPass(createCSEPass());
   std::string arch = ptoTargetArch;
   for (char &c : arch)
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -831,17 +905,42 @@ int main(int argc, char **argv) {
   }
   module->getOperation()->setAttr("pto.target_arch",
                                   mlir::StringAttr::get(&context, arch));
-  if (arch == "a3") {
-    pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));
-  } else {
-    pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A5));
+  if (effectiveBackend == PTOBackend::EmitC) {
+    if (arch == "a3") {
+      pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));
+    } else {
+      pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A5));
+    }
+    pm.addPass(emitc::createFormExpressionsPass());
+    pm.addPass(mlir::createCSEPass());
   }
-  pm.addPass(emitc::createFormExpressionsPass());
-  pm.addPass(mlir::createCSEPass());
 
-  if (failed(pm.run(*module))) {
-    llvm::errs() << "Error: Pass execution failed.\n";
-    return 1;
+  if (!skipPreBackendPasses) {
+    if (failed(pm.run(*module))) {
+      llvm::errs() << "Error: Pass execution failed.\n";
+      return 1;
+    }
+  }
+
+  if (effectiveBackend == PTOBackend::A5VM) {
+    if (a5vmPrintIR) {
+      printA5VMIROpSummary(*module, llvm::errs());
+      module->print(llvm::errs());
+      llvm::errs() << "\n";
+    }
+
+    pto::A5VMEmissionOptions options;
+    options.printIntrinsicSelections = a5vmPrintIntrinsics;
+    options.allowUnresolved = a5vmAllowUnresolved;
+    options.unresolvedReportPath = a5vmUnresolvedReport;
+
+    if (failed(pto::translateA5VMModuleToText(*module, outputFile.os(), options,
+                                              llvm::errs()))) {
+      llvm::errs() << "Error: Failed to emit A5VM text.\n";
+      return 1;
+    }
+    outputFile.keep();
+    return 0;
   }
 
   dropEmptyEmitCExpressions(module.get());

@@ -12,6 +12,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+// The A5VM backend is emitted from tools/ptoas rather than a TableGen pass;
+// these registrations continue to describe the shared pre-backend pipeline.
+
 #ifndef MLIR_DIALECT_PTO_PASSES
 #define MLIR_DIALECT_PTO_PASSES
 
