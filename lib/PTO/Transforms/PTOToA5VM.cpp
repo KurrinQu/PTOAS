@@ -11,12 +11,15 @@
 
 #include "PTO/IR/A5VM.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
-#include "llvm/ADT/TypeSwitch.h"
 
 namespace mlir {
 namespace pto {
@@ -26,37 +29,39 @@ namespace pto {
 
 namespace {
 
+template <typename OpTy, LogicalResult (*LowerFn)(OpTy, PatternRewriter &)>
+struct LowerPTOOpPattern : public OpRewritePattern<OpTy> {
+  using OpRewritePattern<OpTy>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(OpTy op,
+                                PatternRewriter &rewriter) const override {
+    if (failed(LowerFn(op, rewriter)))
+      return failure();
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct PTOToA5VMPass : public impl::PTOToA5VMBase<PTOToA5VMPass> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PTOToA5VMPass)
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    SmallVector<Operation *> worklist;
-    module.walk([&](Operation *op) {
-      if (isa<TLoadOp, TAbsOp, TStoreOp>(op))
-        worklist.push_back(op);
-    });
+    RewritePatternSet patterns(&getContext());
+    patterns.add<LowerPTOOpPattern<TLoadOp, lowerTLOAD>,
+                 LowerPTOOpPattern<TAbsOp, lowerTABS>,
+                 LowerPTOOpPattern<TStoreOp, lowerTSTORE>>(&getContext());
 
-    PatternRewriter rewriter(&getContext());
-    for (Operation *op : worklist) {
-      if (!op->getBlock())
-        continue;
+    ConversionTarget target(getContext());
+    target.addLegalDialect<a5vm::A5VMDialect, arith::ArithDialect,
+                           func::FuncDialect, memref::MemRefDialect,
+                           scf::SCFDialect>();
+    target.addLegalDialect<pto::PTODialect>();
+    target.addIllegalOp<TLoadOp, TAbsOp, TStoreOp>();
+    target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
-      rewriter.setInsertionPoint(op);
-      LogicalResult status = TypeSwitch<Operation *, LogicalResult>(op)
-                                 .Case<TLoadOp>([&](TLoadOp loadOp) {
-                                   return lowerTLOAD(loadOp, rewriter);
-                                 })
-                                 .Case<TAbsOp>([&](TAbsOp absOp) {
-                                   return lowerTABS(absOp, rewriter);
-                                 })
-                                 .Case<TStoreOp>([&](TStoreOp storeOp) {
-                                   return lowerTSTORE(storeOp, rewriter);
-                                 })
-                                 .Default([](Operation *) { return failure(); });
-      if (succeeded(status))
-        rewriter.eraseOp(op);
-    }
+    if (failed(applyPartialConversion(module, target, std::move(patterns))))
+      signalPassFailure();
   }
 };
 
