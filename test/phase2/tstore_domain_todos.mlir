@@ -1,20 +1,12 @@
-// RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm --a5vm-print-ir %s -o /dev/null 2>&1 | FileCheck %s
+// RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm %s -o /dev/null 2>&1 | FileCheck %s
 
-// CHECK-LABEL: func.func @tstore_vec_contract
-// CHECK: a5vm.store
-// CHECK-SAME: src_domain = "vec"
-// CHECK-SAME: dst_layout = "nd"
-// CHECK-SAME: dst_shape = [32, 32]
-// CHECK-SAME: dst_strides = [32, 1]
-// CHECK-SAME: valid_rows = 32
-// CHECK-SAME: valid_cols = 32
-// CHECK-SAME: trace_offsets = [0, 0]
-// CHECK-SAME: trace_sizes = [32, 32]
+// CHECK-LABEL: func.func @tstore_domain_todos
+// CHECK: a5vm.copy_ubuf_to_gm
 // CHECK: TSTORE ACC lowering TODO for a5vm backend
 // CHECK: TSTORE MAT lowering TODO for a5vm backend
 
 module {
-  func.func @tstore_vec_contract(%dst: !pto.ptr<f32>, %index: index) {
+  func.func @tstore_domain_todos(%dst: !pto.ptr<f32>) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c32 = arith.constant 32 : index
