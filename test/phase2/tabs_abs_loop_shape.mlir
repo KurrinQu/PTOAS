@@ -1,13 +1,13 @@
 // RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm --a5vm-print-ir %s -o /dev/null 2>&1 | FileCheck %s
 
 // CHECK-LABEL: func.func @tabs_abs_loop_shape
-// CHECK: scf.for
-// CHECK-SAME: cce_aiv_loop_hint
-// CHECK: llvm.loop.aivector_scope
-// CHECK: scf.for
+// CHECK: scf.for %[[DUMMY:[^ ]+]] = %{{[^ ]+}} to %{{[^ ]+}} step %{{[^ ]+}} {
+// CHECK: scf.for %[[CHUNK:[^ ]+]] = %{{[^ ]+}} to %{{[^ ]+}} step %{{[^ ]+}}
 // CHECK: a5vm.vlds
 // CHECK: a5vm.vabs
 // CHECK: a5vm.vsts
+// CHECK: } {a5vm.scope = "__VEC_SCOPE__", cce_aiv_loop_hint, llvm.loop.aivector_scope
+// CHECK: } {a5vm.loop_scope_depth = 0 : i64, a5vm.scope = "__VEC_SCOPE__", cce_aiv_loop_hint, llvm.loop.aivector_scope
 // CHECK-NOT: emitc.call_opaque "TABS"
 
 module {

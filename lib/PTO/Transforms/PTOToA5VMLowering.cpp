@@ -730,25 +730,12 @@ LogicalResult buildUnaryVecScope(StringRef family,
     return emitError(loc)
            << "TABS lowering requires total valid elements divisible by vector width";
 
-  int64_t outerStep = 1;
-  int64_t innerStep = vectorWidth;
-  int64_t innerUpperBound = validCols;
-  if (validCols < vectorWidth) {
-    if (vectorWidth % validCols != 0)
-      return emitError(loc)
-             << "TABS lowering requires valid cols to evenly divide the vector width";
-    outerStep = vectorWidth / validCols;
-    innerStep = validCols;
-  }
-
   Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-  Value rows = rewriter.create<arith::ConstantIndexOp>(loc, validRows);
-  Value cols = rewriter.create<arith::ConstantIndexOp>(loc, validCols);
   Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-  Value outerStepValue = rewriter.create<arith::ConstantIndexOp>(loc, outerStep);
-  Value innerUpperBoundValue =
-      rewriter.create<arith::ConstantIndexOp>(loc, innerUpperBound);
-  Value innerStepValue = rewriter.create<arith::ConstantIndexOp>(loc, innerStep);
+  Value totalElementsValue =
+      rewriter.create<arith::ConstantIndexOp>(loc, totalElements);
+  Value vectorStepValue =
+      rewriter.create<arith::ConstantIndexOp>(loc, vectorWidth);
 
   auto aivScopeLoop = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
   if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
@@ -757,20 +744,13 @@ LogicalResult buildUnaryVecScope(StringRef family,
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
   rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
-  auto chunkLoop = rewriter.create<scf::ForOp>(loc, c0, rows, outerStepValue);
+  auto chunkLoop =
+      rewriter.create<scf::ForOp>(loc, c0, totalElementsValue, vectorStepValue);
   attachUnaryContractAttrs(chunkLoop, contract);
 
   OpBuilder::InsertionGuard chunkGuard(rewriter);
   rewriter.setInsertionPointToStart(chunkLoop.getBody());
-  auto vectorLoop =
-      rewriter.create<scf::ForOp>(loc, c0, innerUpperBoundValue, innerStepValue);
-
-  OpBuilder::InsertionGuard vectorGuard(rewriter);
-  rewriter.setInsertionPointToStart(vectorLoop.getBody());
-  Value rowOffset = rewriter.create<arith::MulIOp>(loc, chunkLoop.getInductionVar(),
-                                                   cols);
-  Value offset =
-      rewriter.create<arith::AddIOp>(loc, rowOffset, vectorLoop.getInductionVar());
+  Value offset = chunkLoop.getInductionVar();
   auto vlds = rewriter.create<a5vm::VldsOp>(loc, vecType, srcBuffer, offset);
   auto vabs = rewriter.create<a5vm::VabsOp>(loc, vecType, vlds.getResult());
   attachUnaryContractAttrs(vabs, contract);
