@@ -1,0 +1,20 @@
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from sample_utils.tiled_elementwise_cases import build_scalar_case
+
+
+def build():
+    return build_scalar_case(
+        kernel_name="muls_kernel_1x96_dynamic",
+        op_name="muls",
+        rows=1,
+        cols=96,
+        dynamic_shape=True,
+    )
+
+
+if __name__ == "__main__":
+    print(build())
