@@ -1,0 +1,16 @@
+{
+  "schema_version": "a5_oplib_v1_manifest",
+  "target": "a5",
+  "operators": [
+    {
+      "op": "trecip",
+      "family": "unary",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32"
+      ]
+    }
+  ]
+}

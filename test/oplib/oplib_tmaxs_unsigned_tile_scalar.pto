@@ -1,0 +1,78 @@
+// RUN: ptoas %s --op-lib-dir=%S/../../oplib/level3 --pto-arch=a5 --pto-level=level3 -o %t.cpp
+// RUN: test -s %t.cpp
+
+module {
+  func.func @tmaxs_ui8(
+      %src: !pto.ptr<ui8>,
+      %scalar_ptr: !pto.ptr<ui8>,
+      %dst: !pto.ptr<ui8>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c32 = arith.constant 32 : index
+    %c128 = arith.constant 128 : index
+    %a0 = arith.constant 0 : i64
+    %a1 = arith.constant 4096 : i64
+
+    %src_tv = pto.make_tensor_view %src, shape = [%c32, %c128], strides = [%c128, %c1] : !pto.tensor_view<?x?xui8>
+    %dst_tv = pto.make_tensor_view %dst, shape = [%c32, %c128], strides = [%c128, %c1] : !pto.tensor_view<?x?xui8>
+    %src_pt = pto.partition_view %src_tv, offsets = [%c0, %c0], sizes = [%c32, %c128] : !pto.tensor_view<?x?xui8> -> !pto.partition_tensor_view<32x128xui8>
+    %dst_pt = pto.partition_view %dst_tv, offsets = [%c0, %c0], sizes = [%c32, %c128] : !pto.tensor_view<?x?xui8> -> !pto.partition_tensor_view<32x128xui8>
+
+    %src_tile = pto.alloc_tile addr = %a0 : !pto.tile_buf<loc=vec, dtype=ui8, rows=32, cols=128, v_row=32, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %dst_tile = pto.alloc_tile addr = %a1 : !pto.tile_buf<loc=vec, dtype=ui8, rows=32, cols=128, v_row=32, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    pto.tload ins(%src_pt : !pto.partition_tensor_view<32x128xui8>) outs(%src_tile : !pto.tile_buf<loc=vec, dtype=ui8, rows=32, cols=128, v_row=32, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    %scalar = pto.load_scalar %scalar_ptr[%c0] : !pto.ptr<ui8> -> ui8
+    pto.tmaxs ins(%src_tile, %scalar : !pto.tile_buf<loc=vec, dtype=ui8, rows=32, cols=128, v_row=32, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>, ui8) outs(%dst_tile : !pto.tile_buf<loc=vec, dtype=ui8, rows=32, cols=128, v_row=32, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tstore ins(%dst_tile : !pto.tile_buf<loc=vec, dtype=ui8, rows=32, cols=128, v_row=32, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%dst_pt : !pto.partition_tensor_view<32x128xui8>)
+    return
+  }
+
+  func.func @tmaxs_ui16(
+      %src: !pto.ptr<ui16>,
+      %scalar_ptr: !pto.ptr<ui16>,
+      %dst: !pto.ptr<ui16>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c32 = arith.constant 32 : index
+    %c128 = arith.constant 128 : index
+    %a0 = arith.constant 0 : i64
+    %a1 = arith.constant 4096 : i64
+
+    %src_tv = pto.make_tensor_view %src, shape = [%c32, %c128], strides = [%c128, %c1] : !pto.tensor_view<?x?xui16>
+    %dst_tv = pto.make_tensor_view %dst, shape = [%c32, %c128], strides = [%c128, %c1] : !pto.tensor_view<?x?xui16>
+    %src_pt = pto.partition_view %src_tv, offsets = [%c0, %c0], sizes = [%c32, %c128] : !pto.tensor_view<?x?xui16> -> !pto.partition_tensor_view<32x128xui16>
+    %dst_pt = pto.partition_view %dst_tv, offsets = [%c0, %c0], sizes = [%c32, %c128] : !pto.tensor_view<?x?xui16> -> !pto.partition_tensor_view<32x128xui16>
+
+    %src_tile = pto.alloc_tile addr = %a0 : !pto.tile_buf<loc=vec, dtype=ui16, rows=32, cols=128, v_row=32, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %dst_tile = pto.alloc_tile addr = %a1 : !pto.tile_buf<loc=vec, dtype=ui16, rows=32, cols=128, v_row=32, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    pto.tload ins(%src_pt : !pto.partition_tensor_view<32x128xui16>) outs(%src_tile : !pto.tile_buf<loc=vec, dtype=ui16, rows=32, cols=128, v_row=32, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    %scalar = pto.load_scalar %scalar_ptr[%c0] : !pto.ptr<ui16> -> ui16
+    pto.tmaxs ins(%src_tile, %scalar : !pto.tile_buf<loc=vec, dtype=ui16, rows=32, cols=128, v_row=32, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>, ui16) outs(%dst_tile : !pto.tile_buf<loc=vec, dtype=ui16, rows=32, cols=128, v_row=32, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tstore ins(%dst_tile : !pto.tile_buf<loc=vec, dtype=ui16, rows=32, cols=128, v_row=32, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%dst_pt : !pto.partition_tensor_view<32x128xui16>)
+    return
+  }
+
+  func.func @tmaxs_ui32(
+      %src: !pto.ptr<ui32>,
+      %scalar_ptr: !pto.ptr<ui32>,
+      %dst: !pto.ptr<ui32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c32 = arith.constant 32 : index
+    %a0 = arith.constant 0 : i64
+    %a1 = arith.constant 4096 : i64
+
+    %src_tv = pto.make_tensor_view %src, shape = [%c32, %c32], strides = [%c32, %c1] : !pto.tensor_view<?x?xui32>
+    %dst_tv = pto.make_tensor_view %dst, shape = [%c32, %c32], strides = [%c32, %c1] : !pto.tensor_view<?x?xui32>
+    %src_pt = pto.partition_view %src_tv, offsets = [%c0, %c0], sizes = [%c32, %c32] : !pto.tensor_view<?x?xui32> -> !pto.partition_tensor_view<32x32xui32>
+    %dst_pt = pto.partition_view %dst_tv, offsets = [%c0, %c0], sizes = [%c32, %c32] : !pto.tensor_view<?x?xui32> -> !pto.partition_tensor_view<32x32xui32>
+
+    %src_tile = pto.alloc_tile addr = %a0 : !pto.tile_buf<loc=vec, dtype=ui32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %dst_tile = pto.alloc_tile addr = %a1 : !pto.tile_buf<loc=vec, dtype=ui32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    pto.tload ins(%src_pt : !pto.partition_tensor_view<32x32xui32>) outs(%src_tile : !pto.tile_buf<loc=vec, dtype=ui32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    %scalar = pto.load_scalar %scalar_ptr[%c0] : !pto.ptr<ui32> -> ui32
+    pto.tmaxs ins(%src_tile, %scalar : !pto.tile_buf<loc=vec, dtype=ui32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, ui32) outs(%dst_tile : !pto.tile_buf<loc=vec, dtype=ui32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tstore ins(%dst_tile : !pto.tile_buf<loc=vec, dtype=ui32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%dst_pt : !pto.partition_tensor_view<32x32xui32>)
+    return
+  }
+}

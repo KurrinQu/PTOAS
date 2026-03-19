@@ -31,34 +31,31 @@ include "mlir/Interfaces/ViewLikeInterface.td"
 // Types
 //===----------------------------------------------------------------------===//
 
-def TensorOrMemref :
-  AnyTypeOf<[AnyMemRef, AnyRankedTensor], "Tensor or Memref">;
+def TensorOrMemref
+    : AnyTypeOf<[AnyMemRef, AnyRankedTensor], "Tensor or Memref">;
 
-def PTODpsType :
-  AnyTypeOf<[AnyRankedTensor, AnyMemRef, PartitionTensorViewType, TileBufType]>;
+def PTODpsType : AnyTypeOf<[AnyRankedTensor, AnyMemRef, PartitionTensorViewType,
+                            TileBufType]>;
 
-def PtrOrMemRef :
-  AnyTypeOf<[PtrType, AnyMemRef], "Ptr or MemRef">;
+def PtrOrMemRef : AnyTypeOf<[PtrType, AnyMemRef], "Ptr or MemRef">;
 
-def TileBufOrMemRef :
-  AnyTypeOf<[TileBufType, AnyMemRef], "TileBuf or MemRef">;
+def TileBufOrMemRef : AnyTypeOf<[TileBufType, AnyMemRef], "TileBuf or MemRef">;
 
-def ScalarPtrOrMemRef :
-  TypeConstraint<
-    CPred<"::mlir::pto::isScalarPtrOrMemRef($_self)">,
-    "Ptr or MemRef in GM">;
+def ScalarPtrOrMemRef
+    : TypeConstraint<CPred<"::mlir::pto::isScalarPtrOrMemRef($_self)">,
+                     "Ptr or MemRef in GM">;
 
-def ScalarType :
-  AnyTypeOf<[AnySignlessInteger, AnyFloat], "numeric (integer/float)">;
+def ScalarType
+    : AnyTypeOf<[AnySignlessInteger, AnyFloat], "numeric (integer/float)">;
 
 //===----------------------------------------------------------------------===//
 // Op Class
 //===----------------------------------------------------------------------===//
 class PTO_TOp<string mnemonic, list<Trait> traits = []>
-    : Op<PTO_Dialect, mnemonic, !listconcat(traits, [ ])>;
+    : Op<PTO_Dialect, mnemonic, !listconcat(traits, [])>;
 
 class PTO_DpsOp<string mnemonic, list<Trait> traits = []>
-    : Op<PTO_Dialect, mnemonic, traits # [DestinationStyleOpInterface]> {
+    : Op<PTO_Dialect, mnemonic, traits#[DestinationStyleOpInterface]> {
   let extraClassDeclaration = [{
     ::mlir::MutableOperandRange getDpsInitsMutable() {
       return getDstMutable();
@@ -67,27 +64,22 @@ class PTO_DpsOp<string mnemonic, list<Trait> traits = []>
 }
 
 class PTO_Op<string mnemonic, list<Trait> traits = []>
-    : Op<PTO_Dialect, mnemonic, !listconcat(traits, [ ])>;
+    : Op<PTO_Dialect, mnemonic, !listconcat(traits, [])>;
 
 //===----------------------------------------------------------------------===//
 // Pointer/View Ops (for your front-end IR)
 //===----------------------------------------------------------------------===//
 
-def AddPtrOp : PTO_Op<"addptr", [
-    Pure,
-    AllTypesMatch<["ptr", "result"]>,
-    DeclareOpInterfaceMethods<InferTypeOpInterface>
-  ]> {
+def AddPtrOp
+    : PTO_Op<"addptr", [Pure, AllTypesMatch<["ptr", "result"]>,
+                        DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
   let summary = "Add an element offset to a !pto.ptr";
   let description = [{
     Computes a new pointer by adding an element offset to the base pointer.
     The offset is in elements (not bytes).
   }];
 
-  let arguments = (ins
-    PtrType:$ptr,
-    Index:$offset
-  );
+  let arguments = (ins PtrType:$ptr, Index:$offset);
 
   let results = (outs PtrType:$result);
 
@@ -102,15 +94,11 @@ def AddPtrOp : PTO_Op<"addptr", [
 // Scalar pointer load/store
 //===----------------------------------------------------------------------===//
 
-def LoadScalarOp : PTO_Op<"load_scalar", [
-    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-  ]> {
+def LoadScalarOp : PTO_Op<"load_scalar", [DeclareOpInterfaceMethods<
+                                             MemoryEffectsOpInterface>]> {
   let summary = "Load a single scalar element from a pointer at offset.";
 
-  let arguments = (ins
-    ScalarPtrOrMemRef:$ptr,
-    Index:$offset
-  );
+  let arguments = (ins ScalarPtrOrMemRef:$ptr, Index:$offset);
 
   let results = (outs AnyType:$value);
 
@@ -121,16 +109,11 @@ def LoadScalarOp : PTO_Op<"load_scalar", [
   }];
 }
 
-def StoreScalarOp : PTO_Op<"store_scalar", [
-    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-  ]> {
+def StoreScalarOp : PTO_Op<"store_scalar", [DeclareOpInterfaceMethods<
+                                               MemoryEffectsOpInterface>]> {
   let summary = "Store a single scalar element to a pointer at offset.";
 
-  let arguments = (ins
-    ScalarPtrOrMemRef:$ptr,
-    Index:$offset,
-    AnyType:$value
-  );
+  let arguments = (ins ScalarPtrOrMemRef:$ptr, Index:$offset, AnyType:$value);
 
   let results = (outs);
 
@@ -142,14 +125,11 @@ def StoreScalarOp : PTO_Op<"store_scalar", [
 }
 
 def MakeTensorViewOp : PTO_Op<"make_tensor_view", [AttrSizedOperandSegments]> {
-  let summary = "Wrap a pointer as a tensor_view descriptor (no allocation, no copy).";
+  let summary =
+      "Wrap a pointer as a tensor_view descriptor (no allocation, no copy).";
 
-  let arguments = (ins
-    AnyType:$ptr,
-    Variadic<Index>:$shape,
-    Variadic<Index>:$strides,
-    OptionalAttr<PTO_LayoutAttr>:$layout
-  );
+  let arguments = (ins AnyType:$ptr, Variadic<Index>:$shape,
+      Variadic<Index>:$strides, OptionalAttr<PTO_LayoutAttr>:$layout);
 
   let results = (outs AnyType:$result);
 
@@ -161,7 +141,8 @@ def MakeTensorViewOp : PTO_Op<"make_tensor_view", [AttrSizedOperandSegments]> {
 // PartitionViewOp
 // =============================================================================
 def PartitionViewOp : PTO_Op<"partition_view", [AttrSizedOperandSegments]> {
-  let summary = "Partition a tensor view into a smaller logical view (logical slicing).";
+  let summary =
+      "Partition a tensor view into a smaller logical view (logical slicing).";
   let description = [{
     Captures a specific calculation region from a large view.
     It carries offsets (where to read) and sizes (how much to read).
@@ -171,11 +152,11 @@ def PartitionViewOp : PTO_Op<"partition_view", [AttrSizedOperandSegments]> {
            : !pto.tensor_view -> !pto.partition_tensor_view
   }];
 
-  let arguments = (ins
-    TensorViewType:$source,    // 输入: 物理大底座 (MakeTensorViewOp 的结果)
-    Variadic<Index>:$offsets,  // 动态 offsets
-    Variadic<Index>:$sizes     // 动态 sizes
-  );
+  let arguments =
+      (ins TensorViewType:$source, // 输入: 物理大底座 (MakeTensorViewOp 的结果)
+          Variadic<Index>:$offsets, // 动态 offsets
+          Variadic<Index>:$sizes    // 动态 sizes
+      );
 
   let results = (outs PartitionTensorViewType:$result); // 输出: 逻辑切片
 
@@ -188,8 +169,8 @@ def PartitionViewOp : PTO_Op<"partition_view", [AttrSizedOperandSegments]> {
 }
 
 // Helper: tensor_view or memref (after lowering tensor_view to memref).
-def TensorViewOrMemRef :
-  AnyTypeOf<[TensorViewType, AnyMemRef], "TensorView or MemRef">;
+def TensorViewOrMemRef
+    : AnyTypeOf<[TensorViewType, AnyMemRef], "TensorView or MemRef">;
 
 // Get the size of a dimension of a tensor_view or its lowered memref view.
 // Result type: Index (use arith.index_cast if i32 is needed).
@@ -205,10 +186,7 @@ def GetTensorViewDimOp : PTO_Op<"get_tensor_view_dim", [Pure]> {
       %dim_size = pto.get_tensor_view_dim %mr, %dim_index
         : memref<...>, index -> index
   }];
-  let arguments = (ins
-    TensorViewOrMemRef:$tensor_view,
-    Index:$dim_index
-  );
+  let arguments = (ins TensorViewOrMemRef:$tensor_view, Index:$dim_index);
   let results = (outs Index:$result);
   let assemblyFormat = [{
     $tensor_view `,` $dim_index `:` qualified(type($tensor_view)) `->` qualified(type($result))
@@ -219,11 +197,8 @@ def GetTensorViewDimOp : PTO_Op<"get_tensor_view_dim", [Pure]> {
 def AllocTileOp : PTO_Op<"alloc_tile", [AttrSizedOperandSegments]> {
   let summary = "Allocates a tile buffer (logical buffer).";
 
-  let arguments = (ins
-    Optional<I64>:$addr,
-    Optional<Index>:$valid_row,
-    Optional<Index>:$valid_col
-  );
+  let arguments = (ins Optional<I64>:$addr, Optional<Index>:$valid_row,
+      Optional<Index>:$valid_col);
 
   let results = (outs TileBufType:$result);
 
@@ -239,15 +214,12 @@ def AllocTileOp : PTO_Op<"alloc_tile", [AttrSizedOperandSegments]> {
   }];
 }
 
-
 // ============================================================================
 // BindTileOp: 将 Config 和 Valid Dims 绑定到 MemRef 上
 // ============================================================================
-def BindTileOp : PTO_Op<"bind_tile", [
-    Pure,
-    AttrSizedOperandSegments
-    // 允许输入 offset:0 -> 输出 offset:?
-  ]> {
+def BindTileOp : PTO_Op<"bind_tile", [Pure, AttrSizedOperandSegments
+                                      // 允许输入 offset:0 -> 输出 offset:?
+]> {
   let summary = "Binds metadata and implicitly casts layout";
   let description = [{
     Wraps a memref with PTO metadata (valid dimensions and config).
@@ -255,12 +227,8 @@ def BindTileOp : PTO_Op<"bind_tile", [
 
   // [修改] 以前是 Variadic<Index>:$valid_dims
   // 现在改为明确的 Optional Row/Col，与 PointerCastOp 保持一致
-  let arguments = (ins
-    AnyMemRef:$source,
-    Optional<Index>:$valid_row,
-    Optional<Index>:$valid_col,
-    TileBufConfigAttr:$config
-  );
+  let arguments = (ins AnyMemRef:$source, Optional<Index>:$valid_row,
+      Optional<Index>:$valid_col, TileBufConfigAttr:$config);
 
   let results = (outs AnyMemRef:$result);
 
@@ -275,7 +243,7 @@ def SubsetOp : PTO_Op<"subset", [
     ViewLikeOpInterface,
     DeclareOpInterfaceMethods<InferTypeOpInterface> // 启用 C++ 推导
   ]> {
-  
+
   let summary = "Create a strided view (subset) from a parent tile.";
   let description = [{
     Creates a view into the source tile.
@@ -284,10 +252,9 @@ def SubsetOp : PTO_Op<"subset", [
     - Result Offset: Represented as multi-dimensional symbols (s0, s1...) in the layout map.
   }];
 
-  let arguments = (ins
-    TileBufType:$source,
-    Variadic<Index>:$offsets, // 运行时动态偏移 [i, j]
-    I64ArrayAttr:$sizes       // 静态形状 [32, 32]
+  let arguments = (ins TileBufType:$source,
+      Variadic<Index>:$offsets, // 运行时动态偏移 [i, j]
+      I64ArrayAttr:$sizes       // 静态形状 [32, 32]
   );
 
   let results = (outs TileBufType:$result);
@@ -310,9 +277,8 @@ def SubsetOp : PTO_Op<"subset", [
   }];
 }
 
-def SetValidShapeOp : PTO_Op<"set_validshape", [
-    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-  ]> {
+def SetValidShapeOp : PTO_Op<"set_validshape", [DeclareOpInterfaceMethods<
+                                                   MemoryEffectsOpInterface>]> {
   let summary = "Update valid row/col metadata in-place on a dynamic tile";
   let description = [{
     Updates the runtime valid_row/valid_col metadata on an existing dynamic
@@ -324,11 +290,8 @@ def SetValidShapeOp : PTO_Op<"set_validshape", [
     or a view derived from it). Function arguments/results are not supported.
   }];
 
-  let arguments = (ins
-    TileBufOrMemRef:$source,
-    Index:$valid_row,
-    Index:$valid_col
-  );
+  let arguments = (ins TileBufOrMemRef:$source, Index:$valid_row,
+      Index:$valid_col);
 
   let hasVerifier = 1;
 
@@ -342,11 +305,9 @@ def SetValidShapeOp : PTO_Op<"set_validshape", [
 // SSA TileBuf Config Ops (aliasing views)
 // ============================================================================
 
-def BitcastOp : PTO_Op<"bitcast", [
-    Pure,
-    ViewLikeOpInterface
-  ]> {
-  let summary = "SSA dtype reinterpretation of a tile buffer view (aliases src storage)";
+def BitcastOp : PTO_Op<"bitcast", [Pure, ViewLikeOpInterface]> {
+  let summary =
+      "SSA dtype reinterpretation of a tile buffer view (aliases src storage)";
   let description = [{
     Returns a tile buffer view with a different element type (dtype) while
     reusing the same underlying storage as the source.
@@ -354,17 +315,14 @@ def BitcastOp : PTO_Op<"bitcast", [
     This op is a metadata/config rewrite only (no data movement).
   }];
 
-  let arguments = (ins
-    TileBufType:$src
-  );
+  let arguments = (ins TileBufType:$src);
 
-  let results = (outs
-    TileBufType:$result
-  );
+  let results = (outs TileBufType:$result);
 
   let hasVerifier = 1;
 
-  let assemblyFormat = "$src attr-dict `:` qualified(type($src)) `->` qualified(type($result))";
+  let assemblyFormat =
+      "$src attr-dict `:` qualified(type($src)) `->` qualified(type($result))";
 
   let extraClassDeclaration = [{
     ::mlir::Value getViewSource() { return getSrc(); }
@@ -377,13 +335,12 @@ def BitcastOp : PTO_Op<"bitcast", [
 // -------------------------
 // DPS versions in tile world
 // -------------------------
-def TLoadOp  : PTO_TOp<"tload", [
-  PTO_DpsInitOpInterface,
-  AttrSizedOperandSegments,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "PTO data load operation (Dimension Collapse: PartitionView -> TileBuf).";
+def TLoadOp
+    : PTO_TOp<"tload", [PTO_DpsInitOpInterface, AttrSizedOperandSegments,
+                        OpPipeInterface,
+                        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary =
+      "PTO data load operation (Dimension Collapse: PartitionView -> TileBuf).";
   let description = [{
     Loads data from a high-dimensional logical partition view into a 2D physical tile buffer.
     Constraint: The product of partition view sizes must match the product of tile buffer valid dims.
@@ -391,72 +348,69 @@ def TLoadOp  : PTO_TOp<"tload", [
       pto.tload ins(%partition_view) outs(%tile_buf)
   }];
 
-  let arguments = (ins 
-    PTODpsType:$src,
-    PTODpsType:$dst,
-    OptionalAttr<PTO_PadModeAttr>:$pad_mode,
-    Optional<AnyType>:$pad_value,
-    Optional<Index>:$left_padding_num,
-    Optional<AnyType>:$right_padding_num,
-    DefaultValuedOptionalAttr<BoolAttr, "false">:$init_out_buffer,
-    Optional<AnyType>:$init_condition
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$dst,
+      OptionalAttr<PTO_PadModeAttr>:$pad_mode, Optional<AnyType>:$pad_value,
+      Optional<Index>:$left_padding_num, Optional<AnyType>:$right_padding_num,
+      DefaultValuedOptionalAttr<BoolAttr, "false">:$init_out_buffer,
+      Optional<AnyType>:$init_condition);
 
-  let results = (outs
-    Optional<AnyRankedTensor>:$result
-  );
+  let results = (outs Optional<AnyRankedTensor>:$result);
 
   let hasVerifier = 1;
 
   let builders = [
-    // 1. Basic: (src, dst)
-    OpBuilder<(ins "TypeRange":$res, "Value":$src, "Value":$dst), [{
+      // 1. Basic: (src, dst)
+      OpBuilder<(ins "TypeRange":$res, "Value":$src, "Value":$dst), [{
       build($_builder, $_state, res, src, dst, 
             /*pad_mode=*/nullptr, /*pad_value=*/nullptr, 
             /*left=*/nullptr, /*right=*/nullptr, 
             /*init_out=*/nullptr, /*init_cond=*/nullptr); 
     }]>,
 
-    // 2. With left_padding_num
-    OpBuilder<(ins "TypeRange":$res, "Value":$src, "Value":$dst,
-                   "Value":$left_padding_num), [{
+      // 2. With left_padding_num
+      OpBuilder<(ins "TypeRange":$res, "Value":$src, "Value":$dst,
+                    "Value":$left_padding_num),
+                [{
       build($_builder, $_state, res, src, dst, 
             nullptr, nullptr, left_padding_num, nullptr, nullptr, nullptr);
     }]>,
 
-    // 3. With pad_mode, pad_value
-    OpBuilder<(ins "TypeRange":$res, "Value":$src, "Value":$dst,
-                   "pto::PadModeAttr":$pad_mode, "Value":$pad_value), [{
+      // 3. With pad_mode, pad_value
+      OpBuilder<(ins "TypeRange":$res, "Value":$src, "Value":$dst,
+                    "pto::PadModeAttr":$pad_mode, "Value":$pad_value),
+                [{
       build($_builder, $_state, res, src, dst, 
             pad_mode, pad_value, nullptr, nullptr, nullptr, nullptr);
     }]>,
 
-    // 4. ... + left
-    OpBuilder<(ins "TypeRange":$res, "Value":$src, "Value":$dst,
-                   "pto::PadModeAttr":$pad_mode, "Value":$pad_value,
-                   "Value":$left_padding_num), [{
+      // 4. ... + left
+      OpBuilder<(ins "TypeRange":$res, "Value":$src, "Value":$dst,
+                    "pto::PadModeAttr":$pad_mode, "Value":$pad_value,
+                    "Value":$left_padding_num),
+                [{
       build($_builder, $_state, res, src, dst, 
             pad_mode, pad_value, left_padding_num, nullptr, nullptr, nullptr);
     }]>,
 
-    // 5. ... + left + right
-    OpBuilder<(ins "TypeRange":$res, "Value":$src, "Value":$dst,
-                   "pto::PadModeAttr":$pad_mode, "Value":$pad_value,
-                   "Value":$left_padding_num, "Value":$right_padding_num), [{
+      // 5. ... + left + right
+      OpBuilder<(ins "TypeRange":$res, "Value":$src, "Value":$dst,
+                    "pto::PadModeAttr":$pad_mode, "Value":$pad_value,
+                    "Value":$left_padding_num, "Value":$right_padding_num),
+                [{
       build($_builder, $_state, res, src, dst, 
             pad_mode, pad_value, left_padding_num, right_padding_num, nullptr, nullptr);
     }]>,
 
-    // 6. ... + left + right + bool
-    OpBuilder<(ins "TypeRange":$res, "Value":$src, "Value":$dst,
-                   "pto::PadModeAttr":$pad_mode, "Value":$pad_value,
-                   "Value":$left_padding_num, "Value":$right_padding_num,
-                   "bool":$init_out_buffer), [{
+      // 6. ... + left + right + bool
+      OpBuilder<(ins "TypeRange":$res, "Value":$src, "Value":$dst,
+                    "pto::PadModeAttr":$pad_mode, "Value":$pad_value,
+                    "Value":$left_padding_num, "Value":$right_padding_num,
+                    "bool":$init_out_buffer),
+                [{
       build($_builder, $_state, res, src, dst, 
             pad_mode, pad_value, left_padding_num, right_padding_num, 
             init_out_buffer, nullptr);
-    }]>
-  ];
+    }]>];
 
   let assemblyFormat = [{
     `ins` `(` $src `:` qualified(type($src)) `)`
@@ -470,7 +424,7 @@ def TLoadOp  : PTO_TOp<"tload", [
     (`init_condition` `=` $init_condition^ `:` type($init_condition))?
     (`->` qualified(type($result))^)?
   }];
-  
+
   let extraClassDeclaration = [{
     static StringRef getOpName() { return "pto_load"; }
     ShapedType getSrcOperandType() {
@@ -486,11 +440,9 @@ def TLoadOp  : PTO_TOp<"tload", [
   }];
 }
 
-def TStoreOp: PTO_TOp<"tstore", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TStoreOp
+    : PTO_TOp<"tstore", [PTO_DpsInitOpInterface, OpPipeInterface,
+                         DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "PTO data store operation (TileBuf -> PartitionView).";
   let description = [{
     Stores data from a 2D physical tile buffer back to a high-dimensional logical partition view.
@@ -499,14 +451,9 @@ def TStoreOp: PTO_TOp<"tstore", [
       pto.tstore ins(%tile_buf) outs(%partition_view)
   }];
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$dst);
 
-  let results = (outs
-    Optional<AnyRankedTensor>:$result
-  );
+  let results = (outs Optional<AnyRankedTensor>:$result);
 
   let hasVerifier = 1;
 
@@ -549,21 +496,15 @@ def TStoreOp: PTO_TOp<"tstore", [
   }];
 }
 
-def TTransOp : PTO_TOp<"ttrans", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TTransOp
+    : PTO_TOp<"ttrans", [PTO_DpsInitOpInterface, OpPipeInterface,
+                         DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "PTO matrix trans operation (destination-style, DPS).";
   let description = [{
     DPS form:
       tile buf:  pto.ttrans ins(%src %tmp) outs(%dst)
   }];
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$tmp,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$tmp, PTODpsType:$dst);
   let results = (outs);
 
   let assemblyFormat = [{
@@ -598,27 +539,23 @@ def TTransOp : PTO_TOp<"ttrans", [
 // Tile-world TOp versions (PTODpsType)
 // -------------------------
 
-def TMatmulBiasOp : PTO_TOp<"tmatmul.bias", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TMatmulBiasOp
+    : PTO_TOp<"tmatmul.bias", [PTO_DpsInitOpInterface, OpPipeInterface,
+                               DeclareOpInterfaceMethods<
+                                   MemoryEffectsOpInterface>]> {
   let summary = "Matmul with bias add (tile world, ins/outs).";
 
-  let arguments = (ins
-    PTODpsType:$a,
-    PTODpsType:$b,
-    PTODpsType:$bias,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$a, PTODpsType:$b, PTODpsType:$bias,
+      PTODpsType:$dst);
 
   let results = (outs Optional<AnyRankedTensor>:$result);
   let hasVerifier = 1;
 
-  //let builders = [
-  //  OpBuilder<(ins "TypeRange":$resultTypes, "Value":$a, "Value":$b, "Value":$bias, "Value":$dst), [{
-  //    build($_builder, $_state, resultTypes, a, b, bias, dst, ValueRange{});
-  //  }]>
+  // let builders = [
+  //   OpBuilder<(ins "TypeRange":$resultTypes, "Value":$a, "Value":$b,
+  //   "Value":$bias, "Value":$dst), [{
+  //     build($_builder, $_state, resultTypes, a, b, bias, dst, ValueRange{});
+  //   }]>
   //];
 
   let assemblyFormat = [{
@@ -636,19 +573,14 @@ def TMatmulBiasOp : PTO_TOp<"tmatmul.bias", [
 }
 
 // pto.tmatmul.mx ins(%a,%a_scale,%b,%b_scale) outs(%dst) -> tensor?
-def TMatmulMxOp : PTO_TOp<"tmatmul.mx", [
-    PTO_DpsInitOpInterface,
-    OpPipeInterface,
-    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-  ]> {
+def TMatmulMxOp
+    : PTO_TOp<
+          "tmatmul.mx", [PTO_DpsInitOpInterface, OpPipeInterface,
+                         DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Matmul mx (tile world, ins/outs).";
 
-  let arguments = (ins
-    PTODpsType:$a,
-    PTODpsType:$a_scale,
-    PTODpsType:$b,
-    PTODpsType:$b_scale,
-    PTODpsType:$dst);
+  let arguments = (ins PTODpsType:$a, PTODpsType:$a_scale, PTODpsType:$b,
+      PTODpsType:$b_scale, PTODpsType:$dst);
 
   let results = (outs Optional<AnyRankedTensor>:$result);
   let hasVerifier = 1;
@@ -671,20 +603,14 @@ def TMatmulMxOp : PTO_TOp<"tmatmul.mx", [
 }
 
 // pto.tmatmul.mx.acc ins(%c_in,%a,%a_scale,%b,%b_scale) outs(%dst) -> tensor?
-def TMatmulMxAccOp : PTO_TOp<"tmatmul.mx.acc", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TMatmulMxAccOp
+    : PTO_TOp<"tmatmul.mx.acc", [PTO_DpsInitOpInterface, OpPipeInterface,
+                                 DeclareOpInterfaceMethods<
+                                     MemoryEffectsOpInterface>]> {
   let summary = "Matmul mx accumulate (tile world, ins/outs).";
 
-  let arguments = (ins
-    PTODpsType:$c_in,
-    PTODpsType:$a,
-    PTODpsType:$a_scale,
-    PTODpsType:$b,
-    PTODpsType:$b_scale,
-    PTODpsType:$dst);
+  let arguments = (ins PTODpsType:$c_in, PTODpsType:$a, PTODpsType:$a_scale,
+      PTODpsType:$b, PTODpsType:$b_scale, PTODpsType:$dst);
 
   let results = (outs Optional<AnyRankedTensor>:$result);
   let hasVerifier = 1;
@@ -707,24 +633,17 @@ def TMatmulMxAccOp : PTO_TOp<"tmatmul.mx.acc", [
 }
 
 // pto.tmatmul.mx.bias ins(%a,%a_scale,%b,%b_scale,%bias) outs(%dst)  -> tensor?
-def TMatmulMxBiasOp : PTO_TOp<"tmatmul.mx.bias",[
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TMatmulMxBiasOp
+    : PTO_TOp<"tmatmul.mx.bias", [PTO_DpsInitOpInterface, OpPipeInterface,
+                                  DeclareOpInterfaceMethods<
+                                      MemoryEffectsOpInterface>]> {
   let summary = "Matmul mx with bias (tile world, ins/outs).";
 
-  let arguments = (ins
-    PTODpsType:$a,
-    PTODpsType:$a_scale,
-    PTODpsType:$b,
-    PTODpsType:$b_scale,
-    PTODpsType:$bias,
-    PTODpsType:$dst);
+  let arguments = (ins PTODpsType:$a, PTODpsType:$a_scale, PTODpsType:$b,
+      PTODpsType:$b_scale, PTODpsType:$bias, PTODpsType:$dst);
 
   let results = (outs Optional<AnyRankedTensor>:$result);
   let hasVerifier = 1;
-
 
   let assemblyFormat = [{
     `ins` `(` $a `,` $a_scale `,` $b `,` $b_scale `,` $bias
@@ -741,22 +660,16 @@ def TMatmulMxBiasOp : PTO_TOp<"tmatmul.mx.bias",[
   }];
 }
 
-def TMatmulOp : PTO_TOp<"tmatmul", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "PTO matrix multiplication operation (optional bias), destination-style (DPS) in tile world.";
+def TMatmulOp
+    : PTO_TOp<
+          "tmatmul", [PTO_DpsInitOpInterface, OpPipeInterface,
+                      DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "PTO matrix multiplication operation (optional bias), "
+                "destination-style (DPS) in tile world.";
 
-  let arguments = (ins
-    PTODpsType:$lhs,
-    PTODpsType:$rhs,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$lhs, PTODpsType:$rhs, PTODpsType:$dst);
 
-  let results = (outs
-    Optional<AnyRankedTensor>:$result
-  );
+  let results = (outs Optional<AnyRankedTensor>:$result);
 
   let hasVerifier = 1;
 
@@ -776,23 +689,17 @@ def TMatmulOp : PTO_TOp<"tmatmul", [
   }];
 }
 
-def TMatmulAccOp : PTO_TOp<"tmatmul.acc", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "PTO matrix multiplication accumulate operation, destination-style (DPS, no bias).";
+def TMatmulAccOp
+    : PTO_TOp<"tmatmul.acc", [PTO_DpsInitOpInterface, OpPipeInterface,
+                              DeclareOpInterfaceMethods<
+                                  MemoryEffectsOpInterface>]> {
+  let summary = "PTO matrix multiplication accumulate operation, "
+                "destination-style (DPS, no bias).";
 
-  let arguments = (ins
-    PTODpsType:$acc_in,
-    PTODpsType:$lhs,
-    PTODpsType:$rhs,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$acc_in, PTODpsType:$lhs, PTODpsType:$rhs,
+      PTODpsType:$dst);
 
-  let results = (outs
-    Optional<AnyRankedTensor>:$result
-  );
+  let results = (outs Optional<AnyRankedTensor>:$result);
 
   let hasVerifier = 1;
 
@@ -811,22 +718,15 @@ def TMatmulAccOp : PTO_TOp<"tmatmul.acc", [
   }];
 }
 
-def TGemvOp : PTO_TOp<"tgemv", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "PTO matrix-vector multiplication operation (optional bias), destination-style (DPS) in tile world.";
+def TGemvOp
+    : PTO_TOp<"tgemv", [PTO_DpsInitOpInterface, OpPipeInterface,
+                        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "PTO matrix-vector multiplication operation (optional bias), "
+                "destination-style (DPS) in tile world.";
 
-  let arguments = (ins
-    PTODpsType:$lhs,
-    PTODpsType:$rhs,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$lhs, PTODpsType:$rhs, PTODpsType:$dst);
 
-  let results = (outs
-    Optional<AnyRankedTensor>:$result
-  );
+  let results = (outs Optional<AnyRankedTensor>:$result);
 
   let hasVerifier = 1;
 
@@ -846,23 +746,17 @@ def TGemvOp : PTO_TOp<"tgemv", [
   }];
 }
 
-def TGemvAccOp : PTO_TOp<"tgemv.acc", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "PTO matrix-vector multiplication accumulate operation, destination-style (DPS, no bias).";
+def TGemvAccOp
+    : PTO_TOp<
+          "tgemv.acc", [PTO_DpsInitOpInterface, OpPipeInterface,
+                        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "PTO matrix-vector multiplication accumulate operation, "
+                "destination-style (DPS, no bias).";
 
-  let arguments = (ins
-    PTODpsType:$acc_in,
-    PTODpsType:$lhs,
-    PTODpsType:$rhs,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$acc_in, PTODpsType:$lhs, PTODpsType:$rhs,
+      PTODpsType:$dst);
 
-  let results = (outs
-    Optional<AnyRankedTensor>:$result
-  );
+  let results = (outs Optional<AnyRankedTensor>:$result);
 
   let hasVerifier = 1;
 
@@ -881,19 +775,14 @@ def TGemvAccOp : PTO_TOp<"tgemv.acc", [
   }];
 }
 
-def TGemvBiasOp : PTO_TOp<"tgemv.bias", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TGemvBiasOp
+    : PTO_TOp<
+          "tgemv.bias", [PTO_DpsInitOpInterface, OpPipeInterface,
+                         DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "GEMV with bias add (tile world, ins/outs).";
 
-  let arguments = (ins
-    PTODpsType :$a,
-    PTODpsType :$b,
-    PTODpsType :$bias,
-    PTODpsType :$dst
-  );
+  let arguments = (ins PTODpsType:$a, PTODpsType:$b, PTODpsType:$bias,
+      PTODpsType:$dst);
 
   let results = (outs Optional<AnyRankedTensor>:$result);
 
@@ -915,21 +804,14 @@ def TGemvBiasOp : PTO_TOp<"tgemv.bias", [
   }];
 }
 
-def TMovOp  : PTO_TOp<"tmov", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TMovOp
+    : PTO_TOp<"tmov", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Move data between domains (DPS version).";
-  
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst
-  );
 
-  let results = (outs
-    Optional<AnyRankedTensor>:$result
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$dst);
+
+  let results = (outs Optional<AnyRankedTensor>:$result);
 
   let assemblyFormat = [{
     `ins` `(` $src `:` qualified(type($src)) `)`
@@ -1001,22 +883,17 @@ def TMovOp  : PTO_TOp<"tmov", [
   }];
 }
 
-
 //===----------------------------------------------------------------------===//
 // Pointer Cast Op (existing)
 //===----------------------------------------------------------------------===//
 
 def PointerCastOp : PTO_Op<"pointer_cast", [AttrSizedOperandSegments, Pure]> {
   let summary = "Casts an integer address to a MemRef with optional valid dims";
-  
+
   // 参数定义 (保持 Optional)
-  let arguments = (ins 
-    Variadic<I64>:$addrs,
-    Optional<Index>:$valid_row,
-    Optional<Index>:$valid_col,
-    OptionalAttr<TileBufConfigAttr>:$config
-  );
-  
+  let arguments = (ins Variadic<I64>:$addrs, Optional<Index>:$valid_row,
+      Optional<Index>:$valid_col, OptionalAttr<TileBufConfigAttr>:$config);
+
   let results = (outs Res<AnyMemRef, "", [MemAlloc]>:$result);
 
   // Assembly Format (去掉了 [])
@@ -1025,8 +902,10 @@ def PointerCastOp : PTO_Op<"pointer_cast", [AttrSizedOperandSegments, Pure]> {
   }];
 
   // Builder (修复 addOperand -> addOperands)
-  let builders = [
-    OpBuilder<(ins "Type":$result, "ValueRange":$addrs, "Value":$vRow, "Value":$vCol, "Attribute":$config), [{
+  let builders = [OpBuilder<(ins "Type":$result, "ValueRange":$addrs,
+                                "Value":$vRow, "Value":$vCol,
+                                "Attribute":$config),
+                            [{
       $_state.addTypes(result);
       $_state.addOperands(addrs);
       // [关键修复] addOperand -> addOperands
@@ -1039,8 +918,7 @@ def PointerCastOp : PTO_Op<"pointer_cast", [AttrSizedOperandSegments, Pure]> {
       int32_t vColSize = vCol ? 1 : 0;
       $_state.addAttribute("operandSegmentSizes", 
         $_builder.getDenseI32ArrayAttr({addrsSize, vRowSize, vColSize}));
-    }]>
-  ];
+    }]>];
 }
 
 // =============================================================================
@@ -1101,7 +979,8 @@ def GetSubBlockNumOp : PTO_Op<"get_subblock_num", [Pure]> {
 // High-Level Synchronization Ops
 //===----------------------------------------------------------------------===//
 
-def PTO_PipeEventTypeLikeAttr : AnyAttrOf<[PTO_PipeEventTypeAttr, PTO_SyncOpTypeAttr]>;
+def PTO_PipeEventTypeLikeAttr
+    : AnyAttrOf<[PTO_PipeEventTypeAttr, PTO_SyncOpTypeAttr]>;
 
 def RecordEventOp : PTO_Op<"record_event"> {
   let summary = "Record an event for synchronization (High Level)";
@@ -1109,11 +988,8 @@ def RecordEventOp : PTO_Op<"record_event"> {
     Records an event from a source operation type to a destination operation type.
     Will be lowered to `pto.set_flag` based on op-to-pipe mapping.
   }];
-  let arguments = (ins
-    PTO_PipeEventTypeLikeAttr:$src_op,
-    PTO_PipeEventTypeLikeAttr:$dst_op,
-    PTO_EventAttr:$event_id
-  );
+  let arguments = (ins PTO_PipeEventTypeLikeAttr:$src_op,
+      PTO_PipeEventTypeLikeAttr:$dst_op, PTO_EventAttr:$event_id);
   let results = (outs);
   let assemblyFormat = [{
     `[` $src_op `,` $dst_op `,` $event_id `]` attr-dict
@@ -1126,11 +1002,8 @@ def WaitEventOp : PTO_Op<"wait_event"> {
     Waits for an event from a source operation type to a destination operation type.
     Will be lowered to `pto.wait_flag` based on op-to-pipe mapping.
   }];
-  let arguments = (ins
-    PTO_PipeEventTypeLikeAttr:$src_op,
-    PTO_PipeEventTypeLikeAttr:$dst_op,
-    PTO_EventAttr:$event_id
-  );
+  let arguments = (ins PTO_PipeEventTypeLikeAttr:$src_op,
+      PTO_PipeEventTypeLikeAttr:$dst_op, PTO_EventAttr:$event_id);
   let results = (outs);
   let assemblyFormat = [{
     `[` $src_op `,` $dst_op `,` $event_id `]` attr-dict
@@ -1144,9 +1017,7 @@ def BarrierSyncOp : PTO_Op<"barrier_sync"> {
     A convenience barrier that specifies a SyncOpType instead of PIPE. The lowering
     pass maps the op type to the corresponding hardware pipe and emits `pto.barrier`.
   }];
-  let arguments = (ins
-    PTO_SyncOpTypeAttr:$op_type
-  );
+  let arguments = (ins PTO_SyncOpTypeAttr:$op_type);
   let results = (outs);
   let assemblyFormat = [{
     `[` $op_type `]` attr-dict
@@ -1180,11 +1051,8 @@ def SectionVectorOp : PTO_SectionOp<"section.vector">;
 
 def SetFlagOp : PTO_Op<"set_flag"> {
   let summary = "Set synchronization flag between pipes";
-  let arguments = (ins
-    PTO_PipeAttr:$src_pipe,
-    PTO_PipeAttr:$dst_pipe,
-    PTO_EventAttr:$event_id
-  );
+  let arguments = (ins PTO_PipeAttr:$src_pipe, PTO_PipeAttr:$dst_pipe,
+      PTO_EventAttr:$event_id);
   let results = (outs);
   let assemblyFormat = [{
     `[` $src_pipe `,` $dst_pipe `,` $event_id `]` attr-dict
@@ -1193,11 +1061,8 @@ def SetFlagOp : PTO_Op<"set_flag"> {
 
 def WaitFlagOp : PTO_Op<"wait_flag"> {
   let summary = "Wait for synchronization flag";
-  let arguments = (ins
-    PTO_PipeAttr:$src_pipe,
-    PTO_PipeAttr:$dst_pipe,
-    PTO_EventAttr:$event_id
-  );
+  let arguments = (ins PTO_PipeAttr:$src_pipe, PTO_PipeAttr:$dst_pipe,
+      PTO_EventAttr:$event_id);
   let results = (outs);
   let assemblyFormat = [{
     `[` $src_pipe `,` $dst_pipe `,` $event_id `]` attr-dict
@@ -1223,11 +1088,8 @@ def GetBufOp : PTO_Op<"get_buf"> {
     This op is intended to be lowered to the CCEC builtin intrinsic `get_buf`.
   }];
 
-  let arguments = (ins
-    PTO_PipeEventTypeLikeAttr:$op_type,
-    I32Attr:$buf_id,
-    DefaultValuedAttr<I32Attr, "0">:$mode
-  );
+  let arguments = (ins PTO_PipeEventTypeLikeAttr:$op_type, I32Attr:$buf_id,
+      DefaultValuedAttr<I32Attr, "0">:$mode);
 
   let results = (outs);
 
@@ -1247,11 +1109,8 @@ def RlsBufOp : PTO_Op<"rls_buf"> {
     This op is intended to be lowered to the CCEC builtin intrinsic `rls_buf`.
   }];
 
-  let arguments = (ins
-    PTO_PipeEventTypeLikeAttr:$op_type,
-    I32Attr:$buf_id,
-    DefaultValuedAttr<I32Attr, "0">:$mode
-  );
+  let arguments = (ins PTO_PipeEventTypeLikeAttr:$op_type, I32Attr:$buf_id,
+      DefaultValuedAttr<I32Attr, "0">:$mode);
 
   let results = (outs);
 
@@ -1263,31 +1122,27 @@ def RlsBufOp : PTO_Op<"rls_buf"> {
 }
 
 def SyncSetOp : PTO_Op<"sync.set"> {
-  let summary = "Set a synchronization signal (trigger) between cube and vector.";
+  let summary =
+      "Set a synchronization signal (trigger) between cube and vector.";
   let description = [{
     Sets a synchronization signal on the specified pipeline stage.
     Corresponds to `ffts_cross_core_sync` (A3) or `set_intra_block` (A5).
   }];
 
-  let arguments = (ins
-    PTO_PipeAttr:$pipe,
-    I32Attr:$event_id
-  );
+  let arguments = (ins PTO_PipeAttr:$pipe, I32Attr:$event_id);
 
   let assemblyFormat = "$pipe `,` $event_id attr-dict";
 }
 
 def SyncWaitOp : PTO_Op<"sync.wait"> {
-  let summary = "Wait for a synchronization signal (barrier) between cube and vector.";
+  let summary =
+      "Wait for a synchronization signal (barrier) between cube and vector.";
   let description = [{
     Waits for a synchronization signal on the specified pipeline stage.
     Corresponds to `wait_flag_dev` (A3) or `wait_intra_block` (A5).
   }];
 
-  let arguments = (ins
-    PTO_PipeAttr:$pipe,
-    I32Attr:$event_id
-  );
+  let arguments = (ins PTO_PipeAttr:$pipe, I32Attr:$event_id);
 
   let assemblyFormat = "$pipe `,` $event_id attr-dict";
 }
@@ -1298,6 +1153,178 @@ def BarrierOp : PTO_Op<"barrier"> {
   let assemblyFormat = "$pipe attr-dict";
 }
 
+//===----------------------------------------------------------------------===//
+// SIMD Bridge Ops (tile -> simd lane semantics inside OP-Lib bodies)
+//===----------------------------------------------------------------------===//
+
+def SimdVecScopeOp : PTO_Op<"simd.vec_scope", [SingleBlock, NoTerminator]> {
+  let summary = "Annotate a region that must execute under __VEC_SCOPE__.";
+  let description = [{
+    This op is a codegen marker for A5 OP-Lib mixed IR.
+    During EmitC lowering it is converted to:
+      __VEC_SCOPE__ {
+        ...
+      }
+    The region should typically contain 1D/2D hardware loops and vector
+    arithmetic/memory instructions.
+  }];
+
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "$body attr-dict";
+}
+
+def SimdTileToMemrefOp : PTO_Op<"simd.tile_to_memref", [Pure]> {
+  let summary = "Bridge cast from tile_buf to memref in OP-Lib bodies.";
+  let description = [{
+    This op is the canonical bridge marker for OP-Lib templates to expose a
+    memref view from tile-like values while keeping external ABI as
+    !pto.tile_buf.
+    In tile_buf world, src is !pto.tile_buf and dst is the corresponding
+    memref bridge type.
+    After memref-world lowering, src may already be memref and this op remains
+    as a marker for backend lowering (EmitC) to materialize tile data access.
+  }];
+
+  let arguments = (ins TileBufOrMemRef:$src);
+
+  let results = (outs AnyMemRef:$dst);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $src attr-dict `:` qualified(type($src)) `to` type($dst)
+  }];
+}
+
+def SimdPredicateOp : PTO_Op<"simd.predicate", [Pure]> {
+  let summary = "Build SIMD lane predicate mask from active lane count.";
+
+  let arguments = (ins Index:$active_count);
+
+  let results = (outs AnyVector:$mask);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $active_count attr-dict `:` type($active_count) `->` type($mask)
+  }];
+}
+
+def SimdLoadOp : PTO_Op<"simd.load"> {
+  let summary = "Masked SIMD load from a linear memref offset.";
+
+  let arguments = (ins AnyMemRef:$src, Index:$offset, AnyVector:$mask);
+
+  let results = (outs AnyVector:$value);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $src `,` $offset `,` $mask attr-dict `:` type($src) `,` type($offset) `,` type($mask) `->` type($value)
+  }];
+}
+
+def SimdStoreOp : PTO_Op<"simd.store"> {
+  let summary = "Masked SIMD store to a linear memref offset.";
+
+  let arguments = (ins AnyVector:$value, AnyMemRef:$dst, Index:$offset,
+      AnyVector:$mask);
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $value `,` $dst `,` $offset `,` $mask attr-dict `:` type($value) `,` type($dst) `,` type($offset) `,` type($mask)
+  }];
+}
+
+def SimdLoadPUOp : PTO_Op<"simd.load_pu"> {
+  let summary = "Masked SIMD load with post-update offset.";
+
+  let arguments = (ins AnyMemRef:$src, Index:$offset, AnyVector:$mask,
+      I64Attr:$step);
+
+  let results = (outs AnyVector:$value, Index:$next_offset);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $src `,` $offset `,` $mask attr-dict `:` type($src) `,` type($offset) `,` type($mask) `->` type($value) `,` type($next_offset)
+  }];
+}
+
+def SimdStorePUOp : PTO_Op<"simd.store_pu"> {
+  let summary = "Masked SIMD store with post-update offset.";
+
+  let arguments = (ins AnyVector:$value, AnyMemRef:$dst, Index:$offset,
+      AnyVector:$mask, I64Attr:$step);
+
+  let results = (outs Index:$next_offset);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $value `,` $dst `,` $offset `,` $mask attr-dict `:` type($value) `,` type($dst) `,` type($offset) `,` type($mask) `->` type($next_offset)
+  }];
+}
+
+def SimdReductionOp
+    : PTO_Op<"simd.reduction", [Pure, AllTypesMatch<["operand", "result"]>]> {
+  let summary = "A5 SIMD reduction marker that preserves vector result form.";
+  let description = [{
+    This op is an OP-Lib codegen marker for A5 hardware reduction instructions
+    whose architectural result stays in a vector register.
+    Unlike `vector.reduction`, this op does not force the IR into scalar result
+    semantics before EmitC lowering.
+  }];
+
+  let arguments = (ins AnyVector:$operand, StrAttr:$kind);
+
+  let results = (outs AnyVector:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `<` $kind `>` `,` $operand attr-dict `:` type($operand) `->` type($result)
+  }];
+}
+
+def SimdStorePredicateOp : PTO_Op<"simd.store_predicate"> {
+  let summary = "A5 OP-Lib marker for packed predicate compare+store.";
+  let description = [{
+    Backend-only OP-Lib bridge op that compares a SIMD vector against either
+    another SIMD vector or a scalar under an active-lane count and writes the
+    packed predicate result to the destination tile/memref using the hardware
+    packed-mask store path.
+  }];
+
+  let arguments = (ins AnyVector:$lhs, AnyType:$rhs, TileBufOrMemRef:$dst,
+      Index:$linear_offset, Index:$active_count, PTO_CmpModeAttr:$cmpMode);
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs `,` $dst `,` $linear_offset `,` $active_count attr-dict
+      `:` type($lhs) `,` type($rhs) `,` qualified(type($dst)) `,`
+         type($linear_offset) `,` type($active_count)
+  }];
+}
+
+// High-Level Mov: 值语义
+def MovOp
+    : PTO_Op<"mov", [SameOperandsAndResultType, // 输入输出类型相同 (!pto.tile
+                                                // -> !pto.tile)
+                     DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+  let summary = "Move data between Cube and Vector domains.";
+  let arguments = (ins AnyType:$src);
+  let results = (outs AnyType:$result);
+
+  let assemblyFormat =
+      "$src attr-dict `:` qualified(type($src)) `->` qualified(type($result))";
+}
 
 //===----------------------------------------------------------------------===//
 // FFT Configuration Operation
@@ -1312,7 +1339,6 @@ def SetFFTsOp : PTO_Op<"set_ffts", [MemoryEffects<[MemRead, MemWrite]>]> {
 
   let hasVerifier = 1;
 }
-
 
 def PrintOp : PTO_Op<"print", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Print debug: format string (attribute) and scalar value.";
@@ -1341,17 +1367,14 @@ def TrapOp : PTO_Op<"trap"> {
 
 // ---- tile-world TOp version (with 't') ----
 // pto.tmgather ins(%mem, %idx) outs(%dst) [ ...] -> tensor?
-def MGatherOp : PTO_TOp<"mgather", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Gather-load elements from memory into a tile using per-element indices (tile world, ins/outs).";
+def MGatherOp
+    : PTO_TOp<
+          "mgather", [PTO_DpsInitOpInterface, OpPipeInterface,
+                      DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Gather-load elements from memory into a tile using "
+                "per-element indices (tile world, ins/outs).";
 
-  let arguments = (ins
-    PTODpsType:$mem,
-    PTODpsType:$idx,
-    PTODpsType:$dst);
+  let arguments = (ins PTODpsType:$mem, PTODpsType:$idx, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -1370,22 +1393,16 @@ def MGatherOp : PTO_TOp<"mgather", [
   }];
 }
 
-
-
 // ---- tile-world TOp version ----
 // pto.tsetval ins(%offset, %val) outs(%dst) : PTODpsType, index, T
-def TSetValOp : PTO_TOp<"tsetval", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Write a scalar value into a single element of dst at offset (tile world, ins/outs).";
+def TSetValOp
+    : PTO_TOp<
+          "tsetval", [PTO_DpsInitOpInterface, OpPipeInterface,
+                      DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Write a scalar value into a single element of dst at offset "
+                "(tile world, ins/outs).";
 
-  let arguments = (ins
-    PTODpsType:$dst,
-    Index:$offset,
-    ScalarType:$val
-  );
+  let arguments = (ins PTODpsType:$dst, Index:$offset, ScalarType:$val);
 
   let results = (outs);
 
@@ -1406,16 +1423,13 @@ def TSetValOp : PTO_TOp<"tsetval", [
 
 // ---- tile-world TOp version ----
 // pto.tgetval ins(%src, %offset) outs(%dst) : PTODpsType, index -> T
-def TGetValOp : PTO_TOp<"tgetval", [
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Read a single element from tile-like src at offset into a scalar (tile world, ins/outs).";
+def TGetValOp
+    : PTO_TOp<"tgetval", [OpPipeInterface, DeclareOpInterfaceMethods<
+                                               MemoryEffectsOpInterface>]> {
+  let summary = "Read a single element from tile-like src at offset into a "
+                "scalar (tile world, ins/outs).";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    Index:$offset
-  );
+  let arguments = (ins PTODpsType:$src, Index:$offset);
 
   let results = (outs ScalarType:$dst);
 
@@ -1433,20 +1447,17 @@ def TGetValOp : PTO_TOp<"tgetval", [
   }];
 }
 
-
 // ---- tile-world TOp version (with 't') ----
 // pto.mscatter ins(%src, %idx) outs(%mem) [ ...]
-def MScatterOp : PTO_TOp<"mscatter", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Scatter-store elements from a tile into memory using per-element indices (tile world, ins/outs).";
+def MScatterOp
+    : PTO_TOp<
+          "mscatter", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Scatter-store elements from a tile into memory using "
+                "per-element indices (tile world, ins/outs).";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$idx,
-    PTODpsType:$mem               // outs target
+  let arguments = (ins PTODpsType:$src, PTODpsType:$idx,
+      PTODpsType:$mem // outs target
   );
 
   let results = (outs);
@@ -1470,22 +1481,18 @@ def MScatterOp : PTO_TOp<"mscatter", [
 // PTO_TOPs(Tilebuffer, DPS)
 //===----------------------------------------------------------------------===//
 
-def TAbsOp : PTO_TOp<"tabs", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TAbsOp
+    : PTO_TOp<"tabs", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<OpLibOpInterface>,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Elementwise absolute value of a tile ";
   let description = [{
     For each element (i, j): dst[i,j] = |src[i,j]|.
   }];
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$dst);
 
-  let results = (outs); 
+  let results = (outs);
 
   let assemblyFormat = [{
     `ins` `(` $src `:` qualified(type($src)) `)` `outs` `(` $dst `:` qualified(type($dst) ) `)`
@@ -1502,21 +1509,16 @@ def TAbsOp : PTO_TOp<"tabs", [
   }];
 }
 
-def TAddOp : PTO_TOp<"tadd", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TAddOp
+    : PTO_TOp<"tadd", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<OpLibOpInterface>,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Elementwise add of two tiles ";
   let description = [{
     For each element (i, j): dst[i,j] = src0[i,j] + src1[i,j].
   }];
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -1539,22 +1541,17 @@ def TAddOp : PTO_TOp<"tadd", [
   }];
 }
 
-def TAddCOp : PTO_TOp<"taddc", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TAddCOp
+    : PTO_TOp<"taddc", [PTO_DpsInitOpInterface, OpPipeInterface,
+                        DeclareOpInterfaceMethods<OpLibOpInterface>,
+                        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Elementwise ternary add of tiles ";
   let description = [{
     For each element (i, j): dst[i,j] = src0[i,j] + src1[i,j] + src2[i,j].
   }];
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    PTODpsType:$src2,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1, PTODpsType:$src2,
+      PTODpsType:$dst);
 
   let results = (outs);
 
@@ -1573,22 +1570,17 @@ def TAddCOp : PTO_TOp<"taddc", [
   }];
 }
 
-def TAddSOp : PTO_TOp<"tadds", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TAddSOp
+    : PTO_TOp<"tadds", [PTO_DpsInitOpInterface, OpPipeInterface,
+                        DeclareOpInterfaceMethods<OpLibOpInterface>,
+                        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Elementwise add a scalar to a tile ";
   let description = [{
     For each element (i, j): dst[i,j] = src[i,j] + scalar.
     Tile operands are tilebuffers; scalar is a builtin scalar type (e.g. f32).
   }];
 
-  let arguments = (ins
-    PTODpsType:$src,
-    ScalarType:$scalar,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, ScalarType:$scalar, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -1606,18 +1598,13 @@ def TAddSOp : PTO_TOp<"tadds", [
   }];
 }
 
-def TAddSCOp : PTO_TOp<"taddsc", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TAddSCOp
+    : PTO_TOp<"taddsc", [PTO_DpsInitOpInterface, OpPipeInterface,
+                         DeclareOpInterfaceMethods<OpLibOpInterface>,
+                         DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "dst = src0 + scalar + src1 ";
-  let arguments = (ins
-    PTODpsType:$src0,
-    ScalarType:$scalar,
-    PTODpsType:$src1,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, ScalarType:$scalar, PTODpsType:$src1,
+      PTODpsType:$dst);
   let results = (outs);
 
   let assemblyFormat = [{
@@ -1634,12 +1621,10 @@ def TAddSCOp : PTO_TOp<"taddsc", [
   }];
 }
 
-
-def TAndOp : PTO_TOp<"tand", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TAndOp
+    : PTO_TOp<"tand", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<OpLibOpInterface>,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TAND(dst, src0, src1) bitwise-and on tiles";
   let arguments = (ins PTODpsType:$src0, PTODpsType:$src1, PTODpsType:$dst);
   let results = (outs);
@@ -1658,11 +1643,10 @@ def TAndOp : PTO_TOp<"tand", [
   }];
 }
 
-def TConcatOp: PTO_TOp<"tconcat", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TConcatOp
+    : PTO_TOp<
+          "tconcat", [PTO_DpsInitOpInterface, OpPipeInterface,
+                      DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TCONCAT: Concatenate two tiles along the column dimension.";
   let description = [{
     Semantics (per row):
@@ -1672,11 +1656,7 @@ def TConcatOp: PTO_TOp<"tconcat", [
     Constraints are implementation-defined; see verifier for current checks.
   }];
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -1694,13 +1674,13 @@ def TConcatOp: PTO_TOp<"tconcat", [
   }];
 }
 
-def TAndSOp : PTO_TOp<"tands", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TAndSOp
+    : PTO_TOp<"tands", [PTO_DpsInitOpInterface, OpPipeInterface,
+                        DeclareOpInterfaceMethods<OpLibOpInterface>,
+                        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TANDS(dst, src, scalar) bitwise-and tile with scalar";
-  let arguments = (ins PTODpsType:$src, AnySignlessInteger:$scalar, PTODpsType:$dst);
+  let arguments = (ins PTODpsType:$src, AnySignlessInteger:$scalar,
+      PTODpsType:$dst);
   let results = (outs);
 
   let assemblyFormat = [{
@@ -1717,19 +1697,13 @@ def TAndSOp : PTO_TOp<"tands", [
   }];
 }
 
-
-def TCIOp : PTO_TOp<"tci", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TCIOp
+    : PTO_TOp<"tci", [PTO_DpsInitOpInterface, OpPipeInterface,
+                      DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Generate contiguous integer sequence into dst tile.";
 
-  let arguments = (ins
-    AnyInteger:$S,
-    PTODpsType:$dst,
-    DefaultValuedAttr<BoolAttr, "false">:$descending
-  );
+  let arguments = (ins AnyInteger:$S, PTODpsType:$dst,
+      DefaultValuedAttr<BoolAttr, "false">:$descending);
   let results = (outs);
 
   let assemblyFormat = [{
@@ -1747,19 +1721,14 @@ def TCIOp : PTO_TOp<"tci", [
   }];
 }
 
-def TCmpOp : PTO_TOp<"tcmp", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TCmpOp
+    : PTO_TOp<"tcmp", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<OpLibOpInterface>,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Compare two tiles and write a packed predicate mask";
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    PTODpsType:$dst,
-    OptionalAttr<PTO_CmpModeAttr>:$cmpMode
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1, PTODpsType:$dst,
+      OptionalAttr<PTO_CmpModeAttr>:$cmpMode);
   let results = (outs);
 
   let assemblyFormat = [{
@@ -1769,8 +1738,8 @@ def TCmpOp : PTO_TOp<"tcmp", [
     `outs` `(` $dst `:` qualified(type($dst) ) `)`   
   }];
 
-   let builders = [
-    OpBuilder<(ins "TypeRange":$res, "Value":$src0, "Value":$src1, "Value":$dst), [{
+  let builders = [OpBuilder<
+      (ins "TypeRange":$res, "Value":$src0, "Value":$src1, "Value":$dst), [{
       build($_builder, $_state, res, src0, src1, dst, /*cmpMode=*/nullptr); 
     }]>];
 
@@ -1782,19 +1751,16 @@ def TCmpOp : PTO_TOp<"tcmp", [
   }];
 }
 
-def TCmpSOp : PTO_TOp<"tcmps", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Compare scalar value against a tile and write a packed predicate mask";
+def TCmpSOp
+    : PTO_TOp<"tcmps", [PTO_DpsInitOpInterface, OpPipeInterface,
+                        DeclareOpInterfaceMethods<OpLibOpInterface>,
+                        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary =
+      "Compare scalar value against a tile and write a packed predicate mask";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    ScalarType:$scalar,
-    DefaultValuedAttr<PTO_CmpModeAttr, "::mlir::pto::CmpMode::EQ">:$cmpMode,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, ScalarType:$scalar,
+      DefaultValuedAttr<PTO_CmpModeAttr, "::mlir::pto::CmpMode::EQ">:$cmpMode,
+      PTODpsType:$dst);
 
   let results = (outs);
   let hasVerifier = 1;
@@ -1813,17 +1779,14 @@ def TCmpSOp : PTO_TOp<"tcmps", [
   }];
 }
 
-def TColExpandOp : PTO_TOp<"tcolexpand", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TColExpandOp
+    : PTO_TOp<
+          "tcolexpand", [PTO_DpsInitOpInterface, OpPipeInterface,
+                         DeclareOpInterfaceMethods<OpLibOpInterface>,
+                         DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Broadcast src(0, j) to all rows in column j ";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -1841,18 +1804,14 @@ def TColExpandOp : PTO_TOp<"tcolexpand", [
   }];
 }
 
-def TColExpandMulOp : PTO_TOp<"tcolexpandmul", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Column-wise broadcast multiply: multiply each element of src0 by a per-column scalar vector src1 ";
+def TColExpandMulOp
+    : PTO_TOp<"tcolexpandmul", [PTO_DpsInitOpInterface, OpPipeInterface,
+                                DeclareOpInterfaceMethods<
+                                    MemoryEffectsOpInterface>]> {
+  let summary = "Column-wise broadcast multiply: multiply each element of src0 "
+                "by a per-column scalar vector src1 ";
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -1870,18 +1829,14 @@ def TColExpandMulOp : PTO_TOp<"tcolexpandmul", [
   }];
 }
 
-def TColExpandMaxOp : PTO_TOp<"tcolexpandmax", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Column-wise broadcast max: take max(src0, src1) using a per-column scalar vector src1 ";
+def TColExpandMaxOp
+    : PTO_TOp<"tcolexpandmax", [PTO_DpsInitOpInterface, OpPipeInterface,
+                                DeclareOpInterfaceMethods<
+                                    MemoryEffectsOpInterface>]> {
+  let summary = "Column-wise broadcast max: take max(src0, src1) using a "
+                "per-column scalar vector src1 ";
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -1899,18 +1854,14 @@ def TColExpandMaxOp : PTO_TOp<"tcolexpandmax", [
   }];
 }
 
-def TColExpandMinOp : PTO_TOp<"tcolexpandmin", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Column-wise broadcast min: take min(src0, src1) using a per-column scalar vector src1 ";
+def TColExpandMinOp
+    : PTO_TOp<"tcolexpandmin", [PTO_DpsInitOpInterface, OpPipeInterface,
+                                DeclareOpInterfaceMethods<
+                                    MemoryEffectsOpInterface>]> {
+  let summary = "Column-wise broadcast min: take min(src0, src1) using a "
+                "per-column scalar vector src1 ";
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -1928,17 +1879,14 @@ def TColExpandMinOp : PTO_TOp<"tcolexpandmin", [
   }];
 }
 
-def TColMaxOp : PTO_TOp<"tcolmax", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TColMaxOp
+    : PTO_TOp<
+          "tcolmax", [PTO_DpsInitOpInterface, OpPipeInterface,
+                      DeclareOpInterfaceMethods<OpLibOpInterface>,
+                      DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Reduce each column by taking the maximum across rows ";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -1956,17 +1904,14 @@ def TColMaxOp : PTO_TOp<"tcolmax", [
   }];
 }
 
-def TColMinOp : PTO_TOp<"tcolmin", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TColMinOp
+    : PTO_TOp<
+          "tcolmin", [PTO_DpsInitOpInterface, OpPipeInterface,
+                      DeclareOpInterfaceMethods<OpLibOpInterface>,
+                      DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Reduce each column by taking the minimum across rows ";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -1984,19 +1929,16 @@ def TColMinOp : PTO_TOp<"tcolmin", [
   }];
 }
 
-def TColSumOp : PTO_TOp<"tcolsum", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Reduce each column by summing across rows (tilebuf-based, explicit tmp)";
+def TColSumOp
+    : PTO_TOp<
+          "tcolsum", [PTO_DpsInitOpInterface, OpPipeInterface,
+                      DeclareOpInterfaceMethods<OpLibOpInterface>,
+                      DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary =
+      "Reduce each column by summing across rows (tilebuf-based, explicit tmp)";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    Optional<PTODpsType>:$tmp,
-    PTODpsType:$dst,
-    DefaultValuedOptionalAttr<BoolAttr, "false">:$isBinary
-  );
+  let arguments = (ins PTODpsType:$src, Optional<PTODpsType>:$tmp,
+      PTODpsType:$dst, DefaultValuedOptionalAttr<BoolAttr, "false">:$isBinary);
 
   let results = (outs);
 
@@ -2012,18 +1954,14 @@ def TColSumOp : PTO_TOp<"tcolsum", [
   }];
 }
 
-def TCvtOp : PTO_TOp<"tcvt", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TCvtOp
+    : PTO_TOp<"tcvt", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Elementwise type conversion with rounding mode (tilebuf, DPS)";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst,
-    DefaultValuedAttr<PTO_RoundModeAttr, "::mlir::pto::RoundMode::CAST_RINT">:$rmode
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$dst,
+      DefaultValuedAttr<PTO_RoundModeAttr,
+                        "::mlir::pto::RoundMode::CAST_RINT">:$rmode);
 
   let results = (outs);
   let hasVerifier = 1;
@@ -2041,22 +1979,17 @@ def TCvtOp : PTO_TOp<"tcvt", [
   }];
 }
 
-def TDivOp : PTO_TOp<"tdiv", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TDivOp
+    : PTO_TOp<"tdiv", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<OpLibOpInterface>,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Elementwise division of two tiles (tilebuf, DPS)";
   let description = [{
     For each element (i, j): dst[i,j] = src0[i,j] / src1[i,j].
     Division-by-zero behavior is target-defined.
   }];
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2072,21 +2005,15 @@ def TDivOp : PTO_TOp<"tdiv", [
     `outs` `(` $dst `:` qualified(type($dst) ) `)`
     attr-dict
   }];
-
 }
 
-def TDivSOp : PTO_TOp<"tdivs", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TDivSOp
+    : PTO_TOp<"tdivs", [PTO_DpsInitOpInterface, OpPipeInterface,
+                        DeclareOpInterfaceMethods<OpLibOpInterface>,
+                        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Elementwise division with a scalar (tilebuf, DPS)";
 
-  let arguments = (ins
-    AnyType:$src,
-    ScalarType:$scalar,
-    PTODpsType:$dst
-  );
+  let arguments = (ins AnyType:$src, ScalarType:$scalar, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2098,20 +2025,15 @@ def TDivSOp : PTO_TOp<"tdivs", [
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
-
 }
 
-def TExpOp : PTO_TOp<"texp", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TExpOp
+    : PTO_TOp<"texp", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<OpLibOpInterface>,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Elementwise exponential (tilebuf, DPS)";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2129,17 +2051,14 @@ def TExpOp : PTO_TOp<"texp", [
   }];
 }
 
-def TExpandsOp : PTO_TOp<"texpands", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TExpandsOp
+    : PTO_TOp<
+          "texpands", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<OpLibOpInterface>,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Broadcast scalar into dst (tilebuf, DPS)";
 
-  let arguments = (ins
-    ScalarType:$scalar,
-    PTODpsType:$dst
-  );
+  let arguments = (ins ScalarType:$scalar, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2157,19 +2076,14 @@ def TExpandsOp : PTO_TOp<"texpands", [
   }];
 }
 
-def TExtractOp : PTO_TOp<"textract", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TExtractOp
+    : PTO_TOp<
+          "textract", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Extract sub-tile window from src into dst (tilebuf, DPS)";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    Index:$indexRow,
-    Index:$indexCol,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, Index:$indexRow, Index:$indexCol,
+      PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2189,19 +2103,15 @@ def TExtractOp : PTO_TOp<"textract", [
   }];
 }
 
-def TInsertOp : PTO_TOp<"tinsert", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Insert src sub-tile into dst at (indexRow, indexCol) (tilebuf, DPS)";
+def TInsertOp
+    : PTO_TOp<
+          "tinsert", [PTO_DpsInitOpInterface, OpPipeInterface,
+                      DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary =
+      "Insert src sub-tile into dst at (indexRow, indexCol) (tilebuf, DPS)";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    Index:$indexRow,
-    Index:$indexCol,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, Index:$indexRow, Index:$indexCol,
+      PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2270,17 +2180,14 @@ def TInsertOp : PTO_TOp<"tinsert", [
   }];
 }
 
-def TFillPadOp : PTO_TOp<"tfillpad", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Copy src into dst and fill padded elements using dst PadVal (tilebuf, DPS)";
+def TFillPadOp
+    : PTO_TOp<
+          "tfillpad", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Copy src into dst and fill padded elements using dst PadVal "
+                "(tilebuf, DPS)";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2298,17 +2205,14 @@ def TFillPadOp : PTO_TOp<"tfillpad", [
   }];
 }
 
-def TFillPadExpandOp : PTO_TOp<"tfillpad_expand", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Copy src into dst and fill padded elements using dst PadVal, allowing dst to be larger (tilebuf, DPS)";
+def TFillPadExpandOp
+    : PTO_TOp<"tfillpad_expand", [PTO_DpsInitOpInterface, OpPipeInterface,
+                                  DeclareOpInterfaceMethods<
+                                      MemoryEffectsOpInterface>]> {
+  let summary = "Copy src into dst and fill padded elements using dst PadVal, "
+                "allowing dst to be larger (tilebuf, DPS)";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2326,20 +2230,17 @@ def TFillPadExpandOp : PTO_TOp<"tfillpad_expand", [
   }];
 }
 
-def TGatherOp : PTO_TOp<"tgather", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Gather/select elements using an index tile or a mask pattern (tilebuf, DPS)";
+def TGatherOp
+    : PTO_TOp<
+          "tgather", [PTO_DpsInitOpInterface, OpPipeInterface,
+                      DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Gather/select elements using an index tile or a mask pattern "
+                "(tilebuf, DPS)";
 
   // --- operands (DPS): src0 + optional indices + outs(dst) ---
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst,
-    Optional<PTODpsType>:$indices,
-    OptionalAttr<PTO_MaskPatternAttr>:$maskPattern
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$dst,
+      Optional<PTODpsType>:$indices,
+      OptionalAttr<PTO_MaskPatternAttr>:$maskPattern);
 
   // --- DPS op: no SSA results ---
   let results = (outs);
@@ -2353,18 +2254,13 @@ def TGatherOp : PTO_TOp<"tgather", [
   }];
 }
 
-def TGatherBOp : PTO_TOp<"tgatherb", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TGatherBOp
+    : PTO_TOp<
+          "tgatherb", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Gather elements using byte offsets (tilebuf, DPS)";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$offsets,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$offsets, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2382,17 +2278,13 @@ def TGatherBOp : PTO_TOp<"tgatherb", [
   }];
 }
 
-def TLogOp : PTO_TOp<"tlog", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TLogOp
+    : PTO_TOp<"tlog", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<OpLibOpInterface>,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Elementwise natural logarithm (tilebuf, DPS)";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2410,18 +2302,13 @@ def TLogOp : PTO_TOp<"tlog", [
   }];
 }
 
-def TLReluOp : PTO_TOp<"tlrelu", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TLReluOp
+    : PTO_TOp<"tlrelu", [PTO_DpsInitOpInterface, OpPipeInterface,
+                         DeclareOpInterfaceMethods<OpLibOpInterface>,
+                         DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Leaky ReLU with a scalar slope (tilebuf, DPS)";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    F32:$slope,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, F32:$slope, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2439,18 +2326,13 @@ def TLReluOp : PTO_TOp<"tlrelu", [
   }];
 }
 
-def TMaxOp : PTO_TOp<"tmax", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TMaxOp
+    : PTO_TOp<"tmax", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<OpLibOpInterface>,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Elementwise maximum of two tiles (tilebuf, DPS)";
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2468,18 +2350,13 @@ def TMaxOp : PTO_TOp<"tmax", [
   }];
 }
 
-def TMaxSOp : PTO_TOp<"tmaxs", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TMaxSOp
+    : PTO_TOp<"tmaxs", [PTO_DpsInitOpInterface, OpPipeInterface,
+                        DeclareOpInterfaceMethods<OpLibOpInterface>,
+                        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Elementwise max of a tile and a scalar (tilebuf, DPS)";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    ScalarType:$scalar,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, AnyType:$scalar, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2497,18 +2374,13 @@ def TMaxSOp : PTO_TOp<"tmaxs", [
   }];
 }
 
-def TMinOp : PTO_TOp<"tmin", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TMinOp
+    : PTO_TOp<"tmin", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<OpLibOpInterface>,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Elementwise minimum of two tiles (tilebuf, DPS)";
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2526,18 +2398,13 @@ def TMinOp : PTO_TOp<"tmin", [
   }];
 }
 
-def TMinSOp : PTO_TOp<"tmins", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TMinSOp
+    : PTO_TOp<"tmins", [PTO_DpsInitOpInterface, OpPipeInterface,
+                        DeclareOpInterfaceMethods<OpLibOpInterface>,
+                        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Elementwise minimum of a tile and a scalar (tilebuf, DPS)";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    ScalarType:$scalar,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, AnyType:$scalar, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2555,18 +2422,13 @@ def TMinSOp : PTO_TOp<"tmins", [
   }];
 }
 
-def TMovFPOp : PTO_TOp<"tmov.fp", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TMovFPOp
+    : PTO_TOp<
+          "tmov.fp", [PTO_DpsInitOpInterface, OpPipeInterface,
+                      DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TMOV_FP: move/convert using fp (scaling) tile (tilebuf, DPS)";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$fp,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$fp, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2586,21 +2448,18 @@ def TMovFPOp : PTO_TOp<"tmov.fp", [
   }];
 }
 
-def TMrgSortOp: PTO_TOp<"tmrgsort", [
-  AttrSizedOperandSegments,
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "TMRGSORT: Merge sort (format1: ins(src,blockLen) out(dst); format2: ins(src0..src3) outs(dst,tmp,executed)).";
+def TMrgSortOp
+    : PTO_TOp<
+          "tmrgsort", [AttrSizedOperandSegments, PTO_DpsInitOpInterface,
+                       OpPipeInterface,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "TMRGSORT: Merge sort (format1: ins(src,blockLen) out(dst); "
+                "format2: ins(src0..src3) outs(dst,tmp,executed)).";
 
-  let arguments = (ins
-    Variadic<PTODpsType>:$srcs,
-    Optional<AnyInteger>:$blockLen,
-    Variadic<PTODpsType>:$dsts,
-    Optional<AnyType>:$excuted,
-    DefaultValuedAttr<BoolAttr, "false">:$exhausted
-  );
+  let arguments = (ins Variadic<PTODpsType>:$srcs,
+      Optional<AnyInteger>:$blockLen, Variadic<PTODpsType>:$dsts,
+      Optional<AnyType>:$excuted,
+      DefaultValuedAttr<BoolAttr, "false">:$exhausted);
 
   let results = (outs);
 
@@ -2619,18 +2478,13 @@ def TMrgSortOp: PTO_TOp<"tmrgsort", [
   }];
 }
 
-def TMulOp: PTO_TOp<"tmul", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TMulOp
+    : PTO_TOp<"tmul", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<OpLibOpInterface>,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TMUL: Elementwise multiply of two tiles.";
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2652,18 +2506,13 @@ def TMulOp: PTO_TOp<"tmul", [
 // PTOOps.td  (add TMULS DPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TMulSOp: PTO_TOp<"tmuls", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TMulSOp
+    : PTO_TOp<"tmuls", [PTO_DpsInitOpInterface, OpPipeInterface,
+                        DeclareOpInterfaceMethods<OpLibOpInterface>,
+                        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TMULS: Elementwise multiply a tile by a scalar.";
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    ScalarType:$scalar,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, ScalarType:$scalar, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2684,17 +2533,13 @@ def TMulSOp: PTO_TOp<"tmuls", [
 // PTOOps.td  (add TNEG TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TNegOp: PTO_TOp<"tneg", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TNegOp
+    : PTO_TOp<"tneg", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<OpLibOpInterface>,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TNEG: Elementwise negation of a tile.";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2715,17 +2560,13 @@ def TNegOp: PTO_TOp<"tneg", [
 // PTOOps.td  (add TNOT TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TNotOp: PTO_TOp<"tnot", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TNotOp
+    : PTO_TOp<"tnot", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<OpLibOpInterface>,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TNOT: Elementwise bitwise NOT of a tile.";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2746,18 +2587,13 @@ def TNotOp: PTO_TOp<"tnot", [
 // PTOOps.td  (add TOR TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TOrOp: PTO_TOp<"tor", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TOrOp
+    : PTO_TOp<"tor", [PTO_DpsInitOpInterface, OpPipeInterface,
+                      DeclareOpInterfaceMethods<OpLibOpInterface>,
+                      DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TOR: Elementwise bitwise OR of two tiles.";
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2778,18 +2614,14 @@ def TOrOp: PTO_TOp<"tor", [
 // PTOOps.td  (add TORS TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TOrSOp: PTO_TOp<"tors", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TOrSOp
+    : PTO_TOp<"tors", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<OpLibOpInterface>,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TORS: Elementwise bitwise OR of a tile and a scalar.";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    AnySignlessInteger:$scalar,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, AnySignlessInteger:$scalar,
+      PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2810,18 +2642,15 @@ def TOrSOp: PTO_TOp<"tors", [
 // PTOOps.td  (add TPARTADD TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TPartAddOp: PTO_TOp<"tpartadd", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "TPARTADD: Partial elementwise add with implementation-defined handling of mismatched valid regions.";
+def TPartAddOp
+    : PTO_TOp<
+          "tpartadd", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<OpLibOpInterface>,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "TPARTADD: Partial elementwise add with implementation-defined "
+                "handling of mismatched valid regions.";
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2842,18 +2671,15 @@ def TPartAddOp: PTO_TOp<"tpartadd", [
 // PTOOps.td  (add TPARTMAX TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TPartMaxOp: PTO_TOp<"tpartmax", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Partial elementwise max with implementation-defined handling of mismatched valid regions.";
+def TPartMaxOp
+    : PTO_TOp<
+          "tpartmax", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<OpLibOpInterface>,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Partial elementwise max with implementation-defined handling "
+                "of mismatched valid regions.";
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2874,18 +2700,15 @@ def TPartMaxOp: PTO_TOp<"tpartmax", [
 // PTOOps.td  (add TPARTMIN TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TPartMinOp: PTO_TOp<"tpartmin", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Partial elementwise min with implementation-defined handling of mismatched valid regions.";
+def TPartMinOp
+    : PTO_TOp<
+          "tpartmin", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<OpLibOpInterface>,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Partial elementwise min with implementation-defined handling "
+                "of mismatched valid regions.";
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2906,23 +2729,19 @@ def TPartMinOp: PTO_TOp<"tpartmin", [
 // PTOOps.td  (add TPRELU TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TPReluOp: PTO_TOp<"tprelu", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "TPRELU: Elementwise PReLU (parametric ReLU) with a per-element slope tile.";
+def TPReluOp
+    : PTO_TOp<"tprelu", [PTO_DpsInitOpInterface, OpPipeInterface,
+                         DeclareOpInterfaceMethods<OpLibOpInterface>,
+                         DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "TPRELU: Elementwise PReLU (parametric ReLU) with a "
+                "per-element slope tile.";
 
   let description = [{
     DPS form:
       tile buf:  pto.tprelu ins(%src0, %src1, %tmp) outs(%dst)
   }];
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    PTODpsType:$tmp,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1, PTODpsType:$tmp,
+      PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2943,17 +2762,13 @@ def TPReluOp: PTO_TOp<"tprelu", [
 // PTOOps.td  (add TRECIP TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TRecipOp: PTO_TOp<"trecip", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TRecipOp
+    : PTO_TOp<"trecip", [PTO_DpsInitOpInterface, OpPipeInterface,
+                         DeclareOpInterfaceMethods<OpLibOpInterface>,
+                         DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TRECIP: Elementwise reciprocal of a tile.";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -2974,17 +2789,13 @@ def TRecipOp: PTO_TOp<"trecip", [
 // PTOOps.td  (add TRELU TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TReluOp: PTO_TOp<"trelu", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TReluOp
+    : PTO_TOp<"trelu", [PTO_DpsInitOpInterface, OpPipeInterface,
+                        DeclareOpInterfaceMethods<OpLibOpInterface>,
+                        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TRELU: Elementwise ReLU of a tile.";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3005,18 +2816,13 @@ def TReluOp: PTO_TOp<"trelu", [
 // PTOOps.td  (add TREM TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TRemOp: PTO_TOp<"trem", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TRemOp
+    : PTO_TOp<"trem", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<OpLibOpInterface>,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TREM: Elementwise remainder of two tiles.";
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3037,18 +2843,13 @@ def TRemOp: PTO_TOp<"trem", [
 // PTOOps.td  (add TREMS TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TRemSOp: PTO_TOp<"trems", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TRemSOp
+    : PTO_TOp<"trems", [PTO_DpsInitOpInterface, OpPipeInterface,
+                        DeclareOpInterfaceMethods<OpLibOpInterface>,
+                        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TREMS: Elementwise remainder with a scalar";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    ScalarType:$scalar,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, ScalarType:$scalar, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3069,24 +2870,19 @@ def TRemSOp: PTO_TOp<"trems", [
 // PTOOps.td  (TRESHAPE: SSA view op; aliases src storage)
 //===----------------------------------------------------------------------===//
 
-def TReshapeOp: PTO_TOp<"treshape", [
-  OpPipeInterface,
-  Pure,
-  ViewLikeOpInterface
-]> {
-  let summary = "TRESHAPE: Reinterpret a tile buffer view (SSA; aliases src storage)";
+def TReshapeOp
+    : PTO_TOp<"treshape", [OpPipeInterface, Pure, ViewLikeOpInterface]> {
+  let summary =
+      "TRESHAPE: Reinterpret a tile buffer view (SSA; aliases src storage)";
 
-  let arguments = (ins
-    PTODpsType:$src
-  );
+  let arguments = (ins PTODpsType:$src);
 
-  let results = (outs
-    PTODpsType:$result
-  );
+  let results = (outs PTODpsType:$result);
 
   let hasVerifier = 1;
 
-  let assemblyFormat = "$src attr-dict `:` qualified(type($src)) `->` qualified(type($result))";
+  let assemblyFormat =
+      "$src attr-dict `:` qualified(type($src)) `->` qualified(type($result))";
 
   let extraClassDeclaration = [{
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
@@ -3097,17 +2893,15 @@ def TReshapeOp: PTO_TOp<"treshape", [
 // PTOOps.td  (add TROWEXPAND TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TRowExpandOp: PTO_TOp<"trowexpand", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "TROWEXPAND: Broadcast the first element of each source row across the destination row.";
+def TRowExpandOp
+    : PTO_TOp<
+          "trowexpand", [PTO_DpsInitOpInterface, OpPipeInterface,
+                         DeclareOpInterfaceMethods<OpLibOpInterface>,
+                         DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "TROWEXPAND: Broadcast the first element of each source row "
+                "across the destination row.";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3128,22 +2922,19 @@ def TRowExpandOp: PTO_TOp<"trowexpand", [
 // PTOOps.td  (add TROWEXPANDDIV TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TRowExpandDivOp: PTO_TOp<"trowexpanddiv", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "TROWEXPANDDIV: Row-wise broadcast divide: divide each row of src0 by a per-row scalar vector src1.";
+def TRowExpandDivOp
+    : PTO_TOp<"trowexpanddiv", [PTO_DpsInitOpInterface, OpPipeInterface,
+                                DeclareOpInterfaceMethods<OpLibOpInterface>,
+                                DeclareOpInterfaceMethods<
+                                    MemoryEffectsOpInterface>]> {
+  let summary = "TROWEXPANDDIV: Row-wise broadcast divide: divide each row of "
+                "src0 by a per-row scalar vector src1.";
   let description = [{
     pto-isa has overloads with/without tmp; optional tmp for scratch.
   }];
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    Optional<PTODpsType>:$tmp,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1,
+      Optional<PTODpsType>:$tmp, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3160,22 +2951,19 @@ def TRowExpandDivOp: PTO_TOp<"trowexpanddiv", [
 // PTOOps.td  (add TROWEXPANDMUL TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TRowExpandMulOp: PTO_TOp<"trowexpandmul", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "TROWEXPANDMUL: Row-wise broadcast multiply with per-row scalar vector.";
+def TRowExpandMulOp
+    : PTO_TOp<"trowexpandmul", [PTO_DpsInitOpInterface, OpPipeInterface,
+                                DeclareOpInterfaceMethods<OpLibOpInterface>,
+                                DeclareOpInterfaceMethods<
+                                    MemoryEffectsOpInterface>]> {
+  let summary =
+      "TROWEXPANDMUL: Row-wise broadcast multiply with per-row scalar vector.";
   let description = [{
     pto-isa has overloads with/without tmp; optional tmp for scratch.
   }];
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    Optional<PTODpsType>:$tmp,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1,
+      Optional<PTODpsType>:$tmp, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3192,22 +2980,19 @@ def TRowExpandMulOp: PTO_TOp<"trowexpandmul", [
 // PTOOps.td  (add TROWEXPANDSUB TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TRowExpandSubOp: PTO_TOp<"trowexpandsub", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "TROWEXPANDSUB: Row-wise broadcast subtract: subtract a per-row scalar vector src1 from each row of src0.";
+def TRowExpandSubOp
+    : PTO_TOp<"trowexpandsub", [PTO_DpsInitOpInterface, OpPipeInterface,
+                                DeclareOpInterfaceMethods<OpLibOpInterface>,
+                                DeclareOpInterfaceMethods<
+                                    MemoryEffectsOpInterface>]> {
+  let summary = "TROWEXPANDSUB: Row-wise broadcast subtract: subtract a "
+                "per-row scalar vector src1 from each row of src0.";
   let description = [{
     pto-isa has overloads with/without tmp; optional tmp for scratch.
   }];
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    Optional<PTODpsType>:$tmp,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1,
+      Optional<PTODpsType>:$tmp, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3224,18 +3009,15 @@ def TRowExpandSubOp: PTO_TOp<"trowexpandsub", [
 // PTOOps.td  (add TROWMAX TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TRowMaxOp: PTO_TOp<"trowmax", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "TROWMAX: Reduce each row by taking the maximum across columns.";
+def TRowMaxOp
+    : PTO_TOp<
+          "trowmax", [PTO_DpsInitOpInterface, OpPipeInterface,
+                      DeclareOpInterfaceMethods<OpLibOpInterface>,
+                      DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary =
+      "TROWMAX: Reduce each row by taking the maximum across columns.";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$tmp,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$tmp, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3256,18 +3038,15 @@ def TRowMaxOp: PTO_TOp<"trowmax", [
 // PTOOps.td  (add TROWMIN TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TRowMinOp: PTO_TOp<"trowmin", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "TROWMIN: Reduce each row by taking the minimum across columns.";
+def TRowMinOp
+    : PTO_TOp<
+          "trowmin", [PTO_DpsInitOpInterface, OpPipeInterface,
+                      DeclareOpInterfaceMethods<OpLibOpInterface>,
+                      DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary =
+      "TROWMIN: Reduce each row by taking the minimum across columns.";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$tmp,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$tmp, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3288,18 +3067,14 @@ def TRowMinOp: PTO_TOp<"trowmin", [
 // PTOOps.td  (add TROWSUM TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TRowSumOp: PTO_TOp<"trowsum", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TRowSumOp
+    : PTO_TOp<
+          "trowsum", [PTO_DpsInitOpInterface, OpPipeInterface,
+                      DeclareOpInterfaceMethods<OpLibOpInterface>,
+                      DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TROWSUM: Reduce each row by summing across columns.";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$tmp,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$tmp, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3320,17 +3095,13 @@ def TRowSumOp: PTO_TOp<"trowsum", [
 // PTOOps.td  (add TRSQRT TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TRsqrtOp: PTO_TOp<"trsqrt", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TRsqrtOp
+    : PTO_TOp<"trsqrt", [PTO_DpsInitOpInterface, OpPipeInterface,
+                         DeclareOpInterfaceMethods<OpLibOpInterface>,
+                         DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TRSQRT: Elementwise reciprocal square root.";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3351,18 +3122,14 @@ def TRsqrtOp: PTO_TOp<"trsqrt", [
 // PTOOps.td  (add TSCATTER TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TScatterOp: PTO_TOp<"tscatter", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "TSCATTER: Scatter elements of a source tile into a destination tile using per-element indices.";
+def TScatterOp
+    : PTO_TOp<
+          "tscatter", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "TSCATTER: Scatter elements of a source tile into a "
+                "destination tile using per-element indices.";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$indexes,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$indexes, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3401,23 +3168,18 @@ def TScatterOp: PTO_TOp<"tscatter", [
 // PTOOps.td  (add TSEL TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TSelOp: PTO_TOp<"tsel", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "TSEL: Select between two tiles using a mask tile (per-element selection).";
+def TSelOp
+    : PTO_TOp<"tsel", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<OpLibOpInterface>,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "TSEL: Select between two tiles using a mask tile (per-element "
+                "selection).";
   let description = [{
     DPS form (pto-isa TSEL requires tmp): ins(%mask, %src0, %src1, %tmp) outs(%dst)
   }];
 
-  let arguments = (ins
-    PTODpsType:$mask,
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    PTODpsType:$tmp,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$mask, PTODpsType:$src0, PTODpsType:$src1,
+      PTODpsType:$tmp, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3438,23 +3200,18 @@ def TSelOp: PTO_TOp<"tsel", [
 // PTOOps.td  (add TSELS TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TSelSOp: PTO_TOp<"tsels", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "TSELS: Select one of two source tiles using a scalar selectMode (global select).";
+def TSelSOp
+    : PTO_TOp<"tsels", [PTO_DpsInitOpInterface, OpPipeInterface,
+                        DeclareOpInterfaceMethods<OpLibOpInterface>,
+                        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "TSELS: Select one of two source tiles using a scalar "
+                "selectMode (global select).";
   let description = [{
     DPS form (pto-isa TSELS requires tmp): ins(%mask, %src, %tmp, %scalar) outs(%dst)
   }];
 
-  let arguments = (ins
-    PTODpsType:$mask,
-    PTODpsType:$src,
-    PTODpsType:$tmp,
-    ScalarType:$scalar,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$mask, PTODpsType:$src, PTODpsType:$tmp,
+      ScalarType:$scalar, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3475,18 +3232,13 @@ def TSelSOp: PTO_TOp<"tsels", [
 // PTOOps.td  (add TSHL TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TShlOp: PTO_TOp<"tshl", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TShlOp
+    : PTO_TOp<"tshl", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<OpLibOpInterface>,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TSHL: Elementwise shift-left of two tiles.";
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3507,18 +3259,13 @@ def TShlOp: PTO_TOp<"tshl", [
 // PTOOps.td  (add TSHR TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TShrOp: PTO_TOp<"tshr", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TShrOp
+    : PTO_TOp<"tshr", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<OpLibOpInterface>,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TSHR: Elementwise shift-right of two tiles.";
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3539,17 +3286,14 @@ def TShrOp: PTO_TOp<"tshr", [
 // PTOOps.td  (add TSHLS/TSHRS TBDPS: shift-left/right by scalar)
 //===----------------------------------------------------------------------===//
 
-def TShlSOp : PTO_TOp<"tshls", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "TSHLS: Elementwise shift-left of a tile by a scalar (shift count).";
-  let arguments = (ins
-    PTODpsType:$src,
-    AnySignlessInteger:$scalar,
-    PTODpsType:$dst
-  );
+def TShlSOp
+    : PTO_TOp<"tshls", [PTO_DpsInitOpInterface, OpPipeInterface,
+                        DeclareOpInterfaceMethods<OpLibOpInterface>,
+                        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary =
+      "TSHLS: Elementwise shift-left of a tile by a scalar (shift count).";
+  let arguments = (ins PTODpsType:$src, AnySignlessInteger:$scalar,
+      PTODpsType:$dst);
   let results = (outs);
   let hasVerifier = 1;
   let extraClassDeclaration = [{
@@ -3563,17 +3307,14 @@ def TShlSOp : PTO_TOp<"tshls", [
   }];
 }
 
-def TShrSOp : PTO_TOp<"tshrs", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "TSHRS: Elementwise shift-right of a tile by a scalar (shift count).";
-  let arguments = (ins
-    PTODpsType:$src,
-    AnySignlessInteger:$scalar,
-    PTODpsType:$dst
-  );
+def TShrSOp
+    : PTO_TOp<"tshrs", [PTO_DpsInitOpInterface, OpPipeInterface,
+                        DeclareOpInterfaceMethods<OpLibOpInterface>,
+                        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary =
+      "TSHRS: Elementwise shift-right of a tile by a scalar (shift count).";
+  let arguments = (ins PTODpsType:$src, AnySignlessInteger:$scalar,
+      PTODpsType:$dst);
   let results = (outs);
   let hasVerifier = 1;
   let extraClassDeclaration = [{
@@ -3590,23 +3331,19 @@ def TShrSOp : PTO_TOp<"tshrs", [
 // PTOOps.td  (add TSORT32 TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TSort32Op: PTO_TOp<"tsort32", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "TSORT32: Sort a fixed-size 32-element block and produce an index mapping.";
+def TSort32Op
+    : PTO_TOp<
+          "tsort32", [PTO_DpsInitOpInterface, OpPipeInterface,
+                      DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "TSORT32: Sort a fixed-size 32-element block and produce an "
+                "index mapping.";
   let description = [{
     DPS form. pto-isa has overloads: (dst, src, idx) or (dst, src, idx, tmp).
     Optional tmp for scratch buffer when required by implementation.
   }];
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst,
-    PTODpsType:$idx,
-    Optional<PTODpsType>:$tmp
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$dst, PTODpsType:$idx,
+      Optional<PTODpsType>:$tmp);
 
   let results = (outs);
 
@@ -3625,17 +3362,13 @@ def TSort32Op: PTO_TOp<"tsort32", [
 // PTOOps.td  (add TSQRT TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TSqrtOp: PTO_TOp<"tsqrt", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,  
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TSqrtOp
+    : PTO_TOp<"tsqrt", [PTO_DpsInitOpInterface, OpPipeInterface,
+                        DeclareOpInterfaceMethods<OpLibOpInterface>,
+                        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TSQRT: Elementwise square root.";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3657,16 +3390,11 @@ def TSqrtOp: PTO_TOp<"tsqrt", [
 // PTOOps.td  (add TSTORE_FP TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TStoreFPOp: PTO_TOp<"tstore_fp", [
-  PTO_DpsInitOpInterface,
-]> {
-  let summary = "TSTORE_FP: Store an accumulator tile into global memory using a scaling (fp) tile for vector quantization parameters.";
+def TStoreFPOp : PTO_TOp<"tstore_fp", [PTO_DpsInitOpInterface, ]> {
+  let summary = "TSTORE_FP: Store an accumulator tile into global memory using "
+                "a scaling (fp) tile for vector quantization parameters.";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$fp,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, PTODpsType:$fp, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3685,18 +3413,13 @@ def TStoreFPOp: PTO_TOp<"tstore_fp", [
 // PTOOps.td  (add TSUB TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TSubOp: PTO_TOp<"tsub", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TSubOp
+    : PTO_TOp<"tsub", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<OpLibOpInterface>,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TSUB: Elementwise subtract of two tiles.";
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3717,19 +3440,14 @@ def TSubOp: PTO_TOp<"tsub", [
 // PTOOps.td  (add TSUBC TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TSubCOp: PTO_TOp<"tsubc", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TSubCOp
+    : PTO_TOp<"tsubc", [PTO_DpsInitOpInterface, OpPipeInterface,
+                        DeclareOpInterfaceMethods<OpLibOpInterface>,
+                        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TSUBC: Elementwise ternary op: src0 - src1 + src2.";
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    PTODpsType:$src2,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1, PTODpsType:$src2,
+      PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3746,25 +3464,18 @@ def TSubCOp: PTO_TOp<"tsubc", [
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
-
-
 }
 //===----------------------------------------------------------------------===//
 // PTOOps.td  (add TSUBS TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TSubSOp: PTO_TOp<"tsubs", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TSubSOp
+    : PTO_TOp<"tsubs", [PTO_DpsInitOpInterface, OpPipeInterface,
+                        DeclareOpInterfaceMethods<OpLibOpInterface>,
+                        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TSUBS: Elementwise subtract a scalar from a tile.";
 
-  let arguments = (ins
-    PTODpsType:$src,
-    ScalarType:$scalar,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, ScalarType:$scalar, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3780,26 +3491,19 @@ def TSubSOp: PTO_TOp<"tsubs", [
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
-
-
 }
 //===----------------------------------------------------------------------===//
 // PTOOps.td  (add TSUBSC TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TSubSCOp: PTO_TOp<"tsubsc", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TSubSCOp
+    : PTO_TOp<"tsubsc", [PTO_DpsInitOpInterface, OpPipeInterface,
+                         DeclareOpInterfaceMethods<OpLibOpInterface>,
+                         DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TSUBSC: Elementwise fused op: src0 - scalar + src1.";
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    ScalarType:$scalar,
-    PTODpsType:$src1,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, ScalarType:$scalar, PTODpsType:$src1,
+      PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3816,29 +3520,23 @@ def TSubSCOp: PTO_TOp<"tsubsc", [
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
-
 }
 
 //===----------------------------------------------------------------------===//
 // PTOOps.td  (add TXORS TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TXorSOp: PTO_TOp<"txors", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TXorSOp
+    : PTO_TOp<"txors", [PTO_DpsInitOpInterface, OpPipeInterface,
+                        DeclareOpInterfaceMethods<OpLibOpInterface>,
+                        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TXORS: Elementwise bitwise XOR of a tile and a scalar.";
   let description = [{
     DPS form (pto-isa TXORS requires tmp): ins(%src, %scalar, %tmp) outs(%dst)
   }];
 
-  let arguments = (ins
-    PTODpsType:$src,
-    AnySignlessInteger:$scalar,
-    PTODpsType:$tmp,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src, AnySignlessInteger:$scalar,
+      PTODpsType:$tmp, PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3854,17 +3552,15 @@ def TXorSOp: PTO_TOp<"txors", [
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
-
 }
 //===----------------------------------------------------------------------===//
 // PTOOps.td  (add TXOR TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def TXorOp: PTO_TOp<"txor", [
-  PTO_DpsInitOpInterface,
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
+def TXorOp
+    : PTO_TOp<"txor", [PTO_DpsInitOpInterface, OpPipeInterface,
+                       DeclareOpInterfaceMethods<OpLibOpInterface>,
+                       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "TXOR: Elementwise bitwise XOR of two tiles.";
   let description = [{
     DPS form:
@@ -3872,12 +3568,8 @@ def TXorOp: PTO_TOp<"txor", [
       with tmp:    pto.txor ins(%src0, %src1, %tmp) outs(%dst)
   }];
 
-  let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    PTODpsType:$tmp,
-    PTODpsType:$dst
-  );
+  let arguments = (ins PTODpsType:$src0, PTODpsType:$src1, PTODpsType:$tmp,
+      PTODpsType:$dst);
 
   let results = (outs);
 
@@ -3893,18 +3585,15 @@ def TXorOp: PTO_TOp<"txor", [
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
-
 }
 
-def TPrintOp: PTO_TOp<"tprint", [
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "TPRINT: Print the contents of a Tile or GlobalTensor for debugging purposes directly from device code..";
+def TPrintOp
+    : PTO_TOp<"tprint", [OpPipeInterface,
+                         DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "TPRINT: Print the contents of a Tile or GlobalTensor for "
+                "debugging purposes directly from device code..";
 
-  let arguments = (ins
-    PTODpsType:$src
-  );
+  let arguments = (ins PTODpsType:$src);
 
   let results = (outs);
 
@@ -3918,6 +3607,6 @@ def TPrintOp: PTO_TOp<"tprint", [
   let extraClassDeclaration = [{
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
   }];
- }
+}
 
 #endif // MLIR_DIALECT_PTO_IR_PTOOPS

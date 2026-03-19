@@ -14,15 +14,15 @@
 #define MLIR_DIALECT_PTO_TRANSFORMS_PASSES_H
 
 #include "PTO/IR/PTO.h"
+#include "PTO/IR/PTODialect.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringRef.h"
-#include "mlir/Pass/Pass.h"
-#include "PTO/IR/PTODialect.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
 
 namespace mlir {
 namespace pto {
@@ -46,7 +46,6 @@ std::unique_ptr<Pass> createEmitPTOManualPass();
 // Explicitly select target arch for codegen.
 std::unique_ptr<Pass> createEmitPTOManualPass(PTOArch arch);
 
-
 /// Create a pass to convert ops from other dialects to PTO Ops.
 std::unique_ptr<Pass> createConvertToPTOOpPass();
 
@@ -64,6 +63,19 @@ std::unique_ptr<Pass> createPTORemoveRedundantBarrierPass();
 std::unique_ptr<Pass> createPTOViewToMemrefPass();
 std::unique_ptr<mlir::Pass> createPTOInsertLoadStoreForMixCVPass();
 std::unique_ptr<Pass> createInferPTOLayoutPass();
+std::unique_ptr<Pass> createPTOCreateFusionGroupsPass();
+LogicalResult importPTOOpLibTemplates(ModuleOp module, StringRef opLibDir,
+                                      bool debug = false);
+std::unique_ptr<Pass> createPTOInstantiateAndLowerToLibCallPass(
+    const PTOInstantiateAndLowerToLibCallOptions &options = {});
+std::unique_ptr<Pass> createPTOOutlineFusionGroupsPass(
+    const PTOOutlineFusionGroupsOptions &options = {});
+std::unique_ptr<Pass>
+createPTOInlineLibCallPass(const PTOInlineLibCallOptions &options = {});
+std::unique_ptr<Pass> createPTOValidateSimdIRPass();
+std::unique_ptr<Pass> createPTOLowerSimdToVectorPass();
+std::unique_ptr<Pass> createPTOLowLevelLoopFusionPass(
+    const PTOLowLevelLoopFusionOptions &options = {});
 // Declare register function
 void registerPTOPasses();
 

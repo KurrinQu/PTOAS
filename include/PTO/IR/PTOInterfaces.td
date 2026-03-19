@@ -1,10 +1,10 @@
 // mlir/include/mlir/Dialect/PTO/IR/PTOInterfaces.td
- 
+
 #ifndef MLIR_DIALECT_PTO_IR_PTOINTERFACES
 #define MLIR_DIALECT_PTO_IR_PTOINTERFACES
- 
+
 include "mlir/IR/OpBase.td"
- 
+
 // 定义 OpPipeInterface
 def OpPipeInterface : OpInterface<"OpPipeInterface"> {
   let description = [{
@@ -12,21 +12,19 @@ def OpPipeInterface : OpInterface<"OpPipeInterface"> {
     This is used by the InjectSync pass to insert synchronization barriers between
     different hardware units (e.g., MTE2 -> Vector).
   }];
-  
+
   let cppNamespace = "::mlir::pto";
- 
-  let methods = [
-    InterfaceMethod<
+
+  let methods = [InterfaceMethod<
       "Get the hardware pipe where this operation executes.",
-      "::mlir::pto::PIPE",  // 返回类型对应 PTOAttrs.td 中的定义
-      "getPipe"
-    >
-  ];
+      "::mlir::pto::PIPE", // 返回类型对应 PTOAttrs.td 中的定义
+      "getPipe">];
 }
 
 // PTO destination-style ops: have "init" operands (e.g. $dst) for plan-memory.
 // No tensor/memref type requirement (unlike MLIR DestinationStyleOpInterface).
-// Each op implements getDpsInitsMutable(); this interface provides getDpsInits().
+// Each op implements getDpsInitsMutable(); this interface provides
+// getDpsInits().
 def PTO_DpsInitOpInterface : OpInterface<"PTO_DpsInitOpInterface"> {
   let description = [{
     PTO ops that have destination (init) operands for memory planning. Init
@@ -35,19 +33,29 @@ def PTO_DpsInitOpInterface : OpInterface<"PTO_DpsInitOpInterface"> {
     verification.
   }];
   let cppNamespace = "::mlir::pto";
-  let methods = [
-    InterfaceMethod<
+  let methods = [InterfaceMethod<
       "Return the mutable range of destination (init) operands.",
-      "::mlir::MutableOperandRange",
-      "getDpsInitsMutable",
-      (ins)
-    >
-  ];
+      "::mlir::MutableOperandRange", "getDpsInitsMutable", (ins)>];
   let extraSharedClassDeclaration = [{
     ::mlir::OperandRange getDpsInits() {
       return $_op.getDpsInitsMutable();
     }
   }];
+}
+
+// OPLib lowering interface: each supported op exports enough metadata to build
+// a MatchRequest without pass-local dyn_cast dispatch.
+def OpLibOpInterface : OpInterface<"OpLibOpInterface"> {
+  let description = [{
+    Interface for PTO ops participating in OP-Lib lowering. Implementors expose
+    template keys, operand roles/order, and optional match fields so lowering
+    can construct a MatchRequest in a data-driven way.
+  }];
+  let cppNamespace = "::mlir::pto";
+  let methods = [InterfaceMethod<
+      "Build OP-Lib match descriptor for this op.",
+      "::mlir::FailureOr<::mlir::pto::OpLibMatchDescriptor>",
+      "getOpLibMatchDescriptor", (ins)>];
 }
 
 #endif // MLIR_DIALECT_PTO_IR_PTOINTERFACES

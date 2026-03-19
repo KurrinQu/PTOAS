@@ -1,0 +1,120 @@
+{
+  "schema_version": "a5_oplib_v1_manifest",
+  "target": "a5",
+  "operators": [
+    {
+      "op": "tadd",
+      "family": "binary_elementwise",
+      "a5_status": "implemented",
+      "dtype_support": ["f32"]
+    },
+    {
+      "op": "tadds",
+      "family": "tile_scalar",
+      "a5_status": "implemented",
+      "dtype_support": ["f16"]
+    },
+    {
+      "op": "tand",
+      "family": "binary_elementwise",
+      "a5_status": "implemented",
+      "dtype_support": ["i32"]
+    },
+    {
+      "op": "tcmp",
+      "family": "compare_tile_tile",
+      "a5_status": "implemented",
+      "dtype_support": ["f32"]
+    },
+    {
+      "op": "tcmps",
+      "family": "compare_tile_scalar",
+      "a5_status": "implemented",
+      "dtype_support": ["f32"]
+    },
+    {
+      "op": "tcolexpand",
+      "family": "broadcast_col",
+      "a5_status": "implemented",
+      "dtype_support": ["f32"]
+    },
+    {
+      "op": "tcolmax",
+      "family": "reduce_col",
+      "a5_status": "implemented",
+      "dtype_support": ["f32"]
+    },
+    {
+      "op": "tcolsum",
+      "family": "reduce_colsum",
+      "a5_status": "implemented",
+      "dtype_support": ["f32"]
+    },
+    {
+      "op": "tdivs",
+      "family": "tile_scalar",
+      "a5_status": "implemented",
+      "dtype_support": ["i32"]
+    },
+    {
+      "op": "texp",
+      "family": "unary_math",
+      "a5_status": "implemented",
+      "dtype_support": ["f32"]
+    },
+    {
+      "op": "texpands",
+      "family": "scalar_expand",
+      "a5_status": "implemented",
+      "dtype_support": ["f32"]
+    },
+    {
+      "op": "tnot",
+      "family": "unary",
+      "a5_status": "implemented",
+      "dtype_support": ["i32"]
+    },
+    {
+      "op": "tpartadd",
+      "family": "partial_binary",
+      "a5_status": "implemented",
+      "dtype_support": ["f32"]
+    },
+    {
+      "op": "trecip",
+      "family": "unary",
+      "a5_status": "implemented",
+      "dtype_support": ["f16", "f32"]
+    },
+    {
+      "op": "trelu",
+      "family": "unary",
+      "a5_status": "implemented",
+      "dtype_support": ["f32"]
+    },
+    {
+      "op": "trowexpand",
+      "family": "broadcast_row",
+      "a5_status": "implemented",
+      "dtype_support": ["f32"]
+    },
+    {
+      "op": "trowexpandmul",
+      "family": "broadcast_row_binary",
+      "a5_status": "implemented",
+      "dtype_support": ["f32"]
+    },
+    {
+      "op": "trowsum",
+      "family": "reduce_row",
+      "a5_status": "implemented",
+      "dtype_support": ["f32"]
+    },
+    {
+      "op": "tsel",
+      "family": "select_mask",
+      "a5_status": "implemented",
+      "dtype_support": ["f32"]
+    }
+  ]
+}

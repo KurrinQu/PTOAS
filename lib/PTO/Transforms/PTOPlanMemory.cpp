@@ -8,12 +8,13 @@
 
 #include "PTOPlanMemory.h"
 
+#include "AllocToPointerCast.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "AllocToPointerCast.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "pto-plan-memory"
@@ -31,9 +32,15 @@ using namespace pto;
 
 namespace {
 
+llvm::cl::opt<bool> planMemoryDebug(
+    "pto-plan-memory-debug",
+    llvm::cl::desc("Enable verbose debug logging for PTO plan-memory pass"),
+    llvm::cl::init(false));
+
 // bool isReusableCastOp(pto::VCastOp &castOp, Value output, Value input) {
 //   auto rank = dyn_cast<MemRefType>(output.getType()).getRank();
-//   if (rank > 1 || !isLastDimContiguous(output) || !isLastDimContiguous(input)) {
+//   if (rank > 1 || !isLastDimContiguous(output) ||
+//   !isLastDimContiguous(input)) {
 //     // can only reuse 1d cast library
 //     return false;
 //   }
@@ -78,7 +85,7 @@ void MemLivenessAnalysis::build() {
   RecursionIR(&funcRegion, live);
   // the lifetime of the buffer.
   GenerateBufferLife();
-  //InitializeInplacePairList();
+  // InitializeInplacePairList();
 }
 
 bool MemLivenessAnalysis::isLocalMemPlan() const {
@@ -117,10 +124,10 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
       }
       UpdateOpBufferInfo(op, op->getResults());
       return WalkResult::advance();
-    // } else if (isGlobalWorkSpaceMemPlan() &&
-    //            dyn_cast<bishengir::memref_ext::AllocWorkspaceOp>(op)) {
-    //   UpdateOpBufferInfo(op, op->getResults());
-    //   return WalkResult::advance();
+      // } else if (isGlobalWorkSpaceMemPlan() &&
+      //            dyn_cast<bishengir::memref_ext::AllocWorkspaceOp>(op)) {
+      //   UpdateOpBufferInfo(op, op->getResults());
+      //   return WalkResult::advance();
     } else if (auto loadOp = dyn_cast<memref::LoadOp>(op)) {
       OpKillHandle(curOpInfo, live, op->getBlock());
     } else if (auto tprintOp = dyn_cast<pto::TPrintOp>(op)) {
@@ -157,8 +164,8 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
       UpdateBufferAlias(selectOp.getResult(), selectOp.getTrueValue(), true);
       UpdateBufferAlias(selectOp.getResult(), selectOp.getFalseValue(), true);
       OpKillHandle(curOpInfo, live, op->getBlock());
-    //} else if (auto markOp = dyn_cast<annotation::MarkOp>(op)) {
-      //UpdateMultiBufferInfo(markOp);
+      //} else if (auto markOp = dyn_cast<annotation::MarkOp>(op)) {
+      // UpdateMultiBufferInfo(markOp);
     } else if (auto callOp = dyn_cast<func::CallOp>(op)) {
       UpdateOpGenInfo(curOpInfo, llvm::to_vector(callOp->getOperands()));
       // UpdateOpTempGenInfo(curOpInfo);
@@ -367,8 +374,8 @@ MemLivenessAnalysis::CheckIfUnknownOpTouchBuffer(Operation *op) const {
 //   if (auto extraBufferOp =
 //           dyn_cast<ExtraBufferOpInterface>(opInfo->operation)) {
 //     auto extraBuffers = extraBufferOp.getExtraBuffers();
-//     resultVec.insert(resultVec.end(), extraBuffers.begin(), extraBuffers.end());
-//     UpdateOpGenInfo(opInfo, resultVec);
+//     resultVec.insert(resultVec.end(), extraBuffers.begin(),
+//     extraBuffers.end()); UpdateOpGenInfo(opInfo, resultVec);
 //   }
 // }
 
@@ -790,9 +797,11 @@ void MemPlan::PrintSuccessfulAllocatedMaxBits() {
   auto it = memscope2rootStorageEntry.find(pto::AddressSpace::VEC);
   if (it != memscope2rootStorageEntry.end()) {
     assert(it->second != nullptr);
-    uint64_t ubAllocBits = it->second->alignedConstBits + it->second->bitsOffset;
-    for (auto& child : it->second->mergedChildren) {
-      ubAllocBits = std::max(ubAllocBits, child->bitsOffset + child->alignedConstBits);
+    uint64_t ubAllocBits =
+        it->second->alignedConstBits + it->second->bitsOffset;
+    for (auto &child : it->second->mergedChildren) {
+      ubAllocBits =
+          std::max(ubAllocBits, child->bitsOffset + child->alignedConstBits);
     }
     llvm::outs() << "[PTOPlanMemory] Allocated UB size = " << ubAllocBits
                  << " bits\n";
@@ -809,8 +818,8 @@ void MemPlan::UpdateBuffer2Offsets() {
   for (auto &e : StorageEntryVec) {
     for (Value &buffer : e->inplaceBuffers) {
       // MultiBuffer can cause multiple addrs.
-      buffer2Offsets[buffer].push_back(
-          (e->bitsOffset + kBitsToByte - 1) / kBitsToByte);
+      buffer2Offsets[buffer].push_back((e->bitsOffset + kBitsToByte - 1) /
+                                       kBitsToByte);
     }
   }
   // In the MultiBuffer scenario, single reuse db will result in additional
@@ -827,8 +836,7 @@ void MemPlan::UpdateMultiBufferReuseExtraOffset() {
     for (Value &buffer : relationEntry.second->inplaceBuffers) {
       // MultiBuffer can cause multiple addrs.
       buffer2Offsets[buffer].push_back(
-          (relationEntry.second->bitsOffset + kBitsToByte - 1) /
-          kBitsToByte);
+          (relationEntry.second->bitsOffset + kBitsToByte - 1) / kBitsToByte);
     }
   }
 }
@@ -892,14 +900,15 @@ PlanStatus MemPlan::PlanWorkSpaceMemAddress() {
   ExpandMultiBufferStorageEntry();
   // Construct root StorageEntry and collect the same work space arg
   // StorageEntry.
-  //MergeSameWorkSpaceArgSE();
+  // MergeSameWorkSpaceArgSE();
   // Start plan
   return PlanMemOffsetOfWholeWorkSpace();
 }
 
 // void MemPlan::MergeSameWorkSpaceArgSE() {
 //   for (auto &iter : StorageEntryVec) {
-//     auto allocWorkspaceOp = dyn_cast<bishengir::memref_ext::AllocWorkspaceOp>(
+//     auto allocWorkspaceOp =
+//     dyn_cast<bishengir::memref_ext::AllocWorkspaceOp>(
 //         iter->bufInfo->operation);
 //     assert(allocWorkspaceOp && "only allocWorkspaceOp will plan");
 //     Value workspaceArg = allocWorkspaceOp.getWorkspaceArg();
@@ -1028,8 +1037,7 @@ void MemPlan::MergeSameScopeSE() {
   }
 }
 
-void MemPlan::PlanMemAddressForLevel0(
-    StorageEntry *rootStorageEntry) {
+void MemPlan::PlanMemAddressForLevel0(StorageEntry *rootStorageEntry) {
   // get the buffer info for a given scope.
   auto bufferSpaceInfo =
       GetBufferSpaceInfo(rootStorageEntry->bufInfo->bufferScope);
@@ -1165,9 +1173,8 @@ void MemPlan::MemLifeDebugInfo(StorageEntry *storageEntry) {
     }
   }
   for (auto &bufferLife : storageEntry->bufferLifeVec) {
-    LDBG("bufferLife : "
-         << "allocTime : " << bufferLife->allocTime
-         << " , freeTime : " << bufferLife->freeTime << "\n");
+    LDBG("bufferLife : " << "allocTime : " << bufferLife->allocTime
+                         << " , freeTime : " << bufferLife->freeTime << "\n");
   }
   LDBG("\n");
 }
@@ -1271,7 +1278,7 @@ MemPlan::GetBufferSpaceInfo(pto::AddressSpace &space) const {
   case pto::AddressSpace::SCALING:
     return std::make_pair(scalingAlignSize, scalingSpaceSize);
   }
-  
+
   llvm_unreachable("Temporarily unsupported memory buffer space !");
 }
 
@@ -1759,8 +1766,7 @@ void MemPlan::ReportAllocatedEntryDebugInfo(StorageEntry *rootStorageEntry) {
   auto printRecord = [this](const StorageEntry *entry) {
     uint64_t needByte =
         (entry->alignedConstBits + kBitsToByte - 1) / kBitsToByte;
-    uint64_t offsetByte =
-        (entry->bitsOffset + kBitsToByte - 1) / kBitsToByte;
+    uint64_t offsetByte = (entry->bitsOffset + kBitsToByte - 1) / kBitsToByte;
     ReportCurEntryDebugInfo(entry);
     LDBG(", offset: " << offsetByte);
     LDBG(", extent: " << needByte);
@@ -1774,8 +1780,7 @@ void MemPlan::ReportAllocatedEntryDebugInfo(StorageEntry *rootStorageEntry) {
        "START-------------------------- "
        << "\n"
        << "\n");
-  LDBG("  BUFFER ALLOCATE START: UB"
-       << "\n");
+  LDBG("  BUFFER ALLOCATE START: UB" << "\n");
   if (!allocatedEntry.empty()) {
     for (auto &entry : allocatedEntry) {
       printRecord(entry);
@@ -1812,12 +1817,10 @@ LogicalResult MemPlan::InitMemSpecsFromModule(func::FuncOp funcOp) {
     int scalingSpaceSize;
   };
 
-  const MemSpec kA3 = {
-      1572864, 4194304, 524288, 524288, 1048576, 256, 256,
-      4096,    4096,    4096,   256,    524288, 256, 1572864};
-  const MemSpec kA5 = {
-      2031616, 4194304, 524288, 524288, 2097152, 256, 256,
-      4096,    4096,    4096,   256,    524288, 256, 2031616};
+  const MemSpec kA3 = {1572864, 4194304, 524288, 524288, 1048576, 256, 256,
+                       4096,    4096,    4096,   256,    524288,  256, 1572864};
+  const MemSpec kA5 = {2031616, 4194304, 524288, 524288, 2097152, 256, 256,
+                       4096,    4096,    4096,   256,    524288,  256, 2031616};
 
   auto applySpec = [this](const MemSpec &spec) {
     ubSpaceSize = spec.ubSpaceSize;
@@ -1958,8 +1961,13 @@ private:
 
 void PlanMemoryPass::runOnOperation() {
   ModuleOp moduleOp = getOperation();
-  //VFInplaceReuseAnalysis vfInplaceReuseAnalysis(moduleOp);
+  // VFInplaceReuseAnalysis vfInplaceReuseAnalysis(moduleOp);
   for (auto funcOp : moduleOp.getOps<func::FuncOp>()) {
+    if (funcOp->hasAttr("pto.oplib.kind") ||
+        funcOp->hasAttr("pto.oplib.instance.variant_id") ||
+        funcOp.getSymName().starts_with("__pto_oplib_")) {
+      continue;
+    }
     // if (hacc::utils::isHost(funcOp))
     //   continue;
     // if (pto::isVF(funcOp))
@@ -2002,9 +2010,11 @@ void PlanMemoryPass::runOnOperation() {
       return signalPassFailure();
     }
   }
-  llvm::errs() << "end PTO plan Mem!\n";
-  auto op = getOperation();
-  op->dump();
+  if (planMemoryDebug) {
+    llvm::errs() << "end PTO plan Mem!\n";
+    auto op = getOperation();
+    op->dump();
+  }
 }
 
 std::unique_ptr<Pass>

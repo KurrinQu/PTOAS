@@ -13,6 +13,7 @@
 #ifndef MLIR_DIALECT_PTO_IR_PTO_H_
 #define MLIR_DIALECT_PTO_IR_PTO_H_
 
+#include "PTO/IR/PTOOpLibMatch.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -26,6 +27,8 @@
 #include "mlir/Interfaces/DestinationStyleOpInterface.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
+
+#include <string>
 
 //===----------------------------------------------------------------------===//
 // PTO Dialect
@@ -42,7 +45,7 @@
 //===----------------------------------------------------------------------===//
 // PTO Interfaces
 //===----------------------------------------------------------------------===//
- 
+
 #include "PTO/IR/PTOInterfaces.h.inc"
 
 //===----------------------------------------------------------------------===//
@@ -95,7 +98,6 @@ private:
   PTOParserTargetArch previousArch;
 };
 
-
 /// Function attribute that marks an explicit PTO kernel entry.
 inline constexpr llvm::StringLiteral kPTOEntryAttrName = "pto.entry";
 inline constexpr llvm::StringLiteral kLegacyHACCEntryAttrName = "hacc.entry";
@@ -111,6 +113,12 @@ LogicalResult validatePTOEntryFunctions(ModuleOp module);
 
 /// Materialize the effective PTO entry selection onto function attributes.
 void annotatePTOEntryFunctions(ModuleOp module);
+
+// Shared helper for OPLib dtype string keys used in matching.
+std::string getOpLibDTypeName(Type type);
+
+// Shared helper for OPLib cmp mode string keys used in matching.
+std::string getOpLibCmpModeName(CmpMode cmpMode);
 
 } // namespace pto
 } // namespace mlir
