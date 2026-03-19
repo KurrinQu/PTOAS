@@ -62,6 +62,7 @@ rm -rf "${SYNC_OUT}"
 mkdir -p "${SYNC_OUT}"
 (
   cd "${ROOT_DIR}"
+  SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${SYNC_OUT}" \
   PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
@@ -79,5 +80,18 @@ require_pattern 'a5vm\.vadd' "${ADD_DOUBLE_OUT}" \
   "dynamic elementwise body did not lower to a5vm vector ops"
 require_pattern 'a5vm\.copy_ubuf_to_gm' "${ADD_DOUBLE_OUT}" \
   "dynamic TSTORE path did not lower to copy_ubuf_to_gm"
+
+require_pattern 'Sync\(test_a5_buf_sync\.py\)[[:space:]]+OK' "${SYNC_OUT}/run.log" \
+  "Sync/test_a5_buf_sync sample did not compile successfully"
+A5_BUF_SYNC_OUT="${SYNC_OUT}/Sync/test_a5_buf_sync.cpp"
+[[ -f "${A5_BUF_SYNC_OUT}" ]] || { echo "error: missing ${A5_BUF_SYNC_OUT}" >&2; exit 1; }
+require_pattern 'a5vm\.get_buf "PIPE_MTE2"' "${A5_BUF_SYNC_OUT}" \
+  "A5 buffer sync output lost get_buf lowering for TLOAD"
+require_pattern 'a5vm\.rls_buf "PIPE_MTE2"' "${A5_BUF_SYNC_OUT}" \
+  "A5 buffer sync output lost rls_buf lowering for TLOAD"
+require_pattern 'a5vm\.get_buf "PIPE_V"' "${A5_BUF_SYNC_OUT}" \
+  "A5 buffer sync output lost get_buf lowering for TVEC"
+require_pattern 'a5vm\.rls_buf "PIPE_V"' "${A5_BUF_SYNC_OUT}" \
+  "A5 buffer sync output lost rls_buf lowering for TVEC"
 
 echo "sample acceptance: PASS"

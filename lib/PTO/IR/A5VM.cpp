@@ -274,6 +274,18 @@ LogicalResult PipeBarrierOp::verify() {
   return verifySyncToken(*this, getPipeAttr(), "pipe");
 }
 
+template <typename BufOp>
+static LogicalResult verifyBufTokenOp(BufOp op) {
+  if (failed(verifySyncToken(op, op.getPipeAttr(), "pipe")))
+    return failure();
+  if (!isa<IntegerType>(op.getBufId().getType()) || !isa<IntegerType>(op.getMode().getType()))
+    return op.emitOpError("requires integer buf_id and mode operands");
+  return success();
+}
+
+LogicalResult GetBufOp::verify() { return verifyBufTokenOp(*this); }
+LogicalResult RlsBufOp::verify() { return verifyBufTokenOp(*this); }
+
 void VldsOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {

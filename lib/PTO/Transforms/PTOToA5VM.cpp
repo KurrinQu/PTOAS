@@ -93,6 +93,14 @@ LogicalResult lowerBarrierOp(BarrierOp op, PatternRewriter &rewriter) {
   return lowerBarrier(op, rewriter);
 }
 
+LogicalResult lowerGetBufOp(GetBufOp op, PatternRewriter &rewriter) {
+  return lowerGetBuf(op, rewriter);
+}
+
+LogicalResult lowerRlsBufOp(RlsBufOp op, PatternRewriter &rewriter) {
+  return lowerRlsBuf(op, rewriter);
+}
+
 LogicalResult lowerTensorPipelineOp(Operation *op, PatternRewriter &rewriter) {
   rewriter.setInsertionPoint(op);
 
@@ -143,6 +151,10 @@ LogicalResult lowerResidualPTOOp(Operation *op, PatternRewriter &rewriter) {
     lowered = lowerWaitFlagOp(waitFlag, rewriter);
   else if (auto barrier = dyn_cast<BarrierOp>(op))
     lowered = lowerBarrierOp(barrier, rewriter);
+  else if (auto getBuf = dyn_cast<GetBufOp>(op))
+    lowered = lowerGetBufOp(getBuf, rewriter);
+  else if (auto rlsBuf = dyn_cast<RlsBufOp>(op))
+    lowered = lowerRlsBufOp(rlsBuf, rewriter);
   else if (isa<PointerCastOp, BindTileOp>(op) && op->use_empty())
     lowered = success();
   else
@@ -166,7 +178,8 @@ struct PTOToA5VMPass : public impl::PTOToA5VMBase<PTOToA5VMPass> {
       if (isa<TLoadOp, TAbsOp, TAddOp, TSubOp, TMulOp, TDivOp, TExpOp, TLogOp,
               TSqrtOp, TRecipOp, TReluOp, TNotOp, TStoreOp>(op))
         tensorPipelineOps.push_back(op);
-      else if (isa<PointerCastOp, BindTileOp, SetFlagOp, WaitFlagOp, BarrierOp>(op))
+      else if (isa<PointerCastOp, BindTileOp, SetFlagOp, WaitFlagOp, BarrierOp,
+                   GetBufOp, RlsBufOp>(op))
         residualPTOOps.push_back(op);
     });
 

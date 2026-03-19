@@ -9,6 +9,7 @@
 #include "PTO/Transforms/A5VMLowering.h"
 
 #include "PTO/IR/A5VM.h"
+#include "PTO/IR/PTOSyncUtils.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -1864,6 +1865,45 @@ LogicalResult lowerWaitFlag(WaitFlagOp op, PatternRewriter &rewriter) {
 LogicalResult lowerBarrier(BarrierOp op, PatternRewriter &rewriter) {
   rewriter.create<a5vm::PipeBarrierOp>(op.getLoc(),
                                        stringifyPipeAttr(op.getPipe(), rewriter));
+  return success();
+}
+
+static FailureOr<StringAttr> stringifyConcreteSyncPipeAttr(Attribute opTypeAttr,
+                                                           PatternRewriter &rewriter) {
+  auto opTypeOr = parseSyncOpTypeLikeAttr(opTypeAttr);
+  if (failed(opTypeOr))
+    return failure();
+  PIPE pipe = mapSyncOpTypeToPipe(*opTypeOr);
+  if (!isConcreteSyncPipe(pipe))
+    return failure();
+  return rewriter.getStringAttr(stringifyPIPE(pipe));
+}
+
+LogicalResult lowerGetBuf(GetBufOp op, PatternRewriter &rewriter) {
+  FailureOr<StringAttr> pipeAttr =
+      stringifyConcreteSyncPipeAttr(op.getOpTypeAttr(), rewriter);
+  if (failed(pipeAttr))
+    return op.emitOpError("get_buf expects SyncOpType/PipeEventType that maps to a concrete pipe");
+
+  Value bufId =
+      rewriter.create<arith::ConstantIntOp>(op.getLoc(), op.getBufId(), 64);
+  Value mode =
+      rewriter.create<arith::ConstantIntOp>(op.getLoc(), op.getMode(), 64);
+  rewriter.create<a5vm::GetBufOp>(op.getLoc(), *pipeAttr, bufId, mode);
+  return success();
+}
+
+LogicalResult lowerRlsBuf(RlsBufOp op, PatternRewriter &rewriter) {
+  FailureOr<StringAttr> pipeAttr =
+      stringifyConcreteSyncPipeAttr(op.getOpTypeAttr(), rewriter);
+  if (failed(pipeAttr))
+    return op.emitOpError("rls_buf expects SyncOpType/PipeEventType that maps to a concrete pipe");
+
+  Value bufId =
+      rewriter.create<arith::ConstantIntOp>(op.getLoc(), op.getBufId(), 64);
+  Value mode =
+      rewriter.create<arith::ConstantIntOp>(op.getLoc(), op.getMode(), 64);
+  rewriter.create<a5vm::RlsBufOp>(op.getLoc(), *pipeAttr, bufId, mode);
   return success();
 }
 

@@ -41,7 +41,8 @@ static LogicalResult writeReportFile(const A5VMEmissionOptions &options,
 
 static constexpr llvm::StringLiteral kSupportedA5VMPrimitives[] = {
     "a5vm.set_flag",              "a5vm.wait_flag",
-    "a5vm.pipe_barrier",          "a5vm.set_loop2_stride_outtoub",
+    "a5vm.pipe_barrier",          "a5vm.get_buf",
+    "a5vm.rls_buf",               "a5vm.set_loop2_stride_outtoub",
     "a5vm.set_loop1_stride_outtoub",
     "a5vm.set_loop_size_outtoub", "a5vm.set_loop2_stride_ubtoout",
     "a5vm.set_loop1_stride_ubtoout",
@@ -56,6 +57,7 @@ static constexpr llvm::StringLiteral kSupportedA5VMPrimitives[] = {
 
 static bool isSupportedA5VMPrimitive(Operation *op) {
   if (!isa<a5vm::SetFlagOp, a5vm::WaitFlagOp, a5vm::PipeBarrierOp,
+           a5vm::GetBufOp, a5vm::RlsBufOp,
            a5vm::SetLoop2StrideOutToUbOp, a5vm::SetLoop1StrideOutToUbOp,
            a5vm::SetLoopSizeOutToUbOp, a5vm::SetLoop2StrideUbToOutOp,
            a5vm::SetLoop1StrideUbToOutOp, a5vm::SetLoopSizeUbToOutOp,

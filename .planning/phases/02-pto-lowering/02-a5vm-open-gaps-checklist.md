@@ -13,7 +13,7 @@ Purpose:
 - [x] P0. Broaden `TLOAD/TSTORE` copy-family lowering so dynamic and tail copies follow PTO A5 behavior instead of only the current narrow vec ND2ND happy path.
 - [ ] P0. Relax and correct unary/binary vec valid-shape contract checks so they match PTO A5 helper behavior instead of requiring today’s over-strict source/destination equality.
 - [ ] P1. Add valid-region fallback derivation when seam IR no longer carries explicit `bind_tile` valid dims but the shaped memref/tile form still determines them.
-- [ ] P1. Lower synchronization-family ops that are still left as PTO ops at the backend seam.
+- [x] P1. Lower synchronization-family ops that are still left as PTO ops at the backend seam.
 - [ ] P2. Revisit deferred `ACC`/`MAT` domains and matrix-family samples after vector/data-movement paths are stable.
 
 ## Confirmed Active Gaps
@@ -94,10 +94,25 @@ Planned end-to-end acceptance once fixed:
 
 ### 4. Missing Sync-Family Lowerings
 
-- [ ] Add lowering for `pto.barrier_sync[...]` to the correct backend representation, aligned with PTO/EmitC behavior.
-- [ ] Add lowering for `pto.get_buf`.
-- [ ] Add lowering for `pto.rls_buf`.
-- [ ] Confirm whether these lower to new `a5vm` ops or to LLVM-lowerable helper form by first checking `PTOToEmitC.cpp` and the PTO A5 implementation.
+- [x] Add lowering for `pto.barrier_sync[...]` to the correct backend representation, aligned with PTO/EmitC behavior.
+- [x] Add lowering for `pto.get_buf`.
+- [x] Add lowering for `pto.rls_buf`.
+- [x] Confirm whether these lower to new `a5vm` ops or to LLVM-lowerable helper form by first checking `PTOToEmitC.cpp` and the PTO A5 implementation.
+
+Status note:
+
+- `pto.barrier_sync[...]` was already closed by the shared `LoweringSyncToPipe` pass before A5VM lowering:
+  - `TLOAD -> PIPE_MTE2`
+  - `TSTORE_VEC -> PIPE_MTE3`
+  - `TVEC -> PIPE_V`, then erased on A5 by arch legalization
+- A5VM backend now lowers:
+  - `pto.barrier` -> `a5vm.pipe_barrier`
+  - `pto.get_buf` -> `a5vm.get_buf`
+  - `pto.rls_buf` -> `a5vm.rls_buf`
+- `get_buf/rls_buf` reuse the shared PTO `SyncOpType -> PIPE` mapping and lower to hardware-facing A5VM ops, matching the EmitC/PTO intent.
+- End-to-end acceptance coverage now includes:
+  - `test/samples/Sync/test_a5_buf_sync.py`
+  - `test/samples/run_a5vm_acceptance_checks.sh`
 
 Representative failing samples:
 
@@ -109,10 +124,10 @@ Representative current failure text:
 - `missing pipe_barrier(PIPE_MTE2) lowering for barrier_sync[TLOAD]`
 - `missing get_buf/rls_buf lowering`
 
-Planned end-to-end acceptance once fixed:
+Closed end-to-end acceptance:
 
-- [ ] Add `test/samples/Sync/test_barrier_sync.py` as a required passing sample after `barrier_sync` lowering lands.
-- [ ] Add `test/samples/Sync/test_a5_buf_sync.py` as a required passing sample after `get_buf/rls_buf` lowering lands.
+- [x] `test/samples/Sync/test_barrier_sync.py` lowers through `pto.barrier` to `a5vm.pipe_barrier`.
+- [x] `test/samples/Sync/test_a5_buf_sync.py` lowers to `a5vm.get_buf` / `a5vm.rls_buf`.
 
 ## Deferred Domains
 
@@ -153,6 +168,6 @@ Notes:
 - [x] Fix dynamic/tail `TLOAD` and `TSTORE`.
 - [ ] Fix unary/binary vec valid-shape contract handling.
 - [ ] Add valid-dim fallback derivation for shaped seam values.
-- [ ] Implement `barrier_sync` lowering.
-- [ ] Implement `get_buf/rls_buf` lowering.
+- [x] Implement `barrier_sync` lowering.
+- [x] Implement `get_buf/rls_buf` lowering.
 - [ ] Re-run `Sync`, `Partition5D`, and current phase-2 checks after each closure.

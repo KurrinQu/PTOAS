@@ -66,6 +66,25 @@ def A5VM_PipeBarrierOp : A5VM_Op<"pipe_barrier"> {
   let assemblyFormat = "$pipe attr-dict";
 }
 
+class A5VM_BufTokenOp<string mnemonic> : A5VM_Op<mnemonic> {
+  let arguments = (ins
+    StrAttr:$pipe,
+    I64:$buf_id,
+    I64:$mode
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $pipe `,` $buf_id `,` $mode attr-dict `:` type($buf_id) `,` type($mode)
+  }];
+}
+
+def A5VM_GetBufOp : A5VM_BufTokenOp<"get_buf">;
+def A5VM_RlsBufOp : A5VM_BufTokenOp<"rls_buf">;
+
 class A5VM_BinaryI64ConfigOp<string mnemonic> : A5VM_Op<mnemonic> {
   let arguments = (ins
     I64:$first,
