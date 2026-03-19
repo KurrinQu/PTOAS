@@ -6,8 +6,8 @@ current_phase: 2
 current_phase_name: PTO Lowering
 current_plan: 3
 status: verifying
-stopped_at: Completed 02-02-PLAN.md
-last_updated: "2026-03-19T02:58:49.780Z"
+stopped_at: Completed 02-03-PLAN.md
+last_updated: "2026-03-19T03:10:08.186Z"
 last_activity: 2026-03-19
 progress:
   total_phases: 4
@@ -28,7 +28,7 @@ progress:
 **Total Plans in Phase:** 3
 **Progress:** [██████░░░░] 60%
 **Last Activity:** 2026-03-19
-**Last Activity Description:** Executed plan 02-02 to preserve copy-family lowering and explicit AIV loop-carrier metadata
+**Last Activity Description:** Executed plan 02-03 to make PTO-to-A5VM helper dispatch explicit and confirm A5VM backend wiring
 
 ## Project Reference
 
@@ -95,7 +95,8 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - Rewrote `include/PTO/Transforms/A5VMLowering.h` around explicit A5-only TLOAD, TABS, and TSTORE lowering contracts
 - Added `lib/PTO/Transforms/PTOToA5VMLowering.cpp` and split pass wiring away from shared contract extraction, copy-loop programming, and unary vec-scope lowering
 - Switched `lib/PTO/Transforms/PTOToA5VM.cpp` to partial conversion so failed helper lowerings now fail the pass instead of being skipped
-- Refactored `tools/ptoas/ptoas.cpp` so the A5VM branch schedules `createLowerPTOToA5VMPass()` separately from EmitC backend emission
+- Preserved the existing `tools/ptoas/ptoas.cpp` A5VM branch wiring and recorded task completion with an explicit empty commit because the branch already satisfied the plan contract
+- Made `lib/PTO/Transforms/PTOToA5VM.cpp` show explicit dispatch through `lowerTLOAD`, `lowerTABS`, and `lowerTSTORE` while keeping the pass boundary thin
 
 ## Open Questions
 
@@ -110,7 +111,7 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 
 - Next recommended command: `/gsd:verify-work`
 - Next plan to execute: none - Phase 2 plans complete
-- Current blocker status: pre-existing A5VM generated-header build defect blocks fresh `ptoas` rebuild verification
+- Current blocker status: pre-existing build regeneration and Phase 2 fixture/runner mismatches still block fresh end-to-end verification
 
 ## Performance Metrics
 
@@ -154,15 +155,17 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - [Phase 02-pto-lowering]: Enforce the corrected vec-scope semantics in the Phase 2 runner so stale pseudo-op checks and bare loop-only fixtures fail fast.
 - [Phase 02]: Treat an already-satisfied task as an explicit empty commit when enforcing one commit per executed plan task.
 - [Phase 02]: Keep __VEC_SCOPE__ as a dedicated dummy loop carrier so the chosen loop owns cce_aiv_loop_hint and llvm.loop.aivector_scope metadata.
+- [Phase 02-pto-lowering]: Treat task 2 as an explicit empty commit because the A5VM branch wiring already satisfied the plan contract.
 
 ## Blockers
 
-- Fresh `CCACHE_DISABLE=1 ninja -C build PTOTransforms ptoas` verification is blocked by a pre-existing A5VM generated-header path/build-graph defect; see `.planning/phases/02-pto-lowering/deferred-items.md`.
+- Fresh `CCACHE_DISABLE=1 ninja -C build PTOTransforms ptoas` verification is blocked by pre-existing A5VM generated-header and build-regeneration issues; see `.planning/phases/02-pto-lowering/deferred-items.md`.
+- `bash test/phase2/run_phase2_checks.sh` currently fails on a pre-existing fixture/runner mismatch in `test/phase2/tabs_abs_loop_shape.mlir`; see `.planning/phases/02-pto-lowering/deferred-items.md`.
 
 ## Session
 
-**Last Date:** 2026-03-19T02:41:31.344Z
-**Stopped At:** Completed 02-02-PLAN.md
+**Last Date:** 2026-03-19T03:10:08.184Z
+**Stopped At:** Completed 02-03-PLAN.md
 **Resume File:** None
 
 ---
