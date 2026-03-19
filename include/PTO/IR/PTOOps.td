@@ -1627,6 +1627,42 @@ def TAndOp : PTO_TOp<"tand", [
   }];
 }
 
+def TConcatOp: PTO_TOp<"tconcat", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "TCONCAT: Concatenate two tiles along the column dimension.";
+  let description = [{
+    Semantics (per row):
+      dst[:, 0:validCol0] = src0
+      dst[:, validCol0:validCol0+validCol1] = src1
+
+    Constraints are implementation-defined; see verifier for current checks.
+  }];
+
+  let arguments = (ins
+    PTODpsType:$src0,
+    PTODpsType:$src1,
+    PTODpsType:$dst
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `ins` `(` $src0 `,` $src1 `:` qualified(type($src0)) `,` qualified(type($src1)) `)`
+    `outs` `(` $dst `:` qualified(type($dst) ) `)`
+    attr-dict
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+}
+
 def TAndSOp : PTO_TOp<"tands", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,

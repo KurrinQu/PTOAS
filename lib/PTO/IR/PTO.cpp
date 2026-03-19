@@ -2121,6 +2121,96 @@ LogicalResult pto::TAndOp::verify() {
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
+mlir::LogicalResult mlir::pto::TConcatOp::verify() {
+  auto verifyCommon = [&]() -> FailureOr<Type> {
+    Type t0 = getSrc0().getType();
+    Type t1 = getSrc1().getType();
+    Type td = getDst().getType();
+    if (failed(verifyTileBufCommon(*this, t0, "src0")) ||
+        failed(verifyTileBufCommon(*this, t1, "src1")) ||
+        failed(verifyTileBufCommon(*this, td, "dst")))
+      return failure();
+
+    Type e0 = getElemTy(t0);
+    Type e1 = getElemTy(t1);
+    Type ed = getElemTy(td);
+    if (!e0 || !e1 || !ed) {
+      emitOpError("failed to get element type for operands");
+      return failure();
+    }
+    if (e0 != e1 || e0 != ed) {
+      emitOpError("expects src0, src1, and dst to have the same element type");
+      return failure();
+    }
+
+    auto v0 = getValidShapeVec(getSrc0());
+    auto v1 = getValidShapeVec(getSrc1());
+    auto vd = getValidShapeVec(getDst());
+    if (v0.size() != 2 || v1.size() != 2 || vd.size() != 2)
+      return emitOpError("expects src0, src1, and dst to have rank-2 valid_shape");
+
+    // validRow must match dst (when known).
+    if (v0[0] != ShapedType::kDynamic && vd[0] != ShapedType::kDynamic && v0[0] != vd[0])
+      return emitOpError("expects src0 valid row to match dst valid row");
+    if (v1[0] != ShapedType::kDynamic && vd[0] != ShapedType::kDynamic && v1[0] != vd[0])
+      return emitOpError("expects src1 valid row to match dst valid row");
+
+    // Total valid columns must fit within dst static cols (when known).
+    auto sd = getShapeVec(td);
+    if (sd.size() == 2 && sd[1] != ShapedType::kDynamic &&
+        v0[1] != ShapedType::kDynamic && v1[1] != ShapedType::kDynamic) {
+      if (v0[1] + v1[1] > sd[1])
+        return emitOpError("expects src0.valid_col + src1.valid_col <= dst.cols");
+    }
+
+    return e0;
+  };
+
+  auto verifyElemType = [&](Type elem) -> LogicalResult {
+    if (elem.isF16() || elem.isF32() || elem.isBF16())
+      return success();
+    auto it = mlir::dyn_cast<IntegerType>(elem);
+    if (!it || !it.isSignless() ||
+        (it.getWidth() != 8 && it.getWidth() != 16 && it.getWidth() != 32))
+      return emitOpError("expects element type to be i8, i16, i32, f16, f32, or bf16");
+    return success();
+  };
+
+  auto verifyLocVec = [&](Type ty, StringRef name) -> LogicalResult {
+    auto as = getPTOMemorySpaceEnum(ty);
+    if (!as || *as != pto::AddressSpace::VEC)
+      return emitOpError() << "expects " << name << " to use loc=vec";
+    return success();
+  };
+
+  auto verifyA2A3 = [&]() -> LogicalResult {
+    FailureOr<Type> elemOr = verifyCommon();
+    if (failed(elemOr))
+      return failure();
+    if (failed(verifyLocVec(getSrc0().getType(), "src0")) ||
+        failed(verifyLocVec(getSrc1().getType(), "src1")) ||
+        failed(verifyLocVec(getDst().getType(), "dst")))
+      return failure();
+    return verifyElemType(*elemOr);
+  };
+
+  auto verifyA5 = [&]() -> LogicalResult {
+    FailureOr<Type> elemOr = verifyCommon();
+    if (failed(elemOr))
+      return failure();
+    if (failed(verifyLocVec(getSrc0().getType(), "src0")) ||
+        failed(verifyLocVec(getSrc1().getType(), "src1")) ||
+        failed(verifyLocVec(getDst().getType(), "dst")))
+      return failure();
+    if (!isRowMajorTileBuf(getSrc0().getType()) || !isRowMajorTileBuf(getSrc1().getType()) ||
+        !isRowMajorTileBuf(getDst().getType()))
+      return emitOpError("expects src0, src1, and dst to use row-major layout");
+    return verifyElemType(*elemOr);
+  };
+
+  return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
+}
+
 LogicalResult pto::TAndSOp::verify() {
   auto verifyCommon = [&]() -> FailureOr<Type> {
     if (getSrc() == getDst()) {
@@ -6605,6 +6695,7 @@ PTO_DEFINE_UNARY_EFFECTS(TAddSOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TAddSCOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 
 PTO_DEFINE_BINARY_EFFECTS(TAndOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
+PTO_DEFINE_BINARY_EFFECTS(TConcatOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TAndSOp, getSrcMutable(), getDstMutable())
 
 // TCI: Write(dst) (generates sequence)

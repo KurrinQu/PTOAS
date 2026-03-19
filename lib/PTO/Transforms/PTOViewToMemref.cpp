@@ -1528,6 +1528,34 @@ struct PTOViewToMemrefPass
             dst);
       }
 
+      SmallVector<mlir::pto::TConcatOp, 8> concats;
+      func.walk([&](mlir::pto::TConcatOp op) { concats.push_back(op); });
+
+      for (auto op : concats) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+
+        Value src0 = op.getSrc0();
+        Value src1 = op.getSrc1();
+        Value dst = op.getDst();
+
+        auto src0Ty = dyn_cast<MemRefType>(src0.getType());
+        auto src1Ty = dyn_cast<MemRefType>(src1.getType());
+        auto dstTy = dyn_cast<MemRefType>(dst.getType());
+        if (!src0Ty || !src1Ty || !dstTy) {
+          op.emitError("ins/outs are not memref yet");
+          signalPassFailure();
+          return;
+        }
+
+        rewriter.replaceOpWithNewOp<pto::TConcatOp>(
+            op,
+            TypeRange{},
+            src0,
+            src1,
+            dst);
+      }
+
       SmallVector<mlir::pto::TAndSOp, 8> andsops;
       func.walk([&](mlir::pto::TAndSOp op) { andsops.push_back(op); });
 

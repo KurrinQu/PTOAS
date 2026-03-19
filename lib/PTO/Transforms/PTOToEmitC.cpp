@@ -4469,6 +4469,25 @@ struct PTOTAndToEmitC : public OpConversionPattern<pto::TAndOp> {
     return success();
   }
 };
+
+struct PTOConcatToEmitC : public OpConversionPattern<pto::TConcatOp> {
+  using OpConversionPattern<pto::TConcatOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::TConcatOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    Value src0 = peelUnrealized(adaptor.getSrc0());
+    Value src1 = peelUnrealized(adaptor.getSrc1());
+    Value dst  = peelUnrealized(adaptor.getDst());
+
+    rewriter.create<emitc::CallOpaqueOp>(
+        op.getLoc(), TypeRange{}, "TCONCAT",
+        ArrayAttr{}, ArrayAttr{},
+        ValueRange{dst, src0, src1});
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
 struct PTOAndSToEmitC : public OpConversionPattern<pto::TAndSOp> {
   using OpConversionPattern<pto::TAndSOp>::OpConversionPattern;
 
@@ -7573,6 +7592,7 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTODivSToEmitC>(typeConverter, ctx);
   patterns.add<PTOTDivSToEmitC>(typeConverter, ctx);
   patterns.add<PTORemToEmitC>(typeConverter, ctx);
+  patterns.add<PTOConcatToEmitC>(typeConverter, ctx);
   patterns.add<PTORecipToEmitC>(typeConverter, ctx);
   patterns.add<PTOMulsToEmitC>(typeConverter, ctx);
   patterns.add<PTOExpToEmitC>(typeConverter, ctx);

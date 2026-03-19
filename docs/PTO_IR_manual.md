@@ -5099,6 +5099,67 @@ Predefined mask patterns for gather operations.
 
 ---
 
+##### `pto.tconcat` - Concatenate Tiles (Column-wise)
+
+**Summary:** Concatenates two source tiles along the column dimension into a destination tile.
+
+**Semantics:**
+
+Let \(R\) be `dst` valid rows, \(C_0\) be `src0` valid columns, and \(C_1\) be `src1` valid columns. For each row \(i\):
+
+\[
+dst[i, 0:C_0) = src0[i, 0:C_0)
+\]
+\[
+dst[i, C_0:C_0+C_1) = src1[i, 0:C_1)
+\]
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `src0` | `pto.tile_buf` | First source tile (first segment) |
+| `src1` | `pto.tile_buf` | Second tile (second segment) |
+| `dst` | `pto.tile_buf` | Destination tile |
+
+**Results:** None. Writes into `dst` via DPS pattern.
+
+**Assembly Format:**
+
+```
+pto.tconcat ins(<src0>, <src1> : <src0_type>, <src1_type>)
+           outs(<dst> : <dst_type>)
+```
+
+**Constraints & Verification:**
+
+- **Implementation checks (A2A3)**:
+- `src0`, `src1`, and `dst` must have the same element type, and must be one of : `i8/i16/i32/f16/f32/bf16`
+- TileType of src and dst tiles must be `loc=vec`
+- The total concatenated valid columns must fit in `dst` capacity:
+  - `src0.valid_col + src1.valid_col <= dst.cols` (checked when these values are statically known).
+- `dst valid row = src0/src1 valid row`, 
+- **Implementation checks (A5)**:
+- `src0`, `src1`, and `dst` must have the same element type, and must be one of : `i8/i16/i32/f16/f32/bf16`.
+- All tiles must `blayout=row_major`
+- TileType of src and dst tiles must be `loc=vec`
+- The total concatenated valid columns must fit in `dst` capacity:
+  - `src0.valid_col + src1.valid_col <= dst.cols` (checked when these values are statically known).
+
+**Hardware Mapping:**
+
+- Executes on the **Vector pipeline** (`PIPE_V`)
+- Operates on data in the **VEC (UB)** memory space
+
+**Basic Example:**
+
+```mlir
+pto.tconcat ins(%a, %b : !pto.tile_buf<...>, !pto.tile_buf<...>)
+           outs(%dst : !pto.tile_buf<...>)
+```
+
+---
+
 ##### `pto.tgather` - Gather/Select Elements
 
 **Summary:** Gathers elements from a source tile using indices or a mask pattern.
