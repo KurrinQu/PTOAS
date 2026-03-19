@@ -41,7 +41,19 @@ LogicalResult lowerTSTOREOp(TStoreOp op, PatternRewriter &rewriter) {
   return lowerTSTORE(op, rewriter);
 }
 
-LogicalResult lowerPTOOp(Operation *op, PatternRewriter &rewriter) {
+LogicalResult lowerSetFlagOp(SetFlagOp op, PatternRewriter &rewriter) {
+  return lowerSetFlag(op, rewriter);
+}
+
+LogicalResult lowerWaitFlagOp(WaitFlagOp op, PatternRewriter &rewriter) {
+  return lowerWaitFlag(op, rewriter);
+}
+
+LogicalResult lowerBarrierOp(BarrierOp op, PatternRewriter &rewriter) {
+  return lowerBarrier(op, rewriter);
+}
+
+LogicalResult lowerTensorPipelineOp(Operation *op, PatternRewriter &rewriter) {
   rewriter.setInsertionPoint(op);
 
   LogicalResult lowered = success();
@@ -61,23 +73,54 @@ LogicalResult lowerPTOOp(Operation *op, PatternRewriter &rewriter) {
   return success();
 }
 
+LogicalResult lowerResidualPTOOp(Operation *op, PatternRewriter &rewriter) {
+  rewriter.setInsertionPoint(op);
+
+  LogicalResult lowered = success();
+  if (auto setFlag = dyn_cast<SetFlagOp>(op))
+    lowered = lowerSetFlagOp(setFlag, rewriter);
+  else if (auto waitFlag = dyn_cast<WaitFlagOp>(op))
+    lowered = lowerWaitFlagOp(waitFlag, rewriter);
+  else if (auto barrier = dyn_cast<BarrierOp>(op))
+    lowered = lowerBarrierOp(barrier, rewriter);
+  else if (isa<PointerCastOp, BindTileOp>(op) && op->use_empty())
+    lowered = success();
+  else
+    return success();
+
+  if (failed(lowered))
+    return failure();
+
+  rewriter.eraseOp(op);
+  return success();
+}
+
 struct PTOToA5VMPass : public impl::PTOToA5VMBase<PTOToA5VMPass> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PTOToA5VMPass)
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    SmallVector<Operation *> ptoOps;
+    SmallVector<Operation *> tensorPipelineOps;
+    SmallVector<Operation *> residualPTOOps;
     module.walk([&](Operation *op) {
       if (isa<TLoadOp, TAbsOp, TStoreOp>(op))
-        ptoOps.push_back(op);
+        tensorPipelineOps.push_back(op);
+      else if (isa<PointerCastOp, BindTileOp, SetFlagOp, WaitFlagOp, BarrierOp>(op))
+        residualPTOOps.push_back(op);
     });
 
     PatternRewriter rewriter(&getContext());
     bool sawFailure = false;
-    for (Operation *op : ptoOps) {
+    for (Operation *op : tensorPipelineOps) {
       if (!op->getBlock())
         continue;
-      if (failed(lowerPTOOp(op, rewriter)))
+      if (failed(lowerTensorPipelineOp(op, rewriter)))
+        sawFailure = true;
+    }
+    for (Operation *op : residualPTOOps) {
+      if (!op->getBlock())
+        continue;
+      if (failed(lowerResidualPTOOp(op, rewriter)))
         sawFailure = true;
     }
 

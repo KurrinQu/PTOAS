@@ -10,6 +10,7 @@
 
 #include "PTO/IR/A5VM.h"
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -43,18 +44,6 @@ std::optional<int64_t> getConstInt(Value value) {
       return intAttr.getInt();
   }
   return std::nullopt;
-}
-
-StringRef stringifyTileDomain(A5VMTileDomain domain) {
-  switch (domain) {
-  case A5VMTileDomain::Vec:
-    return "vec";
-  case A5VMTileDomain::Acc:
-    return "acc";
-  case A5VMTileDomain::Mat:
-    return "mat";
-  }
-  llvm_unreachable("unknown A5VM tile domain");
 }
 
 StringRef stringifyTileLayout(TileBufType type) {
@@ -102,6 +91,14 @@ StringRef stringifyLayoutAttr(Attribute layoutAttr) {
   if (auto attr = dyn_cast_or_null<LayoutAttr>(layoutAttr))
     return stringifyLayout(attr.getLayout());
   return "nd";
+}
+
+StringAttr stringifyPipeAttr(PipeAttr pipe, PatternRewriter &rewriter) {
+  return rewriter.getStringAttr(stringifyPIPE(pipe.getPipe()));
+}
+
+StringAttr stringifyEventAttr(EventAttr event, PatternRewriter &rewriter) {
+  return rewriter.getStringAttr(stringifyEVENT(event.getEvent()));
 }
 
 A5VMTileDomain deriveTileDomain(Attribute memorySpace) {
@@ -472,6 +469,14 @@ Attribute getGmMemorySpace(MLIRContext *context) {
   return AddressSpaceAttr::get(context, AddressSpace::GM);
 }
 
+unsigned getLLVMAddressSpace(Attribute memorySpace) {
+  if (auto addrSpace = dyn_cast_or_null<AddressSpaceAttr>(memorySpace))
+    return static_cast<unsigned>(addrSpace.getAddressSpace());
+  if (auto intAttr = dyn_cast_or_null<IntegerAttr>(memorySpace))
+    return static_cast<unsigned>(intAttr.getInt());
+  return static_cast<unsigned>(AddressSpace::GM);
+}
+
 Value materializeMemRefView(Value value, ArrayRef<int64_t> shape, Type elementType,
                             Attribute memorySpace,
                             PatternRewriter &rewriter, Location loc) {
@@ -498,13 +503,37 @@ Value materializeTileBufferView(Value value, PatternRewriter &rewriter,
                                tileType.getMemorySpace(), rewriter, loc);
 }
 
-Value materializeGmView(Value value, ArrayRef<int64_t> shape, Type elementType,
-                        PatternRewriter &rewriter, Location loc) {
-  if (isa<BaseMemRefType>(value.getType()))
-    return value;
-  return materializeMemRefView(value, shape, elementType,
-                               getGmMemorySpace(rewriter.getContext()),
-                               rewriter, loc);
+Value materializeBufferPointer(Value value, Type elementType,
+                               Attribute memorySpace,
+                               PatternRewriter &rewriter, Location loc) {
+  if (!value)
+    return {};
+
+  if (auto bind = value.getDefiningOp<BindTileOp>())
+    return materializeBufferPointer(bind.getSource(), elementType, memorySpace,
+                                    rewriter, loc);
+
+  if (auto cast = value.getDefiningOp<PointerCastOp>()) {
+    if (cast.getAddrs().empty())
+      return {};
+    auto ptrType =
+        LLVM::LLVMPointerType::get(rewriter.getContext(),
+                                   getLLVMAddressSpace(memorySpace));
+    return rewriter.create<LLVM::IntToPtrOp>(loc, ptrType, cast.getAddrs().front());
+  }
+
+  Value memrefValue = materializeTileBufferView(value, rewriter, loc);
+  if (!memrefValue || !isa<BaseMemRefType>(memrefValue.getType()))
+    return {};
+
+  Value ptrAsIndex =
+      rewriter.create<memref::ExtractAlignedPointerAsIndexOp>(loc, memrefValue);
+  Value ptrAsI64 =
+      rewriter.create<arith::IndexCastUIOp>(loc, rewriter.getI64Type(), ptrAsIndex);
+  auto ptrType =
+      LLVM::LLVMPointerType::get(rewriter.getContext(),
+                                 getLLVMAddressSpace(memorySpace));
+  return rewriter.create<LLVM::IntToPtrOp>(loc, ptrType, ptrAsI64);
 }
 
 A5VMPartitionTrace extractPartitionTrace(Value value) {
@@ -750,10 +779,12 @@ LogicalResult buildUnaryVecScope(StringRef family,
   if (!vecType)
     return emitError(loc) << "unsupported A5VM unary element type";
 
-  Value srcBuffer = materializeTileBufferView(src, rewriter, loc);
-  Value dstBuffer = materializeTileBufferView(dst, rewriter, loc);
+  Value srcBuffer = materializeBufferPointer(src, contract.elementType,
+                                             getMemorySpace(src), rewriter, loc);
+  Value dstBuffer = materializeBufferPointer(dst, contract.elementType,
+                                             getMemorySpace(dst), rewriter, loc);
   if (!srcBuffer || !dstBuffer)
-    return emitError(loc) << "requires memref-backed tile buffers for unary lowering";
+    return emitError(loc) << "requires pointer-backed tile buffers for unary lowering";
 
   int64_t validRows = contract.validRows;
   int64_t validCols = contract.validCols;
@@ -803,11 +834,13 @@ LogicalResult lowerTLOAD(TLoadOp op, PatternRewriter &rewriter) {
   if (!base)
     return op.emitOpError("requires a memref- or ptr-backed source for A5VM lowering");
 
-  Value sourceBuffer = materializeGmView(base, contract.sourceShape,
-                                         getElementType(base), rewriter,
-                                         op.getLoc());
-  Value destinationBuffer = materializeTileBufferView(op.getDst(), rewriter,
-                                                      op.getLoc());
+  Value sourceBuffer =
+      materializeBufferPointer(base, getElementType(base),
+                               getGmMemorySpace(rewriter.getContext()), rewriter,
+                               op.getLoc());
+  Value destinationBuffer =
+      materializeBufferPointer(op.getDst(), contract.elementType,
+                               getMemorySpace(op.getDst()), rewriter, op.getLoc());
   if (!sourceBuffer || !destinationBuffer)
     return op.emitOpError("requires A5-compatible source and destination buffers");
 
@@ -903,10 +936,13 @@ LogicalResult lowerTSTORE(TStoreOp op, PatternRewriter &rewriter) {
   if (!base)
     return op.emitOpError("requires a memref- or ptr-backed destination for A5VM lowering");
 
-  Value sourceBuffer = materializeTileBufferView(op.getSrc(), rewriter, op.getLoc());
-  Value destinationBuffer = materializeGmView(base, contract.destinationShape,
-                                              getElementType(base), rewriter,
-                                              op.getLoc());
+  Value sourceBuffer =
+      materializeBufferPointer(op.getSrc(), contract.elementType,
+                               getMemorySpace(op.getSrc()), rewriter, op.getLoc());
+  Value destinationBuffer =
+      materializeBufferPointer(base, getElementType(base),
+                               getGmMemorySpace(rewriter.getContext()), rewriter,
+                               op.getLoc());
   if (!sourceBuffer || !destinationBuffer)
     return op.emitOpError("requires A5-compatible source and destination buffers");
 
@@ -940,6 +976,28 @@ LogicalResult lowerTSTORE(TStoreOp op, PatternRewriter &rewriter) {
   attachStoreContractAttrs(copyOp, contract);
   if (failed(programCopyUbToGmLoops(copyOp, contract, rewriter)))
     return failure();
+  return success();
+}
+
+LogicalResult lowerSetFlag(SetFlagOp op, PatternRewriter &rewriter) {
+  rewriter.create<a5vm::SetFlagOp>(op.getLoc(),
+                                   stringifyPipeAttr(op.getSrcPipe(), rewriter),
+                                   stringifyPipeAttr(op.getDstPipe(), rewriter),
+                                   stringifyEventAttr(op.getEventId(), rewriter));
+  return success();
+}
+
+LogicalResult lowerWaitFlag(WaitFlagOp op, PatternRewriter &rewriter) {
+  rewriter.create<a5vm::WaitFlagOp>(op.getLoc(),
+                                    stringifyPipeAttr(op.getSrcPipe(), rewriter),
+                                    stringifyPipeAttr(op.getDstPipe(), rewriter),
+                                    stringifyEventAttr(op.getEventId(), rewriter));
+  return success();
+}
+
+LogicalResult lowerBarrier(BarrierOp op, PatternRewriter &rewriter) {
+  rewriter.create<a5vm::PipeBarrierOp>(op.getLoc(),
+                                       stringifyPipeAttr(op.getPipe(), rewriter));
   return success();
 }
 

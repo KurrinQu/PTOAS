@@ -119,6 +119,9 @@ LogicalResult buildUnaryVecScope(StringRef family,
 LogicalResult lowerTLOAD(TLoadOp op, PatternRewriter &rewriter);
 LogicalResult lowerTABS(TAbsOp op, PatternRewriter &rewriter);
 LogicalResult lowerTSTORE(TStoreOp op, PatternRewriter &rewriter);
+LogicalResult lowerSetFlag(SetFlagOp op, PatternRewriter &rewriter);
+LogicalResult lowerWaitFlag(WaitFlagOp op, PatternRewriter &rewriter);
+LogicalResult lowerBarrier(BarrierOp op, PatternRewriter &rewriter);
 
 } // namespace pto
 } // namespace mlir

@@ -17,15 +17,61 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 def A5VM_VectorType : Type<CPred<"::llvm::isa<::mlir::a5vm::VecType>($_self)">,
                            "A5VM vector type">;
 
+def A5VM_BufferType : Type<
+  CPred<"::llvm::isa<::mlir::LLVM::LLVMPointerType>($_self)">,
+  "LLVM pointer type">;
+
 class A5VM_Op<string mnemonic, list<Trait> traits = []>
     : Op<A5VM_Dialect, mnemonic, traits>;
+
+def A5VM_SetFlagOp : A5VM_Op<"set_flag"> {
+  let arguments = (ins
+    StrAttr:$src_pipe,
+    StrAttr:$dst_pipe,
+    StrAttr:$event_id
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `[` $src_pipe `,` $dst_pipe `,` $event_id `]` attr-dict
+  }];
+}
+
+def A5VM_WaitFlagOp : A5VM_Op<"wait_flag"> {
+  let arguments = (ins
+    StrAttr:$src_pipe,
+    StrAttr:$dst_pipe,
+    StrAttr:$event_id
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `[` $src_pipe `,` $dst_pipe `,` $event_id `]` attr-dict
+  }];
+}
+
+def A5VM_PipeBarrierOp : A5VM_Op<"pipe_barrier"> {
+  let arguments = (ins StrAttr:$pipe);
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = "$pipe attr-dict";
+}
 
 def A5VM_CopyGmToUbufOp : A5VM_Op<"copy_gm_to_ubuf", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
-    AnyMemRef:$source,
-    AnyMemRef:$destination,
+    A5VM_BufferType:$source,
+    A5VM_BufferType:$destination,
     OptionalAttr<StrAttr>:$layout,
     OptionalAttr<I64Attr>:$valid_rows,
     OptionalAttr<I64Attr>:$valid_cols,
@@ -54,7 +100,7 @@ def A5VM_VldsOp : A5VM_Op<"vlds", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
-    AnyMemRef:$source,
+    A5VM_BufferType:$source,
     Index:$offset
   );
 
@@ -83,7 +129,7 @@ def A5VM_VstsOp : A5VM_Op<"vsts", [
   ]> {
   let arguments = (ins
     A5VM_VectorType:$value,
-    AnyMemRef:$destination,
+    A5VM_BufferType:$destination,
     Index:$offset,
     OptionalAttr<StrAttr>:$dist
   );
@@ -101,8 +147,8 @@ def A5VM_CopyUbufToGmOp : A5VM_Op<"copy_ubuf_to_gm", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
-    AnyMemRef:$source,
-    AnyMemRef:$destination,
+    A5VM_BufferType:$source,
+    A5VM_BufferType:$destination,
     OptionalAttr<StrAttr>:$layout,
     OptionalAttr<I64Attr>:$valid_rows,
     OptionalAttr<I64Attr>:$valid_cols,

@@ -9,6 +9,7 @@
 #include "PTO/IR/A5VM.h"
 #include "PTO/IR/PTO.h"
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectImplementation.h"
@@ -54,8 +55,20 @@ enum class MemoryRole {
 
 static MemoryRole classifyMemoryRole(Type type) {
   auto memrefType = dyn_cast<BaseMemRefType>(type);
-  if (!memrefType)
+  if (!memrefType) {
+    if (auto ptrType = dyn_cast<LLVM::LLVMPointerType>(type)) {
+      switch (ptrType.getAddressSpace()) {
+      case static_cast<unsigned>(pto::AddressSpace::GM):
+      case static_cast<unsigned>(pto::AddressSpace::Zero):
+        return MemoryRole::GM;
+      case static_cast<unsigned>(pto::AddressSpace::VEC):
+        return MemoryRole::UB;
+      default:
+        return MemoryRole::Other;
+      }
+    }
     return MemoryRole::Other;
+  }
 
   Attribute memorySpace = memrefType.getMemorySpace();
   if (!memorySpace)
@@ -88,13 +101,22 @@ static MemoryRole classifyMemoryRole(Type type) {
   return MemoryRole::Other;
 }
 
-static bool isMemRefLike(Type type) { return isa<BaseMemRefType>(type); }
+static bool isBufferLike(Type type) {
+  return isa<BaseMemRefType, LLVM::LLVMPointerType>(type);
+}
+
+static LogicalResult verifySyncToken(Operation *op, StringAttr token,
+                                     StringRef role) {
+  if (!token || token.getValue().empty())
+    return op->emitOpError() << "requires non-empty " << role;
+  return success();
+}
 
 template <typename CopyOp>
 static LogicalResult verifyCopyGmToUbufOp(CopyOp op, bool expectSourceGM) {
-  if (!isMemRefLike(op.getSource().getType()) ||
-      !isMemRefLike(op.getDestination().getType()))
-    return op.emitOpError("requires memref source and destination");
+  if (!isBufferLike(op.getSource().getType()) ||
+      !isBufferLike(op.getDestination().getType()))
+    return op.emitOpError("requires pointer-like source and destination");
 
   bool hasAllMetadata = op.getLayoutAttr() && op.getValidRowsAttr() &&
                         op.getValidColsAttr() && op.getSidAttr() &&
@@ -129,9 +151,9 @@ static LogicalResult verifyCopyGmToUbufOp(CopyOp op, bool expectSourceGM) {
 
 template <typename CopyOp>
 static LogicalResult verifyCopyUbufToGmOp(CopyOp op, bool expectSourceGM) {
-  if (!isMemRefLike(op.getSource().getType()) ||
-      !isMemRefLike(op.getDestination().getType()))
-    return op.emitOpError("requires memref source and destination");
+  if (!isBufferLike(op.getSource().getType()) ||
+      !isBufferLike(op.getDestination().getType()))
+    return op.emitOpError("requires pointer-like source and destination");
 
   bool hasAllMetadata =
       op.getLayoutAttr() && op.getValidRowsAttr() && op.getValidColsAttr() &&
@@ -242,6 +264,26 @@ LogicalResult CopyGmToUbufOp::verify() {
   return verifyCopyGmToUbufOp(*this, true);
 }
 
+LogicalResult SetFlagOp::verify() {
+  if (failed(verifySyncToken(*this, getSrcPipeAttr(), "src_pipe")) ||
+      failed(verifySyncToken(*this, getDstPipeAttr(), "dst_pipe")) ||
+      failed(verifySyncToken(*this, getEventIdAttr(), "event_id")))
+    return failure();
+  return success();
+}
+
+LogicalResult WaitFlagOp::verify() {
+  if (failed(verifySyncToken(*this, getSrcPipeAttr(), "src_pipe")) ||
+      failed(verifySyncToken(*this, getDstPipeAttr(), "dst_pipe")) ||
+      failed(verifySyncToken(*this, getEventIdAttr(), "event_id")))
+    return failure();
+  return success();
+}
+
+LogicalResult PipeBarrierOp::verify() {
+  return verifySyncToken(*this, getPipeAttr(), "pipe");
+}
+
 void VldsOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
@@ -249,15 +291,15 @@ void VldsOp::getEffects(
 }
 
 LogicalResult VldsOp::verify() {
-  if (!isMemRefLike(getSource().getType()))
-    return emitOpError("requires a memref source");
+  if (!isBufferLike(getSource().getType()))
+    return emitOpError("requires a pointer-like source");
 
   if (failed(verifyVecTypeLike(*this, getResult().getType(), "result type")))
     return failure();
 
   MemoryRole sourceRole = classifyMemoryRole(getSource().getType());
   if (sourceRole == MemoryRole::GM)
-    return emitOpError("requires a UB-backed source memref");
+    return emitOpError("requires a UB-backed source");
 
   return success();
 }
@@ -283,12 +325,12 @@ LogicalResult VstsOp::verify() {
   if (failed(verifyVecTypeLike(*this, getValue().getType(), "value type")))
     return failure();
 
-  if (!isMemRefLike(getDestination().getType()))
-    return emitOpError("requires a memref destination");
+  if (!isBufferLike(getDestination().getType()))
+    return emitOpError("requires a pointer-like destination");
 
   MemoryRole destinationRole = classifyMemoryRole(getDestination().getType());
   if (destinationRole == MemoryRole::GM)
-    return emitOpError("requires a UB-backed destination memref");
+    return emitOpError("requires a UB-backed destination");
 
   return success();
 }
