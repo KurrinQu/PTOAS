@@ -28,6 +28,8 @@ namespace pto {
 namespace {
 
 constexpr StringLiteral kVecScopeName = "__VEC_SCOPE__";
+constexpr StringLiteral kSourceLoopScopeAttrName = "cce_aiv_loop_hint";
+constexpr StringLiteral kLoweredLoopScopeAttrName = "llvm.loop.aivector_scope";
 
 std::optional<int64_t> getConstInt(Value value) {
   if (!value)
@@ -423,6 +425,10 @@ A5VMUnaryContract extractTAbsContract(TAbsOp op) {
   contract.tileLayout = deriveTileLayout(op.getSrc());
   deriveValidShape(op.getSrc(), contract.validRows, contract.validCols);
   contract.elementType = getElementType(op.getSrc());
+  contract.loopScope.kind = A5VMLoopScopeKind::AIVVectorScope;
+  contract.loopScope.sourceAttr = kSourceLoopScopeAttrName;
+  contract.loopScope.loweredAttr = kLoweredLoopScopeAttrName;
+  contract.loopScope.loopDepth = 0;
   return contract;
 }
 
@@ -472,6 +478,11 @@ void attachUnaryContractAttrs(Operation *op, const A5VMUnaryContract &contract) 
   op->setAttr("tile_layout", builder.getStringAttr(contract.tileLayout));
   op->setAttr("valid_rows", builder.getI64IntegerAttr(contract.validRows));
   op->setAttr("valid_cols", builder.getI64IntegerAttr(contract.validCols));
+  if (contract.loopScope.kind == A5VMLoopScopeKind::AIVVectorScope) {
+    op->setAttr(contract.loopScope.sourceAttr, builder.getUnitAttr());
+    op->setAttr(contract.loopScope.loweredAttr, builder.getUnitAttr());
+    op->setAttr("a5vm.scope", builder.getStringAttr(kVecScopeName));
+  }
 }
 
 void attachStoreContractAttrs(Operation *op, const A5VMStoreContract &contract) {
@@ -497,6 +508,25 @@ LogicalResult lowerUnsupportedMatStore(Location loc) {
 }
 
 } // namespace
+
+LogicalResult attachLoopScopeMetadata(LoopLikeOpInterface loop,
+                                      const A5VMLoopScopeContract &contract,
+                                      PatternRewriter &rewriter) {
+  if (!loop)
+    return failure();
+  if (contract.kind == A5VMLoopScopeKind::None)
+    return success();
+  if (contract.kind != A5VMLoopScopeKind::AIVVectorScope)
+    return failure();
+
+  Operation *loopOp = loop.getOperation();
+  loopOp->setAttr(contract.sourceAttr, rewriter.getUnitAttr());
+  loopOp->setAttr(contract.loweredAttr, rewriter.getUnitAttr());
+  loopOp->setAttr("a5vm.scope", rewriter.getStringAttr(kVecScopeName));
+  loopOp->setAttr("a5vm.loop_scope_depth",
+                  rewriter.getI64IntegerAttr(contract.loopDepth));
+  return success();
+}
 
 void set_loop2_stride_outtoub(Operation *copyOp, int64_t dstStride,
                               int64_t srcStride, Builder &builder) {
@@ -625,26 +655,33 @@ LogicalResult buildUnaryVecScope(StringRef family,
   Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
   Value rows = rewriter.create<arith::ConstantIndexOp>(loc, validRows);
   Value cols = rewriter.create<arith::ConstantIndexOp>(loc, validCols);
+  Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
   Value outerStepValue = rewriter.create<arith::ConstantIndexOp>(loc, outerStep);
   Value innerUpperBoundValue =
       rewriter.create<arith::ConstantIndexOp>(loc, innerUpperBound);
   Value innerStepValue = rewriter.create<arith::ConstantIndexOp>(loc, innerStep);
 
-  auto outerLoop = rewriter.create<scf::ForOp>(loc, c0, rows, outerStepValue);
-  outerLoop->setAttr("a5vm.scope", rewriter.getStringAttr(kVecScopeName));
-  attachUnaryContractAttrs(outerLoop, contract);
+  auto aivScopeLoop = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
+  if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
+    return emitError(loc) << "failed to attach AIV loop scope metadata";
+  attachUnaryContractAttrs(aivScopeLoop, contract);
 
-  OpBuilder::InsertionGuard outerGuard(rewriter);
-  rewriter.setInsertionPointToStart(outerLoop.getBody());
-  auto innerLoop =
+  OpBuilder::InsertionGuard aivGuard(rewriter);
+  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
+  auto chunkLoop = rewriter.create<scf::ForOp>(loc, c0, rows, outerStepValue);
+  attachUnaryContractAttrs(chunkLoop, contract);
+
+  OpBuilder::InsertionGuard chunkGuard(rewriter);
+  rewriter.setInsertionPointToStart(chunkLoop.getBody());
+  auto vectorLoop =
       rewriter.create<scf::ForOp>(loc, c0, innerUpperBoundValue, innerStepValue);
 
-  OpBuilder::InsertionGuard innerGuard(rewriter);
-  rewriter.setInsertionPointToStart(innerLoop.getBody());
-  Value rowOffset = rewriter.create<arith::MulIOp>(loc, outerLoop.getInductionVar(),
+  OpBuilder::InsertionGuard vectorGuard(rewriter);
+  rewriter.setInsertionPointToStart(vectorLoop.getBody());
+  Value rowOffset = rewriter.create<arith::MulIOp>(loc, chunkLoop.getInductionVar(),
                                                    cols);
   Value offset =
-      rewriter.create<arith::AddIOp>(loc, rowOffset, innerLoop.getInductionVar());
+      rewriter.create<arith::AddIOp>(loc, rowOffset, vectorLoop.getInductionVar());
   auto vlds = rewriter.create<a5vm::VldsOp>(loc, vecType, srcBuffer, offset);
   auto vabs = rewriter.create<a5vm::VabsOp>(loc, vecType, vlds.getResult());
   attachUnaryContractAttrs(vabs, contract);
@@ -717,7 +754,8 @@ LogicalResult lowerTABS(TAbsOp op, PatternRewriter &rewriter) {
     hasPrecheckFailure = true;
   }
   if (contract.validRows != dstRows || contract.validCols != dstCols) {
-    op.emitOpError("TABS lowering requires matching source and destination valid shape");
+    op.emitOpError(
+        "TABS lowering requires matching source and destination valid region");
     hasPrecheckFailure = true;
   }
   if (!contract.elementType ||
