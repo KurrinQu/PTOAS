@@ -4,31 +4,31 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 2
 current_phase_name: PTO Lowering
-current_plan: 3
-status: verifying
-stopped_at: Completed 02-03-PLAN.md
-last_updated: "2026-03-19T03:10:08.186Z"
+current_plan: 4
+status: executing
+stopped_at: Completed 02-04-PLAN.md
+last_updated: "2026-03-19T03:53:25.757Z"
 last_activity: 2026-03-19
 progress:
   total_phases: 4
-  completed_phases: 2
-  total_plans: 10
-  completed_plans: 6
-  percent: 60
+  completed_phases: 1
+  total_plans: 13
+  completed_plans: 7
+  percent: 54
 ---
 
 # Project State
 
 **Updated:** 2026-03-19
-**Status:** Phase complete — ready for verification
+**Status:** Phase in progress
 **Current Phase:** 2
 **Current Phase Name:** PTO Lowering
 **Total Phases:** 4
-**Current Plan:** 3
-**Total Plans in Phase:** 3
-**Progress:** [██████░░░░] 60%
+**Current Plan:** 4
+**Total Plans in Phase:** 6
+**Progress:** [█████░░░░░] 54%
 **Last Activity:** 2026-03-19
-**Last Activity Description:** Executed plan 02-03 to make PTO-to-A5VM helper dispatch explicit and confirm A5VM backend wiring
+**Last Activity Description:** Executed plan 02-04 to recover exact copy-family stride and partition-trace metadata in observable lowered IR
 
 ## Project Reference
 
@@ -51,7 +51,8 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - Revised plan `02-01` executed and summarized
 - Plan `02-02` executed and summarized
 - Plan `02-03` executed and summarized
-- Next execution target: verification for Phase 2 completion
+- Plan `02-04` executed and summarized
+- Next execution target: execute `02-05-PLAN.md`
 
 ## Active Milestone
 
@@ -63,7 +64,7 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 | Phase | Name | Status |
 |-------|------|--------|
 | 1 | A5VM Foundation | Complete |
-| 2 | PTO Lowering | Ready for Verification |
+| 2 | PTO Lowering | In Progress |
 | 3 | HIVM Emission | Pending |
 | 4 | Abs Validation | Pending |
 
@@ -97,6 +98,8 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - Switched `lib/PTO/Transforms/PTOToA5VM.cpp` to partial conversion so failed helper lowerings now fail the pass instead of being skipped
 - Preserved the existing `tools/ptoas/ptoas.cpp` A5VM branch wiring and recorded task completion with an explicit empty commit because the branch already satisfied the plan contract
 - Made `lib/PTO/Transforms/PTOToA5VM.cpp` show explicit dispatch through `lowerTLOAD`, `lowerTABS`, and `lowerTSTORE` while keeping the pass boundary thin
+- Recovered copy-family stride metadata through `memref.subview`, `memref.reinterpret_cast`, and `memref.cast` chains in `PTOToA5VMLowering.cpp`
+- Restored exact `trace_offsets` / `trace_sizes` from lowered subview form and tightened the TLOAD/TSTORE fixtures to require `src_strides` / `dst_strides = [32, 1]`
 
 ## Open Questions
 
@@ -109,9 +112,9 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 
 ## Session Continuity
 
-- Next recommended command: `/gsd:verify-work`
-- Next plan to execute: none - Phase 2 plans complete
-- Current blocker status: pre-existing build regeneration and Phase 2 fixture/runner mismatches still block fresh end-to-end verification
+- Next recommended command: `/gsd:execute-phase`
+- Next plan to execute: `02-05-PLAN.md`
+- Current blocker status: the checked-in `build/` directory still has pre-existing regeneration/header issues, but a fresh throwaway build verified the `02-04` copy-family metadata fix
 
 ## Performance Metrics
 
@@ -127,6 +130,7 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 | Phase 02-pto-lowering P03 | 12min | 2 tasks | 2 files |
 | Phase 02-pto-lowering P01 | 8min | 2 tasks | 3 files |
 | Phase 02-pto-lowering P02 | 14min | 2 tasks | 1 files |
+| Phase 02-pto-lowering P04 | 75min | 2 tasks | 4 files |
 
 ## Decisions Made
 
@@ -156,6 +160,8 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - [Phase 02]: Treat an already-satisfied task as an explicit empty commit when enforcing one commit per executed plan task.
 - [Phase 02]: Keep __VEC_SCOPE__ as a dedicated dummy loop carrier so the chosen loop owns cce_aiv_loop_hint and llvm.loop.aivector_scope metadata.
 - [Phase 02-pto-lowering]: Treat task 2 as an explicit empty commit because the A5VM branch wiring already satisfied the plan contract.
+- [Phase 02]: Recover copy-family metadata by walking memref.subview, memref.reinterpret_cast, and memref.cast instead of relying on direct PartitionViewOp producers.
+- [Phase 02]: Keep Task 2 focused on fixture contracts by locking only the exact stride and trace attrs the emitted IR now proves.
 
 ## Blockers
 
@@ -164,9 +170,9 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 
 ## Session
 
-**Last Date:** 2026-03-19T03:10:08.184Z
-**Stopped At:** Completed 02-03-PLAN.md
+**Last Date:** 2026-03-19T03:53:13.956Z
+**Stopped At:** Completed 02-04-PLAN.md
 **Resume File:** None
 
 ---
-*Last updated: 2026-03-19 after completing plan 02-03*
+*Last updated: 2026-03-19 after completing plan 02-04*
