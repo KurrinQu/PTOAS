@@ -11,6 +11,7 @@
 
 #include "PTO/IR/PTO.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Support/LLVM.h"
 
 namespace mlir {

@@ -253,6 +253,58 @@ int64_t deriveTransferStride(ArrayRef<int64_t> strides, int64_t fallback,
   return fallback;
 }
 
+void recordStaticValues(ValueRange values, SmallVectorImpl<int64_t> &out) {
+  out.clear();
+  out.reserve(values.size());
+  for (Value value : values)
+    out.push_back(getConstInt(value).value_or(ShapedType::kDynamic));
+}
+
+void recordStaticSizes(ArrayRef<OpFoldResult> values,
+                       SmallVectorImpl<int64_t> &out, bool &hasDynamic) {
+  out.clear();
+  hasDynamic = false;
+  out.reserve(values.size());
+  for (OpFoldResult value : values) {
+    if (auto attr = dyn_cast<Attribute>(value)) {
+      if (auto intAttr = dyn_cast<IntegerAttr>(attr)) {
+        out.push_back(intAttr.getInt());
+        continue;
+      }
+    } else if (std::optional<int64_t> constant =
+                   getConstInt(cast<Value>(value))) {
+      out.push_back(*constant);
+      continue;
+    }
+    out.push_back(ShapedType::kDynamic);
+    hasDynamic = true;
+  }
+}
+
+void mergeSubviewTrace(A5VMPartitionTrace &trace, ArrayRef<int64_t> offsets,
+                       ArrayRef<int64_t> sizes, bool hasDynamicOffsets,
+                       bool hasDynamicSizes) {
+  if (trace.offsets.empty()) {
+    trace.offsets.assign(offsets.begin(), offsets.end());
+    trace.hasDynamicOffsets = hasDynamicOffsets;
+  } else {
+    size_t count = std::min(trace.offsets.size(), offsets.size());
+    for (size_t i = 0; i < count; ++i) {
+      if (trace.offsets[i] == ShapedType::kDynamic ||
+          offsets[i] == ShapedType::kDynamic) {
+        trace.offsets[i] = ShapedType::kDynamic;
+        trace.hasDynamicOffsets = true;
+        continue;
+      }
+      trace.offsets[i] += offsets[i];
+    }
+    trace.hasDynamicOffsets = trace.hasDynamicOffsets || hasDynamicOffsets;
+  }
+
+  trace.sizes.assign(sizes.begin(), sizes.end());
+  trace.hasDynamicSizes = hasDynamicSizes;
+}
+
 Value resolveTensorViewBase(Value value, Attribute &layoutAttr,
                             SmallVectorImpl<int64_t> &shape,
                             SmallVectorImpl<int64_t> &strides) {
@@ -260,19 +312,6 @@ Value resolveTensorViewBase(Value value, Attribute &layoutAttr,
     return {};
 
   if (auto part = value.getDefiningOp<PartitionViewOp>()) {
-    if (auto source = part.getSource().getDefiningOp<MakeTensorViewOp>()) {
-      layoutAttr = source.getLayoutAttr();
-      auto tensorType = dyn_cast<TensorViewType>(source.getResult().getType());
-      shape.assign(tensorType.getShape().begin(), tensorType.getShape().end());
-      strides.clear();
-      for (Value stride : source.getStrides()) {
-        if (std::optional<int64_t> constant = getConstInt(stride))
-          strides.push_back(*constant);
-        else
-          strides.push_back(ShapedType::kDynamic);
-      }
-      return source.getPtr();
-    }
     return resolveTensorViewBase(part.getSource(), layoutAttr, shape, strides);
   }
 
@@ -280,21 +319,51 @@ Value resolveTensorViewBase(Value value, Attribute &layoutAttr,
     layoutAttr = source.getLayoutAttr();
     auto tensorType = dyn_cast<TensorViewType>(source.getResult().getType());
     shape.assign(tensorType.getShape().begin(), tensorType.getShape().end());
-    strides.clear();
-    for (Value stride : source.getStrides()) {
-      if (std::optional<int64_t> constant = getConstInt(stride))
-        strides.push_back(*constant);
-      else
-        strides.push_back(ShapedType::kDynamic);
-    }
+    recordStaticValues(source.getStrides(), strides);
     return source.getPtr();
   }
 
+  if (auto subview = value.getDefiningOp<memref::SubViewOp>()) {
+    Value base =
+        resolveTensorViewBase(subview.getSource(), layoutAttr, shape, strides);
+    if (shape.empty()) {
+      bool hasDynamicSizes = false;
+      recordStaticSizes(subview.getMixedSizes(), shape, hasDynamicSizes);
+    }
+    return base ? base : value;
+  }
+
+  if (auto reinterpret = value.getDefiningOp<memref::ReinterpretCastOp>()) {
+    if (Attribute layout = reinterpret->getAttr("layout"))
+      layoutAttr = layout;
+    if (shape.empty()) {
+      bool hasDynamicSizes = false;
+      recordStaticSizes(reinterpret.getMixedSizes(), shape, hasDynamicSizes);
+    }
+    if (strides.empty()) {
+      bool hasDynamicStrides = false;
+      recordStaticSizes(reinterpret.getMixedStrides(), strides,
+                        hasDynamicStrides);
+    }
+    Value base =
+        resolveTensorViewBase(reinterpret.getSource(), layoutAttr, shape, strides);
+    return base ? base : value;
+  }
+
+  if (auto cast = value.getDefiningOp<memref::CastOp>()) {
+    Value base =
+        resolveTensorViewBase(cast.getSource(), layoutAttr, shape, strides);
+    return base ? base : value;
+  }
+
   if (auto memrefType = dyn_cast<MemRefType>(value.getType())) {
-    shape.assign(memrefType.getShape().begin(), memrefType.getShape().end());
-    int64_t offset = 0;
-    if (failed(mlir::getStridesAndOffset(memrefType, strides, offset)))
-      strides.assign(shape.size(), ShapedType::kDynamic);
+    if (shape.empty())
+      shape.assign(memrefType.getShape().begin(), memrefType.getShape().end());
+    if (strides.empty()) {
+      int64_t offset = 0;
+      if (failed(mlir::getStridesAndOffset(memrefType, strides, offset)))
+        strides.assign(shape.size(), ShapedType::kDynamic);
+    }
     return value;
   }
 
@@ -392,6 +461,26 @@ A5VMPartitionTrace extractPartitionTrace(Value value) {
   if (auto part = value.getDefiningOp<PartitionViewOp>()) {
     appendStaticSizes(part.getOffsets(), trace.offsets, trace.hasDynamicOffsets);
     appendStaticSizes(part.getSizes(), trace.sizes, trace.hasDynamicSizes);
+    return trace;
+  }
+  if (auto subview = value.getDefiningOp<memref::SubViewOp>()) {
+    trace = extractPartitionTrace(subview.getSource());
+    SmallVector<int64_t> offsets;
+    SmallVector<int64_t> sizes;
+    bool hasDynamicOffsets = false;
+    bool hasDynamicSizes = false;
+    recordStaticSizes(subview.getMixedOffsets(), offsets, hasDynamicOffsets);
+    recordStaticSizes(subview.getMixedSizes(), sizes, hasDynamicSizes);
+    mergeSubviewTrace(trace, offsets, sizes, hasDynamicOffsets, hasDynamicSizes);
+    return trace;
+  }
+  if (auto reinterpret = value.getDefiningOp<memref::ReinterpretCastOp>())
+    return extractPartitionTrace(reinterpret.getSource());
+  if (auto cast = value.getDefiningOp<memref::CastOp>())
+    return extractPartitionTrace(cast.getSource());
+  if (auto unrealized = value.getDefiningOp<UnrealizedConversionCastOp>()) {
+    if (!unrealized.getInputs().empty())
+      return extractPartitionTrace(unrealized.getInputs().front());
   }
   return trace;
 }
