@@ -70,7 +70,7 @@ Implement PTO-to-A5VM lowering that preserves the real PTO-library control struc
 **Plans:** 3 plans
 
 Plans:
-- [ ] `02-01-PLAN.md` — Replan required: existing fixtures lock the wrong pseudo-load/store semantics
+- [x] `02-01-PLAN.md` — Replace the obsolete Phase 2 fixture suite with corrected copy-family and structural vec-scope contracts
 - [ ] `02-02-PLAN.md` — Replan required: existing helper layer does not mirror PTO-library structure
 - [ ] `02-03-PLAN.md` — Replan required: existing pass wiring lowers through the wrong semantic model
 
@@ -126,4 +126,4 @@ Use the `Abs` sample as the first acceptance case for the new backend and extrac
 - Phase 4 is the acceptance and inventory-extraction phase, not a separate architecture redesign.
 
 ---
-*Last updated: 2026-03-19 after correcting the roadmap to match PTO-library-aligned A5VM and lowering semantics*
+*Last updated: 2026-03-19 after replaying revised plan 02-01*

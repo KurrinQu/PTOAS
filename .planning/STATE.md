@@ -4,31 +4,31 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 2
 current_phase_name: PTO Lowering
-current_plan: 3
-status: verifying
-stopped_at: Refreshed 01-03-PLAN.md
-last_updated: "2026-03-18T20:46:28Z"
+current_plan: 2
+status: in_progress
+stopped_at: Completed 02-01-PLAN.md
+last_updated: "2026-03-19T00:35:16Z"
 last_activity: 2026-03-19
 progress:
   total_phases: 4
-  completed_phases: 2
+  completed_phases: 1
   total_plans: 10
-  completed_plans: 6
-  percent: 60
+  completed_plans: 4
+  percent: 40
 ---
 
 # Project State
 
 **Updated:** 2026-03-19
-**Status:** Phase complete — ready for verification
+**Status:** In progress — revised Phase 2 replay underway
 **Current Phase:** 2
 **Current Phase Name:** PTO Lowering
 **Total Phases:** 4
-**Current Plan:** 3
+**Current Plan:** 2
 **Total Plans in Phase:** 3
-**Progress:** [██████░░░░] 60%
+**Progress:** [████░░░░░░] 40%
 **Last Activity:** 2026-03-19
-**Last Activity Description:** Refreshed 01-03 raw corrected A5VM backend seam contract
+**Last Activity Description:** Replayed revised 02-01 Phase 2 fixture and runner contracts
 
 ## Project Reference
 
@@ -48,10 +48,8 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - Plan `01-01` executed and summarized
 - Plan `01-02` executed and summarized
 - Plan `01-03` executed and summarized
-- Plan `02-01` executed and summarized
-- Plan `02-02` executed and summarized
-- Plan `02-03` executed and summarized
-- Next execution target: `03-01-PLAN.md`
+- Revised plan `02-01` executed and summarized
+- Next execution target: `02-02-PLAN.md`
 
 ## Active Milestone
 
@@ -63,7 +61,7 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 | Phase | Name | Status |
 |-------|------|--------|
 | 1 | A5VM Foundation | Complete |
-| 2 | PTO Lowering | Complete |
+| 2 | PTO Lowering | In Progress |
 | 3 | HIVM Emission | Pending |
 | 4 | Abs Validation | Pending |
 
@@ -92,26 +90,10 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 
 ## Recent Progress
 
-- Replaced the obsolete Phase 1 pseudo-op fixtures with corrected GM/UB copy and `vlds` / `vabs` / `vsts` contracts
-- Rewrote `test/phase1/run_phase1_checks.sh` to run only the corrected Phase 1 suite and guard against legacy pseudo-op names
-- Committed Phase 1 fixtures for `a5vm` vector types, core ops, backend switching, and shared dialect preservation
-- Added executable `test/phase1/run_phase1_checks.sh` with unresolved-report and intrinsic-tracing coverage
-- Created `.planning/phases/01-a5vm-foundation/01-a5vm-foundation-01-SUMMARY.md`
-- Added first-class A5VM IR headers, TableGen contracts, and `lib/PTO/IR/A5VM.cpp`
-- Registered A5VM in `ptoas` with parse-only textual fixture handling and passing Phase 1 A5VM checks
-- Created `.planning/phases/01-a5vm-foundation/01-a5vm-foundation-02-SUMMARY.md`
-- Marked BACK-01, BACK-02, and A5VM-01 through A5VM-04 complete in `.planning/REQUIREMENTS.md`
-- Rewrote `A5VMTextEmitter` to preserve raw corrected A5VM text and explicit unsupported-op diagnostics at the Phase 1 seam
-- Locked `ptoas --pto-backend=a5vm` regression coverage to corrected A5VM primitive text while keeping `emitc` as the default path
-- Refreshed `.planning/phases/01-a5vm-foundation/01-a5vm-foundation-03-SUMMARY.md` to document the raw-text seam contract
-- Added committed Phase 2 fixtures for TLOAD, TSTORE, TABS, and unary lowering metadata contracts
-- Added executable `test/phase2/run_phase2_checks.sh` with explicit ptoas and `ctest` invocations
-- Created `.planning/phases/02-pto-lowering/02-pto-lowering-01-SUMMARY.md`
-- Added `include/PTO/Transforms/A5VMLowering.h` with reusable TLOAD/TABS/TSTORE lowering contracts and entrypoint declarations
-- Added `lib/PTO/Transforms/PTOToA5VM.cpp` with contract extraction helpers, unary metadata attachment, and explicit TSTORE ACC/MAT TODO diagnostics
-- Created `.planning/phases/02-pto-lowering/02-pto-lowering-02-SUMMARY.md`
-- Registered the `pto-to-a5vm` pass and wired `ptoas --pto-backend=a5vm` through PTO-to-A5VM lowering before backend emission
-- Created `.planning/phases/02-pto-lowering/02-pto-lowering-03-SUMMARY.md`
+- Refreshed `.planning/phases/02-pto-lowering/02-pto-lowering-01-SUMMARY.md` against the revised planning docs after the decision checkpoint
+- Replaced the obsolete Phase 2 pseudo-op fixture suite with corrected `tload_copy_family_shape`, `tabs_abs_loop_shape`, `tabs_precheck_a5`, `tstore_copy_family_shape`, `tstore_domain_todos`, and `pto_backend_a5vm_wiring` contracts
+- Rewrote `test/phase2/run_phase2_checks.sh` to gate on landed A5VM primitive names and reject legacy pseudo-op regressions before compiler execution
+- Marked PTO-01 through PTO-04 complete in `.planning/REQUIREMENTS.md`
 
 ## Open Questions
 
@@ -121,13 +103,14 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 ## Session Continuity
 
 - Next recommended command: `/gsd:execute-phase 02-pto-lowering`
-- Next plan to execute: `02-03-PLAN.md`
+- Next plan to execute: `02-02-PLAN.md`
 - Current blocker status: none
 
 ## Performance Metrics
 
 | Phase | Duration | Tasks | Files |
 |-------|----------|-------|-------|
+| Phase 02-pto-lowering P01 (replay) | 20min | 2 tasks | 11 files |
 | Phase 01-a5vm-foundation P03 (refresh) | 22min | 2 tasks | 4 files |
 | Phase 02 P02 | 7min | 2 tasks | 3 files |
 | Phase 02-pto-lowering P03 | 24min | 2 tasks | 6 files |
@@ -143,6 +126,9 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - [Phase 02]: Run PTO-to-A5VM only on the --pto-backend=a5vm branch after the shared pre-backend passes.
 - [Phase 02]: Extract tile layout, valid dims, and address-space metadata from bind_tile and pointer_cast SSA chains because the A5VM boundary sees memref-backed tile values.
 - [Phase 02]: Use an explicit rewrite walk instead of greedy pattern application so single-op Phase 2 fixtures retain visible a5vm.load and a5vm.abs ops in debug IR.
+- [Phase 02]: Gate revised Wave 0 fixture replay on the landed A5VM primitive names instead of silently tolerating stale Phase 1 assumptions.
+- [Phase 02]: Represent `__VEC_SCOPE__` structurally in Phase 2 fixtures by checking loop nesting and ordered `vlds` / `vabs` / `vsts`.
+- [Phase 02]: Keep obsolete pseudo-op name rejection in the Phase 2 runner so fixture files stay focused on the corrected lowering shape.
 - [Phase 01-a5vm-foundation]: Keep the Phase 1 A5VM seam at raw corrected backend text and defer llvm.hivm emission to the later HIVM phase.
 - [Phase 01]: Keep the no-legacy-name regression check in the standalone runner rather than in the MLIR fixtures so file-level validation can forbid obsolete spellings entirely.
 - [Phase 01-a5vm-foundation]: Keep copy-op transfer attrs parser-optional and verifier-required so invalid fixtures fail with the planned diagnostic instead of a parser error.
@@ -156,8 +142,8 @@ None.
 ## Session
 
 **Last Date:** 2026-03-18T20:35:30.003Z
-**Stopped At:** Completed 01-02-PLAN.md
+**Stopped At:** Completed 02-01-PLAN.md
 **Resume File:** None
 
 ---
-*Last updated: 2026-03-19 after completing plan 01-01*
+*Last updated: 2026-03-19 after completing revised plan 02-01*
