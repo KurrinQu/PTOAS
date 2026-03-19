@@ -1,0 +1,605 @@
+{
+  "schema_version": "a5_oplib_v1_snippet_contracts/v1",
+  "contracts": [
+    {
+      "id": "binary_result",
+      "family_class": "binary",
+      "role_signature": ["tile", "tile", "tile"],
+      "visible_ssa": [
+        {
+          "name": "%lhs",
+          "source": "role:src0"
+        },
+        {
+          "name": "%rhs",
+          "source": "role:src1"
+        }
+      ],
+      "result_ssa": "%result",
+      "generator_owned": [
+        "function_signature_and_attrs",
+        "tile_to_memref_casts",
+        "loop_nest",
+        "tail_mask",
+        "masked_loads",
+        "masked_store"
+      ],
+      "snippet_must_not_define": [
+        "%lhs",
+        "%rhs",
+        "%result",
+        "%mask",
+        "%passive"
+      ],
+      "forbidden_ops": [
+        "func.func",
+        "scf.for",
+        "vector.maskedload",
+        "vector.maskedstore",
+        "pto.simd.tile_to_memref"
+      ]
+    },
+    {
+      "id": "tile_scalar_result",
+      "family_class": "tile_scalar",
+      "role_signature": ["tile", "scalar", "tile"],
+      "visible_ssa": [
+        {
+          "name": "%lhs",
+          "source": "role:src0"
+        },
+        {
+          "name": "%scalarVec",
+          "source": "role:scalar"
+        }
+      ],
+      "result_ssa": "%result",
+      "generator_owned": [
+        "function_signature_and_attrs",
+        "tile_to_memref_casts",
+        "loop_nest",
+        "tail_mask",
+        "scalar_splat",
+        "masked_loads",
+        "masked_store"
+      ],
+      "snippet_must_not_define": [
+        "%lhs",
+        "%scalarVec",
+        "%result",
+        "%mask",
+        "%passive"
+      ],
+      "forbidden_ops": [
+        "func.func",
+        "scf.for",
+        "vector.splat",
+        "vector.maskedload",
+        "vector.maskedstore",
+        "pto.simd.tile_to_memref"
+      ]
+    },
+    {
+      "id": "unary_result",
+      "family_class": "unary",
+      "role_signature": ["tile", "tile"],
+      "visible_ssa": [
+        {
+          "name": "%lhs",
+          "source": "role:src"
+        }
+      ],
+      "result_ssa": "%result",
+      "generator_owned": [
+        "function_signature_and_attrs",
+        "tile_to_memref_casts",
+        "loop_nest",
+        "tail_mask",
+        "masked_loads",
+        "masked_store"
+      ],
+      "snippet_must_not_define": ["%lhs", "%result", "%mask", "%passive"],
+      "forbidden_ops": [
+        "func.func",
+        "scf.for",
+        "vector.maskedload",
+        "vector.maskedstore",
+        "pto.simd.tile_to_memref"
+      ]
+    },
+    {
+      "id": "ternary_tile_result",
+      "family_class": "ternary",
+      "role_signature": ["tile", "tile", "tile", "tile"],
+      "visible_ssa": [
+        {
+          "name": "%lhs",
+          "source": "role:src0"
+        },
+        {
+          "name": "%rhs",
+          "source": "role:src1"
+        },
+        {
+          "name": "%aux",
+          "source": "role:src2"
+        }
+      ],
+      "result_ssa": "%result",
+      "generator_owned": [
+        "function_signature_and_attrs",
+        "tile_to_memref_casts",
+        "loop_nest",
+        "tail_mask",
+        "masked_loads",
+        "masked_store"
+      ],
+      "snippet_must_not_define": [
+        "%lhs",
+        "%rhs",
+        "%aux",
+        "%result",
+        "%mask",
+        "%passive"
+      ],
+      "forbidden_ops": [
+        "func.func",
+        "scf.for",
+        "vector.maskedload",
+        "vector.maskedstore",
+        "pto.simd.tile_to_memref"
+      ]
+    },
+    {
+      "id": "ternary_tile_scalar_result",
+      "family_class": "ternary",
+      "role_signature": ["tile", "scalar", "tile", "tile"],
+      "visible_ssa": [
+        {
+          "name": "%lhs",
+          "source": "role:src0"
+        },
+        {
+          "name": "%scalarVec",
+          "source": "role:scalar"
+        },
+        {
+          "name": "%rhs",
+          "source": "role:src1"
+        }
+      ],
+      "result_ssa": "%result",
+      "generator_owned": [
+        "function_signature_and_attrs",
+        "tile_to_memref_casts",
+        "loop_nest",
+        "tail_mask",
+        "scalar_splat",
+        "masked_loads",
+        "masked_store"
+      ],
+      "snippet_must_not_define": [
+        "%lhs",
+        "%scalarVec",
+        "%rhs",
+        "%result",
+        "%mask",
+        "%passive"
+      ],
+      "forbidden_ops": [
+        "func.func",
+        "scf.for",
+        "vector.splat",
+        "vector.maskedload",
+        "vector.maskedstore",
+        "pto.simd.tile_to_memref"
+      ]
+    },
+    {
+      "id": "compare_tile_tile_cmp",
+      "family_class": "compare",
+      "role_signature": ["tile", "tile", "tile"],
+      "visible_ssa": [
+        {
+          "name": "%lhs",
+          "source": "role:src0"
+        },
+        {
+          "name": "%rhs",
+          "source": "role:src1"
+        }
+      ],
+      "result_ssa": "%cmp",
+      "generator_owned": [
+        "function_signature_and_attrs",
+        "tile_to_memref_casts",
+        "loop_nest",
+        "tail_mask",
+        "masked_loads",
+        "mask_materialization",
+        "final_store"
+      ],
+      "snippet_must_not_define": ["%lhs", "%rhs", "%cmp", "%mask", "%passive"],
+      "forbidden_ops": [
+        "func.func",
+        "scf.for",
+        "vector.maskedload",
+        "vector.maskedstore",
+        "pto.simd.tile_to_memref"
+      ]
+    },
+    {
+      "id": "compare_tile_scalar_cmp",
+      "family_class": "compare",
+      "role_signature": ["tile", "scalar", "tile"],
+      "visible_ssa": [
+        {
+          "name": "%lhs",
+          "source": "role:src"
+        },
+        {
+          "name": "%scalarVec",
+          "source": "role:scalar"
+        }
+      ],
+      "result_ssa": "%cmp",
+      "generator_owned": [
+        "function_signature_and_attrs",
+        "tile_to_memref_casts",
+        "loop_nest",
+        "tail_mask",
+        "scalar_splat",
+        "masked_loads",
+        "mask_materialization",
+        "final_store"
+      ],
+      "snippet_must_not_define": [
+        "%lhs",
+        "%scalarVec",
+        "%cmp",
+        "%mask",
+        "%passive"
+      ],
+      "forbidden_ops": [
+        "func.func",
+        "scf.for",
+        "vector.splat",
+        "vector.maskedload",
+        "vector.maskedstore",
+        "pto.simd.tile_to_memref"
+      ]
+    },
+    {
+      "id": "select_mask_result",
+      "family_class": "select",
+      "role_signature": ["tile", "tile", "tile", "tile"],
+      "visible_ssa": [
+        {
+          "name": "%maskVec",
+          "source": "role:mask"
+        },
+        {
+          "name": "%lhs",
+          "source": "role:src0"
+        },
+        {
+          "name": "%rhs",
+          "source": "role:src1"
+        }
+      ],
+      "result_ssa": "%result",
+      "generator_owned": [
+        "function_signature_and_attrs",
+        "tile_to_memref_casts",
+        "loop_nest",
+        "tail_mask",
+        "masked_loads",
+        "masked_store"
+      ],
+      "snippet_must_not_define": [
+        "%maskVec",
+        "%lhs",
+        "%rhs",
+        "%result",
+        "%mask",
+        "%passive"
+      ],
+      "forbidden_ops": [
+        "func.func",
+        "scf.for",
+        "vector.maskedload",
+        "vector.maskedstore",
+        "pto.simd.tile_to_memref"
+      ]
+    },
+    {
+      "id": "select_scalar_result",
+      "family_class": "select",
+      "role_signature": ["tile", "tile", "scalar", "tile"],
+      "visible_ssa": [
+        {
+          "name": "%lhs",
+          "source": "role:src0"
+        },
+        {
+          "name": "%rhs",
+          "source": "role:src1"
+        },
+        {
+          "name": "%scalarVec",
+          "source": "role:select_mode"
+        }
+      ],
+      "result_ssa": "%result",
+      "generator_owned": [
+        "function_signature_and_attrs",
+        "tile_to_memref_casts",
+        "loop_nest",
+        "tail_mask",
+        "scalar_splat",
+        "masked_loads",
+        "masked_store"
+      ],
+      "snippet_must_not_define": [
+        "%lhs",
+        "%rhs",
+        "%scalarVec",
+        "%result",
+        "%mask",
+        "%passive"
+      ],
+      "forbidden_ops": [
+        "func.func",
+        "scf.for",
+        "vector.splat",
+        "vector.maskedload",
+        "vector.maskedstore",
+        "pto.simd.tile_to_memref"
+      ]
+    },
+    {
+      "id": "reduce_row_core",
+      "family_class": "reduction",
+      "role_signature": ["tile", "tile", "tile"],
+      "visible_ssa": [
+        {
+          "name": "%lhs",
+          "source": "role:src"
+        },
+        {
+          "name": "%acc",
+          "source": "role:tmp"
+        }
+      ],
+      "result_ssa": "%result",
+      "generator_owned": [
+        "function_signature_and_attrs",
+        "tile_to_memref_casts",
+        "loop_nest",
+        "accumulator_initialization",
+        "tail_mask",
+        "masked_loads",
+        "final_store"
+      ],
+      "snippet_must_not_define": [
+        "%lhs",
+        "%acc",
+        "%result",
+        "%mask",
+        "%passive"
+      ],
+      "forbidden_ops": [
+        "func.func",
+        "scf.for",
+        "vector.maskedload",
+        "vector.maskedstore",
+        "pto.simd.tile_to_memref"
+      ]
+    },
+    {
+      "id": "reduce_col_core",
+      "family_class": "reduction",
+      "role_signature": ["tile", "tile"],
+      "visible_ssa": [
+        {
+          "name": "%lhs",
+          "source": "role:src"
+        },
+        {
+          "name": "%acc",
+          "source": "generator:accumulator"
+        }
+      ],
+      "result_ssa": "%result",
+      "generator_owned": [
+        "function_signature_and_attrs",
+        "tile_to_memref_casts",
+        "loop_nest",
+        "accumulator_initialization",
+        "tail_mask",
+        "masked_loads",
+        "final_store"
+      ],
+      "snippet_must_not_define": [
+        "%lhs",
+        "%acc",
+        "%result",
+        "%mask",
+        "%passive"
+      ],
+      "forbidden_ops": [
+        "func.func",
+        "scf.for",
+        "vector.maskedload",
+        "vector.maskedstore",
+        "pto.simd.tile_to_memref"
+      ]
+    },
+    {
+      "id": "reduce_colsum_core",
+      "family_class": "reduction",
+      "role_signature": ["tile", "tile", "tile"],
+      "visible_ssa": [
+        {
+          "name": "%lhs",
+          "source": "role:src"
+        },
+        {
+          "name": "%acc",
+          "source": "role:tmp"
+        }
+      ],
+      "result_ssa": "%result",
+      "generator_owned": [
+        "function_signature_and_attrs",
+        "tile_to_memref_casts",
+        "loop_nest",
+        "accumulator_initialization",
+        "tail_mask",
+        "masked_loads",
+        "final_store"
+      ],
+      "snippet_must_not_define": [
+        "%lhs",
+        "%acc",
+        "%result",
+        "%mask",
+        "%passive"
+      ],
+      "forbidden_ops": [
+        "func.func",
+        "scf.for",
+        "vector.maskedload",
+        "vector.maskedstore",
+        "pto.simd.tile_to_memref"
+      ]
+    },
+    {
+      "id": "broadcast_row_core",
+      "family_class": "broadcast",
+      "role_signature": ["tile", "tile"],
+      "visible_ssa": [
+        {
+          "name": "%lhs",
+          "source": "role:src"
+        }
+      ],
+      "result_ssa": "%result",
+      "generator_owned": [
+        "function_signature_and_attrs",
+        "tile_to_memref_casts",
+        "loop_nest",
+        "broadcast_indexing",
+        "tail_mask",
+        "masked_loads",
+        "final_store"
+      ],
+      "snippet_must_not_define": ["%lhs", "%result", "%mask", "%passive"],
+      "forbidden_ops": [
+        "func.func",
+        "scf.for",
+        "vector.maskedload",
+        "vector.maskedstore",
+        "pto.simd.tile_to_memref"
+      ]
+    },
+    {
+      "id": "broadcast_col_core",
+      "family_class": "broadcast",
+      "role_signature": ["tile", "tile"],
+      "visible_ssa": [
+        {
+          "name": "%lhs",
+          "source": "role:src"
+        }
+      ],
+      "result_ssa": "%result",
+      "generator_owned": [
+        "function_signature_and_attrs",
+        "tile_to_memref_casts",
+        "loop_nest",
+        "broadcast_indexing",
+        "tail_mask",
+        "masked_loads",
+        "final_store"
+      ],
+      "snippet_must_not_define": ["%lhs", "%result", "%mask", "%passive"],
+      "forbidden_ops": [
+        "func.func",
+        "scf.for",
+        "vector.maskedload",
+        "vector.maskedstore",
+        "pto.simd.tile_to_memref"
+      ]
+    },
+    {
+      "id": "broadcast_row_binary_result",
+      "family_class": "broadcast",
+      "role_signature": ["tile", "tile", "tile"],
+      "visible_ssa": [
+        {
+          "name": "%lhs",
+          "source": "role:src0"
+        },
+        {
+          "name": "%rhs",
+          "source": "role:src1"
+        }
+      ],
+      "result_ssa": "%result",
+      "generator_owned": [
+        "function_signature_and_attrs",
+        "tile_to_memref_casts",
+        "loop_nest",
+        "broadcast_indexing",
+        "tail_mask",
+        "masked_loads",
+        "final_store"
+      ],
+      "snippet_must_not_define": [
+        "%lhs",
+        "%rhs",
+        "%result",
+        "%mask",
+        "%passive"
+      ],
+      "forbidden_ops": [
+        "func.func",
+        "scf.for",
+        "vector.maskedload",
+        "vector.maskedstore",
+        "pto.simd.tile_to_memref"
+      ]
+    },
+    {
+      "id": "scalar_expand_result",
+      "family_class": "broadcast",
+      "role_signature": ["scalar", "tile"],
+      "visible_ssa": [
+        {
+          "name": "%scalarVec",
+          "source": "role:scalar"
+        }
+      ],
+      "result_ssa": "%result",
+      "generator_owned": [
+        "function_signature_and_attrs",
+        "tile_to_memref_casts",
+        "loop_nest",
+        "broadcast_indexing",
+        "tail_mask",
+        "scalar_splat",
+        "final_store"
+      ],
+      "snippet_must_not_define": ["%scalarVec", "%result", "%mask", "%passive"],
+      "forbidden_ops": [
+        "func.func",
+        "scf.for",
+        "vector.splat",
+        "vector.maskedload",
+        "vector.maskedstore",
+        "pto.simd.tile_to_memref"
+      ]
+    }
+  ]
+}

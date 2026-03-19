@@ -1,0 +1,2 @@
+%partial = pto.simd.reduction <"@@REDUCE_KIND@@">, %lhs : @@INPUT_VECTOR_TYPE@@ -> @@INPUT_VECTOR_TYPE@@
+%result = @@CORE_OP@@ %partial, %acc@@EXEC_MODE_ATTR@@ : @@INPUT_VECTOR_TYPE@@

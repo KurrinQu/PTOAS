@@ -1,0 +1,2053 @@
+{
+  "schema_version": "a5_oplib_v1_manifest/v1",
+  "generated_from": {
+    "manual_path": "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md",
+    "common_api_header": "include/pto/common/pto_instr.hpp",
+    "a5_include_dir": "include/pto/npu/a5",
+    "a5_test_dir": "tests/npu/a5/src/st/testcase"
+  },
+  "scope_boundary": {
+    "manual_sections": [
+      {
+        "section": "4.5",
+        "title": "Vector Arithmetic Operations",
+        "manual_op_count": 31,
+        "v1_in_scope_ops": [
+          "tabs",
+          "tadd",
+          "taddc",
+          "tadds",
+          "taddsc",
+          "tdiv",
+          "tdivs",
+          "texp",
+          "tlog",
+          "tlrelu",
+          "tmax",
+          "tmaxs",
+          "tmin",
+          "tmins",
+          "tmul",
+          "tmuls",
+          "tneg",
+          "tpartadd",
+          "tpartmax",
+          "tpartmin",
+          "tprelu",
+          "trecip",
+          "trelu",
+          "trem",
+          "trems",
+          "trsqrt",
+          "tsqrt",
+          "tsub",
+          "tsubc",
+          "tsubs",
+          "tsubsc"
+        ]
+      },
+      {
+        "section": "4.6",
+        "title": "Reduction Operations",
+        "manual_op_count": 6,
+        "v1_in_scope_ops": [
+          "tcolmax",
+          "tcolmin",
+          "tcolsum",
+          "trowmax",
+          "trowmin",
+          "trowsum"
+        ]
+      },
+      {
+        "section": "4.7",
+        "title": "Broadcast Operations",
+        "manual_op_count": 6,
+        "v1_in_scope_ops": [
+          "tcolexpand",
+          "texpands",
+          "trowexpand",
+          "trowexpanddiv",
+          "trowexpandmul",
+          "trowexpandsub"
+        ]
+      },
+      {
+        "section": "4.8",
+        "title": "Compare & Select Operations",
+        "manual_op_count": 4,
+        "v1_in_scope_ops": [
+          "tcmp",
+          "tcmps",
+          "tsel",
+          "tsels"
+        ]
+      },
+      {
+        "section": "4.9",
+        "title": "Bitwise Operations",
+        "manual_op_count": 11,
+        "v1_in_scope_ops": [
+          "tand",
+          "tnot",
+          "tor",
+          "tshl",
+          "tshr",
+          "txor"
+        ]
+      }
+    ],
+    "status_rules": {
+      "implemented": [
+        "operator must belong to the fixed 4.5-4.9 in-scope set",
+        "one or more approved semantic evidence paths must be discoverable under include/pto/npu/a5 or include/pto/common/pto_instr.hpp",
+        "dtype_support must be non-empty",
+        "key_constraints must be non-empty",
+        "semantic_source_paths must be non-empty",
+        "deferred_reason must be empty"
+      ],
+      "deferred": [
+        "operator must still belong to the fixed 4.5-4.9 in-scope set",
+        "deferred_reason must be non-empty",
+        "the snapshot must keep semantic source evidence when available",
+        "implemented-only guarantees are not claimed"
+      ]
+    },
+    "classification_rules": {
+      "native_a5_impl": [
+        "implemented status is justified by a discoverable A5 OP_NAME(...) or *_IMPL definition under include/pto/npu/a5",
+        "semantic_source_paths and header_paths must retain the native A5 header evidence"
+      ],
+      "public_api_rewrite": [
+        "implemented status is justified by an approved include/pto/common/pto_instr.hpp rewrite to an already supported A5 semantic target",
+        "manifest must retain both the public API rewrite path and the target A5 semantic evidence",
+        "A5 ST testcase evidence must remain discoverable under tests/npu/a5/src/st/testcase"
+      ],
+      "missing_accepted_semantics": [
+        "deferred status is used when no native A5 _IMPL exists and the current change has not approved the public API path as an OpLib semantic rewrite",
+        "deferred entries should keep public API evidence when it exists, so the missing boundary stays explicit"
+      ]
+    }
+  },
+  "operators": [
+    {
+      "op": "tadd",
+      "instruction": "TADD",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise Add of Two Tiles",
+      "family": "binary_tile_tile",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "Fix: TADD has invalid data type.",
+        "Fix: TADD input tile src0 valid shape mismatch with output tile dst shape.",
+        "Fix: TADD input tile src0, src1 and dst tile data type mismatch.",
+        "Fix: TADD input tile src1 valid shape mismatch with output tile dst shape.",
+        "Fix: TADD only support row major layout.",
+        "binary elementwise operands are shape-aligned with the destination valid region"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:1255",
+        "include/pto/npu/a5/TAdd.hpp:34"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TAdd.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tadd"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tsub",
+      "instruction": "TSUB",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise Subtract of Two Tiles",
+      "family": "binary_tile_tile",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "Fix: TSUB has invalid data type.",
+        "Fix: TSUB input tile src0 valid shape mismatch with output tile dst shape.",
+        "Fix: TSUB input tile src0, src1 and dst tile data type mismatch.",
+        "Fix: TSUB input tile src1 valid shape mismatch with output tile dst shape.",
+        "Fix: TSUB only support row major layout.",
+        "binary elementwise operands are shape-aligned with the destination valid region"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:1310",
+        "include/pto/npu/a5/TSub.hpp:34"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TSub.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tsub"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tmul",
+      "instruction": "TMUL",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise Multiply of Two Tiles",
+      "family": "binary_tile_tile",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "Fix: TMUL has invalid data type.",
+        "Fix: TMUL input tile src0 valid shape mismatch with output tile dst shape.",
+        "Fix: TMUL input tile src0, src1 and dst tile data type mismatch.",
+        "Fix: TMUL input tile src1 valid shape mismatch with output tile dst shape.",
+        "Fix: TMUL only support row major layout.",
+        "binary elementwise operands are shape-aligned with the destination valid region"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:1364",
+        "include/pto/npu/a5/TMul.hpp:34"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TMul.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tmul"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tdiv",
+      "instruction": "TDIV",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise Division of Two Tiles",
+      "family": "binary_tile_tile",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "Fix: TDIV has invalid data type.",
+        "Fix: TDIV input tile src0 valid shape mismatch with output tile dst shape.",
+        "Fix: TDIV input tile src0, src1 and dst tile data type mismatch.",
+        "Fix: TDIV input tile src1 valid shape mismatch with output tile dst shape.",
+        "Fix: TDIV only support row major layout.",
+        "binary elementwise operands are shape-aligned with the destination valid region"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:1418",
+        "include/pto/npu/a5/TDiv.hpp:34"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TDiv.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tdiv"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tmax",
+      "instruction": "TMAX",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise Maximum of Two Tiles",
+      "family": "binary_tile_tile",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "Fix: TMAX input tile src0 valid shape mismatch with output tile dst shape.",
+        "Fix: TMAX input tile src0, src1 and dst tile data type mismatch.",
+        "Fix: TMAX input tile src1 valid shape mismatch with output tile dst shape.",
+        "Fix: TMax has invalid data type.",
+        "Fix: TMax only support row major layout.",
+        "binary elementwise operands are shape-aligned with the destination valid region"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:1474",
+        "include/pto/npu/a5/TMax.hpp:34"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TMax.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tmax"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tmin",
+      "instruction": "TMIN",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise Minimum of Two Tiles",
+      "family": "binary_tile_tile",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "Fix: TMIN has invalid data type.",
+        "Fix: TMIN input tile src0 valid shape mismatch with output tile dst shape.",
+        "Fix: TMIN input tile src0, src1 and dst tile data type mismatch.",
+        "Fix: TMIN input tile src1 valid shape mismatch with output tile dst shape.",
+        "Fix: TMIN only support row major layout.",
+        "binary elementwise operands are shape-aligned with the destination valid region"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:1528",
+        "include/pto/npu/a5/TMin.hpp:34"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TMin.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tmin"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "trem",
+      "instruction": "TREM",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise Remainder of Two Tiles",
+      "family": "binary_tile_tile",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "u16",
+        "u32"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "Fix: TREM has invalid data type.",
+        "Fix: TREM input tile src0 valid shape mismatch with output tile dst shape.",
+        "Fix: TREM input tile src0, src1 and dst tile data type mismatch.",
+        "Fix: TREM input tile src1 valid shape mismatch with output tile dst shape.",
+        "Fix: TREM only support row major layout.",
+        "binary elementwise operands are shape-aligned with the destination valid region"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:1582",
+        "include/pto/npu/a5/TRem.hpp:65"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TRem.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/trem"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tpartadd",
+      "instruction": "TPARTADD",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Partial Elementwise Add",
+      "family": "partial_binary",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "Fix: TPARTADD Invalid data type.",
+        "Fix: TPARTADD src and dst data type is different!",
+        "Fix: TPARTADD/MUL At most one entry in the valid-rows and valid-cols of src0 and src1 is smaller than dst.",
+        "partial elementwise semantics follow valid-region overlap rather than full physical shape equality",
+        "partial valid-region behavior is implementation-defined outside the overlap"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:1636",
+        "include/pto/npu/a5/TPartAdd.hpp:151"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TPartAdd.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tpartadd"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tpartmax",
+      "instruction": "TPARTMAX",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Partial Elementwise Max",
+      "family": "partial_binary",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "Fix: TPARTMAX/MIN Input and output types should match",
+        "Fix: TPARTMAX/MIN Invalid data type.",
+        "partial elementwise semantics follow valid-region overlap rather than full physical shape equality",
+        "partial valid-region behavior is implementation-defined outside the overlap"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:1693",
+        "include/pto/npu/a5/TPartMax.hpp:28"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TPartMax.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tpartmax"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tpartmin",
+      "instruction": "TPARTMIN",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Partial Elementwise Min",
+      "family": "partial_binary",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "Fix: TPARTMAX/MIN Input and output types should match",
+        "Fix: TPARTMAX/MIN Invalid data type.",
+        "partial elementwise semantics follow valid-region overlap rather than full physical shape equality",
+        "partial valid-region behavior is implementation-defined outside the overlap"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:1741",
+        "include/pto/npu/a5/TPartMin.hpp:28"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TPartMin.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tpartmin"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tprelu",
+      "instruction": "TPRELU",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Parametric ReLU with Per-Element Slope",
+      "family": "partial_binary",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "f16",
+        "f32"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "Fix: TPRELU has invalid data type.",
+        "Fix: TPRELU input tile src0 valid shape mismatch with output tile dst shape.",
+        "Fix: TPRELU input tile src0, src1 and dst tile data type mismatch.",
+        "Fix: TPRELU input tile src1 valid shape mismatch with output tile dst shape.",
+        "Fix: TPRELU only support row major layout.",
+        "negative slope is provided as a per-element tile",
+        "partial elementwise semantics follow valid-region overlap rather than full physical shape equality"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:1789",
+        "include/pto/npu/a5/TPrelu.hpp:34"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TPrelu.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tprelu"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tadds",
+      "instruction": "TADDS",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise Add Scalar to Tile",
+      "family": "tile_scalar",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "i8",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "TADDS: Invalid data type",
+        "scalar operand is an immediate / scalar lane input",
+        "scalar operand legality is coupled to the tile element type family"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:1857",
+        "include/pto/npu/a5/TAddS.hpp:32"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TAddS.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tadds"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tsubs",
+      "instruction": "TSUBS",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise Subtract Scalar from Tile",
+      "family": "tile_scalar",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "i8",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "TSUBS: Invalid data type",
+        "scalar operand is an immediate / scalar lane input",
+        "scalar operand legality is coupled to the tile element type family"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:1910",
+        "include/pto/npu/a5/TSubS.hpp:32"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TSubS.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tsubs"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tmuls",
+      "instruction": "TMULS",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise Multiply Tile by Scalar",
+      "family": "tile_scalar",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "TMULS: Invalid data type",
+        "scalar operand is an immediate / scalar lane input",
+        "scalar operand legality is coupled to the tile element type family"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:1962",
+        "include/pto/npu/a5/TMulS.hpp:32",
+        "include/pto/npu/a5/TUnaryOp.hpp:339"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TMulS.hpp",
+        "include/pto/npu/a5/TUnaryOp.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tmuls"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tdivs",
+      "instruction": "TDIVS",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise Division with Scalar",
+      "family": "tile_scalar",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "TDIVS: Invalid data type",
+        "scalar operand is an immediate / scalar lane input",
+        "scalar operand legality is coupled to the tile element type family"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2015",
+        "include/pto/npu/a5/TDivS.hpp:104"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TDivS.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tdivs"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tmaxs",
+      "instruction": "TMAXS",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise Max of Tile and Scalar",
+      "family": "tile_scalar",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i32",
+        "i8",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "scalar operand is an immediate / scalar lane input",
+        "scalar operand legality is coupled to the tile element type family"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2084",
+        "include/pto/npu/a5/TMaxs.hpp:32"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TMaxs.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tmaxs"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tmins",
+      "instruction": "TMINS",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise Min of Tile and Scalar",
+      "family": "tile_scalar",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i32",
+        "i8",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "scalar operand is an immediate / scalar lane input",
+        "scalar operand legality is coupled to the tile element type family"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2137",
+        "include/pto/npu/a5/TMins.hpp:32"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TMins.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tmins"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "trems",
+      "instruction": "TREMS",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise Remainder with Scalar",
+      "family": "tile_scalar",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i32",
+        "i8",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "TREMS: Invalid data type",
+        "scalar operand is an immediate / scalar lane input",
+        "scalar operand legality is coupled to the tile element type family"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2190",
+        "include/pto/npu/a5/TRemS.hpp:64"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TRemS.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/trems"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "taddc",
+      "instruction": "TADDC",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise Ternary Add of Tiles",
+      "family": "ternary",
+      "a5_status": "deferred",
+      "dtype_support": [],
+      "key_constraints": [
+        "A5 OpLib V1 reserves a ternary family slot even when A5 implementation is deferred",
+        "public API entry exists, but no native A5 _IMPL or approved semantic rewrite is available for OpLib V1"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2254",
+        "include/pto/common/pto_instr.hpp:325"
+      ],
+      "header_paths": [
+        "include/pto/common/pto_instr.hpp"
+      ],
+      "test_paths": [],
+      "deferred_reason": "public API exists in include/pto/common/pto_instr.hpp, but A5 has no native TADDC_IMPL/OP_NAME(TADDC) and this change does not approve OpLib decomposition semantics"
+    },
+    {
+      "op": "tsubc",
+      "instruction": "TSUBC",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise Ternary Subtract-Add",
+      "family": "ternary",
+      "a5_status": "deferred",
+      "dtype_support": [],
+      "key_constraints": [
+        "A5 OpLib V1 reserves a ternary family slot even when A5 implementation is deferred",
+        "public API entry exists, but no native A5 _IMPL or approved semantic rewrite is available for OpLib V1"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2312",
+        "include/pto/common/pto_instr.hpp:333"
+      ],
+      "header_paths": [
+        "include/pto/common/pto_instr.hpp"
+      ],
+      "test_paths": [],
+      "deferred_reason": "public API exists in include/pto/common/pto_instr.hpp, but A5 has no native TSUBC_IMPL/OP_NAME(TSUBC) and this change does not approve OpLib decomposition semantics"
+    },
+    {
+      "op": "taddsc",
+      "instruction": "TADDSC",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Fused Add-Scalar-Add",
+      "family": "ternary",
+      "a5_status": "deferred",
+      "dtype_support": [],
+      "key_constraints": [
+        "A5 OpLib V1 reserves a ternary family slot even when A5 implementation is deferred",
+        "public API entry exists, but no native A5 _IMPL or approved semantic rewrite is available for OpLib V1"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2370",
+        "include/pto/common/pto_instr.hpp:1359"
+      ],
+      "header_paths": [
+        "include/pto/common/pto_instr.hpp"
+      ],
+      "test_paths": [],
+      "deferred_reason": "public API exists in include/pto/common/pto_instr.hpp, but A5 has no native TADDSC_IMPL/OP_NAME(TADDSC) and this change does not approve OpLib decomposition semantics"
+    },
+    {
+      "op": "tsubsc",
+      "instruction": "TSUBSC",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Fused Subtract-Scalar-Add",
+      "family": "ternary",
+      "a5_status": "deferred",
+      "dtype_support": [],
+      "key_constraints": [
+        "A5 OpLib V1 reserves a ternary family slot even when A5 implementation is deferred",
+        "public API entry exists, but no native A5 _IMPL or approved semantic rewrite is available for OpLib V1"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2424",
+        "include/pto/common/pto_instr.hpp:1368"
+      ],
+      "header_paths": [
+        "include/pto/common/pto_instr.hpp"
+      ],
+      "test_paths": [],
+      "deferred_reason": "public API exists in include/pto/common/pto_instr.hpp, but A5 has no native TSUBSC_IMPL/OP_NAME(TSUBSC) and this change does not approve OpLib decomposition semantics"
+    },
+    {
+      "op": "tabs",
+      "instruction": "TABS",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise Absolute Value",
+      "family": "unary",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "f16",
+        "f32"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "TABS: Number of columns of src and dst must be the same.",
+        "TABS: Number of rows of src and dst must be the same.",
+        "src and dst valid regions must stay aligned"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2494",
+        "include/pto/npu/a5/TUnaryOp.hpp:284"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TUnaryOp.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tabs"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tneg",
+      "instruction": "TNEG",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise Negation",
+      "family": "unary",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i32",
+        "i8",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "src and dst valid regions must stay aligned"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2545",
+        "include/pto/npu/a5/TUnaryOp.hpp:337"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TUnaryOp.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tneg"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "texp",
+      "instruction": "TEXP",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise Exponential",
+      "family": "unary",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "f16",
+        "f32"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "TEXP: Number of columns of src and dst must be the same.",
+        "TEXP: Number of rows of src and dst must be the same.",
+        "src and dst valid regions must stay aligned"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2595",
+        "include/pto/npu/a5/TUnaryOp.hpp:154"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TUnaryOp.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/texp"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tlog",
+      "instruction": "TLOG",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise Natural Logarithm",
+      "family": "unary",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "f16",
+        "f32"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "TLOG: Number of columns of src and dst must be the same.",
+        "TLOG: Number of rows of src and dst must be the same.",
+        "src and dst valid regions must stay aligned"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2644",
+        "include/pto/npu/a5/TUnaryOp.hpp:314"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TUnaryOp.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tlog"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tsqrt",
+      "instruction": "TSQRT",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise Square Root",
+      "family": "unary",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "f16",
+        "f32"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "TSQRT: Number of columns of src and dst must be the same.",
+        "TSQRT: Number of rows of src and dst must be the same.",
+        "src and dst valid regions must stay aligned"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2693",
+        "include/pto/npu/a5/TUnaryOp.hpp:254"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TUnaryOp.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tsqrt"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "trsqrt",
+      "instruction": "TRSQRT",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise Reciprocal Square Root",
+      "family": "unary",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i32",
+        "i8",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "TRSQRT: Invalid data type.",
+        "TRSQRT: Not supported Layout type",
+        "TRSQRT: Number of columns of src and dst must be the same.",
+        "TRSQRT: Number of dst's valid columns must not be greater than number of tile columns.",
+        "TRSQRT: Number of dst's valid rows must not be greater than number of tile rows.",
+        "TRSQRT: Number of rows of src and dst must be the same.",
+        "TRSQRT: Number of src's valid columns must not be greater than number of tile columns.",
+        "TRSQRT: Number of src's valid rows must not be greater than number of tile rows.",
+        "TRSQRT: The data type of dst must be consistent with of src",
+        "TRSQRT: TileType of src and dst tiles must be TileType::Vec.",
+        "src and dst valid regions must stay aligned"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2742",
+        "include/pto/npu/a5/TRsqrt.hpp:124"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TRsqrt.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/trsqrt"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "trecip",
+      "instruction": "TRECIP",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise Reciprocal",
+      "family": "unary",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "public API rewrites TRECIP(dst, src) to TDIVS(dst, 1, src)",
+        "TDIVS rewrite inherits tile-scalar dtype legality from include/pto/npu/a5/TDivS.hpp",
+        "src and dst valid regions must stay aligned"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2791",
+        "include/pto/common/pto_instr.hpp:296",
+        "include/pto/npu/a5/TDivS.hpp:104"
+      ],
+      "header_paths": [
+        "include/pto/common/pto_instr.hpp",
+        "include/pto/npu/a5/TDivS.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/trecip"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "trelu",
+      "instruction": "TRELU",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Elementwise ReLU",
+      "family": "unary",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "f16",
+        "f32",
+        "i32"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "TRELU: Invalid data type.",
+        "TRELU: Number of columns of src and dst must be the same.",
+        "TRELU: Number of rows of src and dst must be the same.",
+        "src and dst valid regions must stay aligned"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2840",
+        "include/pto/npu/a5/TUnaryOp.hpp:220"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TUnaryOp.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/trelu"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tlrelu",
+      "instruction": "TLRELU",
+      "manual_section": "4.5",
+      "manual_section_title": "Vector Arithmetic Operations",
+      "manual_heading": "Leaky ReLU with Scalar Slope",
+      "family": "unary",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i32",
+        "i8",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "TLRELU: Invalid data type",
+        "negative slope is a scalar parameter",
+        "src and dst valid regions must stay aligned"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2889",
+        "include/pto/npu/a5/TLRelu.hpp:32"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TLRelu.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tlrelu"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "trowsum",
+      "instruction": "TROWSUM",
+      "manual_section": "4.6",
+      "manual_section_title": "Reduction Operations",
+      "manual_heading": "Row-wise Sum Reduction",
+      "family": "reduce_row",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i32",
+        "i8",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "Fix: Choose one of the following for TileDataOut:",
+        "Fix: Define TileDataIn with BFractal_ = BLayout::RowMajor and SFractal_",
+        "Fix: Define TileDataIn with DType = half or float.",
+        "Fix: Ensure TileDataOut uses the same DType as TileDataIn.",
+        "Fix: Ensure srcValidRows > 0 and srcValidCols > 0.",
+        "Fix: Instantiate TileDataIn and TileDataOut with Loc_ = TileType::Vec.",
+        "Fix: Pass dstValidRow = srcValidRows.",
+        "Row reduction only supports 'half' or 'float' data types.",
+        "row count is preserved while columns are reduced",
+        "tmp operand exists at the PTO API layer but is not consumed by the A5 row-reduce vector kernel"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2955",
+        "include/pto/npu/a5/TRowReduce.hpp:197"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TRowReduce.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/trowsum"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "trowmax",
+      "instruction": "TROWMAX",
+      "manual_section": "4.6",
+      "manual_section_title": "Reduction Operations",
+      "manual_heading": "Row-wise Max Reduction",
+      "family": "reduce_row",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i32",
+        "i8",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "Fix: Choose one of the following for TileDataOut:",
+        "Fix: Define TileDataIn with BFractal_ = BLayout::RowMajor and SFractal_",
+        "Fix: Define TileDataIn with DType = half or float.",
+        "Fix: Ensure TileDataOut uses the same DType as TileDataIn.",
+        "Fix: Ensure srcValidRows > 0 and srcValidCols > 0.",
+        "Fix: Instantiate TileDataIn and TileDataOut with Loc_ = TileType::Vec.",
+        "Fix: Pass dstValidRow = srcValidRows.",
+        "Row reduction only supports 'half' or 'float' data types.",
+        "row count is preserved while columns are reduced",
+        "tmp operand exists at the PTO API layer but is not consumed by the A5 row-reduce vector kernel"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:3010",
+        "include/pto/npu/a5/TRowReduce.hpp:180"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TRowReduce.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/trowmax"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "trowmin",
+      "instruction": "TROWMIN",
+      "manual_section": "4.6",
+      "manual_section_title": "Reduction Operations",
+      "manual_heading": "Row-wise Min Reduction",
+      "family": "reduce_row",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i32",
+        "i8",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "Fix: Choose one of the following for TileDataOut:",
+        "Fix: Define TileDataIn with BFractal_ = BLayout::RowMajor and SFractal_",
+        "Fix: Define TileDataIn with DType = half or float.",
+        "Fix: Ensure TileDataOut uses the same DType as TileDataIn.",
+        "Fix: Ensure srcValidRows > 0 and srcValidCols > 0.",
+        "Fix: Instantiate TileDataIn and TileDataOut with Loc_ = TileType::Vec.",
+        "Fix: Pass dstValidRow = srcValidRows.",
+        "Row reduction only supports 'half' or 'float' data types.",
+        "row count is preserved while columns are reduced",
+        "tmp operand exists at the PTO API layer but is not consumed by the A5 row-reduce vector kernel"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:3064",
+        "include/pto/npu/a5/TRowReduce.hpp:214"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TRowReduce.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/trowmin"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tcolsum",
+      "instruction": "TCOLSUM",
+      "manual_section": "4.6",
+      "manual_section_title": "Reduction Operations",
+      "manual_heading": "Column-wise Sum Reduction",
+      "family": "reduce_col",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "Fix: TCOLSUM input valid columns must be less than or equal to the tmp columns.",
+        "column count is preserved while rows are reduced",
+        "tmp operand exists at the PTO API layer but is not consumed by the A5 column-reduce vector kernel"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:3118",
+        "include/pto/npu/a5/TColSum.hpp:130"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TColSum.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tcolsum"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tcolmax",
+      "instruction": "TCOLMAX",
+      "manual_section": "4.6",
+      "manual_section_title": "Reduction Operations",
+      "manual_heading": "Column-wise Max Reduction",
+      "family": "reduce_col",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "Fix: TCOLREDUCE input data type is not supported by this instruction.",
+        "Fix: TCOLREDUCE input data type must be consistent with the output data type.",
+        "Fix: TCOLREDUCE input tile only support Nd fractal Tile",
+        "Fix: TCOLREDUCE input valid row must be consistent with the output valid row.",
+        "Fix: TCOLREDUCE only support Vec Tile",
+        "Fix: TCOLREDUCE output tile only support Nd fractal Tile",
+        "column count is preserved while rows are reduced",
+        "tmp operand exists at the PTO API layer but is not consumed by the A5 column-reduce vector kernel"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:3172",
+        "include/pto/npu/a5/TColMax.hpp:37"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TColMax.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tcolmax"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tcolmin",
+      "instruction": "TCOLMIN",
+      "manual_section": "4.6",
+      "manual_section_title": "Reduction Operations",
+      "manual_heading": "Column-wise Min Reduction",
+      "family": "reduce_col",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "Fix: TCOLREDUCE input data type is not supported by this instruction.",
+        "Fix: TCOLREDUCE input data type must be consistent with the output data type.",
+        "Fix: TCOLREDUCE input tile only support Nd fractal Tile",
+        "Fix: TCOLREDUCE input valid row must be consistent with the output valid row.",
+        "Fix: TCOLREDUCE only support Vec Tile",
+        "Fix: TCOLREDUCE output tile only support Nd fractal Tile",
+        "column count is preserved while rows are reduced",
+        "tmp operand exists at the PTO API layer but is not consumed by the A5 column-reduce vector kernel"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:3220",
+        "include/pto/npu/a5/TColMin.hpp:37"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TColMin.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tcolmin"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "trowexpand",
+      "instruction": "TROWEXPAND",
+      "manual_section": "4.7",
+      "manual_section_title": "Broadcast Operations",
+      "manual_heading": "Row-wise Broadcast",
+      "family": "broadcast_row",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i32",
+        "i8",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "Fix: TROWEXPAND Dst TileType must be Vec Tile!",
+        "Fix: TROWEXPAND Src TileType must be Vec Tile!",
+        "Fix: TROWEXPAND Src ValidCol must be 1 or -1",
+        "Fix: TROWEXPAND data type must be b8/b16/b32",
+        "Fix: TROWEXPAND input data type must be consistent with the output data type.",
+        "Fix: TROWEXPAND input shape is invalid, validCol or validRow is 0.",
+        "Fix: TROWEXPAND input valid row must be consistent with the output valid row.",
+        "Fix: TROWEXPAND only support Nd fractal Tile",
+        "Fix: TROWEXPAND only support Nd or Dn fractal Tile",
+        "source tile is broadcast across rows"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:3283",
+        "include/pto/npu/a5/TRowExpand.hpp:160"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TRowExpand.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/trowexpand"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tcolexpand",
+      "instruction": "TCOLEXPAND",
+      "manual_section": "4.7",
+      "manual_section_title": "Broadcast Operations",
+      "manual_heading": "Column-wise Broadcast",
+      "family": "broadcast_col",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i32",
+        "i8",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "Fix: TCOLEXPAND Dst TileType must be Vec Tile!",
+        "Fix: TCOLEXPAND Src TileType must be Vec Tile!",
+        "Fix: TCOLEXPAND data type must be b8/b16/b32",
+        "Fix: TCOLEXPAND input data type must be consistent with the output data type.",
+        "Fix: TCOLEXPAND input shape in invalid, validCol or validRow is 0.",
+        "Fix: TCOLEXPAND input valid col must be consistent with output valid col.",
+        "Fix: TCOLEXPAND only support Nd fractal Tile.",
+        "source tile is broadcast across columns"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:3331",
+        "include/pto/npu/a5/TColExpand.hpp:89"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TColExpand.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tcolexpand"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "trowexpandmul",
+      "instruction": "TROWEXPANDMUL",
+      "manual_section": "4.7",
+      "manual_section_title": "Broadcast Operations",
+      "manual_heading": "Row-wise Broadcast Multiply",
+      "family": "broadcast_row_binary",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i32",
+        "i8",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "Fix: TROWEXPANDMUL Invalid data type.",
+        "Fix: TROWEXPANDMUL Invalid tile shape.",
+        "Fix: TROWEXPANDMUL src and dst data type is different!",
+        "TROWEXPANDMUL: invalid src0 shape.",
+        "TROWEXPANDMUL: invalid src1 shape.",
+        "TROWEXPANDMUL: the validShape of src0 or src1 should be equal to dst",
+        "row-broadcast source is fused with a binary elementwise update"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:3379",
+        "include/pto/npu/a5/TRowExpandMul.hpp:33"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TRowExpandMul.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/trowexpandmul"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "trowexpanddiv",
+      "instruction": "TROWEXPANDDIV",
+      "manual_section": "4.7",
+      "manual_section_title": "Broadcast Operations",
+      "manual_heading": "Row-wise Broadcast Divide",
+      "family": "broadcast_row_binary",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i32",
+        "i8",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "Fix: TROWEXPANDDIV Invalid tile shape.",
+        "Fix: TROWEXPANDDIV invalid data type.",
+        "Fix: TROWEXPANDDIV src and dst data type is different!",
+        "TROWEXPANDDIV: invalid src0 shape.",
+        "TROWEXPANDDIV: invalid src1 shape.",
+        "TROWEXPANDDIV: the validShape of src0 or src1 should be equal to dst",
+        "row-broadcast source is fused with a binary elementwise update"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:3432",
+        "include/pto/npu/a5/TRowExpandDiv.hpp:42"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TRowExpandDiv.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/trowexpanddiv"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "trowexpandsub",
+      "instruction": "TROWEXPANDSUB",
+      "manual_section": "4.7",
+      "manual_section_title": "Broadcast Operations",
+      "manual_heading": "Row-wise Broadcast Subtract",
+      "family": "broadcast_row_binary",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i32",
+        "i8",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "Fix: TROWEXPANDSUB Invalid data type.",
+        "Fix: TROWEXPANDSUB Invalid tile shape.",
+        "Fix: TROWEXPANDSUB src and dst data type is different!",
+        "TROWEXPANDSUB: invalid src0 shape.",
+        "TROWEXPANDSUB: invalid src1 shape.",
+        "TROWEXPANDSUB: the validShape of src0 or src1 should be equal to dst",
+        "row-broadcast source is fused with a binary elementwise update"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:3485",
+        "include/pto/npu/a5/TRowExpandSub.hpp:42"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TRowExpandSub.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/trowexpandsub"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "texpands",
+      "instruction": "TEXPANDS",
+      "manual_section": "4.7",
+      "manual_section_title": "Broadcast Operations",
+      "manual_heading": "Broadcast Scalar to Tile",
+      "family": "scalar_expand",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 implementation targets vector / UB tiles",
+        "TEXPANDS: Invalid data type",
+        "a scalar or one-point source is expanded to the destination valid region",
+        "scalar source is broadcast into a tile"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:3538",
+        "include/pto/npu/a5/TAndS.hpp:25",
+        "include/pto/npu/a5/TExpandS.hpp:42",
+        "include/pto/npu/a5/TOrS.hpp:25",
+        "include/pto/npu/a5/TXorS.hpp:25"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TAndS.hpp",
+        "include/pto/npu/a5/TExpandS.hpp",
+        "include/pto/npu/a5/TOrS.hpp",
+        "include/pto/npu/a5/TXorS.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/texpands"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tcmp",
+      "instruction": "TCMP",
+      "manual_section": "4.8",
+      "manual_section_title": "Compare & Select Operations",
+      "manual_heading": "tcmp",
+      "family": "compare_tile_tile",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 compare/select family uses packed predicate mask tiles as observable outputs",
+        "compare mode is an explicit legality dimension",
+        "compare result is stored as a packed predicate mask tile"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:3605",
+        "include/pto/npu/a5/TCmp.hpp:52"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TCmp.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tcmp"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tcmps",
+      "instruction": "TCMPS",
+      "manual_section": "4.8",
+      "manual_section_title": "Compare & Select Operations",
+      "manual_heading": "tcmps",
+      "family": "compare_tile_scalar",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "bf16",
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "A5 compare/select family uses packed predicate mask tiles as observable outputs",
+        "TCMPS: Invalid data type.",
+        "TCMPS: not supported Layout type",
+        "compare result is stored as a packed predicate mask tile",
+        "scalar comparison mode is an explicit legality dimension"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:3660",
+        "include/pto/npu/a5/TCmps.hpp:52"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TCmps.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tcmps"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tsel",
+      "instruction": "TSEL",
+      "manual_section": "4.8",
+      "manual_section_title": "Compare & Select Operations",
+      "manual_heading": "tsel",
+      "family": "select_mask",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "Fix: TSEL only support 8B, 16B and 32B data type.",
+        "Fix: TSEL only support RowMajor layout type.",
+        "Fix: TSEL only support same data type between dst, src0, and src1.",
+        "selection consumes a packed predicate mask tile",
+        "selection uses a packed predicate mask tile",
+        "source tiles and destination tile share the same data-width family"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:3705",
+        "include/pto/npu/a5/TSel.hpp:110"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TSel.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tsel"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tsels",
+      "instruction": "TSELS",
+      "manual_section": "4.8",
+      "manual_section_title": "Compare & Select Operations",
+      "manual_heading": "tsels",
+      "family": "select_scalar_mode",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "TSELS: Invalid data type",
+        "TSELS: Invalid data type.",
+        "TSELS: not supported Layout type",
+        "selection mode includes scalar-position semantics",
+        "selection semantics include scalar-position / scalar-mode matching",
+        "source tiles and destination tile share the same data-width family"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:3762",
+        "include/pto/npu/a5/TSels.hpp:116"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TSels.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tsels"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tand",
+      "instruction": "TAND",
+      "manual_section": "4.9",
+      "manual_section_title": "Bitwise Operations",
+      "manual_heading": "Elementwise Bitwise AND",
+      "family": "bitwise_binary",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "Fix: TAND has invalid data type.",
+        "Fix: TAND input tile src0 valid shape mismatch with output tile dst shape.",
+        "Fix: TAND input tile src0, src1 and dst tile data type mismatch.",
+        "Fix: TAND input tile src1 valid shape mismatch with output tile dst shape.",
+        "Fix: TAND only support row major layout.",
+        "binary bitwise operands are shape-aligned with the destination valid region",
+        "bitwise A5 implementation targets integer lane types only"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:3824",
+        "include/pto/npu/a5/TAnd.hpp:44",
+        "include/pto/npu/a5/TAndS.hpp:26"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TAnd.hpp",
+        "include/pto/npu/a5/TAndS.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tand"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tor",
+      "instruction": "TOR",
+      "manual_section": "4.9",
+      "manual_section_title": "Bitwise Operations",
+      "manual_heading": "Elementwise Bitwise OR",
+      "family": "bitwise_binary",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "Fix: TOR has invalid data type.",
+        "Fix: TOR input tile src0 valid shape mismatch with output tile dst shape.",
+        "Fix: TOR input tile src0, src1 and dst tile data type mismatch.",
+        "Fix: TOR input tile src1 valid shape mismatch with output tile dst shape.",
+        "Fix: TOR only support row major layout.",
+        "binary bitwise operands are shape-aligned with the destination valid region",
+        "bitwise A5 implementation targets integer lane types only"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:3877",
+        "include/pto/npu/a5/TOr.hpp:34",
+        "include/pto/npu/a5/TOrS.hpp:26"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TOr.hpp",
+        "include/pto/npu/a5/TOrS.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tor"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "txor",
+      "instruction": "TXOR",
+      "manual_section": "4.9",
+      "manual_section_title": "Bitwise Operations",
+      "manual_heading": "Elementwise Bitwise XOR",
+      "family": "bitwise_binary",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "Fix: TXOR has invalid data type.",
+        "Fix: TXOR input tile src0 valid shape mismatch with output tile dst shape.",
+        "Fix: TXOR input tile src0, src1 and dst tile data type mismatch.",
+        "Fix: TXOR input tile src1 valid shape mismatch with output tile dst shape.",
+        "Fix: TXOR only support row major layout.",
+        "binary bitwise operands are shape-aligned with the destination valid region",
+        "bitwise A5 implementation targets integer lane types only"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:3923",
+        "include/pto/npu/a5/TXor.hpp:34",
+        "include/pto/npu/a5/TXorS.hpp:26"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TXor.hpp",
+        "include/pto/npu/a5/TXorS.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/txor"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tshl",
+      "instruction": "TSHL",
+      "manual_section": "4.9",
+      "manual_section_title": "Bitwise Operations",
+      "manual_heading": "Elementwise Shift Left",
+      "family": "bitwise_binary",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "Fix: TSHL has invalid data type.",
+        "Fix: TSHL input tile src0 valid shape mismatch with output tile dst shape.",
+        "Fix: TSHL input tile src0, src1 and dst tile data type mismatch.",
+        "Fix: TSHL input tile src1 valid shape mismatch with output tile dst shape.",
+        "Fix: TSHL only support row major layout.",
+        "binary bitwise operands are shape-aligned with the destination valid region",
+        "bitwise A5 implementation targets integer lane types only"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:3969",
+        "include/pto/npu/a5/TShl.hpp:49"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TShl.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tshl"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tshr",
+      "instruction": "TSHR",
+      "manual_section": "4.9",
+      "manual_section_title": "Bitwise Operations",
+      "manual_heading": "Elementwise Shift Right",
+      "family": "bitwise_binary",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "Fix: TSHR has invalid data type.",
+        "Fix: TSHR input tile src0 valid shape mismatch with output tile dst shape.",
+        "Fix: TSHR input tile src0, src1 and dst tile data type mismatch.",
+        "Fix: TSHR input tile src1 valid shape mismatch with output tile dst shape.",
+        "Fix: TSHR only support row major layout.",
+        "binary bitwise operands are shape-aligned with the destination valid region",
+        "bitwise A5 implementation targets integer lane types only"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:4015",
+        "include/pto/npu/a5/TShr.hpp:49"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TShr.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tshr"
+      ],
+      "deferred_reason": ""
+    },
+    {
+      "op": "tnot",
+      "instruction": "TNOT",
+      "manual_section": "4.9",
+      "manual_section_title": "Bitwise Operations",
+      "manual_heading": "Elementwise Bitwise NOT",
+      "family": "bitwise_unary",
+      "a5_status": "implemented",
+      "dtype_support": [
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
+      "key_constraints": [
+        "TNOT: Invalid data type.",
+        "TNOT: Number of columns of src and dst must be the same.",
+        "TNOT: Number of rows of src and dst must be the same.",
+        "bitwise A5 implementation targets integer lane types only",
+        "src and dst valid regions must stay aligned"
+      ],
+      "semantic_source_paths": [
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:4063",
+        "include/pto/npu/a5/TUnaryOp.hpp:184"
+      ],
+      "header_paths": [
+        "include/pto/npu/a5/TUnaryOp.hpp"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/tnot"
+      ],
+      "deferred_reason": ""
+    }
+  ]
+}

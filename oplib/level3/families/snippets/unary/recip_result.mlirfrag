@@ -1,0 +1,6 @@
+// SNIPPET_SETUP_BEGIN
+%ones = arith.constant @@ONE_LITERAL@@ : @@VECTOR_TYPE@@
+// SNIPPET_SETUP_END
+// SNIPPET_COMPUTE_BEGIN
+%result = arith.divf %ones, %lhs@@EXEC_MODE_ATTR@@ : @@VECTOR_TYPE@@
+// SNIPPET_COMPUTE_END

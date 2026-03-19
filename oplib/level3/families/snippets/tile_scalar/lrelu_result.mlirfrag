@@ -1,0 +1,8 @@
+// SNIPPET_SETUP_BEGIN
+%zeroVec = arith.constant @@ZERO_LITERAL@@ : @@VECTOR_TYPE@@
+// SNIPPET_SETUP_END
+// SNIPPET_COMPUTE_BEGIN
+%positive = arith.cmpf ogt, %lhs, %zeroVec : @@VECTOR_TYPE@@
+%scaled = arith.mulf %lhs, %scalarVec@@EXEC_MODE_ATTR@@ : @@VECTOR_TYPE@@
+%result = arith.select %positive, %lhs, %scaled : @@MASK_VECTOR_TYPE@@, @@VECTOR_TYPE@@
+// SNIPPET_COMPUTE_END
