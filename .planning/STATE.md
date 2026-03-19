@@ -4,29 +4,29 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 2
 current_phase_name: PTO Lowering
-current_plan: 2
-status: in_progress
-stopped_at: Completed 02-01-PLAN.md
-last_updated: "2026-03-19T00:35:16Z"
+current_plan: 3
+status: executing
+stopped_at: Completed 02-02-PLAN.md
+last_updated: "2026-03-19T01:00:12.912Z"
 last_activity: 2026-03-19
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 10
-  completed_plans: 4
-  percent: 40
+  completed_plans: 6
+  percent: 60
 ---
 
 # Project State
 
 **Updated:** 2026-03-19
-**Status:** In progress — revised Phase 2 replay underway
+**Status:** In progress
 **Current Phase:** 2
 **Current Phase Name:** PTO Lowering
 **Total Phases:** 4
-**Current Plan:** 2
+**Current Plan:** 3
 **Total Plans in Phase:** 3
-**Progress:** [████░░░░░░] 40%
+**Progress:** [██████░░░░] 60%
 **Last Activity:** 2026-03-19
 **Last Activity Description:** Replayed revised 02-01 Phase 2 fixture and runner contracts
 
@@ -49,7 +49,8 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - Plan `01-02` executed and summarized
 - Plan `01-03` executed and summarized
 - Revised plan `02-01` executed and summarized
-- Next execution target: `02-02-PLAN.md`
+- Plan `02-02` executed and summarized
+- Next execution target: `02-03-PLAN.md`
 
 ## Active Milestone
 
@@ -90,10 +91,9 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 
 ## Recent Progress
 
-- Refreshed `.planning/phases/02-pto-lowering/02-pto-lowering-01-SUMMARY.md` against the revised planning docs after the decision checkpoint
-- Replaced the obsolete Phase 2 pseudo-op fixture suite with corrected `tload_copy_family_shape`, `tabs_abs_loop_shape`, `tabs_precheck_a5`, `tstore_copy_family_shape`, `tstore_domain_todos`, and `pto_backend_a5vm_wiring` contracts
-- Rewrote `test/phase2/run_phase2_checks.sh` to gate on landed A5VM primitive names and reject legacy pseudo-op regressions before compiler execution
-- Marked PTO-01 through PTO-04 complete in `.planning/REQUIREMENTS.md`
+- Rewrote `include/PTO/Transforms/A5VMLowering.h` around explicit A5-only TLOAD, TABS, and TSTORE lowering contracts
+- Added `lib/PTO/Transforms/PTOToA5VMLowering.cpp` and split pass wiring away from shared contract extraction, copy-loop programming, and unary vec-scope lowering
+- Registered `scf` for the PTO-to-A5VM pass and validated `test/phase2/tabs_abs_loop_shape.mlir` against the rebuilt CLI
 
 ## Open Questions
 
@@ -103,7 +103,7 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 ## Session Continuity
 
 - Next recommended command: `/gsd:execute-phase 02-pto-lowering`
-- Next plan to execute: `02-02-PLAN.md`
+- Next plan to execute: `02-03-PLAN.md`
 - Current blocker status: none
 
 ## Performance Metrics
@@ -116,6 +116,7 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 | Phase 02-pto-lowering P03 | 24min | 2 tasks | 6 files |
 | Phase 01 P01 | 21min | 2 tasks | 10 files |
 | Phase 01-a5vm-foundation P02 | 25min | 2 tasks | 8 files |
+| Phase 02-pto-lowering P02 | 24min | 2 tasks | 5 files |
 
 ## Decisions Made
 
@@ -134,6 +135,9 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - [Phase 01-a5vm-foundation]: Keep copy-op transfer attrs parser-optional and verifier-required so invalid fixtures fail with the planned diagnostic instead of a parser error.
 - [Phase 01-a5vm-foundation]: Derive copy transfer metadata from existing lowering contract fields instead of widening the public Phase 2 lowering structs in this plan.
 - [Phase 01-a5vm-foundation]: Add A5VMOpsIncGen as a direct ptoas build dependency because the CLI includes generated A5VM headers before linking against PTOIR.
+- [Phase 02]: Keep the public Phase 2 surface limited to lowerTLOAD, lowerTABS, and lowerTSTORE plus truthful A5-only contracts.
+- [Phase 02]: Represent copy-family set_loop programming as explicit attached metadata so the PTO branch structure stays visible before dedicated loop ops exist.
+- [Phase 02]: Build unary Abs lowering as structural SCF vec-scope loops around vlds, vabs, and vsts, and register SCF in the pass dependency list.
 
 ## Blockers
 
@@ -141,9 +145,9 @@ None.
 
 ## Session
 
-**Last Date:** 2026-03-18T20:35:30.003Z
-**Stopped At:** Completed 02-01-PLAN.md
+**Last Date:** 2026-03-19T01:00:12.910Z
+**Stopped At:** Completed 02-02-PLAN.md
 **Resume File:** None
 
 ---
-*Last updated: 2026-03-19 after completing revised plan 02-01*
+*Last updated: 2026-03-19 after completing plan 02-02*
