@@ -4,6 +4,7 @@
 import argparse
 import ast
 import re
+import shutil
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -444,6 +445,17 @@ def _copy_asset_if_needed(src: Path, dst: Path):
     if src.resolve() == dst.resolve():
         return
     shutil.copy2(src, dst)
+
+
+def _maybe_copy_validation_runtime(sample_root: Path, output_dir: Path):
+    candidates = [
+        sample_root / "validation_runtime.py",
+        sample_root.parent / "validation_runtime.py",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            _copy_asset_if_needed(candidate, output_dir / "validation_runtime.py")
+            return
 
 
 def _replace_includes(text: str) -> str:
@@ -1194,6 +1206,8 @@ def generate_testcase(
         ptr_elem_counts[p["name"]] = inferred_counts.get(p["name"], logical_elem_count)
 
     templates_root = Path(__file__).resolve().parents[1] / "templates"
+    custom_golden = _find_custom_case_asset(sample_root, testcase, "golden.py")
+    custom_compare = _find_custom_case_asset(sample_root, testcase, "compare.py")
     template = (templates_root / "main_template.cpp").read_text(encoding="utf-8")
     case_name = f"case_{rows}x{cols}"
 
@@ -1375,145 +1389,144 @@ def generate_testcase(
     )
     (output_dir / "main.cpp").write_text(main_cpp, encoding="utf-8")
 
-    golden_template = (templates_root / "golden_template.py").read_text(
-        encoding="utf-8"
-    )
-    input_generate = []
-    elem_count = logical_elem_count
-    # Some kernels use an integer tensor as "indices". The safe in-range domain
-    # depends on the op semantics (see pto-isa docs):
-    # - TSCATTER: indices are linear indices in [0, rows*cols)
-    # - TGATHER/TGATHERB: indices are linear indices in [0, rows*cols)
-    index_mod = None
-    if "TSCATTER" in raw_kernel:
-        index_mod = max(elem_count, 1)
-    elif any(m in raw_kernel for m in ("TGATHER", "TGATHERB")):
-        index_mod = max(elem_count, 1)
-    mrgsort_packed = "TMRGSORT" in raw_kernel
-    for p in init_ptrs:
-        np_dtype = _np_dtype_for_cpp(p["cpp_type"])
-        name = p["name"]
-        size = ptr_elem_counts.get(name, elem_count)
-        is_output = p.get("role") == "output"
-        # If the kernel has both inputs and outputs, default to zero-init for
-        # output buffers to match pto-isa ST conventions (and improve determinism).
-        zero_init = is_output and len(init_ptrs) > 1
+    if custom_golden is not None:
+        _copy_asset_if_needed(custom_golden, output_dir / "golden.py")
+        _maybe_copy_validation_runtime(sample_root, output_dir)
+    else:
+        golden_template = (templates_root / "golden_template.py").read_text(
+            encoding="utf-8"
+        )
+        input_generate = []
+        elem_count = logical_elem_count
+        # Some kernels use an integer tensor as "indices". The safe in-range domain
+        # depends on the op semantics (see pto-isa docs):
+        # - TSCATTER: indices are linear indices in [0, rows*cols)
+        # - TGATHER/TGATHERB: indices are linear indices in [0, rows*cols)
+        index_mod = None
+        if "TSCATTER" in raw_kernel:
+            index_mod = max(elem_count, 1)
+        elif any(m in raw_kernel for m in ("TGATHER", "TGATHERB")):
+            index_mod = max(elem_count, 1)
+        mrgsort_packed = "TMRGSORT" in raw_kernel
+        for p in init_ptrs:
+            np_dtype = _np_dtype_for_cpp(p["cpp_type"])
+            name = p["name"]
+            size = ptr_elem_counts.get(name, elem_count)
+            is_output = p.get("role") == "output"
+            # If the kernel has both inputs and outputs, default to zero-init for
+            # output buffers to match pto-isa ST conventions (and improve determinism).
+            zero_init = is_output and len(init_ptrs) > 1
 
-        if zero_init:
-            input_generate.append(f"    {name} = np.zeros(({size},), dtype={np_dtype})")
-            input_generate.append(f'    {name}.tofile("{name}.bin")')
-        elif (
-            mrgsort_packed
-            and (not is_output)
-            and np_dtype in ("np.float32", "np.float16")
-        ):
-            input_generate.append(
-                f"    # TMRGSORT expects packed (value, index) structures (8 bytes each)."
-            )
-            input_generate.append(
-                f"    # Generate per-block sorted inputs to match pto-isa ST data layout."
-            )
-            if np_dtype == "np.float32":
+            if zero_init:
+                input_generate.append(f"    {name} = np.zeros(({size},), dtype={np_dtype})")
+                input_generate.append(f'    {name}.tofile("{name}.bin")')
+            elif (
+                mrgsort_packed
+                and (not is_output)
+                and np_dtype in ("np.float32", "np.float16")
+            ):
                 input_generate.append(
-                    f"    {name}__words_per_struct = 2  # float32(4B) + uint32(4B)"
+                    f"    # TMRGSORT expects packed (value, index) structures (8 bytes each)."
                 )
                 input_generate.append(
-                    f"    {name}__struct_dtype = np.dtype([('v', np.float32), ('i', np.uint32)])"
+                    f"    # Generate per-block sorted inputs to match pto-isa ST data layout."
                 )
-                input_generate.append(f"    {name}__value_dtype = np.float32")
+                if np_dtype == "np.float32":
+                    input_generate.append(
+                        f"    {name}__words_per_struct = 2  # float32(4B) + uint32(4B)"
+                    )
+                    input_generate.append(
+                        f"    {name}__struct_dtype = np.dtype([('v', np.float32), ('i', np.uint32)])"
+                    )
+                    input_generate.append(f"    {name}__value_dtype = np.float32")
+                else:
+                    input_generate.append(
+                        f"    {name}__words_per_struct = 4  # float16(2B) + pad(2B) + uint32(4B)"
+                    )
+                    input_generate.append(
+                        f"    {name}__struct_dtype = np.dtype([('v', np.float16), ('pad', np.uint16), ('i', np.uint32)])"
+                    )
+                    input_generate.append(f"    {name}__value_dtype = np.float16")
+
+                input_generate.append(
+                    f"    {name}__struct_count = {size} // {name}__words_per_struct"
+                )
+                mrgsort_single = mrgsort_block_len is not None
+                if mrgsort_single:
+                    input_generate.append(f"    {name}__block_len = {mrgsort_block_len}")
+                    input_generate.append(
+                        f"    {name}__structs_per_block = {name}__block_len // {name}__words_per_struct"
+                    )
+                input_generate.append(
+                    f"    {name}__values = np.random.uniform(low=0, high=1, size=({name}__struct_count,)).astype({name}__value_dtype)"
+                )
+                input_generate.append(
+                    f"    {name}__idx = np.arange({name}__struct_count, dtype=np.uint32)"
+                )
+                if mrgsort_single:
+                    input_generate.append(
+                        f"    if {name}__structs_per_block > 0 and {name}__struct_count > 0:"
+                    )
+                    input_generate.append(
+                        f"        pad = (-{name}__struct_count) % {name}__structs_per_block"
+                    )
+                    input_generate.append(f"        if pad:")
+                    input_generate.append(
+                        f"            {name}__values = np.concatenate(({name}__values, np.zeros(pad, dtype={name}__values.dtype)))"
+                    )
+                    input_generate.append(
+                        f"            {name}__idx = np.concatenate(({name}__idx, np.zeros(pad, dtype={name}__idx.dtype)))"
+                    )
+                    input_generate.append(
+                        f"        v = {name}__values.reshape(-1, {name}__structs_per_block)"
+                    )
+                    input_generate.append(
+                        f"        i = {name}__idx.reshape(-1, {name}__structs_per_block)"
+                    )
+                    input_generate.append(
+                        f"        order = np.argsort(-v, kind='stable', axis=1)"
+                    )
+                    input_generate.append(
+                        f"        {name}__values = np.take_along_axis(v, order, axis=1).reshape(-1)[:{name}__struct_count]"
+                    )
+                    input_generate.append(
+                        f"        {name}__idx = np.take_along_axis(i, order, axis=1).reshape(-1)[:{name}__struct_count]"
+                    )
+                else:
+                    input_generate.append(f"    if {name}__struct_count > 0:")
+                    input_generate.append(
+                        f"        order = np.argsort(-{name}__values, kind='stable')"
+                    )
+                    input_generate.append(f"        {name}__values = {name}__values[order]")
+                    input_generate.append(f"        {name}__idx = {name}__idx[order]")
+                input_generate.append(
+                    f"    {name}__packed = np.empty(({name}__struct_count,), dtype={name}__struct_dtype)"
+                )
+                input_generate.append(f"    {name}__packed['v'] = {name}__values")
+                if np_dtype == "np.float16":
+                    input_generate.append(f"    {name}__packed['pad'] = np.uint16(0)")
+                input_generate.append(f"    {name}__packed['i'] = {name}__idx")
+                input_generate.append(f'    {name}__packed.tofile("{name}.bin")')
+            elif np_dtype.startswith("np.int") or np_dtype.startswith("np.uint"):
+                if index_mod is not None:
+                    input_generate.append(
+                        f"    {name} = (np.arange({size}, dtype=np.int64) % {index_mod}).astype({np_dtype})"
+                    )
+                else:
+                    input_generate.append(
+                        f"    {name} = np.zeros(({size},), dtype={np_dtype})"
+                    )
+                input_generate.append(f'    {name}.tofile("{name}.bin")')
             else:
                 input_generate.append(
-                    f"    {name}__words_per_struct = 4  # float16(2B) + pad(2B) + uint32(4B)"
+                    f"    {name} = np.random.random(size=({size},)).astype({np_dtype})"
                 )
-                input_generate.append(
-                    f"    {name}__struct_dtype = np.dtype([('v', np.float16), ('pad', np.uint16), ('i', np.uint32)])"
-                )
-                input_generate.append(f"    {name}__value_dtype = np.float16")
+                input_generate.append(f'    {name}.tofile("{name}.bin")')
 
-            input_generate.append(
-                f"    {name}__struct_count = {size} // {name}__words_per_struct"
-            )
-            # Two modes:
-            #   - Single-list format (TMRGSORT(dst, src, blockLen)): input is arranged in
-            #     4 blocks and each block is sorted independently.
-            #   - Multi-list format (TMRGSORT(dst, executed, tmp, src0..)): each input list
-            #     is fully sorted.
-            mrgsort_single = mrgsort_block_len is not None
-            if mrgsort_single:
-                input_generate.append(f"    {name}__block_len = {mrgsort_block_len}")
-                input_generate.append(
-                    f"    {name}__structs_per_block = {name}__block_len // {name}__words_per_struct"
-                )
-            input_generate.append(
-                f"    {name}__values = np.random.uniform(low=0, high=1, size=({name}__struct_count,)).astype({name}__value_dtype)"
-            )
-            input_generate.append(
-                f"    {name}__idx = np.arange({name}__struct_count, dtype=np.uint32)"
-            )
-            if mrgsort_single:
-                input_generate.append(
-                    f"    if {name}__structs_per_block > 0 and {name}__struct_count > 0:"
-                )
-                input_generate.append(
-                    f"        pad = (-{name}__struct_count) % {name}__structs_per_block"
-                )
-                input_generate.append(f"        if pad:")
-                input_generate.append(
-                    f"            {name}__values = np.concatenate(({name}__values, np.zeros(pad, dtype={name}__values.dtype)))"
-                )
-                input_generate.append(
-                    f"            {name}__idx = np.concatenate(({name}__idx, np.zeros(pad, dtype={name}__idx.dtype)))"
-                )
-                input_generate.append(
-                    f"        v = {name}__values.reshape(-1, {name}__structs_per_block)"
-                )
-                input_generate.append(
-                    f"        i = {name}__idx.reshape(-1, {name}__structs_per_block)"
-                )
-                input_generate.append(
-                    f"        order = np.argsort(-v, kind='stable', axis=1)"
-                )
-                input_generate.append(
-                    f"        {name}__values = np.take_along_axis(v, order, axis=1).reshape(-1)[:{name}__struct_count]"
-                )
-                input_generate.append(
-                    f"        {name}__idx = np.take_along_axis(i, order, axis=1).reshape(-1)[:{name}__struct_count]"
-                )
-            else:
-                input_generate.append(f"    if {name}__struct_count > 0:")
-                input_generate.append(
-                    f"        order = np.argsort(-{name}__values, kind='stable')"
-                )
-                input_generate.append(f"        {name}__values = {name}__values[order]")
-                input_generate.append(f"        {name}__idx = {name}__idx[order]")
-            input_generate.append(
-                f"    {name}__packed = np.empty(({name}__struct_count,), dtype={name}__struct_dtype)"
-            )
-            input_generate.append(f"    {name}__packed['v'] = {name}__values")
-            if np_dtype == "np.float16":
-                input_generate.append(f"    {name}__packed['pad'] = np.uint16(0)")
-            input_generate.append(f"    {name}__packed['i'] = {name}__idx")
-            input_generate.append(f'    {name}__packed.tofile("{name}.bin")')
-        elif np_dtype.startswith("np.int") or np_dtype.startswith("np.uint"):
-            if index_mod is not None:
-                input_generate.append(
-                    f"    {name} = (np.arange({size}, dtype=np.int64) % {index_mod}).astype({np_dtype})"
-                )
-            else:
-                input_generate.append(
-                    f"    {name} = np.zeros(({size},), dtype={np_dtype})"
-                )
-            input_generate.append(f'    {name}.tofile("{name}.bin")')
-        else:
-            input_generate.append(
-                f"    {name} = np.random.random(size=({size},)).astype({np_dtype})"
-            )
-            input_generate.append(f'    {name}.tofile("{name}.bin")')
-
-    golden_py = golden_template.replace(
-        "    # __INPUT_GENERATE_PLACEHOLDER__", "\n".join(input_generate)
-    ).replace("@INPUT_GENERATE@", "\n".join(input_generate))
-    (output_dir / "golden.py").write_text(golden_py, encoding="utf-8")
+        golden_py = golden_template.replace(
+            "    # __INPUT_GENERATE_PLACEHOLDER__", "\n".join(input_generate)
+        ).replace("@INPUT_GENERATE@", "\n".join(input_generate))
+        (output_dir / "golden.py").write_text(golden_py, encoding="utf-8")
 
     # Emit the kernel source, optionally injecting a packed-predicate preload to
     # make TCMP/TCMPS outputs deterministic for byte-wise compares.
@@ -1726,47 +1739,51 @@ endif()
         cmake_content.strip() + "\n", encoding="utf-8"
     )
 
-    compare_template = (templates_root / "compare_template.py").read_text(
-        encoding="utf-8"
-    )
-    compare_lines = ["    ok = True"]
-    compare_prefix_counts = {}
-    for p in output_ptrs:
-        name = p["name"]
-        req = inferred_counts.get(name)
-        if req is None:
-            continue
-        try:
-            req = int(req)
-        except Exception:
-            continue
-        if req <= 0:
-            continue
-        file_cnt = ptr_elem_counts.get(name, logical_elem_count)
-        if file_cnt and req < int(file_cnt):
-            compare_prefix_counts[name] = req
-    for p in output_ptrs:
-        np_dtype = _np_dtype_for_cpp(p["cpp_type"])
-        name = p["name"]
-        eps = _default_eps_for_cpp_type(p["cpp_type"])
-        if has_packed_pred_mask and p["cpp_type"] in {"uint8_t", "int8_t"}:
-            compare_lines.append(
-                f'    ok = compare_packed_pred_mask("golden_{name}.bin", "{name}.bin", {rows}, {cols}) and ok'
-            )
-        else:
-            prefix_cnt = compare_prefix_counts.get(name)
-            if prefix_cnt is not None:
+    if custom_compare is not None:
+        _copy_asset_if_needed(custom_compare, output_dir / "compare.py")
+        _maybe_copy_validation_runtime(sample_root, output_dir)
+    else:
+        compare_template = (templates_root / "compare_template.py").read_text(
+            encoding="utf-8"
+        )
+        compare_lines = ["    ok = True"]
+        compare_prefix_counts = {}
+        for p in output_ptrs:
+            name = p["name"]
+            req = inferred_counts.get(name)
+            if req is None:
+                continue
+            try:
+                req = int(req)
+            except Exception:
+                continue
+            if req <= 0:
+                continue
+            file_cnt = ptr_elem_counts.get(name, logical_elem_count)
+            if file_cnt and req < int(file_cnt):
+                compare_prefix_counts[name] = req
+        for p in output_ptrs:
+            np_dtype = _np_dtype_for_cpp(p["cpp_type"])
+            name = p["name"]
+            eps = _default_eps_for_cpp_type(p["cpp_type"])
+            if has_packed_pred_mask and p["cpp_type"] in {"uint8_t", "int8_t"}:
                 compare_lines.append(
-                    f'    ok = compare_bin_prefix("golden_{name}.bin", "{name}.bin", {np_dtype}, {eps}, {prefix_cnt}) and ok'
+                    f'    ok = compare_packed_pred_mask("golden_{name}.bin", "{name}.bin", {rows}, {cols}) and ok'
                 )
             else:
-                compare_lines.append(
-                    f'    ok = compare_bin("golden_{name}.bin", "{name}.bin", {np_dtype}, {eps}) and ok'
-                )
-    compare_py = compare_template.replace(
-        "    # __COMPARES_PLACEHOLDER__", "\n".join(compare_lines)
-    ).replace("@COMPARES@", "\n".join(compare_lines))
-    (output_dir / "compare.py").write_text(compare_py, encoding="utf-8")
+                prefix_cnt = compare_prefix_counts.get(name)
+                if prefix_cnt is not None:
+                    compare_lines.append(
+                        f'    ok = compare_bin_prefix("golden_{name}.bin", "{name}.bin", {np_dtype}, {eps}, {prefix_cnt}) and ok'
+                    )
+                else:
+                    compare_lines.append(
+                        f'    ok = compare_bin("golden_{name}.bin", "{name}.bin", {np_dtype}, {eps}) and ok'
+                    )
+        compare_py = compare_template.replace(
+            "    # __COMPARES_PLACEHOLDER__", "\n".join(compare_lines)
+        ).replace("@COMPARES@", "\n".join(compare_lines))
+        (output_dir / "compare.py").write_text(compare_py, encoding="utf-8")
 
     # Let the runner know which bins are outputs (for sim->golden copying).
     (output_dir / "outputs.txt").write_text(

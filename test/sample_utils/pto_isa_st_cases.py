@@ -9,6 +9,7 @@ from mlir.ir import (
     Location,
     Module,
     StringAttr,
+    UnitAttr,
 )
 from mlir.dialects import arith, func, pto
 
@@ -184,6 +185,7 @@ def build_binary_case(
                 fn = func.FuncOp(
                     kernel_name, func.FunctionType.get([ptr_ty, ptr_ty, ptr_ty], [])
                 )
+                fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):
@@ -309,6 +311,7 @@ def build_scalar_case(
                 fn = func.FuncOp(
                     kernel_name, func.FunctionType.get([ptr_ty, ptr_ty, ptr_ty], [])
                 )
+                fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):
