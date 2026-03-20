@@ -16,12 +16,12 @@ using namespace mlir::pto;
 
 namespace {
 
-static TFreeOp findMatchingTFree(TPopOp tpopOp) {
+static TFreeInternalOp findMatchingTFree(TPopInternalOp tpopOp) {
   Value pipeHandle = tpopOp.getPipeHandle();
   Block *block = tpopOp->getBlock();
   for (auto it = std::next(tpopOp->getIterator()), end = block->end();
        it != end; ++it) {
-    if (auto tfreeOp = dyn_cast<TFreeOp>(&*it)) {
+    if (auto tfreeOp = dyn_cast<TFreeInternalOp>(&*it)) {
       if (tfreeOp.getPipeHandle() == pipeHandle)
         return tfreeOp;
     }
@@ -41,9 +41,9 @@ static Operation *getTopLevelAncestorInBlock(Operation *op, Block *block) {
 }
 
 static bool hasSamePipeTPopInRegion(Operation *op, Value pipeHandle,
-                                    TPopOp current) {
+                                    TPopInternalOp current) {
   bool found = false;
-  op->walk([&](TPopOp nestedTpop) {
+  op->walk([&](TPopInternalOp nestedTpop) {
     if (nestedTpop == current)
       return WalkResult::advance();
     if (nestedTpop.getPipeHandle() == pipeHandle) {
@@ -55,7 +55,7 @@ static bool hasSamePipeTPopInRegion(Operation *op, Value pipeHandle,
   return found;
 }
 
-static LogicalResult verifySingleOutstandingUntil(TPopOp tpopOp,
+static LogicalResult verifySingleOutstandingUntil(TPopInternalOp tpopOp,
                                                   Operation *freeBoundary) {
   if (!freeBoundary || freeBoundary == tpopOp.getOperation())
     return success();
@@ -76,8 +76,8 @@ static LogicalResult verifySingleOutstandingUntil(TPopOp tpopOp,
   return success();
 }
 
-static LogicalResult verifyNoTileUsesAfterTFree(TPopOp tpopOp,
-                                                TFreeOp tfreeOp) {
+static LogicalResult verifyNoTileUsesAfterTFree(TPopInternalOp tpopOp,
+                                                TFreeInternalOp tfreeOp) {
   Value tile = tpopOp.getTile();
   Block *block = tpopOp->getBlock();
 
@@ -101,15 +101,15 @@ struct PTOVerifyTFreePass
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
 
-    SmallVector<TPopOp> tpops;
-    funcOp.walk([&](TPopOp op) { tpops.push_back(op); });
+    SmallVector<TPopInternalOp> tpops;
+    funcOp.walk([&](TPopInternalOp op) { tpops.push_back(op); });
 
-    for (TPopOp tpopOp : tpops) {
+    for (TPopInternalOp tpopOp : tpops) {
       if (!tpopOp->getParentOfType<SectionCubeOp>() &&
           !tpopOp->getParentOfType<SectionVectorOp>())
         continue;
 
-      TFreeOp existingTFree = findMatchingTFree(tpopOp);
+      TFreeInternalOp existingTFree = findMatchingTFree(tpopOp);
       if (!existingTFree) {
         tpopOp.emitOpError("requires an explicit matching tfree");
         signalPassFailure();

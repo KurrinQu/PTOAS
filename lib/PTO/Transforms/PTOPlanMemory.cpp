@@ -363,7 +363,8 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
       UpdateOpGenInfo(curOpInfo, llvm::to_vector(callOp->getOperands()));
       // UpdateOpTempGenInfo(curOpInfo);
       OpKillHandle(curOpInfo, live, op->getBlock());
-    } else if (isa<pto::TPushOp, pto::TFreeOp, pto::InitializeL2LPipeOp,
+    } else if (isa<pto::TPushInternalOp, pto::TFreeInternalOp,
+                   pto::InitializeL2LPipeOp,
                    pto::InitializeL2G2LPipeOp>(op)) {
       UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
       OpKillHandle(curOpInfo, live, op->getBlock());

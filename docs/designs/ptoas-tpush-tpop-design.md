@@ -7,23 +7,19 @@
 本文覆盖两层接口：
 
 - 前端接口
-  - `pto.aic_initialize_pipe`
-  - `pto.aiv_initialize_pipe`
-  - `pto.tpush_to_aiv`
-  - `pto.tpush_to_aic`
-  - `pto.tpop_from_aic`
-  - `pto.tpop_from_aiv`
-  - `pto.tfree_from_aic`
-  - `pto.tfree_from_aiv`
+  - `pto.initialize_pipe`
+  - `pto.tpush`
+  - `pto.tpop`
+  - `pto.tfree`
   - `pto.reserve_buffer`
   - `pto.import_reserved_buffer`
 - PTOAS 内部统一接口
   - `pto.initialize_l2g2l_pipe`
   - `pto.initialize_l2l_pipe`
-  - `pto.tpush`
+  - `pto.tpush_internal`
   - `pto.declare_tile`
-  - `pto.tpop`
-  - `pto.tfree`
+  - `pto.tpop_internal`
+  - `pto.tfree_internal`
 
 本文只描述接口契约与编译流程，不展开具体 C++ 模板实现细节。
 
@@ -31,23 +27,25 @@
 
 本设计的目标如下：
 
-- 对前端提供\*\_initialize_pipe/tpush_to_\*/tpop_from_\*/tfree_from_\*IR接口。
-- 在 PTOAS 内部统一为 pipe/tpush/tpop/tfree 指令，便于复用已有 pass。
+- 对前端提供统一的 `initialize_pipe` / `tpush` / `tpop` / `tfree` IR 接口。
+- 在 PTOAS 内部统一为 pipe + `*_internal` 数据传输指令，便于复用已有 pass。
 - 支持 A2/A3 与 A5 两个平台使用同一套前端接口。
 - 定义consumer slot buffer的分配地址与producer之间的匹配关系，并传播。
 
 ## 3. 前端 IR 接口定义
 
-### 3.1 `pto.aic_initialize_pipe`
+### 3.1 `pto.initialize_pipe`
 
 #### 语义
 
-由 Cube kernel 在函数启动时调用，初始化该函数涉及的通信 pipe。
+在函数启动时调用，初始化该函数涉及的逻辑 pipe ring buffer。
+具体 lower 到哪条单向 pipe，由所在函数的 `pto.kernel_kind` 与前端 op
+种类共同决定。
 
 #### 语法
 
 ```mlir
-pto.aic_initialize_pipe(
+pto.initialize_pipe(
     DIR_MASK,
     SLOT_SIZE,
     GM_SLOT_BUFFER,
@@ -65,87 +63,38 @@ pto.aic_initialize_pipe(
 | `C2V_CONSUMER_BUF` | `i32` | C2V 方向 consumer 的 local slot buffer 基址 |
 | `V2C_CONSUMER_BUF` | `i32` | V2C 方向 consumer 的 local slot buffer 基址 |
 
-### 3.2 `pto.aiv_initialize_pipe`
+### 3.2 前端数据传输接口
 
-#### 语义
-
-由 Vector kernel 在函数启动时调用，初始化该函数涉及的通信 pipe。
-
-#### 语法
+#### `pto.tpush`
 
 ```mlir
-pto.aiv_initialize_pipe(
-    DIR_MASK,
-    SLOT_SIZE,
-    GM_SLOT_BUFFER,
-    C2V_CONSUMER_BUF,
-    V2C_CONSUMER_BUF)
+pto.tpush(%tile) { split = 0 }
 ```
 
-参数语义与 `pto.aic_initialize_pipe` 相同。
+- 向当前逻辑 pipe 的 ring buffer 中 push 一个 tile
 
-### 3.3 前端数据传输接口
-
-#### `pto.tpush_to_aiv`
+#### `pto.tpop`
 
 ```mlir
-pto.tpush_to_aiv(%tile) { split = 0 }
+%tile = pto.tpop { split = 0 } -> !pto.tile_buf<...>
 ```
 
-- 仅出现在 Cube kernel 中
-- 表示 C2V 方向 producer push
+- 从当前逻辑 pipe 的 ring buffer 中 pop 一个 tile
 
-#### `pto.tpush_to_aic`
+#### `pto.tfree`
 
 ```mlir
-pto.tpush_to_aic(%tile) { split = 0 }
+pto.tfree { split = 0 }
 ```
 
-- 仅出现在 Vector kernel 中
-- 表示 V2C 方向 producer push
-
-#### `pto.tpop_from_aic`
-
-```mlir
-%tile = pto.tpop_from_aic { split = 0 } -> !pto.tile_buf<...>
-```
-
-- 仅出现在 Vector kernel 中
-- 表示 C2V 方向 consumer pop
-
-#### `pto.tpop_from_aiv`
-
-```mlir
-%tile = pto.tpop_from_aiv { split = 0 } -> !pto.tile_buf<...>
-```
-
-- 仅出现在 Cube kernel 中
-- 表示 V2C 方向 consumer pop
-
-#### `pto.tfree_from_aic`
-
-```mlir
-pto.tfree_from_aic { split = 0 }
-```
-
-- 仅出现在 Vector kernel 中
-- 表示 C2V 方向 consumer free
-
-#### `pto.tfree_from_aiv`
-
-```mlir
-pto.tfree_from_aiv { split = 0 }
-```
-
-- 仅出现在 Cube kernel 中
-- 表示 V2C 方向 consumer free
+- 释放当前逻辑 pipe ring buffer 上最近一次 consumer 占用的 slot
 
 以上前端数据传输接口中的 `split` 均为编译期常量属性，不是运行时 SSA operand。
 
 - 取值使用 `TileSplitAxis` 枚举语义：`0/1/2` 分别对应 `TILE_NO_SPLIT`、`TILE_UP_DOWN`、`TILE_LEFT_RIGHT`
 - lowering 到 PTOAS 内部 IR 时，`split` 继续以属性形式保留
 
-### 3.4 地址提示接口
+### 3.3 地址提示接口
 
 #### `pto.reserve_buffer`
 
@@ -212,12 +161,11 @@ pto.tfree_from_aiv { split = 0 }
 - 结果类型为 `i32`
 - 结果值表示从 peer `reserve_buffer` 导入的已解析基址
 
-### 3.5 前端层约束
+### 3.4 前端层约束
 
 前端 IR 需满足以下约束：
 
-- 每个 Cube function 最多一条 `pto.aic_initialize_pipe`
-- 每个 Vector function 最多一条 `pto.aiv_initialize_pipe`
+- 每个带 `pto.kernel_kind` 的函数最多一条 `pto.initialize_pipe`
 - 每个函数内最多一条 C2V 逻辑 pipe 和一条 V2C 逻辑 pipe
 - 每个函数最多一条 `reserve_buffer`
 - 每个函数最多一条 `import_reserved_buffer`
@@ -364,10 +312,10 @@ pto.tfree_from_aiv { split = 0 }
 
 - `local_addr`
 
-### 5.4 `pto.tpush`
+### 5.4 `pto.tpush_internal`
 
 ```mlir
-pto.tpush(%tile, %pipe) { split = 0 }
+pto.tpush_internal(%tile, %pipe) { split = 0 }
 ```
 
 ### 5.5 `pto.declare_tile`
@@ -376,16 +324,16 @@ pto.tpush(%tile, %pipe) { split = 0 }
 %tile = pto.declare_tile -> !pto.tile_buf<...>
 ```
 
-### 5.6 `pto.tpop`
+### 5.6 `pto.tpop_internal`
 
 ```mlir
-pto.tpop(%tile, %pipe) { split = 0 }
+pto.tpop_internal(%tile, %pipe) { split = 0 }
 ```
 
-### 5.7 `pto.tfree`
+### 5.7 `pto.tfree_internal`
 
 ```mlir
-pto.tfree(%pipe) { split = 0 }
+pto.tfree_internal(%pipe) { split = 0 }
 ```
 
 `split` 在内部 IR 中必须以编译期常量属性形式保留，不能在 lowering 时擦除或降为运行时 operand。
@@ -396,12 +344,12 @@ pto.tfree(%pipe) { split = 0 }
 
 #### A2/A3
 
-- `pto.aic_initialize_pipe` 和 `pto.aiv_initialize_pipe` lower 为 `pto.initialize_l2g2l_pipe`
+- `pto.initialize_pipe` lower 为 `pto.initialize_l2g2l_pipe`
 - 若前端未提供更具体信息，lowering 默认补上 `local_slot_num = slot_num`
 
 #### A5
 
-- `pto.aic_initialize_pipe` 和 `pto.aiv_initialize_pipe` lower 为 `pto.initialize_l2l_pipe`
+- `pto.initialize_pipe` lower 为 `pto.initialize_l2l_pipe`
 
 ### 6.2 `DIR_MASK=1/2`
 
@@ -432,43 +380,43 @@ pto.tfree(%pipe) { split = 0 }
 
 | 前端 op | 所在函数 | 方向 | 使用的内部 pipe |
 |---|---|---|---|
-| `tpush_to_aiv` | Cube | C2V | `dir_mask = 1` |
-| `tpop_from_aic` | Vector | C2V | `dir_mask = 1` |
-| `tfree_from_aic` | Vector | C2V | `dir_mask = 1` |
-| `tpush_to_aic` | Vector | V2C | `dir_mask = 2` |
-| `tpop_from_aiv` | Cube | V2C | `dir_mask = 2` |
-| `tfree_from_aiv` | Cube | V2C | `dir_mask = 2` |
+| `tpush` | Cube | C2V | `dir_mask = 1` |
+| `tpop` | Vector | C2V | `dir_mask = 1` |
+| `tfree` | Vector | C2V | `dir_mask = 1` |
+| `tpush` | Vector | V2C | `dir_mask = 2` |
+| `tpop` | Cube | V2C | `dir_mask = 2` |
+| `tfree` | Cube | V2C | `dir_mask = 2` |
 
 ### 6.5 数据传输 op lowering
 
-#### `tpush_to_aiv` / `tpush_to_aic`
+#### `tpush`
 
 lower 为：
 
 ```mlir
-pto.tpush(%tile, %pipe) { split = 0 }
+pto.tpush_internal(%tile, %pipe) { split = 0 }
 ```
 
-#### `tpop_from_aic` / `tpop_from_aiv`
+#### `tpop`
 
 lower 为：
 
 ```mlir
 %decl = pto.declare_tile -> !pto.tile_buf<...>
-pto.tpop(%decl, %pipe) { split = 0 }
+pto.tpop_internal(%decl, %pipe) { split = 0 }
 ```
 
 即：
 
-- 前端 `pto.tpop_from_aic` / `pto.tpop_from_aiv` 是返回 tile 结果值的接口
-- PTOAS 内部 `pto.tpop` 才是 destination-style 形式，显式接收一个 `pto.declare_tile` 结果作为入参
+- 前端 `pto.tpop` 是返回 tile 结果值的接口
+- PTOAS 内部 `pto.tpop_internal` 才是 destination-style 形式，显式接收一个 `pto.declare_tile` 结果作为入参
 
-#### `tfree_from_aic` / `tfree_from_aiv`
+#### `tfree`
 
 lower 为：
 
 ```mlir
-pto.tfree(%pipe) { split = 0 }
+pto.tfree_internal(%pipe) { split = 0 }
 ```
 
 ## 7. `reserve_buffer` 与地址传播
@@ -716,10 +664,10 @@ PTOAS 对 `split` 的处理边界如下：
 
 在进入 EmitC 前：
 
-- 前端 `pto.aic_initialize_pipe` / `pto.aiv_initialize_pipe`
-- 前端 `pto.tpush_to_aiv` / `pto.tpush_to_aic`
-- 前端 `pto.tpop_from_aic` / `pto.tpop_from_aiv`
-- 前端 `pto.tfree_from_aic` / `pto.tfree_from_aiv`
+- 前端 `pto.initialize_pipe`
+- 前端 `pto.tpush`
+- 前端 `pto.tpop`
+- 前端 `pto.tfree`
 - `pto.reserve_buffer` / `pto.import_reserved_buffer`
 
 都必须已经被前序 pass 消除。

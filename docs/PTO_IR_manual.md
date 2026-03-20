@@ -6423,7 +6423,16 @@ generated IR. The detailed design document is:
 - `split` is a compile-time attribute, not a runtime SSA operand.
 - `split = 0/1/2` corresponds to `TILE_NO_SPLIT`, `TILE_UP_DOWN`, and
   `TILE_LEFT_RIGHT`.
-- `pto.tpop_from_aic` and `pto.tpop_from_aiv` are result-valued frontend ops.
+- Frontend `pto.tpop` is result-valued.
+- Frontend pipe semantics are described in terms of ring-buffer interactions:
+  `pto.tpush` pushes one tile into the logical pipe ring buffer,
+  `pto.tpop` pops one tile from it, and `pto.tfree` releases the current
+  consumer slot.
+- The concrete pipe direction is inferred by PTOAS from `pto.kernel_kind`
+  together with the frontend op kind during lowering.
+- Frontend pipe ops lower to internal
+  `pto.initialize_l2g2l_pipe` / `pto.initialize_l2l_pipe` and
+  `pto.tpush_internal` / `pto.tpop_internal` / `pto.tfree_internal`.
 - A single function currently models at most one logical C2V pipe and one
   logical V2C pipe.
 
@@ -6485,14 +6494,14 @@ function's reserved buffer declaration.
 - At most one `pto.import_reserved_buffer` is expected in one function
 - `peer_func` must contain a matching `pto.reserve_buffer`
 
-##### `pto.aic_initialize_pipe` - Frontend Cube Pipe Initialization
+##### `pto.initialize_pipe` - Frontend Pipe Initialization
 
-**Summary:** Frontend pipe initialization op used in Cube kernels.
+**Summary:** Frontend initialization op for a logical ring-buffer pipe.
 
 **Syntax:**
 
 ```mlir
-pto.aic_initialize_pipe {dir_mask = 1, slot_size = 1024}
+pto.initialize_pipe {dir_mask = 1, slot_size = 1024}
   (c2v_consumer_buf = %c2v_import : i32,
    v2c_consumer_buf = %c0_i32 : i32)
 ```
@@ -6509,39 +6518,20 @@ pto.aic_initialize_pipe {dir_mask = 1, slot_size = 1024}
 
 **Constraints & Verification:**
 
-- Must appear in Cube kernels
-- At most one `pto.aic_initialize_pipe` is expected in one Cube function
+- Must appear in functions carrying `pto.kernel_kind`
+- `pto.kernel_kind` participates in determining the concrete pipe direction
+  during lowering
+- At most one `pto.initialize_pipe` is expected in one function
 
-##### `pto.aiv_initialize_pipe` - Frontend Vector Pipe Initialization
+##### `pto.tpush` - Frontend Producer Push
 
-**Summary:** Frontend pipe initialization op used in Vector kernels.
-
-**Syntax:**
-
-```mlir
-pto.aiv_initialize_pipe {dir_mask = 1, slot_size = 1024}
-  (c2v_consumer_buf = %c2v_local : i32,
-   v2c_consumer_buf = %c0_i32 : i32)
-```
-
-**Arguments:** Same operand and attribute structure as
-`pto.aic_initialize_pipe`.
-
-**Results:** None.
-
-**Constraints & Verification:**
-
-- Must appear in Vector kernels
-- At most one `pto.aiv_initialize_pipe` is expected in one Vector function
-
-##### `pto.tpush_to_aiv` - Frontend C2V Producer Push
-
-**Summary:** Pushes one tile from a Cube kernel to the C2V logical pipe.
+**Summary:** Pushes one tile into the function's frontend logical pipe ring
+buffer.
 
 **Syntax:**
 
 ```mlir
-pto.tpush_to_aiv(%tile : !pto.tile_buf<...>) {split = 1}
+pto.tpush(%tile : !pto.tile_buf<...>) {split = 1}
 ```
 
 **Arguments:**
@@ -6553,39 +6543,18 @@ pto.tpush_to_aiv(%tile : !pto.tile_buf<...>) {split = 1}
 
 **Constraints & Verification:**
 
-- Must appear in Cube kernels
-- Represents the producer side of a C2V transfer
+- Must appear in functions carrying `pto.kernel_kind`
+- The concrete pipe direction is resolved during lowering
 
-##### `pto.tpush_to_aic` - Frontend V2C Producer Push
+##### `pto.tpop` - Frontend Consumer Pop
 
-**Summary:** Pushes one tile from a Vector kernel to the V2C logical pipe.
-
-**Syntax:**
-
-```mlir
-pto.tpush_to_aic(%tile : !pto.tile_buf<...>) {split = 1}
-```
-
-**Arguments:**
-
-- one tile operand
-- compile-time `split` attribute
-
-**Results:** None.
-
-**Constraints & Verification:**
-
-- Must appear in Vector kernels
-- Represents the producer side of a V2C transfer
-
-##### `pto.tpop_from_aic` - Frontend C2V Consumer Pop
-
-**Summary:** Pops one tile from a C2V logical pipe in a Vector kernel.
+**Summary:** Pops one tile from the function's frontend logical pipe ring
+buffer.
 
 **Syntax:**
 
 ```mlir
-%tile = pto.tpop_from_aic {split = 1} -> !pto.tile_buf<...>
+%tile = pto.tpop {split = 1} -> !pto.tile_buf<...>
 ```
 
 **Arguments:** compile-time `split` attribute.
@@ -6594,36 +6563,18 @@ pto.tpush_to_aic(%tile : !pto.tile_buf<...>) {split = 1}
 
 **Constraints & Verification:**
 
-- Must appear in Vector kernels
-- Represents the consumer side of a C2V transfer
+- Must appear in functions carrying `pto.kernel_kind`
+- The concrete pipe direction is resolved during lowering
 
-##### `pto.tpop_from_aiv` - Frontend V2C Consumer Pop
+##### `pto.tfree` - Frontend Consumer Free
 
-**Summary:** Pops one tile from a V2C logical pipe in a Cube kernel.
-
-**Syntax:**
-
-```mlir
-%tile = pto.tpop_from_aiv {split = 1} -> !pto.tile_buf<...>
-```
-
-**Arguments:** compile-time `split` attribute.
-
-**Results:** one `!pto.tile_buf<...>` result tile.
-
-**Constraints & Verification:**
-
-- Must appear in Cube kernels
-- Represents the consumer side of a V2C transfer
-
-##### `pto.tfree_from_aic` - Frontend C2V Consumer Free
-
-**Summary:** Releases the current C2V consumer slot in a Vector kernel.
+**Summary:** Releases the current consumer slot for the function's frontend
+logical pipe ring buffer.
 
 **Syntax:**
 
 ```mlir
-pto.tfree_from_aic {split = 1}
+pto.tfree {split = 1}
 ```
 
 **Arguments:** compile-time `split` attribute.
@@ -6632,27 +6583,8 @@ pto.tfree_from_aic {split = 1}
 
 **Constraints & Verification:**
 
-- Must appear in Vector kernels
-- Represents the consumer free side of a C2V transfer
-
-##### `pto.tfree_from_aiv` - Frontend V2C Consumer Free
-
-**Summary:** Releases the current V2C consumer slot in a Cube kernel.
-
-**Syntax:**
-
-```mlir
-pto.tfree_from_aiv {split = 1}
-```
-
-**Arguments:** compile-time `split` attribute.
-
-**Results:** None.
-
-**Constraints & Verification:**
-
-- Must appear in Cube kernels
-- Represents the consumer free side of a V2C transfer
+- Must appear in functions carrying `pto.kernel_kind`
+- The concrete pipe direction is resolved during lowering
 
 ---
 

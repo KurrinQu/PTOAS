@@ -1,0 +1,16 @@
+// RUN: not ptoas --pto-arch=a5 %s 2>&1 | FileCheck %s
+
+module {
+  func.func @vector_kernel() attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0_i32 = arith.constant 0 : i32
+    pto.initialize_pipe {dir_mask = 1, slot_size = 1024}
+      (c2v_consumer_buf = %c0_i32 : i32,
+       v2c_consumer_buf = %c0_i32 : i32)
+
+    %vec_tile = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    pto.tpush(%vec_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>) {split = 0}
+    return
+  }
+}
+
+// CHECK: error: 'pto.tpush' op requires the dominating initialize_pipe op to enable ring-buffer push

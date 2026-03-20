@@ -1178,8 +1178,8 @@ def SectionVectorOp : PTO_SectionOp<"section.vector">;
 // Frontend TPUSH/TPOP Pipe Communication Ops
 //===----------------------------------------------------------------------===//
 
-def AicInitializePipeOp : PTO_Op<"aic_initialize_pipe"> {
-  let summary = "Frontend Cube-kernel pipe initialization";
+def InitializePipeOp : PTO_Op<"initialize_pipe"> {
+  let summary = "Frontend logical ring-buffer pipe initialization";
 
   let arguments = (ins
       I8Attr:$dir_mask,
@@ -1204,34 +1204,8 @@ def AicInitializePipeOp : PTO_Op<"aic_initialize_pipe"> {
   }];
 }
 
-def AivInitializePipeOp : PTO_Op<"aiv_initialize_pipe"> {
-  let summary = "Frontend Vector-kernel pipe initialization";
-
-  let arguments = (ins
-      I8Attr:$dir_mask,
-      I32Attr:$slot_size,
-      Optional<I32>:$gm_slot_buffer,
-      I32:$c2v_consumer_buf,
-      I32:$v2c_consumer_buf
-  );
-
-  let results = (outs);
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `{` `dir_mask` `=` $dir_mask `,`
-        `slot_size` `=` $slot_size `}`
-    `(`
-      (`gm_slot_buffer` `=` $gm_slot_buffer^ `:` type($gm_slot_buffer) `,`)?
-      `c2v_consumer_buf` `=` $c2v_consumer_buf `:` type($c2v_consumer_buf) `,`
-      `v2c_consumer_buf` `=` $v2c_consumer_buf `:` type($v2c_consumer_buf)
-    `)`
-    attr-dict
-  }];
-}
-
-def TPushToAivOp : PTO_TOp<"tpush_to_aiv"> {
-  let summary = "Frontend C2V producer push from Cube to Vector";
+def TPushOp : PTO_TOp<"tpush"> {
+  let summary = "Frontend push into a logical pipe ring buffer";
 
   let arguments = (ins
       PTODpsType:$tile,
@@ -1247,25 +1221,8 @@ def TPushToAivOp : PTO_TOp<"tpush_to_aiv"> {
   }];
 }
 
-def TPushToAicOp : PTO_TOp<"tpush_to_aic"> {
-  let summary = "Frontend V2C producer push from Vector to Cube";
-
-  let arguments = (ins
-      PTODpsType:$tile,
-      I8Attr:$split
-  );
-
-  let results = (outs);
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `(` $tile `:` qualified(type($tile)) `)`
-    `{` `split` `=` $split `}` attr-dict
-  }];
-}
-
-def TPopFromAicOp : PTO_TOp<"tpop_from_aic"> {
-  let summary = "Frontend C2V consumer pop in Vector kernel";
+def TPopOp : PTO_TOp<"tpop"> {
+  let summary = "Frontend pop from a logical pipe ring buffer";
 
   let arguments = (ins
       I8Attr:$split
@@ -1279,38 +1236,8 @@ def TPopFromAicOp : PTO_TOp<"tpop_from_aic"> {
   }];
 }
 
-def TPopFromAivOp : PTO_TOp<"tpop_from_aiv"> {
-  let summary = "Frontend V2C consumer pop in Cube kernel";
-
-  let arguments = (ins
-      I8Attr:$split
-  );
-
-  let results = (outs PTODpsType:$tile);
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `{` `split` `=` $split `}` attr-dict `->` qualified(type($tile))
-  }];
-}
-
-def TFreeFromAicOp : PTO_TOp<"tfree_from_aic"> {
-  let summary = "Frontend C2V consumer free in Vector kernel";
-
-  let arguments = (ins
-      I8Attr:$split
-  );
-
-  let results = (outs);
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `{` `split` `=` $split `}` attr-dict
-  }];
-}
-
-def TFreeFromAivOp : PTO_TOp<"tfree_from_aiv"> {
-  let summary = "Frontend V2C consumer free in Cube kernel";
+def TFreeOp : PTO_TOp<"tfree"> {
+  let summary = "Frontend release of the current ring-buffer consumer slot";
 
   let arguments = (ins
       I8Attr:$split
@@ -1427,7 +1354,7 @@ def InitializeL2LPipeOp : PTO_Op<"initialize_l2l_pipe", [
   }];
 }
 
-def TPushOp : PTO_TOp<"tpush", [
+def TPushInternalOp : PTO_TOp<"tpush_internal", [
     OpPipeInterface,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
@@ -1488,7 +1415,7 @@ def DeclareTileOp : PTO_Op<"declare_tile", [Pure]> {
   }];
 }
 
-def TPopOp : PTO_TOp<"tpop", [
+def TPopInternalOp : PTO_TOp<"tpop_internal", [
     PTO_DpsInitOpInterface,
     OpPipeInterface,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -1522,7 +1449,7 @@ def TPopOp : PTO_TOp<"tpop", [
   }];
 }
 
-def TFreeOp : PTO_TOp<"tfree", [
+def TFreeInternalOp : PTO_TOp<"tfree_internal", [
     OpPipeInterface,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {

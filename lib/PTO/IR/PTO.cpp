@@ -7498,32 +7498,25 @@ static LogicalResult verifySplitAttr(Operation *op, int64_t split) {
   return success();
 }
 
-static LogicalResult verifyFrontendKernelKind(Operation *op,
-                                              FunctionKernelKind expected,
-                                              StringRef kernelName) {
-  auto kernelKind = getEnclosingFunctionKernelKind(op);
-  if (!kernelKind || *kernelKind != expected) {
-    return op->emitOpError("must be inside a ")
-           << kernelName << " kernel function";
+static LogicalResult verifyFrontendKernelPresence(Operation *op) {
+  if (!getEnclosingFunctionKernelKind(op)) {
+    return op->emitOpError("must be inside a function carrying pto.kernel_kind");
   }
   return success();
 }
 
-template <typename InitOpT>
-static LogicalResult verifyFrontendInitCommon(InitOpT op,
-                                              FunctionKernelKind expected,
-                                              StringRef kernelName) {
-  if (failed(verifyFrontendKernelKind(op.getOperation(), expected, kernelName)))
+static LogicalResult verifyFrontendInitCommon(InitializePipeOp op) {
+  if (failed(verifyFrontendKernelPresence(op.getOperation())))
     return failure();
 
-  auto funcOp = op->template getParentOfType<func::FuncOp>();
+  auto funcOp = op->getParentOfType<func::FuncOp>();
   if (!funcOp)
     return op.emitOpError("must be nested under a func.func");
 
-  unsigned sameInitCount = 0;
-  funcOp.walk([&](InitOpT) { ++sameInitCount; });
-  if (sameInitCount > 1)
-    return op.emitOpError("requires at most one matching initialize_pipe op per function");
+  unsigned initCount = 0;
+  funcOp.walk([&](InitializePipeOp) { ++initCount; });
+  if (initCount > 1)
+    return op.emitOpError("requires at most one pto.initialize_pipe per function");
 
   int8_t dirMask = op.getDirMask();
   if (dirMask != 1 && dirMask != 2 && dirMask != 3)
@@ -7602,10 +7595,8 @@ LogicalResult ImportReservedBufferOp::verify() {
 }
 
 static LogicalResult verifyFrontendSplitOp(Operation *op,
-                                           FunctionKernelKind expected,
-                                           StringRef kernelName,
                                            int64_t split) {
-  if (failed(verifyFrontendKernelKind(op, expected, kernelName)))
+  if (failed(verifyFrontendKernelPresence(op)))
     return failure();
   return verifySplitAttr(op, split);
 }
@@ -7637,42 +7628,20 @@ static LogicalResult verifyPipeHandleProducer(Operation *op, Value pipeHandle) {
   return success();
 }
 
-LogicalResult AicInitializePipeOp::verify() {
-  return verifyFrontendInitCommon(*this, FunctionKernelKind::Cube, "cube");
+LogicalResult InitializePipeOp::verify() {
+  return verifyFrontendInitCommon(*this);
 }
 
-LogicalResult AivInitializePipeOp::verify() {
-  return verifyFrontendInitCommon(*this, FunctionKernelKind::Vector, "vector");
+LogicalResult TPushOp::verify() {
+  return verifyFrontendSplitOp(getOperation(), getSplit());
 }
 
-LogicalResult TPushToAivOp::verify() {
-  return verifyFrontendSplitOp(getOperation(), FunctionKernelKind::Cube,
-                               "cube", getSplit());
+LogicalResult TPopOp::verify() {
+  return verifyFrontendSplitOp(getOperation(), getSplit());
 }
 
-LogicalResult TPushToAicOp::verify() {
-  return verifyFrontendSplitOp(getOperation(), FunctionKernelKind::Vector,
-                               "vector", getSplit());
-}
-
-LogicalResult TPopFromAicOp::verify() {
-  return verifyFrontendSplitOp(getOperation(), FunctionKernelKind::Vector,
-                               "vector", getSplit());
-}
-
-LogicalResult TPopFromAivOp::verify() {
-  return verifyFrontendSplitOp(getOperation(), FunctionKernelKind::Cube,
-                               "cube", getSplit());
-}
-
-LogicalResult TFreeFromAicOp::verify() {
-  return verifyFrontendSplitOp(getOperation(), FunctionKernelKind::Vector,
-                               "vector", getSplit());
-}
-
-LogicalResult TFreeFromAivOp::verify() {
-  return verifyFrontendSplitOp(getOperation(), FunctionKernelKind::Cube,
-                               "cube", getSplit());
+LogicalResult TFreeOp::verify() {
+  return verifyFrontendSplitOp(getOperation(), getSplit());
 }
 
 LogicalResult InitializeL2G2LPipeOp::verify() {
@@ -7703,7 +7672,7 @@ LogicalResult InitializeL2LPipeOp::verify() {
                              : std::nullopt);
 }
 
-LogicalResult TPushOp::verify() {
+LogicalResult TPushInternalOp::verify() {
   if (!isInsideSectionOrAttributedKernel(getOperation()))
     return emitOpError("must be inside pto.section.cube/vector or a kernel_kind function");
   if (failed(verifyPipeHandleProducer(getOperation(), getPipeHandle())))
@@ -7715,7 +7684,7 @@ LogicalResult TPushOp::verify() {
   return success();
 }
 
-LogicalResult TPopOp::verify() {
+LogicalResult TPopInternalOp::verify() {
   if (!isInsideSectionOrAttributedKernel(getOperation()))
     return emitOpError("must be inside pto.section.cube/vector or a kernel_kind function");
   if (failed(verifyPipeHandleProducer(getOperation(), getPipeHandle())))
@@ -7727,7 +7696,7 @@ LogicalResult TPopOp::verify() {
   return success();
 }
 
-LogicalResult TFreeOp::verify() {
+LogicalResult TFreeInternalOp::verify() {
   if (!isInsideSectionOrAttributedKernel(getOperation()))
     return emitOpError("must be inside pto.section.cube/vector or a kernel_kind function");
   if (failed(verifyPipeHandleProducer(getOperation(), getPipeHandle())))
@@ -7750,7 +7719,7 @@ void InitializeL2LPipeOp::getEffects(
   addEffect(effects, getOperation()->getOpResult(0), MemoryEffects::Write::get());
 }
 
-void TPushOp::getEffects(
+void TPushInternalOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
   addEffect(effects, &getTileMutable(), MemoryEffects::Read::get());
@@ -7758,7 +7727,7 @@ void TPushOp::getEffects(
   addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Write::get());
 }
 
-void TPopOp::getEffects(
+void TPopInternalOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
   addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Read::get());
@@ -7766,7 +7735,7 @@ void TPopOp::getEffects(
   addEffect(effects, &getTileMutable(), MemoryEffects::Write::get());
 }
 
-void TFreeOp::getEffects(
+void TFreeInternalOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
   addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Read::get());

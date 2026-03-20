@@ -2,8 +2,8 @@
 #include "PTO/Transforms/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Dominance.h"
-#include "mlir/Pass/Pass.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Pass/Pass.h"
 
 namespace mlir {
 namespace pto {
@@ -35,9 +35,18 @@ static PTOArch getTargetArch(Operation *op) {
   return PTOArch::A3;
 }
 
+static std::optional<FunctionKernelKind>
+getFunctionKernelKind(func::FuncOp funcOp) {
+  auto kernelKindAttr = funcOp->getAttrOfType<FunctionKernelKindAttr>(
+      FunctionKernelKindAttr::name);
+  if (!kernelKindAttr)
+    return std::nullopt;
+  return kernelKindAttr.getKernelKind();
+}
+
 template <typename InitOpT>
-static FailureOr<FrontendPipeHandles> lowerFrontendInitOp(InitOpT initOp,
-                                                          IRRewriter &rewriter) {
+static FailureOr<FrontendPipeHandles>
+lowerFrontendInitOp(InitOpT initOp, IRRewriter &rewriter) {
   FrontendPipeHandles handles;
   Location loc = initOp.getLoc();
   MLIRContext *ctx = initOp.getContext();
@@ -113,61 +122,33 @@ static FailureOr<FrontendPipeHandles> lowerFrontendInitOp(InitOpT initOp,
 static FailureOr<FrontendPipeHandles> lowerInitIfPresent(func::FuncOp funcOp,
                                                          IRRewriter &rewriter) {
   FrontendPipeHandles handles;
-  AicInitializePipeOp aicInit;
-  AivInitializePipeOp aivInit;
-  unsigned aicInitCount = 0;
-  unsigned aivInitCount = 0;
+  InitializePipeOp initOp;
+  unsigned initCount = 0;
 
   funcOp.walk([&](Operation *op) {
-    if (auto init = dyn_cast<AicInitializePipeOp>(op)) {
-      ++aicInitCount;
-      if (!aicInit)
-        aicInit = init;
-      return WalkResult::advance();
-    }
-    if (auto init = dyn_cast<AivInitializePipeOp>(op)) {
-      ++aivInitCount;
-      if (!aivInit)
-        aivInit = init;
+    if (auto init = dyn_cast<InitializePipeOp>(op)) {
+      ++initCount;
+      if (!initOp)
+        initOp = init;
       return WalkResult::advance();
     }
     return WalkResult::advance();
   });
 
-  if (aicInitCount > 1) {
-    funcOp.emitOpError("requires at most one pto.aic_initialize_pipe");
+  if (initCount > 1) {
+    funcOp.emitOpError("requires at most one pto.initialize_pipe");
     return failure();
   }
 
-  if (aivInitCount > 1) {
-    funcOp.emitOpError("requires at most one pto.aiv_initialize_pipe");
-    return failure();
-  }
-
-  if (aicInit && aivInit) {
-    funcOp.emitOpError(
-        "cannot mix pto.aic_initialize_pipe and pto.aiv_initialize_pipe in one function");
-    return failure();
-  }
-
-  if (!aicInit && !aivInit)
+  if (!initOp)
     return handles;
 
-  if (aicInit) {
-    rewriter.setInsertionPoint(aicInit);
-    auto loweredOr = lowerFrontendInitOp(aicInit, rewriter);
-    if (failed(loweredOr))
-      return failure();
-    handles = *loweredOr;
-    rewriter.eraseOp(aicInit);
-  } else {
-    rewriter.setInsertionPoint(aivInit);
-    auto loweredOr = lowerFrontendInitOp(aivInit, rewriter);
-    if (failed(loweredOr))
-      return failure();
-    handles = *loweredOr;
-    rewriter.eraseOp(aivInit);
-  }
+  rewriter.setInsertionPoint(initOp);
+  auto loweredOr = lowerFrontendInitOp(initOp, rewriter);
+  if (failed(loweredOr))
+    return failure();
+  handles = *loweredOr;
+  rewriter.eraseOp(initOp);
 
   return handles;
 }
@@ -175,8 +156,7 @@ static FailureOr<FrontendPipeHandles> lowerInitIfPresent(func::FuncOp funcOp,
 static bool hasFrontendPipeOps(func::FuncOp funcOp) {
   bool found = false;
   funcOp.walk([&](Operation *op) {
-    if (isa<AicInitializePipeOp, AivInitializePipeOp, TPushToAivOp, TPushToAicOp,
-            TPopFromAicOp, TPopFromAivOp, TFreeFromAicOp, TFreeFromAivOp>(op)) {
+    if (isa<InitializePipeOp, TPushOp, TPopOp, TFreeOp>(op)) {
       found = true;
       return WalkResult::interrupt();
     }
@@ -191,93 +171,65 @@ static LogicalResult lowerFrontendDataOps(func::FuncOp funcOp,
   DominanceInfo dom(funcOp);
   SmallVector<Operation *> frontendOps;
   funcOp.walk([&](Operation *op) {
-    if (isa<TPushToAivOp, TPushToAicOp, TPopFromAicOp, TPopFromAivOp,
-            TFreeFromAicOp, TFreeFromAivOp>(op))
+    if (isa<TPushOp, TPopOp, TFreeOp>(op))
       frontendOps.push_back(op);
   });
 
   for (Operation *op : frontendOps) {
     if (!handles.anchorOp) {
-      op->emitOpError("requires a frontend initialize_pipe op in the same function");
+      op->emitOpError(
+          "requires a frontend initialize_pipe op in the same function");
       return failure();
     }
     if (!dom.dominates(handles.anchorOp, op)) {
-      op->emitOpError(
-          "requires a dominating frontend initialize_pipe op");
+      op->emitOpError("requires a dominating frontend initialize_pipe op");
       return failure();
     }
 
     rewriter.setInsertionPoint(op);
-
-    if (auto push = dyn_cast<TPushToAivOp>(op)) {
-      if (!handles.c2vPipe) {
-        op->emitOpError(
-            "requires the dominating initialize_pipe op to enable C2V");
-        return failure();
-      }
-      rewriter.replaceOpWithNewOp<TPushOp>(push, push.getTile(), handles.c2vPipe,
-                                           push.getSplitAttr());
-      continue;
-    }
-
-    if (auto push = dyn_cast<TPushToAicOp>(op)) {
-      if (!handles.v2cPipe) {
-        op->emitOpError(
-            "requires the dominating initialize_pipe op to enable V2C");
-        return failure();
-      }
-      rewriter.replaceOpWithNewOp<TPushOp>(push, push.getTile(), handles.v2cPipe,
-                                           push.getSplitAttr());
-      continue;
-    }
-
-    if (auto pop = dyn_cast<TPopFromAicOp>(op)) {
-      if (!handles.c2vPipe) {
-        op->emitOpError(
-            "requires the dominating initialize_pipe op to enable C2V");
-        return failure();
-      }
-      auto decl = rewriter.create<DeclareTileOp>(pop.getLoc(),
-                                                 pop.getTile().getType());
-      rewriter.create<TPopOp>(pop.getLoc(), decl.getTile(), handles.c2vPipe,
-                              pop.getSplitAttr());
-      rewriter.replaceOp(pop, decl.getTile());
-      continue;
-    }
-
-    if (auto pop = dyn_cast<TPopFromAivOp>(op)) {
-      if (!handles.v2cPipe) {
-        op->emitOpError(
-            "requires the dominating initialize_pipe op to enable V2C");
-        return failure();
-      }
-      auto decl = rewriter.create<DeclareTileOp>(pop.getLoc(),
-                                                 pop.getTile().getType());
-      rewriter.create<TPopOp>(pop.getLoc(), decl.getTile(), handles.v2cPipe,
-                              pop.getSplitAttr());
-      rewriter.replaceOp(pop, decl.getTile());
-      continue;
-    }
-
-    if (auto free = dyn_cast<TFreeFromAicOp>(op)) {
-      if (!handles.c2vPipe) {
-        op->emitOpError(
-            "requires the dominating initialize_pipe op to enable C2V");
-        return failure();
-      }
-      rewriter.replaceOpWithNewOp<TFreeOp>(free, handles.c2vPipe,
-                                           free.getSplitAttr());
-      continue;
-    }
-
-    auto free = cast<TFreeFromAivOp>(op);
-    if (!handles.v2cPipe) {
+    auto kernelKind = getFunctionKernelKind(funcOp);
+    if (!kernelKind) {
       op->emitOpError(
-          "requires the dominating initialize_pipe op to enable V2C");
+          "requires the containing function to carry pto.kernel_kind");
       return failure();
     }
-    rewriter.replaceOpWithNewOp<TFreeOp>(free, handles.v2cPipe,
-                                         free.getSplitAttr());
+    bool isCube = *kernelKind == FunctionKernelKind::Cube;
+    Value pushPipe = isCube ? handles.c2vPipe : handles.v2cPipe;
+    Value popPipe = isCube ? handles.v2cPipe : handles.c2vPipe;
+
+    if (auto push = dyn_cast<TPushOp>(op)) {
+      if (!pushPipe) {
+        op->emitOpError("requires the dominating initialize_pipe op to enable "
+                        "ring-buffer push");
+        return failure();
+      }
+      rewriter.replaceOpWithNewOp<TPushInternalOp>(
+          push, push.getTile(), pushPipe, push.getSplitAttr());
+      continue;
+    }
+
+    if (auto pop = dyn_cast<TPopOp>(op)) {
+      if (!popPipe) {
+        op->emitOpError("requires the dominating initialize_pipe op to enable "
+                        "ring-buffer pop/free");
+        return failure();
+      }
+      auto decl =
+          rewriter.create<DeclareTileOp>(pop.getLoc(), pop.getTile().getType());
+      rewriter.create<TPopInternalOp>(pop.getLoc(), decl.getTile(), popPipe,
+                                      pop.getSplitAttr());
+      rewriter.replaceOp(pop, decl.getTile());
+      continue;
+    }
+
+    auto free = cast<TFreeOp>(op);
+    if (!popPipe) {
+      op->emitOpError("requires the dominating initialize_pipe op to enable "
+                      "ring-buffer pop/free");
+      return failure();
+    }
+    rewriter.replaceOpWithNewOp<TFreeInternalOp>(free, popPipe,
+                                                 free.getSplitAttr());
   }
 
   return success();

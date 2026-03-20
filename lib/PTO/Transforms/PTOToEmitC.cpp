@@ -4630,13 +4630,15 @@ struct PTODeclareTileToEmitC
   PTOArch targetArch;
 };
 
-struct PTOTPushToEmitC : public OpConversionPattern<mlir::pto::TPushOp> {
+struct PTOTPushToEmitC
+    : public OpConversionPattern<mlir::pto::TPushInternalOp> {
   PTOTPushToEmitC(TypeConverter &typeConverter, MLIRContext *ctx,
                   PTOArch targetArch)
-      : OpConversionPattern<mlir::pto::TPushOp>(typeConverter, ctx),
+      : OpConversionPattern<mlir::pto::TPushInternalOp>(typeConverter, ctx),
         targetArch(targetArch) {}
 
-  LogicalResult matchAndRewrite(mlir::pto::TPushOp op, OpAdaptor adaptor,
+  LogicalResult matchAndRewrite(mlir::pto::TPushInternalOp op,
+                                OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     auto pipeTok = getTPipeTokenFromValue(op.getPipeHandle(), targetArch);
     if (failed(pipeTok))
@@ -4660,13 +4662,15 @@ struct PTOTPushToEmitC : public OpConversionPattern<mlir::pto::TPushOp> {
   PTOArch targetArch;
 };
 
-struct PTOTPopToEmitC : public OpConversionPattern<mlir::pto::TPopOp> {
+struct PTOTPopToEmitC
+    : public OpConversionPattern<mlir::pto::TPopInternalOp> {
   PTOTPopToEmitC(TypeConverter &typeConverter, MLIRContext *ctx,
                  PTOArch targetArch)
-      : OpConversionPattern<mlir::pto::TPopOp>(typeConverter, ctx),
+      : OpConversionPattern<mlir::pto::TPopInternalOp>(typeConverter, ctx),
         targetArch(targetArch) {}
 
-  LogicalResult matchAndRewrite(mlir::pto::TPopOp op, OpAdaptor adaptor,
+  LogicalResult matchAndRewrite(mlir::pto::TPopInternalOp op,
+                                OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     auto pipeTok = getTPipeTokenFromValue(op.getPipeHandle(), targetArch);
     if (failed(pipeTok))
@@ -4690,13 +4694,15 @@ struct PTOTPopToEmitC : public OpConversionPattern<mlir::pto::TPopOp> {
   PTOArch targetArch;
 };
 
-struct PTOTFreeToEmitC : public OpConversionPattern<mlir::pto::TFreeOp> {
+struct PTOTFreeToEmitC
+    : public OpConversionPattern<mlir::pto::TFreeInternalOp> {
   PTOTFreeToEmitC(TypeConverter &typeConverter, MLIRContext *ctx,
                   PTOArch targetArch)
-      : OpConversionPattern<mlir::pto::TFreeOp>(typeConverter, ctx),
+      : OpConversionPattern<mlir::pto::TFreeInternalOp>(typeConverter, ctx),
         targetArch(targetArch) {}
 
-  LogicalResult matchAndRewrite(mlir::pto::TFreeOp op, OpAdaptor adaptor,
+  LogicalResult matchAndRewrite(mlir::pto::TFreeInternalOp op,
+                                OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     auto pipeTok = getTPipeTokenFromValue(op.getPipeHandle(), targetArch);
     if (failed(pipeTok))

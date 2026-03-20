@@ -137,10 +137,10 @@ def PTOWrapFunctionsInSections : Pass<"pto-wrap-functions-in-sections", "func::F
 def PTOLowerFrontendPipeOps : Pass<"pto-lower-frontend-pipe-ops", "func::FuncOp"> {
   let summary = "Lower frontend TPUSH/TPOP pipe ops to internal pipe ops";
   let description = [{
-    Converts frontend `aic/aiv_initialize_pipe`, `tpush_to_*`,
-    `tpop_from_*`, and `tfree_from_*` ops into the internal unified pipe IR:
-    `initialize_l2l_pipe` / `initialize_l2g2l_pipe`, `tpush`,
-    `declare_tile`, `tpop`, and `tfree`.
+    Converts frontend `initialize_pipe`, `tpush`, `tpop`, and `tfree` ops
+    into the internal pipe IR: `initialize_l2l_pipe` /
+    `initialize_l2g2l_pipe`, `tpush_internal`, `declare_tile`,
+    `tpop_internal`, and `tfree_internal`.
   }];
 
   let constructor = "mlir::pto::createPTOLowerFrontendPipeOpsPass()";

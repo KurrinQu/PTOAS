@@ -25,11 +25,11 @@ module {
     }(%c2v_import : i32) -> !pto.pipe
 
     %acc_tile = pto.alloc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>
-    pto.tpush(%acc_tile, %c2v_pipe : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>, !pto.pipe) {split = 0}
+    pto.tpush_internal(%acc_tile, %c2v_pipe : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>, !pto.pipe) {split = 0}
 
     %recv_tile = pto.declare_tile -> !pto.tile_buf<loc=mat, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=1024, pad=0>
-    pto.tpop(%recv_tile, %v2c_pipe : !pto.tile_buf<loc=mat, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=1024, pad=0>, !pto.pipe) {split = 1}
-    pto.tfree(%v2c_pipe : !pto.pipe) {split = 2}
+    pto.tpop_internal(%recv_tile, %v2c_pipe : !pto.tile_buf<loc=mat, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=1024, pad=0>, !pto.pipe) {split = 1}
+    pto.tfree_internal(%v2c_pipe : !pto.pipe) {split = 2}
     return
   }
 
@@ -63,11 +63,11 @@ module {
       slot_num = 8
     }(%v2c_import : i32) -> !pto.pipe
 
-    pto.tpush(%send_tile, %v2c_pipe : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.pipe) {split = 0}
+    pto.tpush_internal(%send_tile, %v2c_pipe : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.pipe) {split = 0}
 
     %fifo_tile = pto.declare_tile -> !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    pto.tpop(%fifo_tile, %c2v_pipe : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.pipe) {split = 1}
-    pto.tfree(%c2v_pipe : !pto.pipe) {split = 2}
+    pto.tpop_internal(%fifo_tile, %c2v_pipe : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.pipe) {split = 1}
+    pto.tfree_internal(%c2v_pipe : !pto.pipe) {split = 2}
     return
   }
 }

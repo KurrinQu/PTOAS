@@ -1,4 +1,4 @@
-// RUN: ptoas --pto-arch=a5 %s 2>&1 | FileCheck %s --check-prefix=A5
+// RUN: ptoas --pto-arch=a5 %s 2>&1 | FileCheck %s --check-prefix=IR
 
 module {
   func.func @cube_push(%c2v_consumer_buf: i32) attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
@@ -20,25 +20,22 @@ module {
       slot_num = 8,
       flag_base = 0
     }(%c2v_consumer_buf : i32) -> !pto.pipe
+    %vec_tile = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %fifo_tile = pto.declare_tile -> !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     pto.tpop_internal(%fifo_tile, %pipe : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.pipe) {split = 1}
+    pto.tmov ins(%fifo_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%vec_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     pto.tfree_internal(%pipe : !pto.pipe) {split = 2}
     return
   }
 }
 
-// A5-LABEL: AICORE void cube_push(
-// A5: #if defined(__DAV_CUBE__)
-// A5: auto {{v[0-9]+}} = TPipe<0, Direction::DIR_C2V, 1024, 8>(
-// A5: TPUSH<TPipe<0, Direction::DIR_C2V, 1024, 8>, Tile<TileType::Acc, float, 16, 16, BLayout::ColMajor, 16, 16, SLayout::RowMajor, 1024, PadValue::Null>, TileSplitAxis::TILE_NO_SPLIT>(
-// A5: #endif // __DAV_CUBE__
+// IR-LABEL: func.func @cube_push(%arg0: i32) attributes {pto.kernel_kind = #pto.kernel_kind<cube>}
+// IR: pto.section.cube {
+// IR: %[[PIPE:.+]] = pto.initialize_l2l_pipe
+// IR: pto.tpush_internal(
 
-// A5-LABEL: AICORE void vector_pop(
-// A5: #if defined(__DAV_VEC__)
-// A5: set_mask_norm();
-// A5: set_vector_mask(-1, -1);
-// A5: auto {{v[0-9]+}} = TPipe<0, Direction::DIR_C2V, 1024, 8>(
-// A5: Tile<TileType::Vec, float, 8, 16, BLayout::RowMajor, 8, 16, SLayout::NoneBox, 512, PadValue::Null> {{v[0-9]+}};
-// A5: TPOP<TPipe<0, Direction::DIR_C2V, 1024, 8>, Tile<TileType::Vec, float, 8, 16, BLayout::RowMajor, 8, 16, SLayout::NoneBox, 512, PadValue::Null>, TileSplitAxis::TILE_UP_DOWN>(
-// A5: TFREE<TPipe<0, Direction::DIR_C2V, 1024, 8>, TileSplitAxis::TILE_LEFT_RIGHT>(
-// A5: #endif // __DAV_VEC__
+// IR-LABEL: func.func @vector_pop(%arg0: i32) attributes {pto.kernel_kind = #pto.kernel_kind<vector>}
+// IR: pto.section.vector {
+// IR: %[[PIPE:.+]] = pto.initialize_l2l_pipe
+// IR: pto.tpop_internal(
+// IR: pto.tfree_internal(

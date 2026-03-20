@@ -1,0 +1,15 @@
+// RUN: not ptoas --pto-arch=a5 %s 2>&1 | FileCheck %s
+
+module {
+  func.func @cube_kernel() attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
+    %c0_i32 = arith.constant 0 : i32
+    pto.initialize_pipe {dir_mask = 1, slot_size = 1024}
+      (c2v_consumer_buf = %c0_i32 : i32,
+       v2c_consumer_buf = %c0_i32 : i32)
+
+    pto.tfree {split = 0}
+    return
+  }
+}
+
+// CHECK: error: 'pto.tfree' op requires the dominating initialize_pipe op to enable ring-buffer pop/free
