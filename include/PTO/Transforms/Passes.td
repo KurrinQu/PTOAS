@@ -178,9 +178,9 @@ def PTOVerifyTFree : Pass<"pto-verify-tfree", "func::FuncOp"> {
   let summary = "Verify explicit matching pto.tfree placement for pto.tpop";
   let description = [{
     For each `pto.tpop` in section.cube / section.vector, verify there is a
-    matching later `pto.tfree(pipe_handle)` in the same block, the borrowed
-    tile is not used after the free, and the same pipe does not accumulate
-    multiple outstanding pops before the matching free.
+    FIFO-matched later `pto.tfree(pipe_handle)` in the same block, each
+    `pto.tfree` has a prior outstanding `pto.tpop` on the same pipe, and the
+    borrowed tile is not used after its matched free.
   }];
 
   let constructor = "mlir::pto::createPTOVerifyTFreePass()";
