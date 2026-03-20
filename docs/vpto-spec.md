@@ -73,9 +73,9 @@ vpto.wait_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
 
 scf.for %dummy = %c0 to %c1 step %c1 {
   scf.for %lane = %c0 to %9 step %c64 {
-    %v = vpto.vlds %2[%lane] : !llvm.ptr<6> -> !vpto.vec<64xf32>
-    %abs = vpto.vabs %v : !vpto.vec<64xf32> -> !vpto.vec<64xf32>
-    vpto.vsts %abs, %8[%lane] : !vpto.vec<64xf32>, !llvm.ptr<6>
+    %v = vpto.vlds %2[%lane] : !llvm.ptr<6> -> !vpto.vreg<64xf32>
+    %abs = vpto.vabs %v : !vpto.vreg<64xf32> -> !vpto.vreg<64xf32>
+    vpto.vsts %abs, %8[%lane] : !vpto.vreg<64xf32>, !llvm.ptr<6>
   }
 } {llvm.loop.aivector_scope}
 
@@ -105,9 +105,10 @@ It does not describe lowering strategy.
 
 ## Core Types
 
-- `vec<T>`: `!vpto.vec<NxT>`
+- `vreg<T>`: `!vpto.vreg<NxT>`
   Fixed-width VPTO vector type with total width exactly 256 bytes.
 - `mask`: `!vpto.mask`
+  `TODO(user): extend this type entry to describe how the mask data type is represented in VPTO syntax and semantics.`
 - `align`: `!vpto.align`
 - `buf`: buffer-like LLVM pointer type accepted by the dialect
 - `idx`: `index`
@@ -116,7 +117,7 @@ It does not describe lowering strategy.
 
 Type parameter conventions used below:
 
-- `!vpto.vec<NxT>`:
+- `!vpto.vreg<NxT>`:
   `N` is the lane count, `T` is the element type, and `N * bitwidth(T) = 2048`
 - `!llvm.ptr<AS>`:
   `AS` is the LLVM address space number
@@ -151,7 +152,7 @@ This section defines how placeholders such as `T`, `T0`, `T1`, and `I` should
 be read throughout the spec.
 
 - General vector rule:
-  `!vpto.vec<NxT>` requires `T` to be an integer or floating-point element
+  `!vpto.vreg<NxT>` requires `T` to be an integer or floating-point element
   type, and `N * bitwidth(T) = 2048`.
 - `T`:
   `TODO(user): summarize the intended element-type set for general arithmetic,
@@ -171,6 +172,10 @@ be read throughout the spec.
 ### `!vpto.mask`
 
 `!vpto.mask` models an A5 predicate register, not an integer vector.
+
+Mask data-type expression:
+
+- `TODO(user): define how !vpto.mask should carry or reference its data type; implementation pending.`
 
 Use it when an operation needs per-lane enable/disable state.
 
@@ -192,8 +197,8 @@ Use it when an operation needs per-lane enable/disable state.
 Example:
 
 ```mlir
-%mask = vpto.vcmp %lhs, %rhs, %seed, "lt" : !vpto.vec<64xf32>, !vpto.vec<64xf32>, !vpto.mask -> !vpto.mask
-%out = vpto.vsel %x, %y, %mask : !vpto.vec<64xf32>, !vpto.vec<64xf32>, !vpto.mask -> !vpto.vec<64xf32>
+%mask = vpto.vcmp %lhs, %rhs, %seed, "lt" : !vpto.vreg<64xf32>, !vpto.vreg<64xf32>, !vpto.mask -> !vpto.mask
+%out = vpto.vsel %x, %y, %mask : !vpto.vreg<64xf32>, !vpto.vreg<64xf32>, !vpto.mask -> !vpto.vreg<64xf32>
 ```
 
 ### `!vpto.align`
@@ -222,7 +227,7 @@ Example:
 
 ```mlir
 %align = vpto.vldas %ub[%c0] : !llvm.ptr<6> -> !vpto.align
-%vec = vpto.vldus %align, %ub[%c64] : !vpto.align, !llvm.ptr<6> -> !vpto.vec<64xf32>
+%vec = vpto.vldus %align, %ub[%c64] : !vpto.align, !llvm.ptr<6> -> !vpto.vreg<64xf32>
 ```
 
 Template placeholder conventions used below:
@@ -251,8 +256,8 @@ Template placeholder conventions used below:
   string literal compare predicate selector
 - `"PAT_*"`:
   predicate pattern literal accepted by the corresponding predicate op
-- `T|!vpto.vec<NxT>`:
-  either a scalar `T` or a vector operand `!vpto.vec<NxT>`, matching the op verifier
+- `T|!vpto.vreg<NxT>`:
+  either a scalar `T` or a vector operand `!vpto.vreg<NxT>`, matching the op verifier
 
 ## Implemented String Constraints
 
@@ -586,7 +591,7 @@ Builtin naming policy in this document:
 ### `vpto.vlds`
 
 - syntax:
-  `%result = vpto.vlds %source[%offset] {dist = "DIST"} : !llvm.ptr<AS> -> !vpto.vec<NxT>`
+  `%result = vpto.vlds %source[%offset] {dist = "DIST"} : !llvm.ptr<AS> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -608,7 +613,7 @@ Builtin naming policy in this document:
 ### `vpto.vldus`
 
 - syntax:
-  `%result = vpto.vldus %align, %source[%offset] : !vpto.align, !llvm.ptr<AS> -> !vpto.vec<NxT>`
+  `%result = vpto.vldus %align, %source[%offset] : !vpto.align, !llvm.ptr<AS> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -648,7 +653,7 @@ Builtin naming policy in this document:
 ### `vpto.vldx2`
 
 - syntax:
-  `%low, %high = vpto.vldx2 %source[%offset], "DIST" : !llvm.ptr<AS>, index -> !vpto.vec<NxT>, !vpto.vec<NxT>`
+  `%low, %high = vpto.vldx2 %source[%offset], "DIST" : !llvm.ptr<AS>, index -> !vpto.vreg<NxT>, !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -658,7 +663,7 @@ Builtin naming policy in this document:
 ### `vpto.vgather2`
 
 - syntax:
-  `%result = vpto.vgather2 %source, %offsets, %active_lanes : !llvm.ptr<AS>, !vpto.vec<NxI>, index -> !vpto.vec<NxT>`
+  `%result = vpto.vgather2 %source, %offsets, %active_lanes : !llvm.ptr<AS>, !vpto.vreg<NxI>, index -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -668,7 +673,7 @@ Builtin naming policy in this document:
 ### `vpto.vgatherb`
 
 - syntax:
-  `%result = vpto.vgatherb %source, %offsets, %active_lanes : !llvm.ptr<AS>, !vpto.vec<NxI>, index -> !vpto.vec<NxT>`
+  `%result = vpto.vgatherb %source, %offsets, %active_lanes : !llvm.ptr<AS>, !vpto.vreg<NxI>, index -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -678,7 +683,7 @@ Builtin naming policy in this document:
 ### `vpto.vgather2_bc`
 
 - syntax:
-  `%result = vpto.vgather2_bc %source, %offsets, %mask : !llvm.ptr<AS>, !vpto.vec<NxI>, !vpto.mask -> !vpto.vec<NxT>`
+  `%result = vpto.vgather2_bc %source, %offsets, %mask : !llvm.ptr<AS>, !vpto.vreg<NxI>, !vpto.mask -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -688,7 +693,7 @@ Builtin naming policy in this document:
 ### `vpto.vsld`
 
 - syntax:
-  `%result = vpto.vsld %source[%offset], "STRIDE" : !llvm.ptr<AS> -> !vpto.vec<NxT>`
+  `%result = vpto.vsld %source[%offset], "STRIDE" : !llvm.ptr<AS> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -698,7 +703,7 @@ Builtin naming policy in this document:
 ### `vpto.vsldb`
 
 - syntax:
-  `%result = vpto.vsldb %source, %offset, %mask : !llvm.ptr<AS>, i32, !vpto.mask -> !vpto.vec<NxT>`
+  `%result = vpto.vsldb %source, %offset, %mask : !llvm.ptr<AS>, i32, !vpto.mask -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -710,7 +715,7 @@ Builtin naming policy in this document:
 ### `vpto.vbr`
 
 - syntax:
-  `%result = vpto.vbr %value : T -> !vpto.vec<NxT>`
+  `%result = vpto.vbr %value : T -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -719,7 +724,7 @@ Builtin naming policy in this document:
 ### `vpto.vdup`
 
 - syntax:
-  `%result = vpto.vdup %input {position = "POSITION", mode = "MODE"} : T|!vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vdup %input {position = "POSITION", mode = "MODE"} : T|!vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -809,7 +814,7 @@ Builtin naming policy in this document:
 ### `vpto.vabs`
 
 - syntax:
-  `%result = vpto.vabs %input : !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vabs %input : !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -819,7 +824,7 @@ Builtin naming policy in this document:
 ### `vpto.vexp`
 
 - syntax:
-  `%result = vpto.vexp %input : !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vexp %input : !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -829,7 +834,7 @@ Builtin naming policy in this document:
 ### `vpto.vln`
 
 - syntax:
-  `%result = vpto.vln %input : !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vln %input : !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -839,7 +844,7 @@ Builtin naming policy in this document:
 ### `vpto.vsqrt`
 
 - syntax:
-  `%result = vpto.vsqrt %input : !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vsqrt %input : !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -849,7 +854,7 @@ Builtin naming policy in this document:
 ### `vpto.vrec`
 
 - syntax:
-  `%result = vpto.vrec %input : !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vrec %input : !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -859,7 +864,7 @@ Builtin naming policy in this document:
 ### `vpto.vrelu`
 
 - syntax:
-  `%result = vpto.vrelu %input : !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vrelu %input : !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -869,7 +874,7 @@ Builtin naming policy in this document:
 ### `vpto.vnot`
 
 - syntax:
-  `%result = vpto.vnot %input : !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vnot %input : !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -879,7 +884,7 @@ Builtin naming policy in this document:
 ### `vpto.vcadd`
 
 - syntax:
-  `%result = vpto.vcadd %input : !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vcadd %input : !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -889,7 +894,7 @@ Builtin naming policy in this document:
 ### `vpto.vcmax`
 
 - syntax:
-  `%result = vpto.vcmax %input : !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vcmax %input : !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -899,7 +904,7 @@ Builtin naming policy in this document:
 ### `vpto.vcmin`
 
 - syntax:
-  `%result = vpto.vcmin %input : !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vcmin %input : !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -909,7 +914,7 @@ Builtin naming policy in this document:
 ### `vpto.vbcnt`
 
 - syntax:
-  `%result = vpto.vbcnt %input : !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vbcnt %input : !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -919,7 +924,7 @@ Builtin naming policy in this document:
 ### `vpto.vcls`
 
 - syntax:
-  `%result = vpto.vcls %input : !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vcls %input : !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -931,7 +936,7 @@ Builtin naming policy in this document:
 ### `vpto.vadd`
 
 - syntax:
-  `%result = vpto.vadd %lhs, %rhs : !vpto.vec<NxT>, !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vadd %lhs, %rhs : !vpto.vreg<NxT>, !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -941,7 +946,7 @@ Builtin naming policy in this document:
 ### `vpto.vsub`
 
 - syntax:
-  `%result = vpto.vsub %lhs, %rhs : !vpto.vec<NxT>, !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vsub %lhs, %rhs : !vpto.vreg<NxT>, !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -951,7 +956,7 @@ Builtin naming policy in this document:
 ### `vpto.vmul`
 
 - syntax:
-  `%result = vpto.vmul %lhs, %rhs : !vpto.vec<NxT>, !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vmul %lhs, %rhs : !vpto.vreg<NxT>, !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -961,7 +966,7 @@ Builtin naming policy in this document:
 ### `vpto.vdiv`
 
 - syntax:
-  `%result = vpto.vdiv %lhs, %rhs : !vpto.vec<NxT>, !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vdiv %lhs, %rhs : !vpto.vreg<NxT>, !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -971,7 +976,7 @@ Builtin naming policy in this document:
 ### `vpto.vmax`
 
 - syntax:
-  `%result = vpto.vmax %lhs, %rhs : !vpto.vec<NxT>, !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vmax %lhs, %rhs : !vpto.vreg<NxT>, !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -981,7 +986,7 @@ Builtin naming policy in this document:
 ### `vpto.vmin`
 
 - syntax:
-  `%result = vpto.vmin %lhs, %rhs : !vpto.vec<NxT>, !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vmin %lhs, %rhs : !vpto.vreg<NxT>, !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -991,7 +996,7 @@ Builtin naming policy in this document:
 ### `vpto.vand`
 
 - syntax:
-  `%result = vpto.vand %lhs, %rhs : !vpto.vec<NxT>, !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vand %lhs, %rhs : !vpto.vreg<NxT>, !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1001,7 +1006,7 @@ Builtin naming policy in this document:
 ### `vpto.vor`
 
 - syntax:
-  `%result = vpto.vor %lhs, %rhs : !vpto.vec<NxT>, !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vor %lhs, %rhs : !vpto.vreg<NxT>, !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1011,7 +1016,7 @@ Builtin naming policy in this document:
 ### `vpto.vxor`
 
 - syntax:
-  `%result = vpto.vxor %lhs, %rhs : !vpto.vec<NxT>, !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vxor %lhs, %rhs : !vpto.vreg<NxT>, !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1021,7 +1026,7 @@ Builtin naming policy in this document:
 ### `vpto.vshl`
 
 - syntax:
-  `%result = vpto.vshl %lhs, %rhs : !vpto.vec<NxT>, !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vshl %lhs, %rhs : !vpto.vreg<NxT>, !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1031,7 +1036,7 @@ Builtin naming policy in this document:
 ### `vpto.vshr`
 
 - syntax:
-  `%result = vpto.vshr %lhs, %rhs : !vpto.vec<NxT>, !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vshr %lhs, %rhs : !vpto.vreg<NxT>, !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1043,7 +1048,7 @@ Builtin naming policy in this document:
 ### `vpto.vmuls`
 
 - syntax:
-  `%result = vpto.vmuls %input, %scalar : !vpto.vec<NxT>, T -> !vpto.vec<NxT>`
+  `%result = vpto.vmuls %input, %scalar : !vpto.vreg<NxT>, T -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1053,7 +1058,7 @@ Builtin naming policy in this document:
 ### `vpto.vadds`
 
 - syntax:
-  `%result = vpto.vadds %input, %scalar : !vpto.vec<NxT>, T -> !vpto.vec<NxT>`
+  `%result = vpto.vadds %input, %scalar : !vpto.vreg<NxT>, T -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1063,7 +1068,7 @@ Builtin naming policy in this document:
 ### `vpto.vmaxs`
 
 - syntax:
-  `%result = vpto.vmaxs %input, %scalar : !vpto.vec<NxT>, T -> !vpto.vec<NxT>`
+  `%result = vpto.vmaxs %input, %scalar : !vpto.vreg<NxT>, T -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1073,7 +1078,7 @@ Builtin naming policy in this document:
 ### `vpto.vmins`
 
 - syntax:
-  `%result = vpto.vmins %input, %scalar : !vpto.vec<NxT>, T -> !vpto.vec<NxT>`
+  `%result = vpto.vmins %input, %scalar : !vpto.vreg<NxT>, T -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1083,7 +1088,7 @@ Builtin naming policy in this document:
 ### `vpto.vlrelu`
 
 - syntax:
-  `%result = vpto.vlrelu %input, %scalar : !vpto.vec<NxT>, T -> !vpto.vec<NxT>`
+  `%result = vpto.vlrelu %input, %scalar : !vpto.vreg<NxT>, T -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1093,7 +1098,7 @@ Builtin naming policy in this document:
 ### `vpto.vshls`
 
 - syntax:
-  `%result = vpto.vshls %input, %scalar : !vpto.vec<NxT>, T -> !vpto.vec<NxT>`
+  `%result = vpto.vshls %input, %scalar : !vpto.vreg<NxT>, T -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1103,7 +1108,7 @@ Builtin naming policy in this document:
 ### `vpto.vshrs`
 
 - syntax:
-  `%result = vpto.vshrs %input, %scalar : !vpto.vec<NxT>, T -> !vpto.vec<NxT>`
+  `%result = vpto.vshrs %input, %scalar : !vpto.vreg<NxT>, T -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1115,7 +1120,7 @@ Builtin naming policy in this document:
 ### `vpto.vaddc`
 
 - syntax:
-  `%result, %carry = vpto.vaddc %lhs, %rhs, %mask : !vpto.vec<NxT>, !vpto.vec<NxT>, !vpto.mask -> !vpto.vec<NxT>, !vpto.mask`
+  `%result, %carry = vpto.vaddc %lhs, %rhs, %mask : !vpto.vreg<NxT>, !vpto.vreg<NxT>, !vpto.mask -> !vpto.vreg<NxT>, !vpto.mask`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1125,7 +1130,7 @@ Builtin naming policy in this document:
 ### `vpto.vsubc`
 
 - syntax:
-  `%result, %carry = vpto.vsubc %lhs, %rhs, %mask : !vpto.vec<NxT>, !vpto.vec<NxT>, !vpto.mask -> !vpto.vec<NxT>, !vpto.mask`
+  `%result, %carry = vpto.vsubc %lhs, %rhs, %mask : !vpto.vreg<NxT>, !vpto.vreg<NxT>, !vpto.mask -> !vpto.vreg<NxT>, !vpto.mask`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1135,7 +1140,7 @@ Builtin naming policy in this document:
 ### `vpto.vaddcs`
 
 - syntax:
-  `%result, %carry = vpto.vaddcs %lhs, %rhs, %carry_in, %mask : !vpto.vec<NxT>, !vpto.vec<NxT>, !vpto.mask, !vpto.mask -> !vpto.vec<NxT>, !vpto.mask`
+  `%result, %carry = vpto.vaddcs %lhs, %rhs, %carry_in, %mask : !vpto.vreg<NxT>, !vpto.vreg<NxT>, !vpto.mask, !vpto.mask -> !vpto.vreg<NxT>, !vpto.mask`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1145,7 +1150,7 @@ Builtin naming policy in this document:
 ### `vpto.vsubcs`
 
 - syntax:
-  `%result, %carry = vpto.vsubcs %lhs, %rhs, %carry_in, %mask : !vpto.vec<NxT>, !vpto.vec<NxT>, !vpto.mask, !vpto.mask -> !vpto.vec<NxT>, !vpto.mask`
+  `%result, %carry = vpto.vsubcs %lhs, %rhs, %carry_in, %mask : !vpto.vreg<NxT>, !vpto.vreg<NxT>, !vpto.mask, !vpto.mask -> !vpto.vreg<NxT>, !vpto.mask`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1155,7 +1160,7 @@ Builtin naming policy in this document:
 ### `vpto.vsel`
 
 - syntax:
-  `%result = vpto.vsel %src0, %src1, %mask : !vpto.vec<NxT>, !vpto.vec<NxT>, !vpto.mask -> !vpto.vec<NxT>`
+  `%result = vpto.vsel %src0, %src1, %mask : !vpto.vreg<NxT>, !vpto.vreg<NxT>, !vpto.mask -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1165,7 +1170,7 @@ Builtin naming policy in this document:
 ### `vpto.vselr`
 
 - syntax:
-  `%result = vpto.vselr %src0, %src1 : !vpto.vec<NxT>, !vpto.vec<NxI> -> !vpto.vec<NxT>`
+  `%result = vpto.vselr %src0, %src1 : !vpto.vreg<NxT>, !vpto.vreg<NxI> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1175,7 +1180,7 @@ Builtin naming policy in this document:
 ### `vpto.vselrv2`
 
 - syntax:
-  `%result = vpto.vselrv2 %src0, %src1 : !vpto.vec<NxT>, !vpto.vec<NxI> -> !vpto.vec<NxT>`
+  `%result = vpto.vselrv2 %src0, %src1 : !vpto.vreg<NxT>, !vpto.vreg<NxI> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1185,7 +1190,7 @@ Builtin naming policy in this document:
 ### `vpto.vcmp`
 
 - syntax:
-  `%result = vpto.vcmp %src0, %src1, %mask, "CMP_MODE" : !vpto.vec<NxT>, !vpto.vec<NxT>, !vpto.mask -> !vpto.mask`
+  `%result = vpto.vcmp %src0, %src1, %mask, "CMP_MODE" : !vpto.vreg<NxT>, !vpto.vreg<NxT>, !vpto.mask -> !vpto.mask`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1195,7 +1200,7 @@ Builtin naming policy in this document:
 ### `vpto.vcmps`
 
 - syntax:
-  `%result = vpto.vcmps %src, %scalar, %mask, "CMP_MODE" : !vpto.vec<NxT>, T, !vpto.mask -> !vpto.mask`
+  `%result = vpto.vcmps %src, %scalar, %mask, "CMP_MODE" : !vpto.vreg<NxT>, T, !vpto.mask -> !vpto.mask`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1243,7 +1248,7 @@ Builtin naming policy in this document:
 ### `vpto.vintlv`
 
 - syntax:
-  `%low, %high = vpto.vintlv %lhs, %rhs : !vpto.vec<NxT>, !vpto.vec<NxT> -> !vpto.vec<NxT>, !vpto.vec<NxT>`
+  `%low, %high = vpto.vintlv %lhs, %rhs : !vpto.vreg<NxT>, !vpto.vreg<NxT> -> !vpto.vreg<NxT>, !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1253,7 +1258,7 @@ Builtin naming policy in this document:
 ### `vpto.vdintlv`
 
 - syntax:
-  `%low, %high = vpto.vdintlv %lhs, %rhs : !vpto.vec<NxT>, !vpto.vec<NxT> -> !vpto.vec<NxT>, !vpto.vec<NxT>`
+  `%low, %high = vpto.vdintlv %lhs, %rhs : !vpto.vreg<NxT>, !vpto.vreg<NxT> -> !vpto.vreg<NxT>, !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1263,7 +1268,7 @@ Builtin naming policy in this document:
 ### `vpto.vintlvv2`
 
 - syntax:
-  `%result = vpto.vintlvv2 %lhs, %rhs, "PART" : !vpto.vec<NxT>, !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vintlvv2 %lhs, %rhs, "PART" : !vpto.vreg<NxT>, !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1273,7 +1278,7 @@ Builtin naming policy in this document:
 ### `vpto.vdintlvv2`
 
 - syntax:
-  `%result = vpto.vdintlvv2 %lhs, %rhs, "PART" : !vpto.vec<NxT>, !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vdintlvv2 %lhs, %rhs, "PART" : !vpto.vreg<NxT>, !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1285,7 +1290,7 @@ Builtin naming policy in this document:
 ### `vpto.vtrc`
 
 - syntax:
-  `%result = vpto.vtrc %input, "ROUND_MODE" : !vpto.vec<NxT> -> !vpto.vec<NxT>`
+  `%result = vpto.vtrc %input, "ROUND_MODE" : !vpto.vreg<NxT> -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1295,7 +1300,7 @@ Builtin naming policy in this document:
 ### `vpto.vcvt`
 
 - syntax:
-  `%result = vpto.vcvt %input {round_mode = "ROUND_MODE", sat = "SAT_MODE", part = "PART_MODE"} : !vpto.vec<NxT0> -> !vpto.vec<NxT1>`
+  `%result = vpto.vcvt %input {round_mode = "ROUND_MODE", sat = "SAT_MODE", part = "PART_MODE"} : !vpto.vreg<NxT0> -> !vpto.vreg<NxT1>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1306,7 +1311,7 @@ Builtin naming policy in this document:
 ### `vpto.vci`
 
 - syntax:
-  `%result = vpto.vci %index {order = "ORDER"} : integer -> !vpto.vec<NxT>`
+  `%result = vpto.vci %index {order = "ORDER"} : integer -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1338,7 +1343,7 @@ Builtin naming policy in this document:
 ### `vpto.vmull`
 
 - syntax:
-  `%low, %high = vpto.vmull %lhs, %rhs, %mask : !vpto.vec<NxT>, !vpto.vec<NxT>, !vpto.mask -> !vpto.vec<NxT>, !vpto.vec<NxT>`
+  `%low, %high = vpto.vmull %lhs, %rhs, %mask : !vpto.vreg<NxT>, !vpto.vreg<NxT>, !vpto.mask -> !vpto.vreg<NxT>, !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1348,7 +1353,7 @@ Builtin naming policy in this document:
 ### `vpto.vmula`
 
 - syntax:
-  `%result = vpto.vmula %acc, %lhs, %rhs, %mask {mode = "MODE"} : !vpto.vec<NxT>, !vpto.vec<NxT>, !vpto.vec<NxT>, !vpto.mask -> !vpto.vec<NxT>`
+  `%result = vpto.vmula %acc, %lhs, %rhs, %mask {mode = "MODE"} : !vpto.vreg<NxT>, !vpto.vreg<NxT>, !vpto.vreg<NxT>, !vpto.mask -> !vpto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1360,7 +1365,7 @@ Builtin naming policy in this document:
 ### `vpto.vsts`
 
 - syntax:
-  `vpto.vsts %value, %destination[%offset] {dist = "DIST"} : !vpto.vec<NxT>, !llvm.ptr<AS>`
+  `vpto.vsts %value, %destination[%offset] {dist = "DIST"} : !vpto.vreg<NxT>, !llvm.ptr<AS>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1370,7 +1375,7 @@ Builtin naming policy in this document:
 ### `vpto.vscatter`
 
 - syntax:
-  `vpto.vscatter %value, %destination, %offsets, %active_lanes : !vpto.vec<NxT>, !llvm.ptr<AS>, !vpto.vec<NxI>, index`
+  `vpto.vscatter %value, %destination, %offsets, %active_lanes : !vpto.vreg<NxT>, !llvm.ptr<AS>, !vpto.vreg<NxI>, index`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1380,7 +1385,7 @@ Builtin naming policy in this document:
 ### `vpto.vsts_pred`
 
 - syntax:
-  `vpto.vsts_pred %value, %destination[%offset], %active_lanes {dist = "DIST"} : !vpto.vec<NxT>, !llvm.ptr<AS>, index`
+  `vpto.vsts_pred %value, %destination[%offset], %active_lanes {dist = "DIST"} : !vpto.vreg<NxT>, !llvm.ptr<AS>, index`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1419,7 +1424,7 @@ Builtin naming policy in this document:
 ### `vpto.vsst`
 
 - syntax:
-  `vpto.vsst %value, %destination[%offset], "STRIDE" : !vpto.vec<NxT>, !llvm.ptr<AS>`
+  `vpto.vsst %value, %destination[%offset], "STRIDE" : !vpto.vreg<NxT>, !llvm.ptr<AS>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1429,7 +1434,7 @@ Builtin naming policy in this document:
 ### `vpto.vstx2`
 
 - syntax:
-  `vpto.vstx2 %low, %high, %destination[%offset], "DIST", %mask : !vpto.vec<NxT>, !vpto.vec<NxT>, !llvm.ptr<AS>, index, !vpto.mask`
+  `vpto.vstx2 %low, %high, %destination[%offset], "DIST", %mask : !vpto.vreg<NxT>, !vpto.vreg<NxT>, !llvm.ptr<AS>, index, !vpto.mask`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1439,7 +1444,7 @@ Builtin naming policy in this document:
 ### `vpto.vsstb`
 
 - syntax:
-  `vpto.vsstb %value, %destination, %offset, %mask : !vpto.vec<NxT>, !llvm.ptr<AS>, i32, !vpto.mask`
+  `vpto.vsstb %value, %destination, %offset, %mask : !vpto.vreg<NxT>, !llvm.ptr<AS>, i32, !vpto.mask`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1493,7 +1498,7 @@ These ops make CCE reference-updated state explicit as SSA results.
 ### `vpto.vstu`
 
 - syntax:
-  `%align_out, %offset_out = vpto.vstu %align_in, %offset_in, %value, %base, "MODE" : !vpto.align, index, !vpto.vec<NxT>, !llvm.ptr<AS> -> !vpto.align, index`
+  `%align_out, %offset_out = vpto.vstu %align_in, %offset_in, %value, %base, "MODE" : !vpto.align, index, !vpto.vreg<NxT>, !llvm.ptr<AS> -> !vpto.align, index`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1503,7 +1508,7 @@ These ops make CCE reference-updated state explicit as SSA results.
 ### `vpto.vstus`
 
 - syntax:
-  `%align_out, %base_out = vpto.vstus %align_in, %offset, %value, %base, "MODE" : !vpto.align, i32, !vpto.vec<NxT>, !llvm.ptr<AS> -> !vpto.align, !llvm.ptr<AS>`
+  `%align_out, %base_out = vpto.vstus %align_in, %offset, %value, %base, "MODE" : !vpto.align, i32, !vpto.vreg<NxT>, !llvm.ptr<AS> -> !vpto.align, !llvm.ptr<AS>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1513,7 +1518,7 @@ These ops make CCE reference-updated state explicit as SSA results.
 ### `vpto.vstur`
 
 - syntax:
-  `%align_out = vpto.vstur %align_in, %value, %base, "MODE" : !vpto.align, !vpto.vec<NxT>, !llvm.ptr<AS> -> !vpto.align`
+  `%align_out = vpto.vstur %align_in, %value, %base, "MODE" : !vpto.align, !vpto.vreg<NxT>, !llvm.ptr<AS> -> !vpto.align`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
