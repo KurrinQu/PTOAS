@@ -3710,11 +3710,14 @@ Broadcast values across rows or columns. All execute on the **Vector pipeline** 
 | `pto.trowexpand` | Broadcast `src[i,0]` across row `i` |
 | `pto.tcolexpand` | Broadcast `src[0,j]` across column `j` |
 | `pto.tcolexpandmul` | `dst[i,j] = src0[i,j] * src1[0,j]` |
+| `pto.tcolexpanddiv` | `dst[i,j] = src0[i,j] / src1[0,j]` |
+| `pto.tcolexpandsub` | `dst[i,j] = src0[i,j] - src1[0,j]` |
 | `pto.tcolexpandmax` | `dst[i,j] = max(src0[i,j], src1[0,j])` |
 | `pto.tcolexpandmin` | `dst[i,j] = min(src0[i,j], src1[0,j])` |
 | `pto.trowexpandmul` | `dst[i,j] = src0[i,j] * src1[i,0]` |
 | `pto.trowexpanddiv` | `dst[i,j] = src0[i,j] / src1[i,0]` |
 | `pto.trowexpandsub` | `dst[i,j] = src0[i,j] - src1[i,0]` |
+| `pto.trowexpandadd` | `dst[i,j] = src0[i,j] + src1[i,0]` |
 | `pto.texpands` | Broadcast scalar to all elements of dst |
 
 ---
@@ -3857,9 +3860,10 @@ pto.tcolexpandmul ins(<src0>, <src1> : <src0_type>, <src1_type>)
 **Constraints & Verification:**
 
 - **Implementation checks**:
-  - `dst`, `src0`, and `src1` must have the same element type.
-  - The shared element type must be one of: `f16`, `f32`.
-  - `dst` must use row-major layout (`blayout=row_major`).
+  - `src0`, `src1`, `dst` must share the same element type and the type must be `f16` or `f32`.
+  - `src0` and `dst` must have the same shape and the same `valid_shape`.
+  - `src0`, `src1`, `dst` must use row-major layout (`blayout=row_major`).
+  - `src1 valid_shape[1]` must equal `dst valid_shape[1]`.
 **Hardware Mapping:**
 
 - Executes on the **Vector pipeline** (`PIPE_V`)
@@ -3869,6 +3873,120 @@ pto.tcolexpandmul ins(<src0>, <src1> : <src0_type>, <src1_type>)
 
 ```mlir
 pto.tcolexpandmul ins(%src0, %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
+                      v_row=16, v_col=16, blayout=row_major, slayout=none_box,
+                      fractal=512, pad=0>,
+                      !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=16,
+                      v_row=1, v_col=16, blayout=row_major, slayout=none_box,
+                      fractal=512, pad=0>)
+                  outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
+                      v_row=16, v_col=16, blayout=row_major, slayout=none_box,
+                      fractal=512, pad=0>)
+```
+
+---
+
+##### `pto.tcolexpanddiv` - Column-wise Broadcast Divide
+
+**Summary:** Divides each element of `src0` by a per-column scalar from `src1`.
+
+**Semantics:**
+
+```
+For each element (i, j):
+    dst[i, j] = src0[i, j] / src1[0, j]
+```
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `src0` | `pto.tile_buf` | Source tile buffer |
+| `src1` | `pto.tile_buf` | Per-column scalar vector (divisor) |
+| `dst` | `pto.tile_buf` | Destination tile buffer |
+
+**Results:** None. Writes into `dst` via DPS pattern.
+
+**Assembly Format:**
+
+```
+pto.tcolexpanddiv ins(<src0>, <src1> : <src0_type>, <src1_type>)
+                  outs(<dst> : <dst_type>)
+```
+
+**Constraints & Verification:**
+
+- **Implementation checks**:
+  - `src0`, `src1`, `dst` must share the same element type and the type must be `f16` or `f32`.
+  - `src0` and `dst` must have the same shape and the same `valid_shape`.
+  - `src0`, `src1`, `dst` must use row-major layout (`blayout=row_major`).
+  - `src1 valid_shape[1]` must equal `dst valid_shape[1]` (one scalar per destination column).
+
+**Hardware Mapping:**
+
+- Executes on the **Vector pipeline** (`PIPE_V`)
+- Operates on data in the **VEC (UB)** memory space
+
+**Basic Example:**
+
+```mlir
+pto.tcolexpanddiv ins(%src0, %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
+                      v_row=16, v_col=16, blayout=row_major, slayout=none_box,
+                      fractal=512, pad=0>,
+                      !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=16,
+                      v_row=1, v_col=16, blayout=row_major, slayout=none_box,
+                      fractal=512, pad=0>)
+                  outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
+                      v_row=16, v_col=16, blayout=row_major, slayout=none_box,
+                      fractal=512, pad=0>)
+```
+
+---
+
+##### `pto.tcolexpandsub` - Column-wise Broadcast Subtract
+
+**Summary:** Subtracts a per-column scalar from `src1` from each element of `src0`.
+
+**Semantics:**
+
+```
+For each element (i, j):
+    dst[i, j] = src0[i, j] - src1[0, j]
+```
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `src0` | `pto.tile_buf` | Source tile buffer |
+| `src1` | `pto.tile_buf` | Per-column scalar vector (subtrahend) |
+| `dst` | `pto.tile_buf` | Destination tile buffer |
+
+**Results:** None. Writes into `dst` via DPS pattern.
+
+**Assembly Format:**
+
+```
+pto.tcolexpandsub ins(<src0>, <src1> : <src0_type>, <src1_type>)
+                  outs(<dst> : <dst_type>)
+```
+
+**Constraints & Verification:**
+
+- **Implementation checks**:
+  - `src0`, `src1`, `dst` must share the same element type and the type must be `f16` or `f32`.
+  - `src0` and `dst` must have the same shape and the same `valid_shape`.
+  - `src0`, `src1`, `dst` must use row-major layout (`blayout=row_major`).
+  - `src1 valid_shape[1]` must equal `dst valid_shape[1]` (one scalar per destination column).
+
+**Hardware Mapping:**
+
+- Executes on the **Vector pipeline** (`PIPE_V`)
+- Operates on data in the **VEC (UB)** memory space
+
+**Basic Example:**
+
+```mlir
+pto.tcolexpandsub ins(%src0, %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
                       v_row=16, v_col=16, blayout=row_major, slayout=none_box,
                       fractal=512, pad=0>,
                       !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=16,
@@ -3912,9 +4030,10 @@ pto.tcolexpandmax ins(<src0>, <src1> : <src0_type>, <src1_type>)
 **Constraints & Verification:**
 
 - **Implementation checks**:
-  - `dst`, `src0`, and `src1` must have the same element type.
-  - The shared element type must be one of: `half`, `float`.
-  - `dst` must use row-major layout (`blayout=row_major`).
+  - `src0`, `src1`, `dst` must share the same element type and the type must be `f16` or `f32`.
+  - `src0` and `dst` must have the same shape and the same `valid_shape`.
+  - `src0`, `src1`, `dst` must use row-major layout (`blayout=row_major`).
+  - `src1 valid_shape[1]` must equal `dst valid_shape[1]`.
 
 **Hardware Mapping:**
 
@@ -3968,9 +4087,10 @@ pto.tcolexpandmin ins(<src0>, <src1> : <src0_type>, <src1_type>)
 **Constraints & Verification:**
 
 - **Implementation checks**:
-  - `dst`, `src0`, and `src1` must have the same element type.
-  - The shared element type must be one of: `half`, `float`.
-  - `dst` must use row-major layout (`blayout=row_major`).
+  - `src0`, `src1`, `dst` must share the same element type and the type must be `f16` or `f32`.
+  - `src0` and `dst` must have the same shape and the same `valid_shape`.
+  - `src0`, `src1`, `dst` must use row-major layout (`blayout=row_major`).
+  - `src1 valid_shape[1]` must equal `dst valid_shape[1]`.
 
 **Hardware Mapping:**
 
@@ -4165,6 +4285,66 @@ pto.trowexpandsub ins(%src0, %src1, %tmp : !pto.tile_buf<loc=vec, dtype=f32, row
                       fractal=512, pad=0>,
                       !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
                       v_row=16, v_col=16, blayout=row_major, slayout=none_box,
+                      fractal=512, pad=0>)
+                  outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
+                      v_row=16, v_col=16, blayout=row_major, slayout=none_box,
+                      fractal=512, pad=0>)
+```
+
+---
+
+##### `pto.trowexpandadd` - Row-wise Broadcast Add
+
+**Summary:** Adds a per-row scalar from `src1` to each row of `src0`.
+
+**Semantics:**
+
+```
+For each element (i, j):
+    dst[i, j] = src0[i, j] + src1[i, 0]
+```
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `src0` | `pto.tile_buf` | Source tile buffer |
+| `src1` | `pto.tile_buf` | Per-row scalar vector |
+| `dst` | `pto.tile_buf` | Destination tile buffer |
+
+**Results:** None. Writes into `dst` via DPS pattern.
+
+**Assembly Format:**
+
+```
+pto.trowexpandadd ins(<src0>, <src1> : <src0_type>, <src1_type>)
+                  outs(<dst> : <dst_type>)
+```
+
+**Constraints & Verification:**
+
+- **Implementation checks**:
+  - `dst`, `src0`, and `src1` must have the same element type.
+  - The shared element type must be one of: `f16`, `f32`.
+  - `src0` and `dst` must have the same shape and the same `valid_shape`.
+  - `src0` and `dst` must use row-major layout (`blayout=row_major`).
+  - `src1 valid_shape[0]` must equal `dst valid_shape[0]`.
+  - If `src1` is row-major: `src1 valid_shape[1] == 32 / sizeof(dtype)` (`16` for `f16`, `8` for `f32`).
+  - If `src1` is not row-major: `src1 valid_shape[1] == 1`.
+
+**Hardware Mapping:**
+
+- Executes on the **Vector pipeline** (`PIPE_V`)
+- Operates on data in the **VEC (UB)** memory space
+
+**Basic Example:**
+
+```mlir
+pto.trowexpandadd ins(%src0, %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
+                      v_row=16, v_col=16, blayout=row_major, slayout=none_box,
+                      fractal=512, pad=0>,
+                      !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1,
+                      v_row=16, v_col=1, blayout=col_major, slayout=none_box,
                       fractal=512, pad=0>)
                   outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
                       v_row=16, v_col=16, blayout=row_major, slayout=none_box,

@@ -5127,6 +5127,50 @@ struct PTOColExpandMulToEmitC : public OpConversionPattern<pto::TColExpandMulOp>
   }
 };
 
+struct PTOColExpandDivToEmitC : public OpConversionPattern<pto::TColExpandDivOp> {
+  using OpConversionPattern<pto::TColExpandDivOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::TColExpandDivOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+
+    Value src0 = peelUnrealized(adaptor.getSrc0());
+    Value src1 = peelUnrealized(adaptor.getSrc1());
+    Value dst = peelUnrealized(adaptor.getDst());
+
+    rewriter.create<emitc::CallOpaqueOp>(
+        loc, TypeRange{}, "TCOLEXPANDDIV",
+        /*args=*/ArrayAttr{},
+        /*templateArgs=*/ArrayAttr{},
+        /*operands=*/ValueRange{dst, src0, src1});
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct PTOColExpandSubToEmitC : public OpConversionPattern<pto::TColExpandSubOp> {
+  using OpConversionPattern<pto::TColExpandSubOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::TColExpandSubOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+
+    Value src0 = peelUnrealized(adaptor.getSrc0());
+    Value src1 = peelUnrealized(adaptor.getSrc1());
+    Value dst = peelUnrealized(adaptor.getDst());
+
+    rewriter.create<emitc::CallOpaqueOp>(
+        loc, TypeRange{}, "TCOLEXPANDSUB",
+        /*args=*/ArrayAttr{},
+        /*templateArgs=*/ArrayAttr{},
+        /*operands=*/ValueRange{dst, src0, src1});
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct PTOColExpandMaxToEmitC : public OpConversionPattern<pto::TColExpandMaxOp> {
   using OpConversionPattern<pto::TColExpandMaxOp>::OpConversionPattern;
 
@@ -6402,6 +6446,28 @@ struct PTORowExpandToEmitC : public OpConversionPattern<pto::TRowExpandOp> {
     SmallVector<Value, 2> operands{dst, src};
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TROWEXPAND",
+        /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
+        /*operands=*/operands);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct PTORowExpandAddToEmitC : public OpConversionPattern<pto::TRowExpandAddOp> {
+  using OpConversionPattern<pto::TRowExpandAddOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::TRowExpandAddOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+
+    Value src0 = peelUnrealized(adaptor.getSrc0());
+    Value src1 = peelUnrealized(adaptor.getSrc1());
+    Value dst = peelUnrealized(adaptor.getDst());
+
+    SmallVector<Value, 3> operands{dst, src0, src1};
+    rewriter.create<emitc::CallOpaqueOp>(
+        loc, TypeRange{}, "TROWEXPANDADD",
         /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
         /*operands=*/operands);
 
@@ -8167,10 +8233,13 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOSqrtSToEmitC>(typeConverter, ctx);
   patterns.add<PTOTTransToEmitC>(typeConverter, ctx);
   patterns.add<PTOSelSToEmitC>(typeConverter, ctx);
+  patterns.add<PTOColExpandDivToEmitC>(typeConverter, ctx);
   patterns.add<PTOColExpandMulToEmitC>(typeConverter, ctx);
   patterns.add<PTOColExpandMaxToEmitC>(typeConverter, ctx);
   patterns.add<PTOColExpandMinToEmitC>(typeConverter, ctx);
+  patterns.add<PTOColExpandSubToEmitC>(typeConverter, ctx);
   patterns.add<PTOColMinToEmitC>(typeConverter, ctx);
+  patterns.add<PTORowExpandAddToEmitC>(typeConverter, ctx);
   patterns.add<PTORowExpandSubToEmitC>(typeConverter, ctx);
   patterns.add<PTOShrSToEmitC>(typeConverter, ctx);
   patterns.add<PTOShlSToEmitC>(typeConverter, ctx);

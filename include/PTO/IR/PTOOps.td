@@ -2242,6 +2242,64 @@ def TColExpandMulOp : PTO_TOp<"tcolexpandmul", [
   }];
 }
 
+def TColExpandDivOp : PTO_TOp<"tcolexpanddiv", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Column-wise broadcast divide: divide each element of src0 by a per-column scalar vector src1 ";
+
+  let arguments = (ins
+    PTODpsType:$src0,
+    PTODpsType:$src1,
+    PTODpsType:$dst
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+
+  let assemblyFormat = [{
+    `ins` `(` $src0 `,` $src1 `:` qualified(type($src0)) `,` qualified(type($src1)) `)`
+    `outs` `(` $dst `:` qualified(type($dst) ) `)`
+    attr-dict
+  }];
+}
+
+def TColExpandSubOp : PTO_TOp<"tcolexpandsub", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Column-wise broadcast subtract: subtract a per-column scalar vector src1 from src0 ";
+
+  let arguments = (ins
+    PTODpsType:$src0,
+    PTODpsType:$src1,
+    PTODpsType:$dst
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+
+  let assemblyFormat = [{
+    `ins` `(` $src0 `,` $src1 `:` qualified(type($src0)) `,` qualified(type($src1)) `)`
+    `outs` `(` $dst `:` qualified(type($dst) ) `)`
+    attr-dict
+  }];
+}
+
 def TColExpandMaxOp : PTO_TOp<"tcolexpandmax", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
@@ -3586,6 +3644,35 @@ def TRowExpandSubOp: PTO_TOp<"trowexpandsub", [
   let hasVerifier = 1;
 
   let hasCustomAssemblyFormat = 1;
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+}
+
+def TRowExpandAddOp: PTO_TOp<"trowexpandadd", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "TROWEXPANDADD: Row-wise broadcast add: add a per-row scalar vector src1 to each row of src0.";
+
+  let arguments = (ins
+    PTODpsType:$src0,
+    PTODpsType:$src1,
+    PTODpsType:$dst
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `ins` `(` $src0 `,` $src1 `:` qualified(type($src0)) `,` qualified(type($src1)) `)`
+    `outs` `(` $dst `:` qualified(type($dst) ) `)`
+    attr-dict
+  }];
 
   let extraClassDeclaration = [{
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }

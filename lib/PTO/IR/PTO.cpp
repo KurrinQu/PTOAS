@@ -2507,6 +2507,13 @@ static LogicalResult verifyTColExpandBinaryLikeOp(Operation *op, Type t0, Type t
 
   if (getShapeVec(t0) != getShapeVec(td))
     return op->emitOpError("expects src0/dst to have same shape");
+  if (failed(verifyTileBufSameValidShape(op, t0, td, "src0", "dst")))
+    return failure();
+
+  if (auto src0TileTy = dyn_cast<TileBufType>(t0)) {
+    if (src0TileTy.getBLayoutValueI32() != 0)
+      return op->emitOpError("expects src0 to use row-major layout");
+  }
 
   if (auto src1TileTy = dyn_cast<TileBufType>(t1)) {
     if (src1TileTy.getBLayoutValueI32() != 0)
@@ -2517,9 +2524,24 @@ static LogicalResult verifyTColExpandBinaryLikeOp(Operation *op, Type t0, Type t
       return op->emitOpError("expects dst to use row-major layout");
   }
 
+  auto src1Valid = getValidShapeVec(t1);
+  auto dstValid = getValidShapeVec(td);
+  if (src1Valid.size() == 2 && dstValid.size() == 2 &&
+      src1Valid[1] != ShapedType::kDynamic && dstValid[1] != ShapedType::kDynamic &&
+      src1Valid[1] != dstValid[1])
+    return op->emitOpError("expects src1 valid_shape[1] to equal dst valid_shape[1]");
+
   return success();
 }
 LogicalResult pto::TColExpandMulOp::verify() {
+  return verifyTColExpandBinaryLikeOp(getOperation(), getSrc0().getType(),
+                                      getSrc1().getType(), getDst().getType());
+}
+LogicalResult pto::TColExpandDivOp::verify() {
+  return verifyTColExpandBinaryLikeOp(getOperation(), getSrc0().getType(),
+                                      getSrc1().getType(), getDst().getType());
+}
+LogicalResult pto::TColExpandSubOp::verify() {
   return verifyTColExpandBinaryLikeOp(getOperation(), getSrc0().getType(),
                                       getSrc1().getType(), getDst().getType());
 }
@@ -5366,6 +5388,52 @@ mlir::LogicalResult mlir::pto::TRowExpandSubOp::verify() {
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
+mlir::LogicalResult mlir::pto::TRowExpandAddOp::verify() {
+  auto verifyCommon = [&]() -> LogicalResult {
+    Type src0Ty = getSrc0().getType();
+    Type src1Ty = getSrc1().getType();
+    Type dstTy = getDst().getType();
+    if (failed(verifyTileBufCommon(*this, src0Ty, "src0")) ||
+        failed(verifyTileBufCommon(*this, src1Ty, "src1")) ||
+        failed(verifyTileBufCommon(*this, dstTy, "dst")))
+      return failure();
+    if (failed(verifyTileBufSameShapeAndElem(*this, src0Ty, dstTy, "src0", "dst")))
+      return failure();
+    if (failed(verifyTileBufSameValidShape(*this, src0Ty, dstTy, "src0", "dst")))
+      return failure();
+    if (getElemTy(src0Ty) != getElemTy(src1Ty))
+      return emitOpError("expects src0 and src1 to have the same element type");
+    if (!isRowMajorTileBuf(src0Ty))
+      return emitOpError("expects src0 to use row-major layout");
+    if (!isRowMajorTileBuf(dstTy))
+      return emitOpError("expects dst to use row-major layout");
+    auto ft = getElemTy(src0Ty).dyn_cast<mlir::FloatType>();
+    if (!ft || (!ft.isF16() && !ft.isF32()))
+      return emitOpError("expects element type to be f16 or f32");
+    auto src1Valid = getValidShapeVec(src1Ty);
+    auto dstValid = getValidShapeVec(dstTy);
+    if (src1Valid.size() != 2 || dstValid.size() != 2)
+      return emitOpError("expects src1 and dst to have rank-2 valid_shape");
+    if (src1Valid[0] != ShapedType::kDynamic && dstValid[0] != ShapedType::kDynamic &&
+        src1Valid[0] != dstValid[0])
+      return emitOpError("expects src1 valid_shape[0] to equal dst valid_shape[0]");
+    bool src1IsRowMajor = isRowMajorTileBuf(src1Ty);
+    int64_t expectedCol = ft.isF16() ? 16 : 8;
+    int64_t src1Col = src1Valid[1];
+    if (src1IsRowMajor) {
+      if (src1Col != ShapedType::kDynamic && src1Col != expectedCol)
+        return emitOpError("expects row-major src1 valid_shape[1] to be 32/sizeof(dtype)");
+    } else {
+      if (src1Col != ShapedType::kDynamic && src1Col != 1)
+        return emitOpError("expects non-row-major src1 valid_shape[1] to be 1");
+    }
+    return mlir::success();
+  };
+  auto verifyA2A3 = [&]() -> LogicalResult { return verifyCommon(); };
+  auto verifyA5 = [&]() -> LogicalResult { return verifyCommon(); };
+  return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
+}
+
 
 mlir::LogicalResult mlir::pto::TRowMaxOp::verify() {
   auto verifyA2A3 = [&]() -> LogicalResult {
@@ -7156,6 +7224,8 @@ PTO_DEFINE_UNARY_EFFECTS(TCmpSOp, getSrcMutable(), getDstMutable())
 
 PTO_DEFINE_UNARY_EFFECTS(TColExpandOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TColExpandMulOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
+PTO_DEFINE_BINARY_EFFECTS(TColExpandDivOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
+PTO_DEFINE_BINARY_EFFECTS(TColExpandSubOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TColExpandMaxOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TColExpandMinOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TColMaxOp, getSrcMutable(), getDstMutable())
@@ -7296,6 +7366,8 @@ void TRowExpandSubOp::getEffects(
     PTO_ADD_WRITE(tmp[0]);
   PTO_ADD_WRITE(getDstMutable());
 }
+
+PTO_DEFINE_BINARY_EFFECTS(TRowExpandAddOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 
 // Row reductions use tmp scratch tile.
 void TRowMaxOp::getEffects(
