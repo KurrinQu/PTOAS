@@ -336,7 +336,7 @@ __VEC_SCOPE__ {
 `tools/ptoas/ptoas.cpp` 中当前开关语义如下：
 
 1. `enableA5OplibPipeline = (effectiveArch == PTOTargetArch::A5)`
-2. A5 目标下要求传入 `--op-lib-dir`
+2. A5 目标下默认解析 installed/repo `oplib/level3`，也支持显式传入 `--op-lib-dir`
 3. `--enable-op-fusion` 只控制 fusion 相关 pass，不控制 base OpLib lowering
 4. `--pto-arch!=a5` 时，`--enable-op-fusion` 被忽略
 

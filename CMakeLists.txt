@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.20.0)
 project(ptoas VERSION 0.11)
 
+include(GNUInstallDirs)
+
 set(PTOAS_RELEASE_VERSION_OVERRIDE ""
     CACHE STRING "Override the version printed by ptoas --version")
 set(PTOAS_CLI_VERSION "${PROJECT_VERSION}")
@@ -128,4 +130,11 @@ configure_package_config_file(
 install(FILES
     "${CMAKE_CURRENT_BINARY_DIR}/PTOASConfig.cmake"
     DESTINATION ${PTOAS_CMAKE_INSTALL_DIR}
+)
+
+install(DIRECTORY oplib/level3/
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/ptoas/oplib/level3
+        COMPONENT PTOAS_Runtime
+        PATTERN "__pycache__" EXCLUDE
+        PATTERN "*.pyc" EXCLUDE
 )

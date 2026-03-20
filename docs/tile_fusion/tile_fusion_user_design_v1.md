@@ -35,7 +35,7 @@
 
 1. 使用 `--pto-arch=a5`
 2. 显式传入 `--enable-op-fusion`
-3. 提供当前 OpLib 模板目录，一般需要 `--op-lib-dir=<path>`
+3. 使用默认 OpLib 模板目录，或显式传入 `--op-lib-dir=<path>` 覆盖默认值
 
 典型命令形态如下：
 
@@ -43,15 +43,15 @@
 build/tools/ptoas/ptoas input.pto \
   --pto-arch=a5 \
   --enable-op-fusion \
-  --op-lib-dir=oplib/level3 \
   -o output.cpp
 ```
 
 说明：
 
 1. `--enable-op-fusion` 在 `--pto-arch!=a5` 时不会生效。
-2. 当前 OpLib lowering 路径要求提供 `--op-lib-dir`。
-3. 本文所有约束和例子都以当前 A5 路径为前提。
+2. 当前 OpLib lowering 路径会先尝试安装目录默认位置，再回退到仓内 `oplib/level3`。
+3. 只有自定义模板目录、负向测试或局部覆写时才需要显式传 `--op-lib-dir`。
+4. 本文所有约束和例子都以当前 A5 路径为前提。
 
 ## 3. 当前用户可见范围
 
@@ -313,7 +313,7 @@ pto.tadd ins(%tmp_after_if, %bias_tile : !pto.tile_buf<...>, !pto.tile_buf<...>)
 
 - [ ] 当前编译入口是否是 `--pto-arch=a5`
 - [ ] 是否显式开启了 `--enable-op-fusion`
-- [ ] 是否提供了 `--op-lib-dir=<path>`
+- [ ] 若使用自定义模板目录，是否显式提供了 `--op-lib-dir=<path>`
 - [ ] 链中 op 是否全部落在当前 12 个 in-scope op 范围内
 - [ ] 是否优先组织为同一 block 内的线性连续 chain
 - [ ] mixed chain 中的 scalar 是否直接作为普通外部输入参与
@@ -347,7 +347,7 @@ pto.tadd ins(%tmp_after_if, %bias_tile : !pto.tile_buf<...>, !pto.tile_buf<...>)
 
 1. 当前 tile fusion 讨论以 `--pto-arch=a5` 为前提。
 2. `--enable-op-fusion` 是当前版本打开 fusion pass 的显式入口。
-3. 当前路径仍依赖 OpLib 输入，通常需要提供 `--op-lib-dir=<path>`。
+3. 当前路径仍依赖 OpLib 输入，但默认会自动查找安装目录或仓内 `oplib/level3`。
 
 ### A.2 当前 in-scope op 范围
 

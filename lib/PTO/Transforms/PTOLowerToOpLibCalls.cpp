@@ -2070,7 +2070,8 @@ struct TemplateRegistry {
                             Location loc) {
     if (opLibDir.empty()) {
       return emitFailure(
-          loc, "--op-lib-dir is required when OP-LIB lowering is enabled");
+          loc,
+          "OP-Lib directory must be resolved before OP-LIB lowering runs");
     }
 
     llvm::SmallVector<std::string, 16> mlirFiles;

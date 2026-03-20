@@ -36,7 +36,7 @@
 3. 选择模板体写法：纯 vector 或 `pto.simd`。
 4. 若使用 `pto.simd.predicate/load/store/load_pu/store_pu`，再补 `pto.simd.level/lanes`。
 5. 对 `seed`，只保留一个 `pto.simd.core_slot = "binary_ewise_core"` 的核心算术 op。
-6. 用 `ptoas --op-lib-dir=...` 跑一轮导入和实例化自检。
+6. 用 `ptoas` 跑一轮导入和实例化自检；只有模板不在默认 installed/repo `oplib/level3` 时才显式加 `--op-lib-dir=...`。
 
 ## 4. 角色差异（`variant` vs `seed`）
 

@@ -309,7 +309,7 @@ Level-3 模板目录统一为：
 2. `oplib/level3/skeletons/` 作为 skeleton source 主维护目录
    lit 约束：
 
-3. `--op-lib-dir` 应指向 `oplib/level3/`
+3. `ptoas` 默认应解析到 installed/repo `oplib/level3/`，显式 `--op-lib-dir` 仅用于覆盖
 4. `test/tile_fusion/oplib/` 不再维护第二份模板源
 5. 基础设施负测资源放在 `test/tile_fusion/resources/`
 

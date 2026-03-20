@@ -37,13 +37,17 @@
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h" // [Fix] Required for OF_None
+#include "llvm/Support/Path.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cctype>
 #include <cstring>
+#include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
+#include <system_error>
 
 using namespace mlir;
 using namespace pto;
@@ -52,9 +56,122 @@ using namespace pto;
 #define PTOAS_RELEASE_VERSION "unknown"
 #endif
 
+#ifndef PTOAS_INSTALL_BINDIR
+#define PTOAS_INSTALL_BINDIR "bin"
+#endif
+
+#ifndef PTOAS_INSTALL_DATADIR
+#define PTOAS_INSTALL_DATADIR "share"
+#endif
+
 static void printPTOASVersion(llvm::raw_ostream &os) {
   os << "ptoas " << PTOAS_RELEASE_VERSION << "\n";
 }
+
+namespace {
+namespace fs = std::filesystem;
+
+static std::optional<fs::path> normalizeExistingDirectory(const fs::path &path) {
+  std::error_code ec;
+  if (!fs::exists(path, ec) || !fs::is_directory(path, ec))
+    return std::nullopt;
+
+  fs::path normalized = fs::weakly_canonical(path, ec);
+  if (ec)
+    normalized = path.lexically_normal();
+  return normalized;
+}
+
+static fs::path getExecutablePath(const char *argv0) {
+  std::error_code ec;
+  const fs::path procSelfExe("/proc/self/exe");
+  if (fs::exists(procSelfExe, ec)) {
+    fs::path resolved = fs::read_symlink(procSelfExe, ec);
+    if (!ec && !resolved.empty()) {
+      fs::path normalized = fs::weakly_canonical(resolved, ec);
+      if (!ec)
+        return normalized;
+      return resolved.lexically_normal();
+    }
+  }
+
+  if (argv0 && *argv0) {
+    fs::path fromArgv(argv0);
+    if (fromArgv.is_relative())
+      fromArgv = fs::absolute(fromArgv, ec);
+
+    if (!ec) {
+      fs::path normalized = fs::weakly_canonical(fromArgv, ec);
+      if (!ec)
+        return normalized;
+    }
+    return fromArgv.lexically_normal();
+  }
+
+  return {};
+}
+
+static std::optional<std::string>
+resolveInstalledOpLibDir(const fs::path &executablePath) {
+  if (executablePath.empty())
+    return std::nullopt;
+
+  fs::path bindir(PTOAS_INSTALL_BINDIR);
+  fs::path datadir(PTOAS_INSTALL_DATADIR);
+  if (datadir.is_absolute()) {
+    fs::path candidate = datadir / "ptoas" / "oplib" / "level3";
+    if (auto normalized = normalizeExistingDirectory(candidate))
+      return normalized->string();
+    return std::nullopt;
+  }
+
+  fs::path prefix = executablePath.parent_path();
+  if (!bindir.is_absolute()) {
+    for (const fs::path &component : bindir) {
+      if (component.empty() || component == ".")
+        continue;
+      fs::path parent = prefix.parent_path();
+      if (parent.empty() || parent == prefix)
+        return std::nullopt;
+      prefix = parent;
+    }
+  }
+
+  fs::path candidate = prefix / datadir / "ptoas" / "oplib" / "level3";
+  if (auto normalized = normalizeExistingDirectory(candidate))
+    return normalized->string();
+  return std::nullopt;
+}
+
+static std::optional<std::string>
+resolveRepoOpLibDir(const fs::path &executablePath) {
+  std::error_code ec;
+  fs::path current = executablePath.empty() ? fs::current_path(ec)
+                                            : executablePath.parent_path();
+  if (ec)
+    return std::nullopt;
+
+  while (!current.empty()) {
+    fs::path candidate = current / "oplib" / "level3";
+    if (auto normalized = normalizeExistingDirectory(candidate))
+      return normalized->string();
+
+    fs::path parent = current.parent_path();
+    if (parent.empty() || parent == current)
+      break;
+    current = parent;
+  }
+
+  return std::nullopt;
+}
+
+static std::optional<std::string> resolveDefaultOpLibDir(const char *argv0) {
+  fs::path executablePath = getExecutablePath(argv0);
+  if (auto installedDir = resolveInstalledOpLibDir(executablePath))
+    return installedDir;
+  return resolveRepoOpLibDir(executablePath);
+}
+} // namespace
 
 static LogicalResult reorderEmitCFunctions(ModuleOp module) {
   SmallVector<emitc::FuncOp> declarations;
@@ -234,7 +351,9 @@ static llvm::cl::opt<bool> enableOpFusion(
 static llvm::cl::opt<std::string>
     opLibDir("op-lib-dir",
              llvm::cl::desc("Directory containing OP-Lib template .mlir files "
-                            "for OP-LIB lowering (A5 only)"),
+                            "for OP-LIB lowering (A5 only). If omitted, ptoas "
+                            "tries the installed default first and then the "
+                            "repository oplib/level3."),
              llvm::cl::value_desc("path"), llvm::cl::init(""));
 
 static llvm::cl::opt<bool>
@@ -1025,6 +1144,7 @@ int main(int argc, char **argv) {
   module->getOperation()->setAttr("pto.target_arch",
                                   mlir::StringAttr::get(&context, arch));
   const bool enableA5OplibPipeline = (effectiveArch == PTOTargetArch::A5);
+  std::string resolvedOpLibDir = opLibDir;
 
   if (effectiveLevel == PTOBuildLevel::Level3) {
     bool missing = false;
@@ -1049,9 +1169,16 @@ int main(int argc, char **argv) {
       return 1;
   }
 
-  if (enableA5OplibPipeline && opLibDir.empty()) {
-    llvm::errs() << "Error: --op-lib-dir is required.\n";
-    return 1;
+  if (enableA5OplibPipeline && resolvedOpLibDir.empty()) {
+    auto defaultOpLibDir = resolveDefaultOpLibDir(argv[0]);
+    if (!defaultOpLibDir) {
+      llvm::errs()
+          << "Error: failed to resolve default OpLib directory. Pass "
+             "--op-lib-dir or ensure the install/repository layout is "
+             "available.\n";
+      return 1;
+    }
+    resolvedOpLibDir = *defaultOpLibDir;
   }
 
   if (!enableA5OplibPipeline && enableOpFusion) {
@@ -1074,8 +1201,8 @@ int main(int argc, char **argv) {
 
   // Stage 1: front-end lowering to memref-level IR.
   if (enableA5OplibPipeline) {
-    if (failed(
-            pto::importPTOOpLibTemplates(*module, opLibDir, opFusionDebug))) {
+    if (failed(pto::importPTOOpLibTemplates(*module, resolvedOpLibDir,
+                                            opFusionDebug))) {
       llvm::errs() << "Error: Failed to import OP-Lib templates.\n";
       return 1;
     }
@@ -1132,7 +1259,7 @@ int main(int argc, char **argv) {
     }
 
     pto::PTOInstantiateAndLowerToLibCallOptions instantiateLowerOptions;
-    instantiateLowerOptions.opLibDir = opLibDir;
+    instantiateLowerOptions.opLibDir = resolvedOpLibDir;
     instantiateLowerOptions.debug = opFusionDebug;
     pm.addPass(pto::createPTOInstantiateAndLowerToLibCallPass(
         instantiateLowerOptions));

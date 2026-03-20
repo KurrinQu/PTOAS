@@ -153,6 +153,13 @@ ptoas在build目录下
     └── ptoas
         └── ptoas
 
+OpLib 模板在 install 目录下会一并安装：
+./install/
+└── share
+    └── ptoas
+        └── oplib
+            └── level3
+
 ```
 
 ---
@@ -213,6 +220,12 @@ ptoas tests/input.pto --pto-arch=a3 -o outputfile.cpp
 
 # 指定构建 Level（level3 会禁用 PlanMemory/InsertSync）
 ptoas tests/input.pto --pto-level=level3 -o outputfile.cpp
+
+# A5 路径默认会自动查找 OpLib 模板目录
+ptoas tests/input.pto --pto-arch=a5 --enable-op-fusion -o outputfile.cpp
+
+# 只有自定义模板目录时才需要显式覆盖
+ptoas tests/input.pto --pto-arch=a5 --op-lib-dir=/path/to/oplib/level3 -o outputfile.cpp
 
 # 查看当前 ptoas release 版本号
 ptoas --version

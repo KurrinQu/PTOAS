@@ -126,16 +126,18 @@ def PTOInstantiateAndLowerToLibCall
   let summary =
       "Instantiate OP-Lib variants and lower PTO binary ops to OP-Lib calls";
   let description = [{
-    Reads OP-Lib template functions from --op-lib-dir, validates templates,
-    selects/matches OP-Lib entries (variant/seed), creates OP-Lib instance
-    symbols, and rewrites PTO binary elementwise ops to OP-Lib func.call.
+    Reads OP-Lib template functions from --op-lib-dir (or a caller-resolved
+    default directory), validates templates, selects/matches OP-Lib entries
+    (variant/seed), creates OP-Lib instance symbols, and rewrites PTO binary
+    elementwise ops to OP-Lib func.call.
     Template/instance/call interfaces are all !pto.tile_buf.
   }];
   let constructor = "mlir::pto::createPTOInstantiateAndLowerToLibCallPass()";
   let dependentDialects = ["mlir::func::FuncDialect", "mlir::pto::PTODialect"];
   let options = [Option<"opLibDir", "op-lib-dir", "std::string",
                         /*default=*/"\"\"",
-                        "Directory containing OP-Lib template .mlir files">,
+                        "Directory containing OP-Lib template .mlir files; "
+                        "the caller may resolve a default when omitted">,
                  Option<"opLibManifest", "op-lib-manifest", "std::string",
                         /*default=*/"\"\"",
                         "Path to the A5 OpLib V1 manifest snapshot used to "

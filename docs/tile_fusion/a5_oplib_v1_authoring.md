@@ -61,7 +61,8 @@ A5 OpLib V1 的主维护源分成四类文件：
 2. 生成入口：
    [`oplib/level3/generate_level3_templates.py`](../../oplib/level3/generate_level3_templates.py)
 3. lowering/importer 消费侧：
-   `ptoas --op-lib-dir=<concrete-template-dir>`
+   `ptoas` 默认自动查找 installed/repo `oplib/level3`，也支持
+   `ptoas --op-lib-dir=<concrete-template-dir>` 显式覆盖
 
 工程约束固定如下：
 
