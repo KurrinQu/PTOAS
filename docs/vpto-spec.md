@@ -8,7 +8,7 @@ Updated: 2026-03-21
 - [Getting Started](#getting-started)
 - [Example: Abs](#example-abs)
 - [Scope](#scope)
-- [Physical ISA Mapping](#physical-isa-mapping)
+- [ISA Contract](#isa-contract)
 - [Core Types](#core-types)
 - [Address Space Conventions](#address-space-conventions)
 - [Element Type Constraints](#element-type-constraints)
@@ -171,29 +171,28 @@ It only describes:
 
 It does not describe lowering strategy.
 
-## Physical ISA Mapping
+## ISA Contract
 
-Each VPTO op in this document names the physical Vector Thread mnemonic or
-mnemonic family that it models.
+VPTO is an ISA-level contract without an encoding layer. Each op below carries
+the architectural behavior of one ISA instruction or ISA family, while making
+hidden register updates, predicate flow, and buffer state explicit in SSA form.
 
-Mapping policy:
+Contract policy:
 
-- A semantics line that names one mnemonic, such as `VADD`, indicates a direct
-  conceptual correspondence between the VPTO op and that physical ISA op.
-- A semantics line that names a family, such as `VLD` / `VLDS` / `VLDI`, means
-  VPTO intentionally collapses several encoding variants into one SSA-level IR
-  op.
-- When the physical behavior is exposed through helper-driven transfer or dual-
-  result forms rather than a standalone chapter mnemonic, the semantics line
-  states that explicitly and the CCE correspondence block records the concrete
-  builtin path.
+- `- ISA family:` names the architectural instruction family that defines the
+  operation semantics.
+- `- semantics:` defines the architecturally visible behavior after removing the
+  encoding and implicit register-mutation details.
+- `- operand roles:` explains the meaning of each SSA operand, result, and
+  control token.
+- Chapter-level assertions and exceptions below are normative unless an op
+  section narrows them further.
 
 Naming note:
 
 - This spec uses `pto.v*` headings for the exposed VPTO contract.
-- Some underlying A5VM op definitions drop that extra `v` prefix for control,
-  predicate, and copy helpers, but the physical behavior being modeled is the
-  same.
+- Some underlying A5VM op definitions omit that extra `v` prefix for control,
+  predicate, and copy helpers; the ISA behavior is unchanged.
 
 ## Core Types
 
@@ -216,25 +215,21 @@ Type parameter conventions used below:
 
 ## Address Space Conventions
 
-The table below captures the current working interpretation of `!llvm.ptr<AS>`
-in this document. These meanings are based on PTO address-space enums plus the
-current verifier behavior, and should be treated as `TO BE CONFIRMED` before
-external publication.
+The table below defines the address-space interpretation used by this spec and by the current dialect implementation.
 
 | `AS` | PTO mnemonic | Working interpretation in this spec | Status |
 |------|--------------|-------------------------------------|--------|
-| `0` | `Zero` | Default / unspecified pointer space; currently treated as GM-like by the verifier | To be confirmed |
-| `1` | `GM` | Global Memory (GM) | To be confirmed |
-| `2` | `MAT` | Matrix / L1-related storage | To be confirmed |
-| `3` | `LEFT` | Left matrix buffer / L0A-related storage | To be confirmed |
-| `4` | `RIGHT` | Right matrix buffer / L0B-related storage | To be confirmed |
-| `5` | `ACC` | Accumulator / L0C-related storage | To be confirmed |
-| `6` | `VEC` | Unified Buffer (UB) / vector buffer | To be confirmed |
-| `7` | `BIAS` | Bias buffer | To be confirmed |
-| `8` | `SCALING` | Scaling buffer | To be confirmed |
+| `0` | `Zero` | Default / unspecified pointer space; treated as GM-like by the current verifier rules | Normative in this spec |
+| `1` | `GM` | Global Memory (GM) | Normative in this spec |
+| `2` | `MAT` | Matrix / L1-related storage | Normative in this spec |
+| `3` | `LEFT` | Left matrix buffer / L0A-related storage | Normative in this spec |
+| `4` | `RIGHT` | Right matrix buffer / L0B-related storage | Normative in this spec |
+| `5` | `ACC` | Accumulator / L0C-related storage | Normative in this spec |
+| `6` | `VEC` | Unified Buffer (UB) / vector buffer | Normative in this spec |
+| `7` | `BIAS` | Bias buffer | Normative in this spec |
+| `8` | `SCALING` | Scaling buffer | Normative in this spec |
 
-- Current verifier rule of thumb: `!llvm.ptr<0>` and `!llvm.ptr<1>` are usually
-  treated as GM-like, while `!llvm.ptr<6>` is treated as UB-like.
+- Current verifier rule: `!llvm.ptr<0>` and `!llvm.ptr<1>` are treated as GM-like, while `!llvm.ptr<6>` is treated as UB-like.
 - External authors should keep the raw numeric LLVM address space in IR and use the symbolic names in this table as the explanatory meaning of those numeric values.
 
 ## Element Type Constraints
@@ -248,7 +243,7 @@ be read throughout the spec.
 - `T`:
   General vector element type accepted by the mapped ISA family. In the current tree this means integer lanes and floating-point lanes such as `i8`, `i16`, `i32`, `i64`, `f16`, `bf16`, and `f32`, subject to the narrower legality of each individual op family.
 - `T0`, `T1`:
-  Source and result element types for conversion ops. Legal pairs are exactly the pairs implemented by the physical conversion families `VCVTFI`, `VCVTFF`, `VCVTIF`, `VCVTII`, and `VTRC`; VPTO does not treat `pto.vcvt` as an arbitrary bitcast.
+  Source and result element types for conversion ops. Legal pairs are exactly the pairs implemented by the ISA conversion families `VCVTFI`, `VCVTFF`, `VCVTIF`, `VCVTII`, and `VTRC`; VPTO does not treat `pto.vcvt` as an arbitrary bitcast.
 - `I`:
   Integer element type used for offsets, indices, lane selectors, and permutation inputs. Gather, scatter, index-generation, and lane-selection ops require integer vectors; scalar offsets use `index`, `i32`, or `i64` exactly as shown in the op syntax.
 - Family-specific exceptions:
@@ -262,7 +257,7 @@ be read throughout the spec.
 
 Mask data-type expression:
 
-- `!pto.mask` is intentionally unparameterized. The physical predicate width is implied by the op family that created or consumed it, so `pset_b8`, `pset_b16`, and `pset_b32` all return the same abstract mask type while preserving their ISA-level granularity in the op name.
+- `!pto.mask` is intentionally unparameterized. Predicate granularity is implied by the op family that creates or consumes it, so `pset_b8`, `pset_b16`, and `pset_b32` all return the same abstract mask type while preserving their ISA-level granularity in the op name.
 
 Use it when an operation needs per-lane enable/disable state.
 
@@ -458,18 +453,18 @@ enumerated by the verifier:
 ### `LAYOUT`
 
 - Current repo-defined layout spellings are `nd`, `dn`, and `nz`.
-- Copy ops preserve the layout token as part of the physical transfer contract.
+- Copy ops preserve the layout token as part of the transfer contract.
 - The verifier does not yet exhaustively cross-check every layout-sensitive combination, so producers must only emit layout values that the selected copy helper or backend path actually implements.
 
 ### `POSITION`
 
-- `POSITION` selects which physical `VDUP*` source position is duplicated when the input is a vector.
-- The current verifier checks type compatibility but does not enumerate a closed token set, so this field is a backend-defined spelling that must be preserved exactly through lowering.
+- `POSITION` selects which `VDUP*` source position is duplicated when the input is a vector.
+- The current verifier checks type compatibility but does not enumerate a closed token set, so this field is an implementation-defined token that must be preserved exactly by translators.
 
 ### `ORDER`
 
-- `ORDER` selects the lane-index generation order for physical `VCI`.
-- The current lowering path emits `INC_ORDER` for monotonic increasing lane indices.
+- `ORDER` selects the lane-index generation order for `VCI`.
+- The currently documented token is `INC_ORDER`, which produces monotonic increasing lane indices.
 - The current verifier does not enforce a closed enum for this field, so any alternative order token must be introduced together with matching lowering support.
 
 ### `SRC_PIPE` / `DST_PIPE`
@@ -483,6 +478,29 @@ enumerated by the verifier:
 - Legal event identifiers in the current tree are `EVENT_ID0` through `EVENT_ID7`.
 - The event id is not meaningful by itself; it is interpreted together with the `(SRC_PIPE, DST_PIPE)` pair.
 - Producer and consumer sides must agree on the entire triplet `(SRC_PIPE, DST_PIPE, EVENT_ID)` for synchronization to be well formed.
+
+## Architectural Assertions And Exceptions
+
+The following rules are ISA-level requirements that VPTO preserves even though
+it does not encode the original instruction words.
+
+Architectural assertions:
+
+- Vector compute, gather, scatter, predicate-load, and predicate-store families operate on UB-backed storage unless an op section states otherwise.
+- Distribution tokens, stride tokens, part selectors, and predicate patterns are semantically significant; changing them changes the operation, not just the encoding.
+- Alignment requirements are part of the contract. Violating the distribution-specific address-alignment rule raises an exception.
+- Stateful align-register behavior is explicit in VPTO through `!pto.align` values and state-threading results, not by implicit mutation of a hidden architectural register.
+- Copy helper families preserve layout, burst geometry, and stride semantics as architecturally visible behavior.
+
+Architectural exceptions:
+
+- UB access overflow raises an exception for UB reads or writes that exceed the permitted UB address range.
+- Load and store families raise an exception when ISA-required alignment constraints are violated.
+- Memory-to-memory sorter and filter families require their ISA alignment and non-overlap constraints; violating those constraints raises an exception.
+- `INF` and `NaN` in source operands raise an exception for the Chapter 11 arithmetic families, Chapter 12 extended-arithmetic families, and the sort families documented in this spec.
+- Division by `+0` or `-0` raises an exception for `pto.vdiv` and `pto.vrec`; the same ISA rule also applies to reciprocal-square-root families not currently exposed here.
+- Negative input raises an exception for `pto.vln` and `pto.vsqrt`; the same ISA rule also applies to reciprocal-square-root families not currently exposed here.
+- Certain conversion cases from negative floating-point input to unsigned integer destination, such as the ISA forms behind `f16 -> u8` and `s32 -> u16/u8`, are architecturally exceptional rather than silently wrapping.
 
 ## __VEC_SCOPE__
 
@@ -525,8 +543,10 @@ Builtin naming policy in this document:
   `pto.vset_flag["SRC_PIPE", "DST_PIPE", "EVENT_ID"]`
 - operand roles:
   `"SRC_PIPE"` names the producer pipeline, `"DST_PIPE"` names the consumer pipeline, and `"EVENT_ID"` names the event channel being published.
+- ISA family:
+  `SET_FLAG`
 - semantics:
-  Models physical ISA `SET_FLAG`; publishes `EVENT_ID` from `SRC_PIPE` to `DST_PIPE` so later waits can order the asynchronous pipelines.
+  Publishes `EVENT_ID` from `SRC_PIPE` to `DST_PIPE` so later waits can order the asynchronous pipelines.
 - CCE correspondence:
   `set_flag(pipe_t, pipe_t, event_t|uint64_t)`
   `__builtin_cce_set_flag`
@@ -540,8 +560,10 @@ Builtin naming policy in this document:
   `pto.vwait_flag["SRC_PIPE", "DST_PIPE", "EVENT_ID"]`
 - operand roles:
   `"SRC_PIPE"` names the producer pipeline, `"DST_PIPE"` names the consumer pipeline, and `"EVENT_ID"` names the event channel being waited on.
+- ISA family:
+  `WAIT_FLAG`
 - semantics:
-  Models physical ISA `WAIT_FLAG`; stalls the consumer side until the matching `(SRC_PIPE, DST_PIPE, EVENT_ID)` event has been observed.
+  Stalls the consumer side until the matching `(SRC_PIPE, DST_PIPE, EVENT_ID)` event has been observed.
 - CCE correspondence:
   `wait_flag(pipe_t, pipe_t, event_t|uint64_t)`
   `__builtin_cce_wait_flag`
@@ -555,6 +577,8 @@ Builtin naming policy in this document:
   `pto.vpipe_barrier "PIPE_*"`
 - operand roles:
   `"PIPE_*"` selects the pipeline whose in-order execution is being fenced.
+- ISA family:
+  `PIPE_BARRIER`
 - semantics:
   Models a same-pipe execution barrier; later operations on `PIPE_*` cannot overtake earlier ones on that pipeline.
 - CCE correspondence:
@@ -567,6 +591,8 @@ Builtin naming policy in this document:
   `pto.vget_buf "PIPE_*", %buf_id, %mode : i64, i64`
 - operand roles:
   `"PIPE_*"` selects the owning pipeline, `%buf_id` is the buffer identifier being requested, and `%mode` carries the hardware acquisition mode.
+- ISA family:
+  `GET_BUF`
 - semantics:
   Models hardware buffer-token acquisition on the selected pipe; the op reserves the identified buffer slot or mode-controlled token before later use.
 - CCE correspondence:
@@ -579,6 +605,8 @@ Builtin naming policy in this document:
   `pto.vrls_buf "PIPE_*", %buf_id, %mode : i64, i64`
 - operand roles:
   `"PIPE_*"` selects the owning pipeline, `%buf_id` is the buffer identifier being released, and `%mode` carries the hardware release mode.
+- ISA family:
+  `RLS_BUF`
 - semantics:
   Models hardware buffer-token release on the selected pipe; the op returns a previously acquired buffer slot or mode-controlled token to the implementation.
 - CCE correspondence:
@@ -593,6 +621,8 @@ Builtin naming policy in this document:
   `pto.vset_loop2_stride_outtoub %first, %second : i64, i64`
 - operand roles:
   `%first` and `%second` are the two i64 configuration fields consumed by the corresponding copy-programming register pair.
+- ISA family:
+  `SET_LOOP2_STRIDE_OUTTOUB`
 - semantics:
   Models GM-to-UB copy programming state; sets the outer-loop stride consumed by the next outbound-to-UB transfer sequence.
 - CCE correspondence:
@@ -605,6 +635,8 @@ Builtin naming policy in this document:
   `pto.vset_loop1_stride_outtoub %first, %second : i64, i64`
 - operand roles:
   `%first` and `%second` are the two i64 configuration fields consumed by the corresponding copy-programming register pair.
+- ISA family:
+  `SET_LOOP1_STRIDE_OUTTOUB`
 - semantics:
   Models GM-to-UB copy programming state; sets the inner-loop stride consumed by the next outbound-to-UB transfer sequence.
 - CCE correspondence:
@@ -617,6 +649,8 @@ Builtin naming policy in this document:
   `pto.vset_loop_size_outtoub %first, %second : i64, i64`
 - operand roles:
   `%first` and `%second` are the two i64 configuration fields consumed by the corresponding copy-programming register pair.
+- ISA family:
+  `SET_LOOP_SIZE_OUTTOUB`
 - semantics:
   Models GM-to-UB copy programming state; sets the loop extents consumed by the next outbound-to-UB transfer sequence.
 - CCE correspondence:
@@ -629,6 +663,8 @@ Builtin naming policy in this document:
   `pto.vset_loop2_stride_ubtoout %first, %second : i64, i64`
 - operand roles:
   `%first` and `%second` are the two i64 configuration fields consumed by the corresponding copy-programming register pair.
+- ISA family:
+  `SET_LOOP2_STRIDE_UBTOOUT`
 - semantics:
   Models UB-to-GM copy programming state; sets the outer-loop stride consumed by the next UB-to-outbound transfer sequence.
 - CCE correspondence:
@@ -641,6 +677,8 @@ Builtin naming policy in this document:
   `pto.vset_loop1_stride_ubtoout %first, %second : i64, i64`
 - operand roles:
   `%first` and `%second` are the two i64 configuration fields consumed by the corresponding copy-programming register pair.
+- ISA family:
+  `SET_LOOP1_STRIDE_UBTOOUT`
 - semantics:
   Models UB-to-GM copy programming state; sets the inner-loop stride consumed by the next UB-to-outbound transfer sequence.
 - CCE correspondence:
@@ -653,6 +691,8 @@ Builtin naming policy in this document:
   `pto.vset_loop_size_ubtoout %first, %second : i64, i64`
 - operand roles:
   `%first` and `%second` are the two i64 configuration fields consumed by the corresponding copy-programming register pair.
+- ISA family:
+  `SET_LOOP_SIZE_UBTOOUT`
 - semantics:
   Models UB-to-GM copy programming state; sets the loop extents consumed by the next UB-to-outbound transfer sequence.
 - CCE correspondence:
@@ -667,8 +707,10 @@ Builtin naming policy in this document:
   `pto.vcopy_gm_to_ubuf %source, %destination, %valid_rows, %valid_cols, %sid, %n_burst, %len_burst, %left_padding_count, %right_padding_count, %l2_cache_ctl, %gm_stride, %ub_stride {layout = "LAYOUT", data_select_bit = true|false, ub_pad = true|false} : !llvm.ptr<AS>, !llvm.ptr<AS>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64`
 - operand roles:
   `%source` is the GM base pointer, `%destination` is the UB base pointer, `%valid_rows` and `%valid_cols` describe the logical tile extent, `%sid` is the stream or source identifier, `%n_burst` and `%len_burst` describe the burst geometry, `%left_padding_count` and `%right_padding_count` describe edge padding, `%l2_cache_ctl` carries cache control bits, `%gm_stride` and `%ub_stride` are per-burst strides, and `"LAYOUT"` records the transfer layout token.
+- ISA family:
+  `GM->UB copy helper family`
 - semantics:
-  Models the physical GM->UB transfer path configured by the copy-programming ops; copies a 2-D burst tile with optional padding and layout metadata into UB.
+  Copies a 2-D burst tile with optional padding and layout metadata into UB.
 - CCE correspondence:
   `copy_gm_to_ubuf(...)`
   PTO A5 path commonly uses `copy_gm_to_ubuf_align_v2(...)`
@@ -684,8 +726,10 @@ Builtin naming policy in this document:
   `pto.vcopy_ubuf_to_ubuf %source, %destination, %sid, %n_burst, %len_burst, %src_stride, %dst_stride : !llvm.ptr<AS>, !llvm.ptr<AS>, i64, i64, i64, i64, i64`
 - operand roles:
   `%source` and `%destination` are UB base pointers, `%sid` is the stream identifier, `%n_burst` and `%len_burst` describe the burst geometry, and `%src_stride` and `%dst_stride` are the per-burst source and destination strides.
+- ISA family:
+  `UB->UB copy helper family`
 - semantics:
-  Models an in-UB DMA copy between two UB-backed buffers using the stated burst and stride parameters.
+  Copies data between two UB-backed buffers using the stated burst and stride parameters.
 - CCE correspondence:
   `copy_ubuf_to_ubuf(...)`
   `__builtin_cce_copy_ubuf_to_ubuf`
@@ -696,8 +740,10 @@ Builtin naming policy in this document:
   `pto.vcopy_ubuf_to_gm %source, %destination, %valid_rows, %valid_cols, %sid, %n_burst, %len_burst, %reserved, %burst_dst_stride, %burst_src_stride {layout = "LAYOUT"} : !llvm.ptr<AS>, !llvm.ptr<AS>, i64, i64, i64, i64, i64, i64, i64, i64`
 - operand roles:
   `%source` is the UB base pointer, `%destination` is the GM base pointer, `%valid_rows` and `%valid_cols` describe the logical tile extent, `%sid` is the stream identifier, `%n_burst` and `%len_burst` describe the burst geometry, `%reserved` is the ISA-reserved field carried by the helper path, `%burst_dst_stride` and `%burst_src_stride` are the per-burst strides, and `"LAYOUT"` records the transfer layout token.
+- ISA family:
+  `UB->GM copy helper family`
 - semantics:
-  Models the physical UB->GM transfer path configured by the copy-programming ops; writes a 2-D burst tile from UB back to GM.
+  Writes a 2-D burst tile from UB back to GM.
 - CCE correspondence:
   `copy_ubuf_to_gm(...)`
   PTO A5 path commonly uses `copy_ubuf_to_gm_align_v2(...)`
@@ -709,14 +755,24 @@ Builtin naming policy in this document:
 
 ## 4. Vector, Predicate And Align Loads
 
+ISA assertions for this family:
+
+- These ops read from UB-backed storage; GM-backed sources are not valid vector-load operands in VPTO.
+- Alignment requirements are part of the ISA contract and depend on the selected distribution token.
+- `pto.vldas` initializes align state for subsequent unaligned accesses; `pto.vldus` assumes a valid align chain for the same logical stream.
+- ISA forms that post-update a shared register are represented in VPTO by explicit SSA operands or by state-threading ops rather than by hidden base-pointer mutation.
+
+
 ### `pto.vlds`
 
 - syntax:
   `%result = pto.vlds %source[%offset] {dist = "DIST"} : !llvm.ptr<AS> -> !pto.vreg<NxT>`
 - operand roles:
-  `%source` is the UB base pointer, `%offset` is the load displacement from that base, `"DIST"` selects the physical distribution mode, and `%result` is the loaded vector.
+  `%source` is the UB base pointer, `%offset` is the load displacement from that base, `"DIST"` selects the ISA distribution mode, and `%result` is the loaded vector.
+- ISA family:
+  `VLD` / `VLDS`
 - semantics:
-  Models the physical load family `VLD` / `VLDS` / `VLDI`; loads one vector from UB at `source + offset` using the selected distribution mode.
+  Reads one vector from UB at `source + offset` using the aligned-load form selected by `DIST`. The distribution token determines the lane arrangement and alignment requirement of the access, and any ISA-defined base update is represented outside this op rather than as an implicit side effect.
 - CCE correspondence:
   `vld(...)`, `vlds(...)`
   `__builtin_cce_vldsx1_*`
@@ -729,8 +785,10 @@ Builtin naming policy in this document:
   `%result = pto.vldas %source[%offset] : !llvm.ptr<AS> -> !pto.align`
 - operand roles:
   `%source` is the UB base pointer, `%offset` is the align-initialization displacement, and `%result` is the produced align state.
+- ISA family:
+  `VLDAS`
 - semantics:
-  Models physical ISA `VLDA` / `VLDAS`; initializes an align register from the current UB address without producing vector payload data.
+  Initializes align state for a subsequent unaligned load stream. The seeded state is derived from the aligned base corresponding to `source + offset`, with the ISA-required low address bits removed.
 - CCE correspondence:
   `vldas(...)`
   `__builtin_cce_vldas_*`
@@ -741,8 +799,10 @@ Builtin naming policy in this document:
   `%result = pto.vldus %align, %source[%offset] : !pto.align, !llvm.ptr<AS> -> !pto.vreg<NxT>`
 - operand roles:
   `%align` is the incoming align state, `%source` is the UB base pointer, `%offset` is the load displacement, and `%result` is the assembled vector result.
+- ISA family:
+  `VLDUS`
 - semantics:
-  Models physical ISA `VLDU` / `VLDUS` / `VLDUI`; performs an unaligned UB load using the incoming align state and returns the assembled vector.
+  Loads one unaligned vector by combining `%align` with the aligned data fetched from `source + offset`. `%align` must come from the same logical align stream, and the returned vector is the ISA contiguous lane sequence assembled across the alignment boundary.
 - CCE correspondence:
   `vldus(...)`
   `__builtin_cce_vldus_*`, `__builtin_cce_vldus_post_*`
@@ -753,8 +813,10 @@ Builtin naming policy in this document:
   `%result = pto.vplds %source[%offset] {dist = "DIST"} : !llvm.ptr<AS> -> !pto.mask`
 - operand roles:
   `%source` is the UB base pointer, `%offset` is the load displacement, `"DIST"` selects the predicate-load distribution, and `%result` is the loaded predicate.
+- ISA family:
+  `PLDS`
 - semantics:
-  Models physical ISA `PLDS`; loads predicate state from UB at `source + offset` using the selected predicate-load distribution.
+  Loads predicate state from UB at `source + offset` using the selected predicate-load distribution.
 - CCE correspondence:
   `plds(...)`
   `__builtin_cce_plds_b8`
@@ -765,8 +827,10 @@ Builtin naming policy in this document:
   `%result = pto.vpld %source[%offset], "DIST" : !llvm.ptr<AS>, index -> !pto.mask`
 - operand roles:
   `%source` is the UB base pointer, `%offset` is the index-style displacement, `"DIST"` selects the predicate-load distribution, and `%result` is the loaded predicate.
+- ISA family:
+  `PLD`
 - semantics:
-  Models physical ISA `PLD`; loads predicate state from UB using an explicit index offset and predicate-load distribution token.
+  Loads predicate state from UB using an explicit index offset and predicate-load distribution token.
 - CCE correspondence:
   `pld(...)`
   `__builtin_cce_pld_b8`
@@ -777,8 +841,10 @@ Builtin naming policy in this document:
   `%result = pto.vpldi %source, %offset, "DIST" : !llvm.ptr<AS>, i32 -> !pto.mask`
 - operand roles:
   `%source` is the UB base pointer, `%offset` is the immediate-style scalar displacement, `"DIST"` selects the predicate-load distribution, and `%result` is the loaded predicate.
+- ISA family:
+  `PLDI`
 - semantics:
-  Models physical ISA `PLDI`; loads predicate state from UB using an immediate-style scalar offset and predicate-load distribution token.
+  Loads predicate state from UB using an immediate-style scalar offset and predicate-load distribution token.
 - CCE correspondence:
   `pldi(...)`
   `__builtin_cce_pldi_b8`, `__builtin_cce_pldi_post_b8`
@@ -789,8 +855,10 @@ Builtin naming policy in this document:
   `%low, %high = pto.vldx2 %source[%offset], "DIST" : !llvm.ptr<AS>, index -> !pto.vreg<NxT>, !pto.vreg<NxT>`
 - operand roles:
   `%source` is the UB base pointer, `%offset` is the displacement, `"DIST"` selects the x2 load distribution token, and `%low` and `%high` are the two produced vector results.
+- ISA family:
+  `Dual-result aligned-load distributions for VLD variants`
 - semantics:
-  Models the dual-result physical vector load form used for interleave and deinterleave fetches; one UB access produces low and high result vectors according to `DIST`.
+  One UB access produces low and high result vectors according to `DIST`.
 - CCE correspondence:
   `vld(...)`
   `__builtin_cce_vldx2_*`
@@ -801,8 +869,10 @@ Builtin naming policy in this document:
   `%result = pto.vgather2 %source, %offsets, %active_lanes : !llvm.ptr<AS>, !pto.vreg<NxI>, index -> !pto.vreg<NxT>`
 - operand roles:
   `%source` is the UB base pointer, `%offsets` is the per-lane offset vector, `%active_lanes` bounds how many lanes participate, and `%result` is the gathered vector.
+- ISA family:
+  `VGATHER2`
 - semantics:
-  Models physical ISA `VGATHER2`; gathers lanes from UB using vector offsets and an explicit active-lane count.
+  Gathers lanes from UB using vector offsets and an explicit active-lane count.
 - CCE correspondence:
   `vgather2(...)`
   `__builtin_cce_vgather2_*`, `__builtin_cce_vgather2_v300_*`
@@ -813,8 +883,10 @@ Builtin naming policy in this document:
   `%result = pto.vgatherb %source, %offsets, %active_lanes : !llvm.ptr<AS>, !pto.vreg<NxI>, index -> !pto.vreg<NxT>`
 - operand roles:
   `%source` is the UB base pointer, `%offsets` is the per-lane offset vector, `%active_lanes` bounds how many lanes participate, and `%result` is the gathered vector.
+- ISA family:
+  `VGATHERB`
 - semantics:
-  Models physical ISA `VGATHERB`; gathers byte-granular lanes from UB using vector offsets and an explicit active-lane count.
+  Gathers byte-granular lanes from UB using vector offsets and an explicit active-lane count.
 - CCE correspondence:
   `vgatherb(...)`
   `__builtin_cce_vgatherb_*`, `__builtin_cce_vgatherb_v300_*`, `__builtin_cce_vgatherb_v310_*`
@@ -825,8 +897,10 @@ Builtin naming policy in this document:
   `%result = pto.vgather2_bc %source, %offsets, %mask : !llvm.ptr<AS>, !pto.vreg<NxI>, !pto.mask -> !pto.vreg<NxT>`
 - operand roles:
   `%source` is the UB base pointer, `%offsets` is the per-lane offset vector, `%mask` selects which lanes participate, and `%result` is the gathered vector.
+- ISA family:
+  `VGATHER2_BC`
 - semantics:
-  Models physical ISA `VGATHER2_BC`; gathers lanes from UB under an explicit predicate mask.
+  Gathers lanes from UB under an explicit predicate mask.
 - CCE correspondence:
   `vgather2_bc(...)`
   `__builtin_cce_vgather2_bc_*`
@@ -837,8 +911,10 @@ Builtin naming policy in this document:
   `%result = pto.vsld %source[%offset], "STRIDE" : !llvm.ptr<AS> -> !pto.vreg<NxT>`
 - operand roles:
   `%source` is the UB base pointer, `%offset` is the displacement, `"STRIDE"` selects the strided-load token, and `%result` is the loaded vector.
+- ISA family:
+  `VSLD`
 - semantics:
-  Models physical ISA `VSLD`; performs a strided or packed vector load from UB according to the selected stride token.
+  Performs a strided or packed vector load from UB according to the selected stride token.
 - CCE correspondence:
   `vsld(...)`
   `__builtin_cce_vsld_*`
@@ -849,8 +925,10 @@ Builtin naming policy in this document:
   `%result = pto.vsldb %source, %offset, %mask : !llvm.ptr<AS>, i32, !pto.mask -> !pto.vreg<NxT>`
 - operand roles:
   `%source` is the UB base pointer, `%offset` is the scalar displacement, `%mask` is the predicate control, and `%result` is the loaded vector.
+- ISA family:
+  `VSLDB`
 - semantics:
-  Models physical ISA `VSLDB`; performs a masked strided vector load using a scalar offset and predicate mask.
+  Performs a masked strided vector load using a scalar offset and predicate mask.
 - CCE correspondence:
   `vsldb(...)`
   `__builtin_cce_vsldb_*`, `__builtin_cce_vsldb_post_*`
@@ -863,8 +941,10 @@ Builtin naming policy in this document:
   `%result = pto.vbr %value : T -> !pto.vreg<NxT>`
 - operand roles:
   `%value` is the scalar value broadcast into all lanes and `%result` is the produced vector.
+- ISA family:
+  `VBR`
 - semantics:
-  Models physical ISA `VBR`; broadcasts one scalar value across all lanes of the result vector.
+  Broadcasts one scalar value across all lanes of the result vector.
 - CCE correspondence:
   broadcast/materialization family used by PTO scalar-to-vector expansion
 
@@ -874,8 +954,10 @@ Builtin naming policy in this document:
   `%result = pto.vdup %input {position = "POSITION", mode = "MODE"} : T|!pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%input` is either the scalar source or the source vector, `"POSITION"` selects the lane position when duplicating from a vector, `"MODE"` carries the duplication mode token, and `%result` is the duplicated vector.
+- ISA family:
+  `VDUP` / `VDUPS` / `VDUPI` / `VDUPM`
 - semantics:
-  Models the physical duplication family `VDUP` / `VDUPS` / `VDUPI` / `VDUPM`; duplicates a scalar or selected lane across the result vector.
+  Duplicates a scalar input or the lane selected by `POSITION` into every lane of `%result`, according to the duplication form selected by `MODE`.
 - CCE correspondence:
   `vdup(...)`
   `__builtin_cce_vdup_*`
@@ -885,9 +967,11 @@ Builtin naming policy in this document:
 - syntax:
   `%result = pto.vpset_b8 "PAT_*" : !pto.mask`
 - operand roles:
-  `"PAT_*"` selects the physical predicate pattern and `%result` is the produced predicate register.
+  `"PAT_*"` selects the ISA predicate pattern and `%result` is the produced predicate register.
+- ISA family:
+  `PSET`
 - semantics:
-  Models physical ISA `PSET` in its 8-bit granularity form; creates a predicate register from the selected `PAT_*` pattern.
+  Creates a predicate register in 8-bit granularity from the selected `PAT_*` pattern.
 - CCE correspondence:
   `pset_b8(...)`
   `__builtin_cce_pset_b8`
@@ -897,9 +981,11 @@ Builtin naming policy in this document:
 - syntax:
   `%result = pto.vpset_b16 "PAT_*" : !pto.mask`
 - operand roles:
-  `"PAT_*"` selects the physical predicate pattern and `%result` is the produced predicate register.
+  `"PAT_*"` selects the ISA predicate pattern and `%result` is the produced predicate register.
+- ISA family:
+  `PSET`
 - semantics:
-  Models physical ISA `PSET` in its 16-bit granularity form; creates a predicate register from the selected `PAT_*` pattern.
+  Creates a predicate register in 16-bit granularity from the selected `PAT_*` pattern.
 - CCE correspondence:
   `pset_b16(...)`
   `__builtin_cce_pset_b16`
@@ -909,9 +995,11 @@ Builtin naming policy in this document:
 - syntax:
   `%result = pto.vpset_b32 "PAT_*" : !pto.mask`
 - operand roles:
-  `"PAT_*"` selects the physical predicate pattern and `%result` is the produced predicate register.
+  `"PAT_*"` selects the ISA predicate pattern and `%result` is the produced predicate register.
+- ISA family:
+  `PSET`
 - semantics:
-  Models physical ISA `PSET` in its 32-bit granularity form; creates a predicate register from the selected `PAT_*` pattern.
+  Creates a predicate register in 32-bit granularity from the selected `PAT_*` pattern.
 - CCE correspondence:
   `pset_b32(...)`
   `__builtin_cce_pset_b32`
@@ -921,9 +1009,11 @@ Builtin naming policy in this document:
 - syntax:
   `%result = pto.vpge_b8 "PAT_*" : !pto.mask`
 - operand roles:
-  `"PAT_*"` selects the physical predicate pattern and `%result` is the produced predicate register.
+  `"PAT_*"` selects the ISA predicate pattern and `%result` is the produced predicate register.
+- ISA family:
+  `PGE`
 - semantics:
-  Models physical ISA `PGE` in its 8-bit granularity form; creates a prefix-enabled predicate register from the selected `PAT_*` pattern.
+  Creates an 8-bit-granularity prefix predicate from the selected `PAT_*` pattern.
 - CCE correspondence:
   `pge_b8(...)`
   `__builtin_cce_pge_b8`
@@ -933,9 +1023,11 @@ Builtin naming policy in this document:
 - syntax:
   `%result = pto.vpge_b16 "PAT_*" : !pto.mask`
 - operand roles:
-  `"PAT_*"` selects the physical predicate pattern and `%result` is the produced predicate register.
+  `"PAT_*"` selects the ISA predicate pattern and `%result` is the produced predicate register.
+- ISA family:
+  `PGE`
 - semantics:
-  Models physical ISA `PGE` in its 16-bit granularity form; creates a prefix-enabled predicate register from the selected `PAT_*` pattern.
+  Creates a 16-bit-granularity prefix predicate from the selected `PAT_*` pattern.
 - CCE correspondence:
   `pge_b16(...)`
   `__builtin_cce_pge_b16`
@@ -945,9 +1037,11 @@ Builtin naming policy in this document:
 - syntax:
   `%result = pto.vpge_b32 "PAT_*" : !pto.mask`
 - operand roles:
-  `"PAT_*"` selects the physical predicate pattern and `%result` is the produced predicate register.
+  `"PAT_*"` selects the ISA predicate pattern and `%result` is the produced predicate register.
+- ISA family:
+  `PGE`
 - semantics:
-  Models physical ISA `PGE` in its 32-bit granularity form; creates a prefix-enabled predicate register from the selected `PAT_*` pattern.
+  Creates a 32-bit-granularity prefix predicate from the selected `PAT_*` pattern.
 - CCE correspondence:
   `pge_b32(...)`
   `__builtin_cce_pge_b32`
@@ -958,8 +1052,10 @@ Builtin naming policy in this document:
   `%result = pto.vppack %input, "PART" : !pto.mask -> !pto.mask`
 - operand roles:
   `%input` is the source predicate, `"PART"` selects which packed half is addressed, and `%result` is the transformed predicate.
+- ISA family:
+  `PPACK`
 - semantics:
-  Models physical ISA `PPACK`; packs predicate lanes according to `PART` into a denser predicate representation.
+  Packs predicate lanes according to `PART` into a denser predicate representation.
 - CCE correspondence:
   `ppack(...)`
 
@@ -969,8 +1065,10 @@ Builtin naming policy in this document:
   `%result = pto.vpunpack %input, "PART" : !pto.mask -> !pto.mask`
 - operand roles:
   `%input` is the source predicate, `"PART"` selects which packed half is addressed, and `%result` is the transformed predicate.
+- ISA family:
+  `PUNPACK`
 - semantics:
-  Models physical ISA `PUNPACK`; expands a packed predicate representation according to `PART`.
+  Expands a packed predicate representation according to `PART`.
 - CCE correspondence:
   `punpack(...)`
 
@@ -982,8 +1080,10 @@ Builtin naming policy in this document:
   `%result = pto.vabs %input : !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%input` is the source vector and `%result` is the transformed vector result.
+- ISA family:
+  `VABS`
 - semantics:
-  Models physical ISA `VABS`; applies lane-wise absolute value to the input vector.
+  Applies lane-wise absolute value to the input vector.
 - CCE correspondence:
   `vabs(...)`
   `__builtin_cce_vabs_*`
@@ -994,8 +1094,10 @@ Builtin naming policy in this document:
   `%result = pto.vexp %input : !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%input` is the source vector and `%result` is the transformed vector result.
+- ISA family:
+  `VEXP`
 - semantics:
-  Models physical ISA `VEXP`; applies lane-wise exponential to the input vector.
+  Applies lane-wise exponential to the input vector.
 - CCE correspondence:
   `vexp(...)`
   `__builtin_cce_vexp_*`
@@ -1006,8 +1108,10 @@ Builtin naming policy in this document:
   `%result = pto.vln %input : !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%input` is the source vector and `%result` is the transformed vector result.
+- ISA family:
+  `VLN`
 - semantics:
-  Models physical ISA `VLN`; applies lane-wise natural logarithm to the input vector.
+  Applies lane-wise natural logarithm to the input vector.
 - CCE correspondence:
   `vln(...)`
   `__builtin_cce_vln_*`
@@ -1018,8 +1122,10 @@ Builtin naming policy in this document:
   `%result = pto.vsqrt %input : !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%input` is the source vector and `%result` is the transformed vector result.
+- ISA family:
+  `VSQRT`
 - semantics:
-  Models physical ISA `VSQRT`; applies lane-wise square root to the input vector.
+  Applies lane-wise square root to the input vector.
 - CCE correspondence:
   `vsqrt(...)`
   `__builtin_cce_vsqrt_*`
@@ -1030,8 +1136,10 @@ Builtin naming policy in this document:
   `%result = pto.vrec %input : !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%input` is the source vector and `%result` is the transformed vector result.
+- ISA family:
+  `VREC`
 - semantics:
-  Models physical ISA `VREC`; applies lane-wise reciprocal to the input vector.
+  Applies lane-wise reciprocal to the input vector.
 - CCE correspondence:
   `vrec(...)`
   `__builtin_cce_vrec_*`
@@ -1042,8 +1150,10 @@ Builtin naming policy in this document:
   `%result = pto.vrelu %input : !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%input` is the source vector and `%result` is the transformed vector result.
+- ISA family:
+  `VRELU`
 - semantics:
-  Models physical ISA `VRELU`; applies lane-wise rectified-linear activation to the input vector.
+  Applies lane-wise rectified-linear activation to the input vector.
 - CCE correspondence:
   `vrelu(...)`
   `__builtin_cce_vrelu_*`
@@ -1054,8 +1164,10 @@ Builtin naming policy in this document:
   `%result = pto.vnot %input : !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%input` is the source vector and `%result` is the transformed vector result.
+- ISA family:
+  `VNOT`
 - semantics:
-  Models physical ISA `VNOT`; applies lane-wise bitwise logical inversion to the input vector.
+  Applies lane-wise bitwise logical inversion to the input vector.
 - CCE correspondence:
   `vnot(...)`
   `__builtin_cce_vnot_*`
@@ -1066,8 +1178,10 @@ Builtin naming policy in this document:
   `%result = pto.vcadd %input : !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%input` is the source vector and `%result` is the transformed vector result.
+- ISA family:
+  `VCADD`
 - semantics:
-  Models physical ISA `VCADD`; performs the physical reduction-add operation within each hardware reduction group and returns the vector-shaped partial results.
+  Performs reduction-add within each ISA reduction group and returns the vector-shaped partial results.
 - CCE correspondence:
   `vcadd(...)`
   `__builtin_cce_vcadd_*`
@@ -1078,8 +1192,10 @@ Builtin naming policy in this document:
   `%result = pto.vcmax %input : !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%input` is the source vector and `%result` is the transformed vector result.
+- ISA family:
+  `VCMAX`
 - semantics:
-  Models physical ISA `VCMAX`; performs the physical reduction-max operation within each hardware reduction group and returns the vector-shaped partial results.
+  Performs reduction-max within each ISA reduction group and returns the vector-shaped partial results.
 - CCE correspondence:
   `vcmax(...)`
   `__builtin_cce_vcmax_*`
@@ -1090,8 +1206,10 @@ Builtin naming policy in this document:
   `%result = pto.vcmin %input : !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%input` is the source vector and `%result` is the transformed vector result.
+- ISA family:
+  `VCMIN`
 - semantics:
-  Models physical ISA `VCMIN`; performs the physical reduction-min operation within each hardware reduction group and returns the vector-shaped partial results.
+  Performs reduction-min within each ISA reduction group and returns the vector-shaped partial results.
 - CCE correspondence:
   `vcmin(...)`
   `__builtin_cce_vcmin_*`
@@ -1102,8 +1220,10 @@ Builtin naming policy in this document:
   `%result = pto.vbcnt %input : !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%input` is the source vector and `%result` is the transformed vector result.
+- ISA family:
+  `VBCNT`
 - semantics:
-  Models physical ISA `VBCNT`; computes the lane-wise bit population count.
+  Computes the lane-wise bit population count.
 - CCE correspondence:
   `vbcnt(...)`
   `__builtin_cce_vbcnt_*`
@@ -1114,8 +1234,10 @@ Builtin naming policy in this document:
   `%result = pto.vcls %input : !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%input` is the source vector and `%result` is the transformed vector result.
+- ISA family:
+  `VCLS`
 - semantics:
-  Models physical ISA `VCLS`; computes the lane-wise count of leading sign bits.
+  Computes the lane-wise count of leading sign bits.
 - CCE correspondence:
   `vcls(...)`
   `__builtin_cce_vcls_*`
@@ -1128,8 +1250,10 @@ Builtin naming policy in this document:
   `%result = pto.vadd %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%lhs` is the first source vector, `%rhs` is the second source vector, and `%result` is the computed vector result.
+- ISA family:
+  `VADD`
 - semantics:
-  Models physical ISA `VADD`; computes lane-wise addition of `%lhs` and `%rhs`.
+  Computes lane-wise addition of `%lhs` and `%rhs`.
 - CCE correspondence:
   `vadd(...)`
   `__builtin_cce_vadd_*`
@@ -1140,8 +1264,10 @@ Builtin naming policy in this document:
   `%result = pto.vsub %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%lhs` is the first source vector, `%rhs` is the second source vector, and `%result` is the computed vector result.
+- ISA family:
+  `VSUB`
 - semantics:
-  Models physical ISA `VSUB`; computes lane-wise subtraction of `%rhs` from `%lhs`.
+  Computes lane-wise subtraction of `%rhs` from `%lhs`.
 - CCE correspondence:
   `vsub(...)`
   `__builtin_cce_vsub_*`
@@ -1152,8 +1278,10 @@ Builtin naming policy in this document:
   `%result = pto.vmul %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%lhs` is the first source vector, `%rhs` is the second source vector, and `%result` is the computed vector result.
+- ISA family:
+  `VMUL`
 - semantics:
-  Models physical ISA `VMUL`; computes lane-wise multiplication of `%lhs` and `%rhs`.
+  Computes lane-wise multiplication of `%lhs` and `%rhs`.
 - CCE correspondence:
   `vmul(...)`
   `__builtin_cce_vmul_*`
@@ -1164,8 +1292,10 @@ Builtin naming policy in this document:
   `%result = pto.vdiv %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%lhs` is the first source vector, `%rhs` is the second source vector, and `%result` is the computed vector result.
+- ISA family:
+  `VDIV`
 - semantics:
-  Models physical ISA `VDIV`; computes lane-wise division of `%lhs` by `%rhs`.
+  Computes lane-wise division of `%lhs` by `%rhs`.
 - CCE correspondence:
   `vdiv(...)`
   `__builtin_cce_vdiv_*`
@@ -1176,8 +1306,10 @@ Builtin naming policy in this document:
   `%result = pto.vmax %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%lhs` is the first source vector, `%rhs` is the second source vector, and `%result` is the computed vector result.
+- ISA family:
+  `VMAX`
 - semantics:
-  Models physical ISA `VMAX`; computes the lane-wise maximum of `%lhs` and `%rhs`.
+  Computes the lane-wise maximum of `%lhs` and `%rhs`.
 - CCE correspondence:
   `vmax(...)`
   `__builtin_cce_vmax_*`
@@ -1188,8 +1320,10 @@ Builtin naming policy in this document:
   `%result = pto.vmin %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%lhs` is the first source vector, `%rhs` is the second source vector, and `%result` is the computed vector result.
+- ISA family:
+  `VMIN`
 - semantics:
-  Models physical ISA `VMIN`; computes the lane-wise minimum of `%lhs` and `%rhs`.
+  Computes the lane-wise minimum of `%lhs` and `%rhs`.
 - CCE correspondence:
   `vmin(...)`
   `__builtin_cce_vmin_*`
@@ -1200,8 +1334,10 @@ Builtin naming policy in this document:
   `%result = pto.vand %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%lhs` is the first source vector, `%rhs` is the second source vector, and `%result` is the computed vector result.
+- ISA family:
+  `VAND`
 - semantics:
-  Models physical ISA `VAND`; computes lane-wise bitwise AND of `%lhs` and `%rhs`.
+  Computes lane-wise bitwise AND of `%lhs` and `%rhs`.
 - CCE correspondence:
   `vand(...)`
   `__builtin_cce_vand_*`
@@ -1212,8 +1348,10 @@ Builtin naming policy in this document:
   `%result = pto.vor %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%lhs` is the first source vector, `%rhs` is the second source vector, and `%result` is the computed vector result.
+- ISA family:
+  `VOR`
 - semantics:
-  Models physical ISA `VOR`; computes lane-wise bitwise OR of `%lhs` and `%rhs`.
+  Computes lane-wise bitwise OR of `%lhs` and `%rhs`.
 - CCE correspondence:
   `vor(...)`
   `__builtin_cce_vor_*`
@@ -1224,8 +1362,10 @@ Builtin naming policy in this document:
   `%result = pto.vxor %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%lhs` is the first source vector, `%rhs` is the second source vector, and `%result` is the computed vector result.
+- ISA family:
+  `VXOR`
 - semantics:
-  Models physical ISA `VXOR`; computes lane-wise bitwise XOR of `%lhs` and `%rhs`.
+  Computes lane-wise bitwise XOR of `%lhs` and `%rhs`.
 - CCE correspondence:
   `vxor(...)`
   `__builtin_cce_vxor_*`
@@ -1236,8 +1376,10 @@ Builtin naming policy in this document:
   `%result = pto.vshl %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%lhs` is the first source vector, `%rhs` is the second source vector, and `%result` is the computed vector result.
+- ISA family:
+  `VSHL`
 - semantics:
-  Models physical ISA `VSHL`; shifts each lane of `%lhs` left by the amount carried in the corresponding `%rhs` lane.
+  Shifts each lane of `%lhs` left by the amount carried in the corresponding `%rhs` lane.
 - CCE correspondence:
   `vshl(...)`
   `__builtin_cce_vshl_*`
@@ -1248,8 +1390,10 @@ Builtin naming policy in this document:
   `%result = pto.vshr %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%lhs` is the first source vector, `%rhs` is the second source vector, and `%result` is the computed vector result.
+- ISA family:
+  `VSHR`
 - semantics:
-  Models physical ISA `VSHR`; shifts each lane of `%lhs` right by the amount carried in the corresponding `%rhs` lane.
+  Shifts each lane of `%lhs` right by the amount carried in the corresponding `%rhs` lane.
 - CCE correspondence:
   `vshr(...)`
   `__builtin_cce_vshr_*`
@@ -1262,8 +1406,10 @@ Builtin naming policy in this document:
   `%result = pto.vmuls %input, %scalar : !pto.vreg<NxT>, T -> !pto.vreg<NxT>`
 - operand roles:
   `%input` is the source vector, `%scalar` is the scalar operand applied to every lane, and `%result` is the computed vector result.
+- ISA family:
+  `VMULS`
 - semantics:
-  Models physical ISA `VMULS`; multiplies each input lane by the scalar operand.
+  Multiplies each input lane by the scalar operand.
 - CCE correspondence:
   `vmuls(...)`
   `__builtin_cce_vmuls_*`
@@ -1274,8 +1420,10 @@ Builtin naming policy in this document:
   `%result = pto.vadds %input, %scalar : !pto.vreg<NxT>, T -> !pto.vreg<NxT>`
 - operand roles:
   `%input` is the source vector, `%scalar` is the scalar operand applied to every lane, and `%result` is the computed vector result.
+- ISA family:
+  `VADDS`
 - semantics:
-  Models physical ISA `VADDS`; adds the scalar operand to each input lane.
+  Adds the scalar operand to each input lane.
 - CCE correspondence:
   `vadds(...)`
   `__builtin_cce_vadds_*`
@@ -1286,8 +1434,10 @@ Builtin naming policy in this document:
   `%result = pto.vmaxs %input, %scalar : !pto.vreg<NxT>, T -> !pto.vreg<NxT>`
 - operand roles:
   `%input` is the source vector, `%scalar` is the scalar operand applied to every lane, and `%result` is the computed vector result.
+- ISA family:
+  `VMAXS`
 - semantics:
-  Models physical ISA `VMAXS`; computes the lane-wise maximum of the input vector and the scalar operand.
+  Computes the lane-wise maximum of the input vector and the scalar operand.
 - CCE correspondence:
   `vmaxs(...)`
   `__builtin_cce_vmaxs_*`
@@ -1298,8 +1448,10 @@ Builtin naming policy in this document:
   `%result = pto.vmins %input, %scalar : !pto.vreg<NxT>, T -> !pto.vreg<NxT>`
 - operand roles:
   `%input` is the source vector, `%scalar` is the scalar operand applied to every lane, and `%result` is the computed vector result.
+- ISA family:
+  `VMINS`
 - semantics:
-  Models physical ISA `VMINS`; computes the lane-wise minimum of the input vector and the scalar operand.
+  Computes the lane-wise minimum of the input vector and the scalar operand.
 - CCE correspondence:
   `vmins(...)`
   `__builtin_cce_vmins_*`
@@ -1310,8 +1462,10 @@ Builtin naming policy in this document:
   `%result = pto.vlrelu %input, %scalar : !pto.vreg<NxT>, T -> !pto.vreg<NxT>`
 - operand roles:
   `%input` is the source vector, `%scalar` is the scalar operand applied to every lane, and `%result` is the computed vector result.
+- ISA family:
+  `VLRELU`
 - semantics:
-  Models physical ISA `VLRELU`; applies a leaky-ReLU style lane-wise transform using the scalar slope operand.
+  Applies a leaky-ReLU style lane-wise transform using the scalar slope operand.
 - CCE correspondence:
   `vlrelu(...)`
   `__builtin_cce_vlrelu_*`
@@ -1322,8 +1476,10 @@ Builtin naming policy in this document:
   `%result = pto.vshls %input, %scalar : !pto.vreg<NxT>, T -> !pto.vreg<NxT>`
 - operand roles:
   `%input` is the source vector, `%scalar` is the scalar operand applied to every lane, and `%result` is the computed vector result.
+- ISA family:
+  `VSHLS`
 - semantics:
-  Models physical ISA `VSHLS`; shifts each input lane left by the scalar shift amount.
+  Shifts each input lane left by the scalar shift amount.
 - CCE correspondence:
   `vshls(...)`
   `__builtin_cce_vshls_*`
@@ -1334,13 +1490,22 @@ Builtin naming policy in this document:
   `%result = pto.vshrs %input, %scalar : !pto.vreg<NxT>, T -> !pto.vreg<NxT>`
 - operand roles:
   `%input` is the source vector, `%scalar` is the scalar operand applied to every lane, and `%result` is the computed vector result.
+- ISA family:
+  `VSHRS`
 - semantics:
-  Models physical ISA `VSHRS`; shifts each input lane right by the scalar shift amount.
+  Shifts each input lane right by the scalar shift amount.
 - CCE correspondence:
   `vshrs(...)`
   `__builtin_cce_vshrs_*`
 
 ## 9. Carry, Compare And Select
+
+ISA assertions for this family:
+
+- Predicate-gated arithmetic uses the supplied predicate as the active-lane mask.
+- Comparison results are predicates, not integer vectors.
+- Comparison families use zeroing semantics for inactive destination lanes.
+
 
 ### `pto.vaddc`
 
@@ -1348,8 +1513,10 @@ Builtin naming policy in this document:
   `%result, %carry = pto.vaddc %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>, !pto.mask`
 - operand roles:
   `%lhs` and `%rhs` are the source vectors, `%mask` is the predicate control, `%result` is the arithmetic result, and `%carry` is the produced carry or borrow predicate.
+- ISA family:
+  `VADDC`
 - semantics:
-  Models physical ISA `VADDC`; performs lane-wise add under `%mask` and returns both the sum vector and the carry-out predicate.
+  Performs lane-wise add under `%mask` and returns both the sum vector and the carry-out predicate.
 - CCE correspondence:
   `vaddc(...)`
   `__builtin_cce_vaddc_*`
@@ -1360,8 +1527,10 @@ Builtin naming policy in this document:
   `%result, %carry = pto.vsubc %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>, !pto.mask`
 - operand roles:
   `%lhs` and `%rhs` are the source vectors, `%mask` is the predicate control, `%result` is the arithmetic result, and `%carry` is the produced carry or borrow predicate.
+- ISA family:
+  `VSUBC`
 - semantics:
-  Models physical ISA `VSUBC`; performs lane-wise subtract under `%mask` and returns both the difference vector and the carry-or-borrow predicate.
+  Performs lane-wise subtract under `%mask` and returns both the difference vector and the carry-or-borrow predicate.
 - CCE correspondence:
   `vsubc(...)`
   `__builtin_cce_vsubc_*`
@@ -1372,8 +1541,10 @@ Builtin naming policy in this document:
   `%result, %carry = pto.vaddcs %lhs, %rhs, %carry_in, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask, !pto.mask -> !pto.vreg<NxT>, !pto.mask`
 - operand roles:
   `%lhs` and `%rhs` are the source vectors, `%carry_in` is the incoming carry or borrow predicate, `%mask` is the predicate control, `%result` is the arithmetic result, and `%carry` is the updated carry or borrow predicate.
+- ISA family:
+  `VADDCS`
 - semantics:
-  Models physical ISA `VADDCS`; performs lane-wise add with carry-in and returns both the sum vector and the updated carry predicate.
+  Performs lane-wise add with carry-in and returns both the sum vector and the updated carry predicate.
 - CCE correspondence:
   `vaddcs(...)`
   `__builtin_cce_vaddcs_*`
@@ -1384,8 +1555,10 @@ Builtin naming policy in this document:
   `%result, %carry = pto.vsubcs %lhs, %rhs, %carry_in, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask, !pto.mask -> !pto.vreg<NxT>, !pto.mask`
 - operand roles:
   `%lhs` and `%rhs` are the source vectors, `%carry_in` is the incoming carry or borrow predicate, `%mask` is the predicate control, `%result` is the arithmetic result, and `%carry` is the updated carry or borrow predicate.
+- ISA family:
+  `VSUBCS`
 - semantics:
-  Models physical ISA `VSUBCS`; performs lane-wise subtract with carry-in and returns both the difference vector and the updated carry-or-borrow predicate.
+  Performs lane-wise subtract with carry-in and returns both the difference vector and the updated carry-or-borrow predicate.
 - CCE correspondence:
   `vsubcs(...)`
   `__builtin_cce_vsubcs_*`
@@ -1396,8 +1569,10 @@ Builtin naming policy in this document:
   `%result = pto.vsel %src0, %src1, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - operand roles:
   `%src0` and `%src1` are the candidate source vectors, `%mask` selects which source each lane takes, and `%result` is the selected vector.
+- ISA family:
+  `VSEL`
 - semantics:
-  Models physical ISA `VSEL`; selects per lane between `%src0` and `%src1` under the control predicate `%mask`.
+  Selects per lane between `%src0` and `%src1` under the control predicate `%mask`.
 - CCE correspondence:
   `vsel(...)`
   `__builtin_cce_vsel_*`
@@ -1408,8 +1583,10 @@ Builtin naming policy in this document:
   `%result = pto.vselr %src0, %src1 : !pto.vreg<NxT>, !pto.vreg<NxI> -> !pto.vreg<NxT>`
 - operand roles:
   `%src0` is the data vector, `%src1` is the integer lane-selector vector, and `%result` is the selected or permuted output vector.
+- ISA family:
+  `VSELR`
 - semantics:
-  Models physical ISA `VSELR`; selects or permutes lanes from `%src0` using the lane indices carried in `%src1`.
+  Selects or permutes lanes from `%src0` using the lane indices carried in `%src1`.
 - CCE correspondence:
   `vselr(...)`
   `__builtin_cce_vselr_*`
@@ -1420,8 +1597,10 @@ Builtin naming policy in this document:
   `%result = pto.vselrv2 %src0, %src1 : !pto.vreg<NxT>, !pto.vreg<NxI> -> !pto.vreg<NxT>`
 - operand roles:
   `%src0` is the data vector, `%src1` is the integer lane-selector vector, and `%result` is the selected or permuted output vector.
+- ISA family:
+  `VSELR v2`
 - semantics:
-  Models the `VSELR` v2 physical form; selects or permutes lanes from `%src0` using the lane indices carried in `%src1`.
+  Selects or permutes lanes from `%src0` using the lane indices carried in `%src1`.
 - CCE correspondence:
   `vselrv2(...)`
   `__builtin_cce_vselrv2_*`
@@ -1432,8 +1611,10 @@ Builtin naming policy in this document:
   `%result = pto.vcmp %src0, %src1, %mask, "CMP_MODE" : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.mask`
 - operand roles:
   `%src0` and `%src1` are the values being compared, `%mask` is the seed predicate or enable mask, `"CMP_MODE"` selects the comparison relation, and `%result` is the produced predicate.
+- ISA family:
+  `VCMP`
 - semantics:
-  Models physical ISA `VCMP`; compares `%src0` and `%src1` lane-wise using `CMP_MODE` and produces a predicate result masked by the seed predicate.
+  For each lane enabled by `%mask`, compares `%src0` and `%src1` using `CMP_MODE` and writes the boolean result into `%result`. Lanes disabled by `%mask` are cleared to zero in the returned predicate.
 - CCE correspondence:
   `vcmp(...)`
   `__builtin_cce_vcmp_<op>_*_z`
@@ -1444,8 +1625,10 @@ Builtin naming policy in this document:
   `%result = pto.vcmps %src, %scalar, %mask, "CMP_MODE" : !pto.vreg<NxT>, T, !pto.mask -> !pto.mask`
 - operand roles:
   `%src` is the vector input, `%scalar` is the scalar comparison value, `%mask` is the seed predicate or enable mask, `"CMP_MODE"` selects the comparison relation, and `%result` is the produced predicate.
+- ISA family:
+  `VCMPS`
 - semantics:
-  Models physical ISA `VCMPS`; compares `%src` against a scalar operand lane-wise using `CMP_MODE` and produces a predicate result masked by the seed predicate.
+  For each lane enabled by `%mask`, compares `%src` against `%scalar` using `CMP_MODE` and writes the boolean result into `%result`. Lanes disabled by `%mask` are cleared to zero in the returned predicate.
 - CCE correspondence:
   `vcmps(...)`
   `__builtin_cce_vcmps_<op>_*_z`
@@ -1456,8 +1639,10 @@ Builtin naming policy in this document:
   `%result = pto.vpnot %input, %mask : !pto.mask, !pto.mask -> !pto.mask`
 - operand roles:
   `%input` is the source predicate, `%mask` is the predicate control, and `%result` is the inverted predicate result.
+- ISA family:
+  `PNOT`
 - semantics:
-  Models physical ISA `PNOT`; inverts predicate bits under the supplied mask.
+  Inverts predicate bits under the supplied mask.
 - CCE correspondence:
   `pnot(...)`
 
@@ -1467,8 +1652,10 @@ Builtin naming policy in this document:
   `%result = pto.vpsel %src0, %src1, %mask : !pto.mask, !pto.mask, !pto.mask -> !pto.mask`
 - operand roles:
   `%src0` and `%src1` are the candidate source predicates, `%mask` selects which predicate each bit takes, and `%result` is the selected predicate.
+- ISA family:
+  `PSEL`
 - semantics:
-  Models physical ISA `PSEL`; selects predicate bits from `%src0` and `%src1` under a predicate control mask.
+  Selects predicate bits from `%src0` and `%src1` under a predicate control mask.
 - CCE correspondence:
   `psel(...)`
 
@@ -1480,8 +1667,10 @@ Builtin naming policy in this document:
   `%low, %high = pto.vpdintlv_b8 %lhs, %rhs : !pto.mask, !pto.mask -> !pto.mask, !pto.mask`
 - operand roles:
   `%lhs` and `%rhs` are the two source predicates, and `%low` plus `%high` are the two predicate results produced by the interleave or deinterleave split.
+- ISA family:
+  `PDINTLV`
 - semantics:
-  Models physical ISA `PDINTLV`; deinterleaves predicate data into low and high predicate results.
+  Deinterleaves predicate data into low and high predicate results.
 - CCE correspondence:
   predicate interleave/deinterleave family
 
@@ -1491,8 +1680,10 @@ Builtin naming policy in this document:
   `%low, %high = pto.vpintlv_b16 %lhs, %rhs : !pto.mask, !pto.mask -> !pto.mask, !pto.mask`
 - operand roles:
   `%lhs` and `%rhs` are the two source predicates, and `%low` plus `%high` are the two predicate results produced by the interleave or deinterleave split.
+- ISA family:
+  `PINTLV`
 - semantics:
-  Models physical ISA `PINTLV`; interleaves predicate data into low and high predicate results.
+  Interleaves predicate data into low and high predicate results.
 - CCE correspondence:
   predicate interleave/deinterleave family
 
@@ -1502,8 +1693,10 @@ Builtin naming policy in this document:
   `%low, %high = pto.vintlv %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>, !pto.vreg<NxT>`
 - operand roles:
   `%lhs` and `%rhs` are the two source vectors, and `%low` plus `%high` are the two vector results produced by the interleave or deinterleave split.
+- ISA family:
+  `VINTLV`
 - semantics:
-  Models physical ISA `VINTLV`; interleaves vector lanes from `%lhs` and `%rhs` into low and high result vectors.
+  Interleaves vector lanes from `%lhs` and `%rhs` into low and high result vectors.
 - CCE correspondence:
   `vintlv(...)`
   `__builtin_cce_vintlv_*`
@@ -1514,8 +1707,10 @@ Builtin naming policy in this document:
   `%low, %high = pto.vdintlv %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>, !pto.vreg<NxT>`
 - operand roles:
   `%lhs` and `%rhs` are the two source vectors, and `%low` plus `%high` are the two vector results produced by the interleave or deinterleave split.
+- ISA family:
+  `VDINTLV`
 - semantics:
-  Models physical ISA `VDINTLV`; deinterleaves vector lanes from `%lhs` and `%rhs` into low and high result vectors.
+  Deinterleaves vector lanes from `%lhs` and `%rhs` into low and high result vectors.
 - CCE correspondence:
   `vdintlv(...)`
   `__builtin_cce_vdintlv_*`
@@ -1525,9 +1720,11 @@ Builtin naming policy in this document:
 - syntax:
   `%result = pto.vintlvv2 %lhs, %rhs, "PART" : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
-  `%lhs` and `%rhs` are the two source vectors, `"PART"` selects which half of the physical lane stream is returned, and `%result` is the selected vector result.
+  `%lhs` and `%rhs` are the two source vectors, `"PART"` selects which half of the interleaved lane stream is returned, and `%result` is the selected vector result.
+- ISA family:
+  `VINTLV v2`
 - semantics:
-  Models the `VINTLV` v2 physical form; returns the selected `PART` of the interleaved lane stream.
+  Returns the selected `PART` of the interleaved lane stream.
 - CCE correspondence:
   `vintlvv2(...)`
   `__builtin_cce_vintlvv2_*`
@@ -1537,14 +1734,24 @@ Builtin naming policy in this document:
 - syntax:
   `%result = pto.vdintlvv2 %lhs, %rhs, "PART" : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
-  `%lhs` and `%rhs` are the two source vectors, `"PART"` selects which half of the physical lane stream is returned, and `%result` is the selected vector result.
+  `%lhs` and `%rhs` are the two source vectors, `"PART"` selects which half of the deinterleaved lane stream is returned, and `%result` is the selected vector result.
+- ISA family:
+  `VDINTLV v2`
 - semantics:
-  Models the `VDINTLV` v2 physical form; returns the selected `PART` of the deinterleaved lane stream.
+  Returns the selected `PART` of the deinterleaved lane stream.
 - CCE correspondence:
   `vdintlvv2(...)`
   `__builtin_cce_vdintlvv2_*`
 
 ## 11. Conversion, Index And Sort
+
+ISA assertions for this family:
+
+- For width-changing conversions, predication is applied to input lanes and is composed with part-selection controls such as even/odd or packed-part selectors.
+- Narrowing conversions place results into the selected destination part and zero the remaining part of the widened slot.
+- Widening conversions read only the selected source part; the unselected part is architecturally ignored.
+- Sort families operate on UB-resident proposal data and preserve the ISA tie-break rule that lower original indices win on equal scores.
+
 
 ### `pto.vtrc`
 
@@ -1552,8 +1759,10 @@ Builtin naming policy in this document:
   `%result = pto.vtrc %input, "ROUND_MODE" : !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - operand roles:
   `%input` is the source vector, `"ROUND_MODE"` selects the rounding behavior, and `%result` is the converted vector result.
+- ISA family:
+  `VTRC`
 - semantics:
-  Models physical ISA `VTRC`; rounds each lane according to `ROUND_MODE` and returns the truncated converted result.
+  Rounds each input lane according to `ROUND_MODE` and returns the truncated converted result. The rounding mode is part of the ISA-visible semantics, not a lowering hint.
 - CCE correspondence:
   `vtrc(...)`
   `__builtin_cce_vtrc_*`
@@ -1563,9 +1772,11 @@ Builtin naming policy in this document:
 - syntax:
   `%result = pto.vcvt %input {round_mode = "ROUND_MODE", sat = "SAT_MODE", part = "PART_MODE"} : !pto.vreg<NxT0> -> !pto.vreg<NxT1>`
 - operand roles:
-  `%input` is the source vector, `"ROUND_MODE"` selects the rounding behavior, `"SAT_MODE"` selects saturation or truncation behavior, `"PART_MODE"` selects the even or odd conversion part when required by the physical form, and `%result` is the converted vector result.
+  `%input` is the source vector, `"ROUND_MODE"` selects the rounding behavior, `"SAT_MODE"` selects saturation or truncation behavior, `"PART_MODE"` selects the even or odd conversion part when required by the ISA form, and `%result` is the converted vector result.
+- ISA family:
+  `VCVTFI` / `VCVTFF` / `VCVTIF` / `VCVTII`
 - semantics:
-  Models the physical conversion family `VCVTFI` / `VCVTFF` / `VCVTIF` / `VCVTII`; converts each lane under the requested rounding, saturation, and part controls.
+  Converts `%input` lane-wise according to the source type, destination type, rounding rule, saturation rule, and part-selection rule encoded by the op form. Width-changing forms consume only the selected source part or produce only the selected destination part exactly as required by the ISA conversion family.
 - CCE correspondence:
   `vcvt(...)`
   builtin families:
@@ -1577,8 +1788,10 @@ Builtin naming policy in this document:
   `%result = pto.vci %index {order = "ORDER"} : integer -> !pto.vreg<NxT>`
 - operand roles:
   `%index` is the scalar seed or base index value, `"ORDER"` selects the lane-index ordering policy, and `%result` is the generated integer index vector.
+- ISA family:
+  `VCI`
 - semantics:
-  Models physical ISA `VCI`; materializes lane indices from the scalar seed value using the selected ordering policy.
+  Materializes lane indices from the scalar seed value using the selected ordering policy.
 - CCE correspondence:
   `vci(...)`
   `__builtin_cce_vci_*`
@@ -1589,8 +1802,10 @@ Builtin naming policy in this document:
   `pto.vbitsort %destination, %source, %indices, %repeat_times : !llvm.ptr<AS>, !llvm.ptr<AS>, !llvm.ptr<AS>, index`
 - operand roles:
   `%destination` is the UB output buffer, `%source` is the UB score buffer, `%indices` is the UB index buffer, and `%repeat_times` is the repeat count for consecutive sort invocations.
+- ISA family:
+  `VBS32`
 - semantics:
-  Models physical ISA `VBS32`; sorts score/index proposal data in UB and writes the sorted structure stream to `%destination`.
+  Sorts the proposal records named by `%source` and `%indices` and writes the ordered result stream to `%destination`. `repeat_times` controls how many consecutive sort iterations are performed, equal scores are ordered by lower original proposal index first, and the destination region must not overlap the source regions.
 - CCE correspondence:
   `vbitsort(...)`
   `__builtin_cce_vbitsort_*`
@@ -1600,9 +1815,11 @@ Builtin naming policy in this document:
 - syntax:
   `pto.vmrgsort4 %destination, %source0, %source1, %source2, %source3, %count, %config : !llvm.ptr<AS>, !llvm.ptr<AS>, !llvm.ptr<AS>, !llvm.ptr<AS>, !llvm.ptr<AS>, i64, i64`
 - operand roles:
-  `%destination` is the UB output buffer, `%source0` through `%source3` are the four UB input list bases, `%count` is the total work or encoded list-count payload, and `%config` is the physical merge-sort configuration word.
+  `%destination` is the UB output buffer, `%source0` through `%source3` are the four UB input list bases, `%count` is the total work or encoded list-count payload, and `%config` is the ISA merge-sort configuration word.
+- ISA family:
+  `VMS4v2`
 - semantics:
-  Models physical ISA `VMS4v2`; merges four already-sorted proposal lists into one sorted output stream in UB.
+  Merges four sorted proposal lists from UB into one sorted output stream. On equal scores, entries from the lower-numbered input list win; `%config` controls repeat and exhausted-input behavior; and source and destination regions must satisfy the ISA non-overlap rules.
 - CCE correspondence:
   `vmrgsort4(...)`
   `__builtin_cce_vmrgsort4_*`
@@ -1615,8 +1832,10 @@ Builtin naming policy in this document:
   `%low, %high = pto.vmull %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>, !pto.vreg<NxT>`
 - operand roles:
   `%lhs` and `%rhs` are the source vectors, `%mask` is the predicate control, and `%low` plus `%high` are the split widened product results.
+- ISA family:
+  `VMULL`
 - semantics:
-  Models physical ISA `VMULL`; multiplies lanes under `%mask` and returns the widened product split across low and high result vectors.
+  Multiplies lanes under `%mask` and returns the widened product split across low and high result vectors.
 - CCE correspondence:
   `vmull(...)`
   `__builtin_cce_vmull_*`
@@ -1627,22 +1846,33 @@ Builtin naming policy in this document:
   `%result = pto.vmula %acc, %lhs, %rhs, %mask {mode = "MODE"} : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - operand roles:
   `%acc` is the accumulator input, `%lhs` and `%rhs` are the multiplicands, `%mask` is the predicate control, `"MODE"` selects merging or zeroing behavior, and `%result` is the accumulated vector result.
+- ISA family:
+  `VMULA`
 - semantics:
-  Models physical ISA `VMULA`; performs masked vector multiply-accumulate into `%acc`, with `mode` controlling the merge or zeroing behavior.
+  Performs masked vector multiply-accumulate into `%acc`, with `mode` controlling the merge or zeroing behavior.
 - CCE correspondence:
   `vmula(...)`
   `__builtin_cce_vmula_*_m`
 
 ## 13. Stateless Stores
 
+ISA assertions for this family:
+
+- These ops write to UB-backed storage and must satisfy the distribution-specific destination-alignment rules defined by the ISA family.
+- ISA forms that can post-update a shared register are represented here only as addressed stores; hidden pointer mutation is not part of these stateless forms.
+- Predicate-store data is architecturally `b8`, regardless of the scalar element type used by surrounding vector code.
+
+
 ### `pto.vsts`
 
 - syntax:
   `pto.vsts %value, %destination[%offset] {dist = "DIST"} : !pto.vreg<NxT>, !llvm.ptr<AS>`
 - operand roles:
-  `%value` is the vector being stored, `%destination` is the UB base pointer, `%offset` is the store displacement, and `"DIST"` selects the physical store distribution mode.
+  `%value` is the vector being stored, `%destination` is the UB base pointer, `%offset` is the store displacement, and `"DIST"` selects the ISA store distribution mode.
+- ISA family:
+  `VST` / `VSTI` / `VSTS`
 - semantics:
-  Models the physical store family `VST` / `VSTI` / `VSTS`; stores one vector to UB at `destination + offset` using the selected distribution mode.
+  Stores `%value` to UB at `destination + offset` using the store form selected by `DIST`. The distribution token determines the destination lane layout and alignment requirement of the access.
 - CCE correspondence:
   `vst(...)`, `vsts(...)`
   `__builtin_cce_vstx1_*`, `__builtin_cce_vstsx1_*`
@@ -1653,8 +1883,10 @@ Builtin naming policy in this document:
   `pto.vscatter %value, %destination, %offsets, %active_lanes : !pto.vreg<NxT>, !llvm.ptr<AS>, !pto.vreg<NxI>, index`
 - operand roles:
   `%value` is the vector being scattered, `%destination` is the UB base pointer, `%offsets` is the per-lane offset vector, and `%active_lanes` bounds how many lanes participate.
+- ISA family:
+  `VSCATTER`
 - semantics:
-  Models physical ISA `VSCATTER`; scatters active vector lanes to UB addresses derived from `%destination` and `%offsets`.
+  Scatters active vector lanes to UB addresses derived from `%destination` and `%offsets`.
 - CCE correspondence:
   `vscatter(...)`
   `__builtin_cce_vscatter_*`
@@ -1664,9 +1896,11 @@ Builtin naming policy in this document:
 - syntax:
   `pto.vsts_pred %value, %destination[%offset], %active_lanes {dist = "DIST"} : !pto.vreg<NxT>, !llvm.ptr<AS>, index`
 - operand roles:
-  `%value` is the vector being stored, `%destination` is the UB base pointer, `%offset` is the store displacement, `%active_lanes` bounds the active prefix, and `"DIST"` selects the physical store distribution mode.
+  `%value` is the vector being stored, `%destination` is the UB base pointer, `%offset` is the store displacement, `%active_lanes` bounds the active prefix, and `"DIST"` selects the ISA store distribution mode.
+- ISA family:
+  `Predicated vector-store helper family`
 - semantics:
-  Models the predicated physical vector-store form used by the backend masked-store path; stores only the active prefix described by `%active_lanes` and `DIST`.
+  Stores only the active prefix of `%value` selected by `%active_lanes`, using the layout and alignment rules implied by `DIST`. Lanes outside the active prefix do not update memory.
 - CCE correspondence:
   predicated vector store family
 
@@ -1676,8 +1910,10 @@ Builtin naming policy in this document:
   `pto.vpsts %value, %destination[%offset] : !pto.mask, !llvm.ptr<AS>`
 - operand roles:
   `%value` is the predicate being stored, `%destination` is the UB base pointer, and `%offset` is the store displacement.
+- ISA family:
+  `PSTS`
 - semantics:
-  Models physical ISA `PSTS`; stores predicate state to UB at `destination + offset`.
+  Stores predicate state to UB at `destination + offset`.
 - CCE correspondence:
   `psts(...)`
   `__builtin_cce_psts_b8`, `__builtin_cce_psts_post_b8`
@@ -1688,8 +1924,10 @@ Builtin naming policy in this document:
   `pto.vpst %value, %destination[%offset], "DIST" : !pto.mask, !llvm.ptr<AS>, index`
 - operand roles:
   `%value` is the predicate being stored, `%destination` is the UB base pointer, `%offset` is the store displacement, and `"DIST"` selects the predicate-store distribution token.
+- ISA family:
+  `PST`
 - semantics:
-  Models physical ISA `PST`; stores predicate state to UB using an explicit index offset and predicate-store distribution token.
+  Stores predicate state to UB using an explicit index offset and predicate-store distribution token.
 - CCE correspondence:
   `pst(...)`
   `__builtin_cce_pst_b8`
@@ -1700,8 +1938,10 @@ Builtin naming policy in this document:
   `pto.vpsti %value, %destination, %offset, "DIST" : !pto.mask, !llvm.ptr<AS>, i32`
 - operand roles:
   `%value` is the predicate being stored, `%destination` is the UB base pointer, `%offset` is the scalar displacement, and `"DIST"` selects the predicate-store distribution token.
+- ISA family:
+  `PSTI`
 - semantics:
-  Models physical ISA `PSTI`; stores predicate state to UB using an immediate-style scalar offset and predicate-store distribution token.
+  Stores predicate state to UB using an immediate-style scalar offset and predicate-store distribution token.
 - CCE correspondence:
   `psti(...)`
   `__builtin_cce_psti_b8`, `__builtin_cce_psti_post_b8`
@@ -1711,9 +1951,11 @@ Builtin naming policy in this document:
 - syntax:
   `pto.vsst %value, %destination[%offset], "STRIDE" : !pto.vreg<NxT>, !llvm.ptr<AS>`
 - operand roles:
-  `%value` is the vector being stored, `%destination` is the UB base pointer, `%offset` is the store displacement, and `"STRIDE"` selects the physical strided-store token.
+  `%value` is the vector being stored, `%destination` is the UB base pointer, `%offset` is the store displacement, and `"STRIDE"` selects the ISA strided-store token.
+- ISA family:
+  `VSST`
 - semantics:
-  Models physical ISA `VSST`; stores vector data to UB using a stride token rather than a regular contiguous distribution.
+  Stores vector data to UB using a stride token rather than a regular contiguous distribution.
 - CCE correspondence:
   `vsst(...)`
   `__builtin_cce_vsst_*`
@@ -1724,8 +1966,10 @@ Builtin naming policy in this document:
   `pto.vstx2 %low, %high, %destination[%offset], "DIST", %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !llvm.ptr<AS>, index, !pto.mask`
 - operand roles:
   `%low` and `%high` are the two source vectors being stored, `%destination` is the UB base pointer, `%offset` is the store displacement, `"DIST"` selects the x2 store distribution token, and `%mask` is the predicate control.
+- ISA family:
+  `VST x2`
 - semantics:
-  Models the dual-result physical vector-store form; writes `%low` and `%high` to UB according to the selected x2 distribution and predicate mask.
+  Stores `%low` and `%high` to UB as one x2 store operation. `DIST` determines how the two source vectors are interleaved into memory, and `%mask` gates which lanes update memory.
 - CCE correspondence:
   `vst(...)`
   `__builtin_cce_vstx2_*`
@@ -1736,8 +1980,10 @@ Builtin naming policy in this document:
   `pto.vsstb %value, %destination, %offset, %mask : !pto.vreg<NxT>, !llvm.ptr<AS>, i32, !pto.mask`
 - operand roles:
   `%value` is the vector being stored, `%destination` is the UB base pointer, `%offset` is the scalar displacement, and `%mask` is the predicate control.
+- ISA family:
+  `VSSTB`
 - semantics:
-  Models physical ISA `VSSTB`; performs a masked strided vector store using a scalar offset and predicate mask.
+  Performs a masked strided vector store using a scalar offset and predicate mask.
 - CCE correspondence:
   `vsstb(...)`
   `__builtin_cce_vsstb_*`, `__builtin_cce_vsstb_post_*`
@@ -1748,8 +1994,10 @@ Builtin naming policy in this document:
   `pto.vsta %value, %destination[%offset] : !pto.align, !llvm.ptr<AS>, index`
 - operand roles:
   `%value` is the align payload being stored, `%destination` is the UB base pointer, and `%offset` is the store displacement.
+- ISA family:
+  `VSTA`
 - semantics:
-  Models physical ISA `VSTA`; stores align-state payload to UB at `destination + offset`.
+  Stores align-state payload to UB at `destination + offset`.
 - CCE correspondence:
   `vsta(...)`
   `__builtin_cce_vsta_*`
@@ -1760,8 +2008,10 @@ Builtin naming policy in this document:
   `pto.vstas %value, %destination, %offset : !pto.align, !llvm.ptr<AS>, i32`
 - operand roles:
   `%value` is the align payload being stored, `%destination` is the UB base pointer, and `%offset` is the scalar displacement.
+- ISA family:
+  `VSTAS`
 - semantics:
-  Models physical ISA `VSTAS`; stores align-state payload to UB using a scalar offset form.
+  Stores align-state payload to UB using a scalar offset form.
 - CCE correspondence:
   `vstas(...)`
   `__builtin_cce_vstas_*`, `__builtin_cce_vstas_post_*`
@@ -1772,15 +2022,24 @@ Builtin naming policy in this document:
   `pto.vstar %value, %destination : !pto.align, !llvm.ptr<AS>`
 - operand roles:
   `%value` is the align payload being stored and `%destination` is the base pointer used by the register-update store form.
+- ISA family:
+  `VSTAR`
 - semantics:
-  Models physical ISA `VSTAR`; stores align-state payload using the base pointer carried directly by `%destination`.
+  Stores align-state payload using the base pointer carried directly by `%destination`.
 - CCE correspondence:
   `vstar(...)`
   `__builtin_cce_vstar_*`
 
 ## 14. Stateful Store Ops
 
-These ops make CCE reference-updated state explicit as SSA results.
+ISA assertions for this family:
+
+- These ops expose the ISA's hidden align-register and address-update effects as explicit SSA results.
+- `"MODE"` determines whether the underlying ISA performs post-update or preserves the incoming base state.
+- Correct programs thread the returned align or base state into the next dependent stateful store on the same logical stream.
+
+
+These ops make ISA reference-updated state explicit as SSA results.
 
 ### `pto.vpstu`
 
@@ -1788,8 +2047,10 @@ These ops make CCE reference-updated state explicit as SSA results.
   `%align_out, %base_out = pto.vpstu %align_in, %value, %base : !pto.align, !pto.mask, !llvm.ptr<AS> -> !pto.align, !llvm.ptr<AS>`
 - operand roles:
   `%align_in` is the incoming align state, `%value` is the predicate being stored, `%base` is the current base pointer, `%align_out` is the updated align state, and `%base_out` is the updated base pointer.
+- ISA family:
+  `PSTU`
 - semantics:
-  Models physical ISA `PSTU`; stores predicate state and returns the updated align/base state that the physical ISA would otherwise mutate implicitly.
+  Stores predicate data through the stateful predicate-store form and returns the align state and base pointer state after the store. The returned state is the exact architected successor state for the next dependent store in the same stream.
 - CCE correspondence:
   `pstu(...)`
   `__builtin_cce_pstu_b16`, `__builtin_cce_pstu_b32`
@@ -1800,8 +2061,10 @@ These ops make CCE reference-updated state explicit as SSA results.
   `%align_out, %offset_out = pto.vstu %align_in, %offset_in, %value, %base, "MODE" : !pto.align, index, !pto.vreg<NxT>, !llvm.ptr<AS> -> !pto.align, index`
 - operand roles:
   `%align_in` is the incoming align state, `%offset_in` is the current index displacement, `%value` is the vector being stored, `%base` is the current base pointer, `"MODE"` selects post-update behavior, `%align_out` is the updated align state, and `%offset_out` is the updated index displacement.
+- ISA family:
+  `VSTU`
 - semantics:
-  Models physical ISA `VSTU` / `VSTUI`; stores vector data with explicit align and offset threading, returning the updated align and offset state.
+  Stores `%value` through the stateful unaligned-store form addressed by `%base` and `%offset_in`, then returns the successor align state and successor index displacement. If `MODE` is `POST_UPDATE`, `%offset_out` is the ISA-updated displacement; if `MODE` is `NO_POST_UPDATE`, `%offset_out` preserves the incoming displacement.
 - CCE correspondence:
   `vstu(...)`
   `__builtin_cce_vstu_*`
@@ -1812,8 +2075,10 @@ These ops make CCE reference-updated state explicit as SSA results.
   `%align_out, %base_out = pto.vstus %align_in, %offset, %value, %base, "MODE" : !pto.align, i32, !pto.vreg<NxT>, !llvm.ptr<AS> -> !pto.align, !llvm.ptr<AS>`
 - operand roles:
   `%align_in` is the incoming align state, `%offset` is the scalar displacement, `%value` is the vector being stored, `%base` is the current base pointer, `"MODE"` selects post-update behavior, `%align_out` is the updated align state, and `%base_out` is the updated base pointer.
+- ISA family:
+  `VSTUS`
 - semantics:
-  Models physical ISA `VSTUS`; stores vector data with a scalar offset form and returns the updated align and base state.
+  Stores `%value` through the scalar-offset stateful unaligned-store form and returns the successor align state and successor base pointer. If `MODE` is `POST_UPDATE`, `%base_out` is the ISA-updated base; if `MODE` is `NO_POST_UPDATE`, `%base_out` preserves the incoming base.
 - CCE correspondence:
   `vstus(...)`
   `__builtin_cce_vstus_*`, `__builtin_cce_vstus_post_*`
@@ -1824,15 +2089,17 @@ These ops make CCE reference-updated state explicit as SSA results.
   `%align_out = pto.vstur %align_in, %value, %base, "MODE" : !pto.align, !pto.vreg<NxT>, !llvm.ptr<AS> -> !pto.align`
 - operand roles:
   `%align_in` is the incoming align state, `%value` is the vector being stored, `%base` is the current base pointer, `"MODE"` selects post-update behavior, and `%align_out` is the updated align state.
+- ISA family:
+  `VSTUR`
 - semantics:
-  Models physical ISA `VSTUR`; stores vector data using the register-carried update form and returns the updated align state.
+  Stores `%value` through the register-update stateful unaligned-store form and returns the successor align state. Any architected base update is controlled by `MODE` and is not hidden from surrounding VPTO state threading.
 - CCE correspondence:
   `vstur(...)`
   `__builtin_cce_vstur_*`
 
 ### Chained Usage Example
 
-Stateful store ops make the implicit physical update chain explicit in SSA form.
+Stateful store ops make the implicit ISA update chain explicit in SSA form.
 A typical sequence starts from an align-producing load-side op such as
 `pto.vldas`, then threads the returned align or base values through each store.
 
@@ -1848,4 +2115,4 @@ A typical sequence starts from an align-producing load-side op such as
 
 In this form, VPTO makes the ordering and the address-state evolution visible to
 verification and later lowering passes instead of leaving them as hidden side
-effects on a physical alignment register or base pointer.
+effects on an implicit alignment register or base pointer.
