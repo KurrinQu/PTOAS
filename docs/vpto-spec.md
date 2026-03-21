@@ -113,16 +113,16 @@ The Vector PTO (VPTO) IR is architected as a performance-critical layer within t
 ### Hardware Pipeline Modeling
 The IR is structured to mirror the three primary hardware pipelines of the Ascend 950 architecture. Correct VPTO authoring requires managing the interaction between these asynchronous units:
 
-**MTE2** (Memory Transfer Engine - Inbound): Responsible for moving data from Global Memory (GM) to the Unified Buffer (UB).
+**MTE2** (Memory Transfer Engine - Inbound): Responsible for moving data from Global Memory (GM) to the Vector tile buffer.
 
-**Vector Core** (Computation): The primary engine for executing SIMD operations on data stored in UB.
+**Vector Core** (Computation): The primary engine for executing SIMD operations on data stored in the Vector tile buffer.
 
-**MTE3** (Memory Transfer Engine - Outbound): Responsible for moving processed data from UB back to GM.
+**MTE3** (Memory Transfer Engine - Outbound): Responsible for moving processed data from the Vector tile buffer back to GM.
 
 ### Memory and Synchronization Model
-VPTO enforces a strict memory hierarchy. The Unified Buffer (UB) is the only valid operand source for vector compute instructions. Consequently, the architecture of a VPTO program is defined by the explicit management of data movement:
+VPTO enforces a strict memory hierarchy. The Vector tile buffer is the only valid operand source for vector compute instructions. Consequently, the architecture of a VPTO program is defined by the explicit management of data movement:
 
-**Address Space Isolation**: The IR uses LLVM pointer address spaces to distinguish between GM (!llvm.ptr<1>) and UB (!llvm.ptr<6>). The verifier ensures that no compute operation attempts to access GM directly.
+**Address Space Isolation**: The IR uses LLVM pointer address spaces to distinguish between GM (`!llvm.ptr<1>`) and the Vector tile buffer (`!llvm.ptr<6>`). The verifier ensures that no compute operation attempts to access GM directly.
 
 **Event-Based Synchronization**: Because the MTE and Vector pipelines operate asynchronously, VPTO utilizes a Flag/Event mechanism. Developers must explicitly insert set_flag and wait_flag operations to resolve Read-After-Write (RAW) and Write-After-Read (WAR) hazards between memory staging and computation.
 
@@ -181,9 +181,10 @@ It does not describe lowering strategy.
 
 ## ISA Contract
 
-VPTO is an ISA-level contract without an encoding layer. Each op below carries
-the architectural behavior of one ISA instruction or ISA family, while making
-hidden register updates, predicate flow, and buffer state explicit in SSA form.
+VPTO is an ISA-level contract without an encoding layer. Each `pto.v*` op below
+preserves the full architectural behavior of one ISA instruction or ISA family,
+with only the binary encoding removed and with hidden register updates,
+predicate flow, and buffer state made explicit in SSA form.
 
 Contract policy:
 
@@ -278,11 +279,11 @@ The table below defines the address-space interpretation used by this spec and b
 | `3` | `LEFT` | Left matrix buffer / L0A-related storage | Normative in this spec |
 | `4` | `RIGHT` | Right matrix buffer / L0B-related storage | Normative in this spec |
 | `5` | `ACC` | Accumulator / L0C-related storage | Normative in this spec |
-| `6` | `VEC` | Unified Buffer (UB) / vector buffer | Normative in this spec |
+| `6` | `VEC` | Vector tile buffer | Normative in this spec |
 | `7` | `BIAS` | Bias buffer | Normative in this spec |
 | `8` | `SCALING` | Scaling buffer | Normative in this spec |
 
-- Current verifier rule: `!llvm.ptr<0>` and `!llvm.ptr<1>` are treated as GM-like, while `!llvm.ptr<6>` is treated as UB-like.
+- Current verifier rule: `!llvm.ptr<0>` and `!llvm.ptr<1>` are treated as GM-like, while `!llvm.ptr<6>` is treated as Vector tile buffer-like.
 - External authors should keep the raw numeric LLVM address space in IR and use the symbolic names in this table as the explanatory meaning of those numeric values.
 
 ## Element Type Constraints
@@ -541,7 +542,7 @@ it does not encode the original instruction words.
 
 Architectural assertions:
 
-- Vector compute, gather, scatter, predicate-load, and predicate-store families operate on UB-backed storage unless an op section states otherwise.
+- Vector compute, gather, scatter, predicate-load, and predicate-store families operate on Vector tile buffer-backed storage unless an op section states otherwise.
 - Distribution tokens, stride tokens, part selectors, and predicate patterns are semantically significant; changing them changes the operation, not just the encoding.
 - Alignment requirements are part of the contract. Violating the distribution-specific address-alignment rule raises an exception.
 - Stateful align-register behavior is explicit in VPTO through `!pto.align` values and state-threading results, not by implicit mutation of a hidden architectural register.
@@ -549,7 +550,7 @@ Architectural assertions:
 
 Architectural exceptions:
 
-- UB access overflow raises an exception for UB reads or writes that exceed the permitted UB address range.
+- Vector tile buffer access overflow raises an exception for reads or writes that exceed the permitted Vector tile buffer address range.
 - Load and store families raise an exception when ISA-required alignment constraints are violated.
 - Memory-to-memory sorter and filter families require their ISA alignment and non-overlap constraints; violating those constraints raises an exception.
 - `INF` and `NaN` in source operands raise an exception for the arithmetic, conversion, and sort families in this spec wherever the ISA defines those inputs as exceptional.
@@ -635,7 +636,7 @@ Builtin naming policy in this document:
 - ISA family:
   `PIPE_BARRIER`
 - semantics:
-  Models a same-pipe execution barrier; later operations on `PIPE_*` cannot overtake earlier ones on that pipeline.
+  Inserts a same-pipe execution barrier; later operations on `PIPE_*` cannot overtake earlier ones on that pipeline.
 - CCE correspondence:
   `pipe_barrier(pipe_t)`
   `__builtin_cce_pipe_barrier`
@@ -649,7 +650,7 @@ Builtin naming policy in this document:
 - ISA family:
   `GET_BUF`
 - semantics:
-  Models hardware buffer-token acquisition on the selected pipe; the op reserves the identified buffer slot or mode-controlled token before later use.
+  Acquires the hardware buffer token on the selected pipe and reserves the identified buffer slot or mode-controlled token for later use.
 - CCE correspondence:
   `get_buf(pipe_t, uint8_t|uint64_t, bool)`
   `__builtin_cce_get_buf`
@@ -663,7 +664,7 @@ Builtin naming policy in this document:
 - ISA family:
   `RLS_BUF`
 - semantics:
-  Models hardware buffer-token release on the selected pipe; the op returns a previously acquired buffer slot or mode-controlled token to the implementation.
+  Releases the hardware buffer token on the selected pipe and returns the previously acquired buffer slot or mode-controlled token to the implementation.
 - CCE correspondence:
   `rls_buf(pipe_t, uint8_t|uint64_t, bool)`
   `__builtin_cce_rls_buf`
@@ -679,7 +680,7 @@ Builtin naming policy in this document:
 - ISA family:
   `SET_LOOP2_STRIDE_OUTTOUB`
 - semantics:
-  Models GM-to-UB copy programming state; sets the outer-loop stride consumed by the next outbound-to-UB transfer sequence.
+  Sets the outer-loop stride consumed by the next GM-to-Vector-tile-buffer transfer sequence.
 - CCE correspondence:
   `set_loop2_stride_outtoub(uint64_t)`
   `__builtin_cce_set_loop2_stride_outtoub`
@@ -693,7 +694,7 @@ Builtin naming policy in this document:
 - ISA family:
   `SET_LOOP1_STRIDE_OUTTOUB`
 - semantics:
-  Models GM-to-UB copy programming state; sets the inner-loop stride consumed by the next outbound-to-UB transfer sequence.
+  Sets the inner-loop stride consumed by the next GM-to-Vector-tile-buffer transfer sequence.
 - CCE correspondence:
   `set_loop1_stride_outtoub(uint64_t)`
   `__builtin_cce_set_loop1_stride_outtoub`
@@ -707,7 +708,7 @@ Builtin naming policy in this document:
 - ISA family:
   `SET_LOOP_SIZE_OUTTOUB`
 - semantics:
-  Models GM-to-UB copy programming state; sets the loop extents consumed by the next outbound-to-UB transfer sequence.
+  Sets the loop extents consumed by the next GM-to-Vector-tile-buffer transfer sequence.
 - CCE correspondence:
   `set_loop_size_outtoub(uint64_t)`
   `__builtin_cce_set_loop_size_outtoub`
@@ -721,7 +722,7 @@ Builtin naming policy in this document:
 - ISA family:
   `SET_LOOP2_STRIDE_UBTOOUT`
 - semantics:
-  Models UB-to-GM copy programming state; sets the outer-loop stride consumed by the next UB-to-outbound transfer sequence.
+  Sets the outer-loop stride consumed by the next Vector-tile-buffer-to-GM transfer sequence.
 - CCE correspondence:
   `set_loop2_stride_ubtoout(uint64_t)`
   `__builtin_cce_set_loop2_stride_ubtoout`
@@ -735,7 +736,7 @@ Builtin naming policy in this document:
 - ISA family:
   `SET_LOOP1_STRIDE_UBTOOUT`
 - semantics:
-  Models UB-to-GM copy programming state; sets the inner-loop stride consumed by the next UB-to-outbound transfer sequence.
+  Sets the inner-loop stride consumed by the next Vector-tile-buffer-to-GM transfer sequence.
 - CCE correspondence:
   `set_loop1_stride_ubtoout(uint64_t)`
   `__builtin_cce_set_loop1_stride_ubtoout`
@@ -749,7 +750,7 @@ Builtin naming policy in this document:
 - ISA family:
   `SET_LOOP_SIZE_UBTOOUT`
 - semantics:
-  Models UB-to-GM copy programming state; sets the loop extents consumed by the next UB-to-outbound transfer sequence.
+  Sets the loop extents consumed by the next Vector-tile-buffer-to-GM transfer sequence.
 - CCE correspondence:
   `set_loop_size_ubtoout(uint64_t)`
   `__builtin_cce_set_loop_size_ubtoout`
@@ -761,11 +762,11 @@ Builtin naming policy in this document:
 - syntax:
   `pto.vcopy_gm_to_ubuf %source, %destination, %valid_rows, %valid_cols, %sid, %n_burst, %len_burst, %left_padding_count, %right_padding_count, %l2_cache_ctl, %gm_stride, %ub_stride {layout = "LAYOUT", data_select_bit = true|false, ub_pad = true|false} : !llvm.ptr<AS>, !llvm.ptr<AS>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64`
 - operand roles:
-  `%source` is the GM base pointer, `%destination` is the UB base pointer, `%valid_rows` and `%valid_cols` describe the logical tile extent, `%sid` is the stream or source identifier, `%n_burst` and `%len_burst` describe the burst geometry, `%left_padding_count` and `%right_padding_count` describe edge padding, `%l2_cache_ctl` carries cache control bits, `%gm_stride` and `%ub_stride` are per-burst strides, and `"LAYOUT"` records the transfer layout token.
+  `%source` is the GM base pointer, `%destination` is the Vector tile buffer base pointer, `%valid_rows` and `%valid_cols` describe the logical tile extent, `%sid` is the stream or source identifier, `%n_burst` and `%len_burst` describe the burst geometry, `%left_padding_count` and `%right_padding_count` describe edge padding, `%l2_cache_ctl` carries cache control bits, `%gm_stride` and `%ub_stride` are per-burst strides, and `"LAYOUT"` records the transfer layout token.
 - ISA family:
-  `GM->UB copy helper family`
+  `GM->Vector-tile-buffer copy helper family`
 - semantics:
-  Copies a 2-D burst tile with optional padding and layout metadata into UB.
+  Copies a 2-D burst tile with optional padding and layout metadata into the Vector tile buffer.
 - CCE correspondence:
   `copy_gm_to_ubuf(...)`
   PTO A5 path commonly uses `copy_gm_to_ubuf_align_v2(...)`
@@ -780,11 +781,11 @@ Builtin naming policy in this document:
 - syntax:
   `pto.vcopy_ubuf_to_ubuf %source, %destination, %sid, %n_burst, %len_burst, %src_stride, %dst_stride : !llvm.ptr<AS>, !llvm.ptr<AS>, i64, i64, i64, i64, i64`
 - operand roles:
-  `%source` and `%destination` are UB base pointers, `%sid` is the stream identifier, `%n_burst` and `%len_burst` describe the burst geometry, and `%src_stride` and `%dst_stride` are the per-burst source and destination strides.
+  `%source` and `%destination` are Vector tile buffer base pointers, `%sid` is the stream identifier, `%n_burst` and `%len_burst` describe the burst geometry, and `%src_stride` and `%dst_stride` are the per-burst source and destination strides.
 - ISA family:
-  `UB->UB copy helper family`
+  `Vector-tile-buffer->Vector-tile-buffer copy helper family`
 - semantics:
-  Copies data between two UB-backed buffers using the stated burst and stride parameters.
+  Copies data between two Vector tile buffer-backed buffers using the stated burst and stride parameters.
 - CCE correspondence:
   `copy_ubuf_to_ubuf(...)`
   `__builtin_cce_copy_ubuf_to_ubuf`
@@ -794,11 +795,11 @@ Builtin naming policy in this document:
 - syntax:
   `pto.vcopy_ubuf_to_gm %source, %destination, %valid_rows, %valid_cols, %sid, %n_burst, %len_burst, %reserved, %burst_dst_stride, %burst_src_stride {layout = "LAYOUT"} : !llvm.ptr<AS>, !llvm.ptr<AS>, i64, i64, i64, i64, i64, i64, i64, i64`
 - operand roles:
-  `%source` is the UB base pointer, `%destination` is the GM base pointer, `%valid_rows` and `%valid_cols` describe the logical tile extent, `%sid` is the stream identifier, `%n_burst` and `%len_burst` describe the burst geometry, `%reserved` is the ISA-reserved field carried by the helper path, `%burst_dst_stride` and `%burst_src_stride` are the per-burst strides, and `"LAYOUT"` records the transfer layout token.
+  `%source` is the Vector tile buffer base pointer, `%destination` is the GM base pointer, `%valid_rows` and `%valid_cols` describe the logical tile extent, `%sid` is the stream identifier, `%n_burst` and `%len_burst` describe the burst geometry, `%reserved` is the ISA-reserved field carried by the helper path, `%burst_dst_stride` and `%burst_src_stride` are the per-burst strides, and `"LAYOUT"` records the transfer layout token.
 - ISA family:
-  `UB->GM copy helper family`
+  `Vector-tile-buffer->GM copy helper family`
 - semantics:
-  Writes a 2-D burst tile from UB back to GM.
+  Writes a 2-D burst tile from the Vector tile buffer back to GM.
 - CCE correspondence:
   `copy_ubuf_to_gm(...)`
   PTO A5 path commonly uses `copy_ubuf_to_gm_align_v2(...)`
@@ -812,7 +813,7 @@ Builtin naming policy in this document:
 
 ISA assertions for this family:
 
-- These ops read from UB-backed storage; GM-backed sources are not valid vector-load operands in VPTO.
+- These ops read from Vector tile buffer-backed storage; GM-backed sources are not valid vector-load operands in VPTO.
 - Alignment requirements are part of the ISA contract and depend on the selected distribution token.
 - `pto.vldas` initializes align state for subsequent unaligned accesses; `pto.vldus` assumes a valid align chain for the same logical stream.
 - ISA forms that post-update a shared register are represented in VPTO by explicit SSA operands or by state-threading ops rather than by hidden base-pointer mutation.
@@ -823,11 +824,11 @@ ISA assertions for this family:
 - syntax:
   `%result = pto.vlds %source[%offset] {dist = "DIST"} : !llvm.ptr<AS> -> !pto.vreg<NxT>`
 - operand roles:
-  `%source` is the UB base pointer, `%offset` is the load displacement from that base, `"DIST"` selects the ISA distribution mode, and `%result` is the loaded vector.
+  `%source` is the Vector tile buffer base pointer, `%offset` is the load displacement from that base, `"DIST"` selects the ISA distribution mode, and `%result` is the loaded vector.
 - ISA family:
   `VLD` / `VLDS`
 - semantics:
-  Reads one vector from UB at `source + offset` using the aligned-load form selected by `DIST`. The distribution token determines the lane arrangement and alignment requirement of the access, and any ISA-defined base update is represented outside this op rather than as an implicit side effect.
+  Loads one vector from the Vector tile buffer at `source + offset` using the aligned-load form selected by `DIST`. The distribution token determines the lane arrangement and alignment requirement of the access, and any ISA-defined base update is represented outside this op rather than as an implicit side effect.
 - CCE correspondence:
   `vld(...)`, `vlds(...)`
   `__builtin_cce_vldsx1_*`
@@ -839,7 +840,7 @@ ISA assertions for this family:
 - syntax:
   `%result = pto.vldas %source[%offset] : !llvm.ptr<AS> -> !pto.align`
 - operand roles:
-  `%source` is the UB base pointer, `%offset` is the align-initialization displacement, and `%result` is the produced align state.
+  `%source` is the Vector tile buffer base pointer, `%offset` is the align-initialization displacement, and `%result` is the produced align state.
 - ISA family:
   `VLDAS`
 - semantics:
@@ -853,7 +854,7 @@ ISA assertions for this family:
 - syntax:
   `%result = pto.vldus %align, %source[%offset] : !pto.align, !llvm.ptr<AS> -> !pto.vreg<NxT>`
 - operand roles:
-  `%align` is the incoming align state, `%source` is the UB base pointer, `%offset` is the load displacement, and `%result` is the assembled vector result.
+  `%align` is the incoming align state, `%source` is the Vector tile buffer base pointer, `%offset` is the load displacement, and `%result` is the assembled vector result.
 - ISA family:
   `VLDUS`
 - semantics:
@@ -867,11 +868,11 @@ ISA assertions for this family:
 - syntax:
   `%result = pto.vplds %source[%offset] {dist = "DIST"} : !llvm.ptr<AS> -> !pto.mask`
 - operand roles:
-  `%source` is the UB base pointer, `%offset` is the load displacement, `"DIST"` selects the predicate-load distribution, and `%result` is the loaded predicate.
+  `%source` is the Vector tile buffer base pointer, `%offset` is the load displacement, `"DIST"` selects the predicate-load distribution, and `%result` is the loaded predicate.
 - ISA family:
   `PLDS`
 - semantics:
-  Loads predicate state from UB at `source + offset` using the selected predicate-load distribution.
+  Loads predicate state from the Vector tile buffer at `source + offset` using the selected predicate-load distribution.
 - CCE correspondence:
   `plds(...)`
   `__builtin_cce_plds_b8`
@@ -881,11 +882,11 @@ ISA assertions for this family:
 - syntax:
   `%result = pto.vpld %source[%offset], "DIST" : !llvm.ptr<AS>, index -> !pto.mask`
 - operand roles:
-  `%source` is the UB base pointer, `%offset` is the index-style displacement, `"DIST"` selects the predicate-load distribution, and `%result` is the loaded predicate.
+  `%source` is the Vector tile buffer base pointer, `%offset` is the index-style displacement, `"DIST"` selects the predicate-load distribution, and `%result` is the loaded predicate.
 - ISA family:
   `PLD`
 - semantics:
-  Loads predicate state from UB using an explicit index offset and predicate-load distribution token.
+  Loads predicate state from the Vector tile buffer using an explicit index offset and predicate-load distribution token.
 - CCE correspondence:
   `pld(...)`
   `__builtin_cce_pld_b8`
@@ -895,11 +896,11 @@ ISA assertions for this family:
 - syntax:
   `%result = pto.vpldi %source, %offset, "DIST" : !llvm.ptr<AS>, i32 -> !pto.mask`
 - operand roles:
-  `%source` is the UB base pointer, `%offset` is the immediate-style scalar displacement, `"DIST"` selects the predicate-load distribution, and `%result` is the loaded predicate.
+  `%source` is the Vector tile buffer base pointer, `%offset` is the immediate-style scalar displacement, `"DIST"` selects the predicate-load distribution, and `%result` is the loaded predicate.
 - ISA family:
   `PLDI`
 - semantics:
-  Loads predicate state from UB using an immediate-style scalar offset and predicate-load distribution token.
+  Loads predicate state from the Vector tile buffer using an immediate-style scalar offset and predicate-load distribution token.
 - CCE correspondence:
   `pldi(...)`
   `__builtin_cce_pldi_b8`, `__builtin_cce_pldi_post_b8`
@@ -909,11 +910,11 @@ ISA assertions for this family:
 - syntax:
   `%low, %high = pto.vldx2 %source[%offset], "DIST" : !llvm.ptr<AS>, index -> !pto.vreg<NxT>, !pto.vreg<NxT>`
 - operand roles:
-  `%source` is the UB base pointer, `%offset` is the displacement, `"DIST"` selects the x2 load distribution token, and `%low` and `%high` are the two produced vector results.
+  `%source` is the Vector tile buffer base pointer, `%offset` is the displacement, `"DIST"` selects the x2 load distribution token, and `%low` and `%high` are the two produced vector results.
 - ISA family:
   `Dual-result aligned-load distributions for VLD variants`
 - semantics:
-  Reads one UB vector stream at `source + offset` and splits the result into `%low` and `%high` according to the x2 distribution selected by `DIST`. The distribution token defines how lanes are deinterleaved between the two returned vectors.
+  Loads one Vector tile buffer vector stream at `source + offset` and splits the result into `%low` and `%high` according to the x2 distribution selected by `DIST`. The distribution token defines how lanes are deinterleaved between the two returned vectors.
 - CCE correspondence:
   `vld(...)`
   `__builtin_cce_vldx2_*`
@@ -923,11 +924,11 @@ ISA assertions for this family:
 - syntax:
   `%result = pto.vgather2 %source, %offsets, %active_lanes : !llvm.ptr<AS>, !pto.vreg<NxI>, index -> !pto.vreg<NxT>`
 - operand roles:
-  `%source` is the UB base pointer, `%offsets` is the per-lane offset vector, `%active_lanes` bounds how many lanes participate, and `%result` is the gathered vector.
+  `%source` is the Vector tile buffer base pointer, `%offsets` is the per-lane offset vector, `%active_lanes` bounds how many lanes participate, and `%result` is the gathered vector.
 - ISA family:
   `VGATHER2`
 - semantics:
-  For each active lane `i` with `i < active_lanes`, reads the element at UB address `source + offsets[i]` and writes it to result lane `i`.
+  For each active lane `i` with `i < active_lanes`, loads the element at Vector tile buffer address `source + offsets[i]` and writes it to result lane `i`.
 - CCE correspondence:
   `vgather2(...)`
   `__builtin_cce_vgather2_*`, `__builtin_cce_vgather2_v300_*`
@@ -937,11 +938,11 @@ ISA assertions for this family:
 - syntax:
   `%result = pto.vgatherb %source, %offsets, %active_lanes : !llvm.ptr<AS>, !pto.vreg<NxI>, index -> !pto.vreg<NxT>`
 - operand roles:
-  `%source` is the UB base pointer, `%offsets` is the per-lane offset vector, `%active_lanes` bounds how many lanes participate, and `%result` is the gathered vector.
+  `%source` is the Vector tile buffer base pointer, `%offsets` is the per-lane offset vector, `%active_lanes` bounds how many lanes participate, and `%result` is the gathered vector.
 - ISA family:
   `VGATHERB`
 - semantics:
-  For each active lane `i` with `i < active_lanes`, reads the byte-granular element at UB address `source + offsets[i]` and writes it to result lane `i`.
+  For each active lane `i` with `i < active_lanes`, loads the byte-granular element at Vector tile buffer address `source + offsets[i]` and writes it to result lane `i`.
 - CCE correspondence:
   `vgatherb(...)`
   `__builtin_cce_vgatherb_*`, `__builtin_cce_vgatherb_v300_*`, `__builtin_cce_vgatherb_v310_*`
@@ -951,11 +952,11 @@ ISA assertions for this family:
 - syntax:
   `%result = pto.vgather2_bc %source, %offsets, %mask : !llvm.ptr<AS>, !pto.vreg<NxI>, !pto.mask -> !pto.vreg<NxT>`
 - operand roles:
-  `%source` is the UB base pointer, `%offsets` is the per-lane offset vector, `%mask` selects which lanes participate, and `%result` is the gathered vector.
+  `%source` is the Vector tile buffer base pointer, `%offsets` is the per-lane offset vector, `%mask` selects which lanes participate, and `%result` is the gathered vector.
 - ISA family:
   `VGATHER2_BC`
 - semantics:
-  For each lane enabled by `%mask`, reads the element at UB address `source + offsets[i]` and writes it to result lane `i`.
+  For each lane enabled by `%mask`, loads the element at Vector tile buffer address `source + offsets[i]` and writes it to result lane `i`.
 - CCE correspondence:
   `vgather2_bc(...)`
   `__builtin_cce_vgather2_bc_*`
@@ -965,11 +966,11 @@ ISA assertions for this family:
 - syntax:
   `%result = pto.vsld %source[%offset], "STRIDE" : !llvm.ptr<AS> -> !pto.vreg<NxT>`
 - operand roles:
-  `%source` is the UB base pointer, `%offset` is the displacement, `"STRIDE"` selects the strided-load token, and `%result` is the loaded vector.
+  `%source` is the Vector tile buffer base pointer, `%offset` is the displacement, `"STRIDE"` selects the strided-load token, and `%result` is the loaded vector.
 - ISA family:
   `VSLD`
 - semantics:
-  Reads `%result` from UB using the address progression encoded by `STRIDE`. The stride token determines the spacing between consecutive source elements or packed groups.
+  Loads `%result` from the Vector tile buffer using the address progression encoded by `STRIDE`. The stride token determines the spacing between consecutive source elements or packed groups.
 - CCE correspondence:
   `vsld(...)`
   `__builtin_cce_vsld_*`
@@ -979,11 +980,11 @@ ISA assertions for this family:
 - syntax:
   `%result = pto.vsldb %source, %offset, %mask : !llvm.ptr<AS>, i32, !pto.mask -> !pto.vreg<NxT>`
 - operand roles:
-  `%source` is the UB base pointer, `%offset` is the scalar displacement, `%mask` is the predicate control, and `%result` is the loaded vector.
+  `%source` is the Vector tile buffer base pointer, `%offset` is the scalar displacement, `%mask` is the predicate control, and `%result` is the loaded vector.
 - ISA family:
   `VSLDB`
 - semantics:
-  Reads a strided vector from UB using the scalar displacement `%offset` and writes only the lanes enabled by `%mask`.
+  Loads a strided vector from the Vector tile buffer using the scalar displacement `%offset` and writes only the lanes enabled by `%mask`.
 - CCE correspondence:
   `vsldb(...)`
   `__builtin_cce_vsldb_*`, `__builtin_cce_vsldb_post_*`
@@ -1805,7 +1806,7 @@ ISA assertions for this family:
 - For width-changing conversions, predication is applied to input lanes and is composed with part-selection controls such as even/odd or packed-part selectors.
 - Narrowing conversions place results into the selected destination part and zero the remaining part of the widened slot.
 - Widening conversions read only the selected source part; the unselected part is architecturally ignored.
-- Sort families operate on UB-resident proposal data and preserve the ISA tie-break rule that lower original indices win on equal scores.
+- Sort families operate on Vector tile buffer-resident proposal data and preserve the ISA tie-break rule that lower original indices win on equal scores.
 
 
 ### `pto.vtrc`
@@ -1856,7 +1857,7 @@ ISA assertions for this family:
 - syntax:
   `pto.vbitsort %destination, %source, %indices, %repeat_times : !llvm.ptr<AS>, !llvm.ptr<AS>, !llvm.ptr<AS>, index`
 - operand roles:
-  `%destination` is the UB output buffer, `%source` is the UB score buffer, `%indices` is the UB index buffer, and `%repeat_times` is the repeat count for consecutive sort invocations.
+  `%destination` is the Vector tile buffer output buffer, `%source` is the Vector tile buffer score buffer, `%indices` is the Vector tile buffer index buffer, and `%repeat_times` is the repeat count for consecutive sort invocations.
 - ISA family:
   `VBS32`
 - semantics:
@@ -1870,11 +1871,11 @@ ISA assertions for this family:
 - syntax:
   `pto.vmrgsort4 %destination, %source0, %source1, %source2, %source3, %count, %config : !llvm.ptr<AS>, !llvm.ptr<AS>, !llvm.ptr<AS>, !llvm.ptr<AS>, !llvm.ptr<AS>, i64, i64`
 - operand roles:
-  `%destination` is the UB output buffer, `%source0` through `%source3` are the four UB input list bases, `%count` is the total work or encoded list-count payload, and `%config` is the ISA merge-sort configuration word.
+  `%destination` is the Vector tile buffer output buffer, `%source0` through `%source3` are the four Vector tile buffer input list bases, `%count` is the total work or encoded list-count payload, and `%config` is the ISA merge-sort configuration word.
 - ISA family:
   `VMS4v2`
 - semantics:
-  Merges four sorted proposal lists from UB into one sorted output stream. On equal scores, entries from the lower-numbered input list win; `%config` controls repeat and exhausted-input behavior; and source and destination regions must satisfy the ISA non-overlap rules.
+  Merges four sorted proposal lists from the Vector tile buffer into one sorted output stream. On equal scores, entries from the lower-numbered input list win; `%config` controls repeat and exhausted-input behavior; and source and destination regions must satisfy the ISA non-overlap rules.
 - CCE correspondence:
   `vmrgsort4(...)`
   `__builtin_cce_vmrgsort4_*`
@@ -1913,7 +1914,7 @@ ISA assertions for this family:
 
 ISA assertions for this family:
 
-- These ops write to UB-backed storage and must satisfy the distribution-specific destination-alignment rules defined by the ISA family.
+- These ops write to Vector tile buffer-backed storage and must satisfy the distribution-specific destination-alignment rules defined by the ISA family.
 - ISA forms that can post-update a shared register are represented here only as addressed stores; hidden pointer mutation is not part of these stateless forms.
 - Predicate-store data is architecturally `b8`, regardless of the scalar element type used by surrounding vector code.
 
@@ -1923,11 +1924,11 @@ ISA assertions for this family:
 - syntax:
   `pto.vsts %value, %destination[%offset] {dist = "DIST"} : !pto.vreg<NxT>, !llvm.ptr<AS>`
 - operand roles:
-  `%value` is the vector being stored, `%destination` is the UB base pointer, `%offset` is the store displacement, and `"DIST"` selects the ISA store distribution mode.
+  `%value` is the vector being stored, `%destination` is the Vector tile buffer base pointer, `%offset` is the store displacement, and `"DIST"` selects the ISA store distribution mode.
 - ISA family:
   `VST` / `VSTI` / `VSTS`
 - semantics:
-  Stores `%value` to UB at `destination + offset` using the store form selected by `DIST`. The distribution token determines the destination lane layout and alignment requirement of the access.
+  Stores `%value` to the Vector tile buffer at `destination + offset` using the store form selected by `DIST`. The distribution token determines the destination lane layout and alignment requirement of the access.
 - CCE correspondence:
   `vst(...)`, `vsts(...)`
   `__builtin_cce_vstx1_*`, `__builtin_cce_vstsx1_*`
@@ -1937,11 +1938,11 @@ ISA assertions for this family:
 - syntax:
   `pto.vscatter %value, %destination, %offsets, %active_lanes : !pto.vreg<NxT>, !llvm.ptr<AS>, !pto.vreg<NxI>, index`
 - operand roles:
-  `%value` is the vector being scattered, `%destination` is the UB base pointer, `%offsets` is the per-lane offset vector, and `%active_lanes` bounds how many lanes participate.
+  `%value` is the vector being scattered, `%destination` is the Vector tile buffer base pointer, `%offsets` is the per-lane offset vector, and `%active_lanes` bounds how many lanes participate.
 - ISA family:
   `VSCATTER`
 - semantics:
-  Scatters active vector lanes to UB addresses derived from `%destination` and `%offsets`.
+  Scatters active vector lanes to Vector tile buffer addresses derived from `%destination` and `%offsets`.
 - CCE correspondence:
   `vscatter(...)`
   `__builtin_cce_vscatter_*`
@@ -1951,7 +1952,7 @@ ISA assertions for this family:
 - syntax:
   `pto.vsts_pred %value, %destination[%offset], %active_lanes {dist = "DIST"} : !pto.vreg<NxT>, !llvm.ptr<AS>, index`
 - operand roles:
-  `%value` is the vector being stored, `%destination` is the UB base pointer, `%offset` is the store displacement, `%active_lanes` bounds the active prefix, and `"DIST"` selects the ISA store distribution mode.
+  `%value` is the vector being stored, `%destination` is the Vector tile buffer base pointer, `%offset` is the store displacement, `%active_lanes` bounds the active prefix, and `"DIST"` selects the ISA store distribution mode.
 - ISA family:
   `Predicated vector-store helper family`
 - semantics:
@@ -1964,11 +1965,11 @@ ISA assertions for this family:
 - syntax:
   `pto.vpsts %value, %destination[%offset] : !pto.mask, !llvm.ptr<AS>`
 - operand roles:
-  `%value` is the predicate being stored, `%destination` is the UB base pointer, and `%offset` is the store displacement.
+  `%value` is the predicate being stored, `%destination` is the Vector tile buffer base pointer, and `%offset` is the store displacement.
 - ISA family:
   `PSTS`
 - semantics:
-  Stores predicate state to UB at `destination + offset`.
+  Stores predicate state to the Vector tile buffer at `destination + offset`.
 - CCE correspondence:
   `psts(...)`
   `__builtin_cce_psts_b8`, `__builtin_cce_psts_post_b8`
@@ -1978,11 +1979,11 @@ ISA assertions for this family:
 - syntax:
   `pto.vpst %value, %destination[%offset], "DIST" : !pto.mask, !llvm.ptr<AS>, index`
 - operand roles:
-  `%value` is the predicate being stored, `%destination` is the UB base pointer, `%offset` is the store displacement, and `"DIST"` selects the predicate-store distribution token.
+  `%value` is the predicate being stored, `%destination` is the Vector tile buffer base pointer, `%offset` is the store displacement, and `"DIST"` selects the predicate-store distribution token.
 - ISA family:
   `PST`
 - semantics:
-  Stores predicate state to UB using an explicit index offset and predicate-store distribution token.
+  Stores predicate state to the Vector tile buffer using an explicit index offset and predicate-store distribution token.
 - CCE correspondence:
   `pst(...)`
   `__builtin_cce_pst_b8`
@@ -1992,11 +1993,11 @@ ISA assertions for this family:
 - syntax:
   `pto.vpsti %value, %destination, %offset, "DIST" : !pto.mask, !llvm.ptr<AS>, i32`
 - operand roles:
-  `%value` is the predicate being stored, `%destination` is the UB base pointer, `%offset` is the scalar displacement, and `"DIST"` selects the predicate-store distribution token.
+  `%value` is the predicate being stored, `%destination` is the Vector tile buffer base pointer, `%offset` is the scalar displacement, and `"DIST"` selects the predicate-store distribution token.
 - ISA family:
   `PSTI`
 - semantics:
-  Stores predicate state to UB using an immediate-style scalar offset and predicate-store distribution token.
+  Stores predicate state to the Vector tile buffer using an immediate-style scalar offset and predicate-store distribution token.
 - CCE correspondence:
   `psti(...)`
   `__builtin_cce_psti_b8`, `__builtin_cce_psti_post_b8`
@@ -2006,11 +2007,11 @@ ISA assertions for this family:
 - syntax:
   `pto.vsst %value, %destination[%offset], "STRIDE" : !pto.vreg<NxT>, !llvm.ptr<AS>`
 - operand roles:
-  `%value` is the vector being stored, `%destination` is the UB base pointer, `%offset` is the store displacement, and `"STRIDE"` selects the ISA strided-store token.
+  `%value` is the vector being stored, `%destination` is the Vector tile buffer base pointer, `%offset` is the store displacement, and `"STRIDE"` selects the ISA strided-store token.
 - ISA family:
   `VSST`
 - semantics:
-  Stores vector data to UB using a stride token rather than a regular contiguous distribution.
+  Stores vector data to the Vector tile buffer using a stride token rather than a regular contiguous distribution.
 - CCE correspondence:
   `vsst(...)`
   `__builtin_cce_vsst_*`
@@ -2020,11 +2021,11 @@ ISA assertions for this family:
 - syntax:
   `pto.vstx2 %low, %high, %destination[%offset], "DIST", %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !llvm.ptr<AS>, index, !pto.mask`
 - operand roles:
-  `%low` and `%high` are the two source vectors being stored, `%destination` is the UB base pointer, `%offset` is the store displacement, `"DIST"` selects the x2 store distribution token, and `%mask` is the predicate control.
+  `%low` and `%high` are the two source vectors being stored, `%destination` is the Vector tile buffer base pointer, `%offset` is the store displacement, `"DIST"` selects the x2 store distribution token, and `%mask` is the predicate control.
 - ISA family:
   `VST x2`
 - semantics:
-  Stores `%low` and `%high` to UB as one x2 store operation. `DIST` determines how the two source vectors are interleaved into memory, and `%mask` gates which lanes update memory.
+  Stores `%low` and `%high` to the Vector tile buffer as one x2 store operation. `DIST` determines how the two source vectors are interleaved into memory, and `%mask` gates which lanes update memory.
 - CCE correspondence:
   `vst(...)`
   `__builtin_cce_vstx2_*`
@@ -2034,7 +2035,7 @@ ISA assertions for this family:
 - syntax:
   `pto.vsstb %value, %destination, %offset, %mask : !pto.vreg<NxT>, !llvm.ptr<AS>, i32, !pto.mask`
 - operand roles:
-  `%value` is the vector being stored, `%destination` is the UB base pointer, `%offset` is the scalar displacement, and `%mask` is the predicate control.
+  `%value` is the vector being stored, `%destination` is the Vector tile buffer base pointer, `%offset` is the scalar displacement, and `%mask` is the predicate control.
 - ISA family:
   `VSSTB`
 - semantics:
@@ -2048,11 +2049,11 @@ ISA assertions for this family:
 - syntax:
   `pto.vsta %value, %destination[%offset] : !pto.align, !llvm.ptr<AS>, index`
 - operand roles:
-  `%value` is the align payload being stored, `%destination` is the UB base pointer, and `%offset` is the store displacement.
+  `%value` is the align payload being stored, `%destination` is the Vector tile buffer base pointer, and `%offset` is the store displacement.
 - ISA family:
   `VSTA`
 - semantics:
-  Stores align-state payload to UB at `destination + offset`.
+  Stores align-state payload to the Vector tile buffer at `destination + offset`.
 - CCE correspondence:
   `vsta(...)`
   `__builtin_cce_vsta_*`
@@ -2062,11 +2063,11 @@ ISA assertions for this family:
 - syntax:
   `pto.vstas %value, %destination, %offset : !pto.align, !llvm.ptr<AS>, i32`
 - operand roles:
-  `%value` is the align payload being stored, `%destination` is the UB base pointer, and `%offset` is the scalar displacement.
+  `%value` is the align payload being stored, `%destination` is the Vector tile buffer base pointer, and `%offset` is the scalar displacement.
 - ISA family:
   `VSTAS`
 - semantics:
-  Stores align-state payload to UB using a scalar offset form.
+  Stores align-state payload to the Vector tile buffer using a scalar offset form.
 - CCE correspondence:
   `vstas(...)`
   `__builtin_cce_vstas_*`, `__builtin_cce_vstas_post_*`
@@ -2365,13 +2366,13 @@ ISA assertions for this family:
 - syntax:
   `pto.vmove_ub %dst, %src, %config : T, T, T`
 - operand roles:
-  `%dst` and `%src` are UB addresses, and `%config` is the ISA-defined control
+  `%dst` and `%src` are Vector tile buffer addresses, and `%config` is the ISA-defined control
   word that determines the transfer submode.
 - data types:
-  `%dst` and `%src` are UB address operands. `%config` is a family-specific
+  `%dst` and `%src` are Vector tile buffer address operands. `%config` is a family-specific
   scalar control word.
 - semantics:
-  Performs the UB-to-UB movement defined by the configuration word. VPTO treats
+  Performs the Vector-tile-buffer-to-Vector-tile-buffer movement defined by the configuration word. VPTO treats
   the addressing, element grouping, and submode fields as part of the
   architectural contract of `%config`; no encoding bits are elided.
 - assertions and exceptions:
