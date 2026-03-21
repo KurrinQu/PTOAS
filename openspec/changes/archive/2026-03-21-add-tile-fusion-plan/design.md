@@ -4,6 +4,17 @@
 
 本 design 只覆盖 5.3 `FusionPlanPass`。
 
+这里的“覆盖”严格指：
+
+- 如何从 5.1 分析结果生成 DAG 融合组
+- 如何为组成员写出稳定的 planning metadata
+
+本 design 不覆盖：
+
+- 5.4 `OpSchedulingPass` 的物理重排
+- 任何把离散 group member 聚拢成连续片段的算法
+- 5.5 及之后的 region / materialization / lowering 行为
+
 其前置条件固定为：
 
 - `PreFusionAnalysisPass` 已存在并能提供 block-local DFG、生命周期与迭代域信息
@@ -15,6 +26,7 @@
 - 为目标 op 打上 `pto.fusion.group_id`
 - 为组内成员打上稳定的 `pto.fusion.order`
 - 不改变物理顺序
+- 不要求同组成员在 IR 中已经连续相邻
 
 ### 当前状态
 
@@ -99,6 +111,16 @@
 这样做的原因：
 
 - 后续 `OpSchedulingPass` 不需要重新推导“组内逻辑顺序”，只需做物理聚拢。
+
+### 决策 5：planning metadata 是 5.3 与 5.4 之间的唯一契约
+
+本 change 中，`FusionPlanPass` 产出的 `pto.fusion.group_id` / `pto.fusion.order` 是 planning 对 scheduling 的唯一承诺。
+
+这意味着：
+
+- planning 负责“谁在一组、组内逻辑顺序是什么”
+- scheduling 负责“是否、以及如何把这些成员物理聚拢”
+- 两者不在同一个 change 内混合实现
 
 ## Risks / Trade-offs
 

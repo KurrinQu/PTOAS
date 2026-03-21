@@ -44,6 +44,7 @@
 - 为每个选中的组生成稳定的：
   - `pto.fusion.group_id`
   - `pto.fusion.order`
+- 上述输出只定义 5.3 planning 契约，不负责把组成员物理聚拢成连续片段。
 
 ### 非目标
 
@@ -56,7 +57,8 @@
 
 - 仓库内出现一个真正基于 DFG 的融合规划 pass，而不是扩展版线性链分组器。
 - `online_update` 样例中的两个主热点能在 planning 阶段稳定成组。
-- 后续调度不需要重新判断“谁该在同一组里”，只需消费 `FusionPlanPass` 的元数据。
+- 后续调度不需要重新判断“谁该在同一组里”，只需消费 `FusionPlanPass` 的元数据做 5.4 物理聚拢。
+- 本 change 到此为止，不覆盖 `OpSchedulingPass` 本身的实现与行为契约。
 
 ## Capabilities
 

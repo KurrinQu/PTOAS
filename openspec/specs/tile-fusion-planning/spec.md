@@ -2,6 +2,18 @@
 
 ## ADDED Requirements
 
+### Requirement: FusionPlanPass MUST stay within 5.3 planning scope
+
+`FusionPlanPass` MUST 只在 5.3 planning 阶段内做“选哪些 op 成组、以及组内逻辑顺序如何表达”的决策，不承担 5.4 scheduling 的物理聚拢职责。
+
+#### Scenario: Planning emits metadata but does not reorder ops
+
+- **WHEN** `FusionPlanPass` 在 tile fusion pipeline 中运行
+- **THEN** 它 MUST 只输出 block-local DAG 分组结论和 `pto.fusion.*` metadata
+- **AND** MUST NOT 改变 op 的物理顺序
+- **AND** MUST NOT 把 basic block 内的离散 group member 聚拢成连续片段
+- **AND** 后续物理重排职责 MUST 留给独立的 `OpSchedulingPass`
+
 ### Requirement: FusionPlanPass MUST build fusion groups from block-local DAGs
 
 `FusionPlanPass` MUST 基于 `PreFusionAnalysisPass` 提供的 block-local DFG 进行分组，而不是仅基于线性连续链。
@@ -54,8 +66,11 @@ v1 planning 范围 MUST 覆盖当前 driver sample 所需的最小 op 闭包。
 - **THEN** 组内所有成员 MUST 获得同一个 `pto.fusion.group_id`
 - **AND** 每个成员 MUST 获得稳定的 `pto.fusion.order`
 - **AND** `pto.fusion.order` MUST 先满足拓扑依赖，再尽量贴近原始程序顺序
+- **AND** metadata MUST 足以让后续 `OpSchedulingPass` 在不重新决策组成员集合的前提下直接消费
 
 ### Requirement: Unproven dynamic iteration domains MUST be rejected conservatively
+
+当融合 legality 依赖动态迭代域等价，而 5.2 尚未提供证明时，`FusionPlanPass` MUST 输出保守拒绝结论，而不是猜测两个 op 可成组。
 
 #### Scenario: Dynamic shape equality not proven blocks grouping
 
