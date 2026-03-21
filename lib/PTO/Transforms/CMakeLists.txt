@@ -1,5 +1,8 @@
 add_mlir_dialect_library(PTOTransforms
+  FusionAnalysis.cpp
+  FusionOpSemantics.cpp
   InsertLoadStoreForMixCV.cpp
+  PTOPrintPreFusionAnalysis.cpp
   PTOInsertCVMov.cpp
   PTOConvertToDPS.cpp
   InsertSync/PTOInsertSync.cpp
@@ -26,6 +29,7 @@ add_mlir_dialect_library(PTOTransforms
   InsertSync/SyncEventIdAllocation.cpp
   InsertSync/SyncCodegen.cpp
   LoweringSyncToPipe.cpp
+  PTOPreFusionAnalysis.cpp
   PTOCreateFusionGroups.cpp
   PTOLowerToOpLibCalls.cpp
   PTOOutlineFusionGroups.cpp

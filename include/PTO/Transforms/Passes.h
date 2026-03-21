@@ -63,6 +63,8 @@ std::unique_ptr<Pass> createPTORemoveRedundantBarrierPass();
 std::unique_ptr<Pass> createPTOViewToMemrefPass();
 std::unique_ptr<mlir::Pass> createPTOInsertLoadStoreForMixCVPass();
 std::unique_ptr<Pass> createInferPTOLayoutPass();
+std::unique_ptr<Pass> createPreFusionAnalysisPass();
+std::unique_ptr<Pass> createPrintPreFusionAnalysisPass();
 std::unique_ptr<Pass> createPTOCreateFusionGroupsPass();
 LogicalResult importPTOOpLibTemplates(ModuleOp module, StringRef opLibDir,
                                       bool debug = false);

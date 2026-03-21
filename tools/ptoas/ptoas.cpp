@@ -368,6 +368,12 @@ static llvm::cl::opt<bool> printIRAfterAll(
                    "for user-related functions"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> dumpPreFusionAnalysis(
+    "dump-pre-fusion-analysis",
+    llvm::cl::desc("Run pre-fusion analysis in tile_buf world, print a stable "
+                   "text dump, and exit"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<std::string> printIRAfterAllFuncFilter(
     "print-ir-after-all-func-filter",
     llvm::cl::desc("When --print-ir-after-all is enabled, only print dumps for "
@@ -1049,7 +1055,7 @@ int main(int argc, char **argv) {
   // Be tolerant: ptobc decode may materialize ops from dialects that aren't
   // explicitly registered/loaded in this tool yet.
   context.allowUnregisteredDialects(true);
-  if (printIRAfterAll)
+  if (printIRAfterAll || dumpPreFusionAnalysis)
     context.disableMultithreading();
 
   context.getOrLoadDialect<emitc::EmitCDialect>();
@@ -1143,6 +1149,18 @@ int main(int argc, char **argv) {
 
   module->getOperation()->setAttr("pto.target_arch",
                                   mlir::StringAttr::get(&context, arch));
+
+  if (dumpPreFusionAnalysis) {
+    PassManager analysisPm(&context);
+    analysisPm.addNestedPass<mlir::func::FuncOp>(
+        pto::createPrintPreFusionAnalysisPass());
+    if (failed(analysisPm.run(*module))) {
+      llvm::errs() << "Error: Pre-fusion analysis dump failed.\n";
+      return 1;
+    }
+    return 0;
+  }
+
   const bool enableA5OplibPipeline = (effectiveArch == PTOTargetArch::A5);
   std::string resolvedOpLibDir = opLibDir;
 

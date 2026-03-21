@@ -121,6 +121,29 @@ def PTOCreateFusionGroups : Pass<"pto-create-fusion-groups", "func::FuncOp"> {
   let dependentDialects = ["mlir::pto::PTODialect"];
 }
 
+def PreFusionAnalysis : Pass<"pto-pre-fusion-analysis", "func::FuncOp"> {
+  let summary = "Analyze block-local tile-fusion candidates before planning";
+  let description = [{
+    Builds reusable pre-planning analysis state for tile-fusion work in
+    tile_buf world. This pass is analysis-only and does not emit grouping or
+    scheduling decisions.
+  }];
+  let constructor = "mlir::pto::createPreFusionAnalysisPass()";
+  let dependentDialects = ["mlir::pto::PTODialect"];
+}
+
+def PrintPreFusionAnalysis
+    : Pass<"pto-print-pre-fusion-analysis", "func::FuncOp"> {
+  let summary = "Print pre-fusion analysis results for testing and debugging";
+  let description = [{
+    Computes the pre-fusion analysis result and prints a stable textual dump of
+    block-local compute nodes, edges, liveness, iteration-domain classes, and
+    local boundaries.
+  }];
+  let constructor = "mlir::pto::createPrintPreFusionAnalysisPass()";
+  let dependentDialects = ["mlir::pto::PTODialect"];
+}
+
 def PTOInstantiateAndLowerToLibCall
     : Pass<"pto-instantiate-lower-to-libcall", "ModuleOp"> {
   let summary =
