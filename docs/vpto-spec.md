@@ -10,6 +10,7 @@ Updated: 2026-03-21
 - [Scope](#scope)
 - [ISA Contract](#isa-contract)
 - [Core Types](#core-types)
+- [Architectural Operand Classes](#architectural-operand-classes)
 - [Address Space Conventions](#address-space-conventions)
 - [Element Type Constraints](#element-type-constraints)
 - [Special Types](#special-types)
@@ -30,6 +31,13 @@ Updated: 2026-03-21
 - [12. Extended Arithmetic](#12-extended-arithmetic)
 - [13. Stateless Stores](#13-stateless-stores)
 - [14. Stateful Store Ops](#14-stateful-store-ops)
+- [15. Vector Thread And Loop Control](#15-vector-thread-and-loop-control)
+- [16. Vector And Predicate Rearrangement](#16-vector-and-predicate-rearrangement)
+- [17. Arithmetic Extension Families](#17-arithmetic-extension-families)
+- [18. Reduction And Compression Families](#18-reduction-and-compression-families)
+- [19. Wide Register Families](#19-wide-register-families)
+- [20. Vision And Histogram Families](#20-vision-and-histogram-families)
+- [21. Detection And Suppression Families](#21-detection-and-suppression-families)
 
 ## Overview
 
@@ -201,6 +209,11 @@ Naming note:
 - `mask`: `!pto.mask`
   Opaque predicate-register type. The element granularity is carried by the producing or consuming opcode family (`*_b8`, `*_b16`, `*_b32`), not by a type parameter on `!pto.mask` itself.
 - `align`: `!pto.align`
+- `wreg<T>`: `!pto.wreg<LxT>`
+  Wide-register payload used by the `W*` instruction families. `L` and `T`
+  are family-defined and preserve the widened lane contract spelled by the ISA
+  mnemonic suffix, such as `s242u8`, `s482u16`, `s642s32`, or the 48-bit forms
+  created by `WCVT48`.
 - `buf`: buffer-like LLVM pointer type accepted by the dialect
 - `idx`: `index`
 - `i32`: `i32`
@@ -210,8 +223,48 @@ Type parameter conventions used below:
 
 - `!pto.vreg<NxT>`:
   `N` is the lane count, `T` is the element type, and `N * bitwidth(T) = 2048`
+- `!pto.wreg<LxT>`:
+  `L` is the logical wide-register lane count and `T` is the widened integer
+  lane type required by the producing or consuming `W*` family. VPTO MUST keep
+  the suffix-defined widening contract; it MUST NOT silently reinterpret a
+  `24`, `48`, or `64`-bit wide lane as an ordinary `vreg` lane.
 - `!llvm.ptr<AS>`:
   `AS` is the LLVM address space number
+
+## Architectural Operand Classes
+
+The ISA families added later in this document use architectural operand classes
+that are broader than the currently materialized `!pto.vreg`, `!pto.mask`, and
+`!pto.align` carriers.
+
+- `Xn`, `Xm`, `Xt`, `Xd`:
+  main-scalar general registers. In VPTO they carry absolute addresses,
+  configuration words, or scalar control values and MUST preserve the integer
+  or pointer width required by the consuming family.
+- `Sn`, `Sm`, `St`, `Sd`:
+  shared-register operands used by vector loops, shift-control forms, scalar
+  coefficients, and compact address-generation state. The ISA text constrains
+  some forms to 16-bit subwords and others to 32-bit or 64-bit values; VPTO
+  MUST model the width required by the named family and MUST preserve even-only
+  register-number requirements where the ISA imposes them.
+- `Ad` / `VAd`:
+  vector address-register state used by address-generation or compatibility
+  motion families. VPTO treats this as architectural address state rather than
+  as a vector payload.
+- `SPR`:
+  architecturally named special-register state. Examples in this spec include
+  `SQZN`, `AR`, and `RPN_COR_IR`. VPTO MUST preserve SPR-specific update,
+  post-update, and clearing semantics exactly; these are not ordinary scalar
+  temporaries.
+- `PBID`:
+  parameter-buffer identifier consumed by vector-thread fetch and release
+  control. VPTO treats the identifier as a logical resource handle rather than
+  as arbitrary integer data.
+
+Architectural operand classes above describe the ISA contract, not a required
+surface syntax for one textual frontend. When a VPTO lowering chooses an SSA
+carrier for one of these operands, that carrier MUST preserve the same visible
+state transition and validation rules documented here.
 
 ## Address Space Conventions
 
@@ -248,6 +301,8 @@ be read throughout the spec.
   Integer element type used for offsets, indices, lane selectors, and permutation inputs. Gather, scatter, index-generation, and lane-selection ops require integer vectors; scalar offsets use `index`, `i32`, or `i64` exactly as shown in the op syntax.
 - Family-specific exceptions:
   Predicate families use `!pto.mask` rather than `!pto.vreg`; `pto.vmull` returns split widened results; stateful store ops thread `!pto.align` and pointer/index state explicitly; and copy-programming ops are configuration side effects rather than value-producing vector instructions.
+  Wide-register families use `!pto.wreg<LxT>` and preserve the suffix-defined
+  widening relation between vector-source lanes and wide-register lanes.
 
 ## Special Types
 
@@ -2116,3 +2171,890 @@ A typical sequence starts from an align-producing load-side op such as
 In this form, VPTO makes the ordering and the address-state evolution visible to
 verification and later lowering passes instead of leaving them as hidden side
 effects on an implicit alignment register or base pointer.
+
+## 15. Vector Thread And Loop Control
+
+ISA assertions for this family:
+
+- Vector-thread control ops execute in the scalar control domain but define
+  architectural state consumed by later vector-thread execution.
+- `instr_num` fields count the loop-body or fetch-body instructions following
+  the control op; they MUST match the architecturally executed body size.
+- Loop-control forms MUST preserve the ordering, loop-layer, and once-only
+  restrictions stated below; these are correctness rules, not performance
+  hints.
+
+### `pto.vthread_fetch`
+
+- covered ISA mnemonics:
+  `VFI`, `VF`, `VFI_RU`, `VFRU`, `VFI_BC`, `VF_BC`, `VFI_PREFETCH`,
+  `VF_PREFETCH`
+- syntax:
+  `pto.vthread_fetch %target, %instr_count {target_mode = "pc_rel|absolute", action = "execute|prefetch", pbid = %pbid?, compat_template = i2?, compat_block_stride = true|false} : T, i16`
+- operand roles:
+  `%target` is either the relative vector-PC delta or the absolute vector-PC
+  start address, `%instr_count` is the unsigned instruction count of the fetched
+  vector body, `pbid` names the parameter-buffer resource attached to RU forms,
+  `compat_template` selects the backward-compatible PB-to-SREG mapping template,
+  and `compat_block_stride` enables the legacy block-stride PB mapping.
+- data types:
+  `%target` is a signed 16-bit PC-relative displacement for `VFI*` forms and a
+  scalar address value for `VF*` forms. `%instr_count` is an unsigned 16-bit
+  count.
+- semantics:
+  Starts a vector-thread fetch window or prefetch window. For `pc_rel` forms,
+  the fetched vector PC equals `sign_extend(target * 4) + PC_of_main_scalar`.
+  For `absolute` forms, the fetched vector PC equals `%target`. `action =
+  "prefetch"` performs instruction prefetch only and MUST NOT execute the
+  fetched body. RU forms associate the fetch with `PBID`. BC forms apply the
+  compatibility template to map PB entries and, when enabled, the legacy
+  block-stride extension fields into shared-register state.
+- assertions and exceptions:
+  One fetch form launches or prefetches exactly one vector body. The PC-relative
+  base is the first 4-byte slot of the fetch instruction, even when the control
+  instruction occupies multiple slots.
+
+### `pto.vparam_buffer`
+
+- covered ISA mnemonics:
+  `PUSH_PB`, `RELEASE_PBID`
+- syntax:
+  `pto.vparam_buffer "push" %xd, %xn, %xm, %xt : T, T, T, T`
+  `pto.vparam_buffer "release" %pbid : T`
+- operand roles:
+  `%xd`, `%xn`, `%xm`, and `%xt` are the four scalar words pushed into the
+  parameter buffer in order; `%pbid` is the parameter-buffer identifier being
+  released.
+- data types:
+  Push consumes four scalar register-width words and writes one 256-bit PB
+  entry. Release consumes one scalar resource identifier.
+- semantics:
+  `push` writes `{%xt, %xm, %xn, %xd}` into the next vector-thread parameter
+  buffer entry. `release` returns a previously used parameter-buffer identifier
+  to the implementation so it can be reused by a later vector loop.
+
+### `pto.vloop`
+
+- covered ISA mnemonics:
+  `VLOOPv2`, `VLOOPN`
+- syntax:
+  `pto.vloop %bound_or_count, %instr_count {mode = "counted|elements", element_type = "b8|b16|b32"?, layer = i4?, last = true|false?, loop_index = "i1|i2|i3|i4"?} : T, i16`
+- operand roles:
+  `%bound_or_count` is the loop trip count for counted loops and the total
+  element count `N` for element-counted loops, `%instr_count` is the loop-body
+  instruction count, `layer` and `last` describe the nesting layer for counted
+  loops, and `loop_index` selects which hardware loop level receives an
+  element-counted bound.
+- data types:
+  Counted loops consume a 16-bit unsigned loop count. Element-counted loops
+  consume a positive total element count and one of `b8`, `b16`, or `b32` as
+  the element granularity.
+- semantics:
+  `mode = "counted"` begins a hardware vector loop whose iteration count equals
+  `%bound_or_count`; if the count is zero the loop body is skipped. `mode =
+  "elements"` derives the loop count from the total element count `N` as
+  `(N - 1) / VL_t` and defines a final partial iteration in which only the
+  lowest `K = (N % VL_t == 0) ? VL_t : (N % VL_t)` elements are active.
+- assertions and exceptions:
+  `%instr_count` MUST be non-zero. The `layer` / `last` fields MUST encode a
+  valid nesting topology. The bound register used by a counted loop MUST NOT be
+  post-updated inside that loop body. `N` in an element-counted loop MUST be
+  greater than zero.
+
+### `pto.vpred_decl`
+
+- covered ISA mnemonics:
+  `VPD`
+- syntax:
+  `pto.vpred_decl %predicate : !pto.mask`
+- operand roles:
+  `%predicate` names the predicate register that hardware auto-updates for the
+  surrounding element-counted loop.
+- data types:
+  `%predicate` is a predicate register at the granularity implied by the
+  associated `VLOOPN` element type.
+- semantics:
+  Declares the predicate register updated by the active `VLOOPN` layer. For all
+  full iterations the declared predicate is all-active; on the final partial
+  iteration only the lowest `K` elements remain active.
+- assertions and exceptions:
+  Each element-counted loop can have at most one architecturally effective
+  predicate declaration. If multiple declarations are emitted, only the last
+  one in the loop body is effective and earlier ones are semantically dead.
+
+### `pto.vloop_exit`
+
+- covered ISA mnemonics:
+  `VEXT`, `VEXTFA`, `SEXT`
+- syntax:
+  `pto.vloop_exit %condition {condition_kind = "pred0|cmp", flush_align = true|false, compare_type = "s16|u16|s32|u32"?, compare_mode = "eq|ne|lt|gt|le|ge"?} : T`
+- operand roles:
+  `%condition` is either the governing predicate register or the pair of shared
+  registers compared by `SEXT`, `flush_align` requests the alignment-register
+  flush behavior of `VEXTFA`, and `compare_type` / `compare_mode` define the
+  typed comparison performed by `SEXT`.
+- data types:
+  Predicate exits consume a predicate register and test its least-significant
+  bit. Compare exits consume typed `s16`, `u16`, `s32`, or `u32` shared-register
+  values.
+- semantics:
+  Schedules an exit from every enclosing hardware loop layer that contains the
+  exit instruction after all remaining instructions of the current iteration
+  execute. `VEXT` tests the first predicate bit. `VEXTFA` performs the same exit
+  and additionally flushes every dirty alignment register to the address implied
+  by its last unaligned-store post-update state. `SEXT` exits when the typed
+  comparison between its operands is true.
+- assertions and exceptions:
+  An exit op MUST be the last instruction in its loop layer and there can be at
+  most one exit op in a given layer. If unaligned-store state remains dirty and
+  the program exits without a flushing form, the pending tail bytes remain the
+  programmer's responsibility.
+
+### `pto.vaddr_gen`
+
+- covered ISA mnemonics:
+  `VAG`
+- syntax:
+  `pto.vaddr_gen %ad, %i1_stride, %i2_stride, %i3_stride, %i4_stride : T, T, T, T, T`
+- operand roles:
+  `%ad` is the destination address-register state, and the four stride operands
+  are the loop-layer contributions for `i1` through `i4`.
+- data types:
+  The stride operands are unsigned shared-register values interpreted in address
+  units for the corresponding loop layer.
+- semantics:
+  Defines the affine address evolution used by vector load/store instructions:
+  `Ad = const1*i1 + const2*i2 + const3*i3 + const4*i4`, omitting absent outer
+  layers. When multiple declarations target the same address register, the last
+  declaration overwrites earlier ones.
+- assertions and exceptions:
+  `VAG` MUST be outside `VLOOPv2` bodies. When the address register is also used
+  by post-update load/store forms, the resulting address stream MUST remain
+  consecutive across loop boundaries.
+
+### `pto.vspr_store`
+
+- covered ISA mnemonics:
+  `SPRSTI`, `SPRSTS`, `SPRCLR`
+- syntax:
+  `pto.vspr_store "store_imm" %spr, %base, %offset {post_update = true|false}`
+  `pto.vspr_store "store_reg" %spr, %base, %offset_reg {post_update = true|false}`
+  `pto.vspr_store "clear" %spr`
+- operand roles:
+  `%spr` is the special register being stored or cleared, `%base` is the base
+  address shared register, `%offset` is the signed immediate displacement,
+  `%offset_reg` is the signed byte displacement from a shared register, and
+  `post_update` selects whether the base register is updated after the store.
+- data types:
+  `%base` is a shared-register address value, `%offset` is a signed 8-bit
+  immediate scaled by the stored-SPR width, and `%offset_reg` is a signed
+  32-bit byte displacement.
+- semantics:
+  Stores the selected SPR to memory at the architecturally addressed location or
+  clears the SPR to zero. If `post_update` is set, the base register itself is
+  used as the store address and then advanced by the scaled immediate or by the
+  register offset.
+- assertions and exceptions:
+  The access address MUST satisfy the alignment requirement of the named SPR.
+  Current ISA text only admits `AR` as the stored or cleared SPR in this family.
+
+### `pto.vmove_ub`
+
+- covered ISA mnemonics:
+  `MOV_UB`
+- syntax:
+  `pto.vmove_ub %dst, %src, %config : T, T, T`
+- operand roles:
+  `%dst` and `%src` are UB addresses, and `%config` is the ISA-defined control
+  word that determines the transfer submode.
+- data types:
+  `%dst` and `%src` are UB address operands. `%config` is a family-specific
+  scalar control word.
+- semantics:
+  Performs the UB-to-UB movement defined by the configuration word. VPTO treats
+  the addressing, element grouping, and submode fields as part of the
+  architectural contract of `%config`; no encoding bits are elided.
+- assertions and exceptions:
+  This family remains configuration-driven. Any frontend that lowers to this
+  VPTO family MUST preserve the full control word rather than rewriting it into
+  a narrower helper sequence.
+
+## 16. Vector And Predicate Rearrangement
+
+ISA assertions for this family:
+
+- Rearrangement families do not change the arithmetic value of a source element
+  unless the family explicitly states truncation, extension, packing, or
+  zero-fill.
+- Predicated move and predicate-logic forms follow the ISA predication mode
+  stated by the family; merge and zeroing behavior are semantically distinct.
+
+### `pto.vmov`
+
+- covered ISA mnemonics:
+  `VMOV`, `PMOV`
+- syntax:
+  `pto.vmov %dst, %src {domain = "vector|predicate", element_type = "b8|b16|b32"?, predicated = true|false, pred_mode = "merging|zeroing"}`
+- operand roles:
+  `%dst` is the destination vector or predicate register, `%src` is the source
+  register, `predicated` selects whether a governing predicate is present, and
+  `pred_mode` records whether inactive destination elements are preserved or
+  zeroed.
+- data types:
+  Vector moves use `b8`, `b16`, or `b32` lane interpretation. Predicate moves
+  always operate on `b8` predicate elements.
+- semantics:
+  Copies active source elements to the corresponding destination positions.
+  Unpredicated vector moves copy all elements. Predicated vector moves are an
+  alias of lane-select with merging behavior. Predicate moves are aliases of
+  `PAND` with identical source operands; the predicated form uses zeroing and
+  the unpredicated form uses the source predicate itself as the governing mask.
+
+### `pto.vpack_family`
+
+- covered ISA mnemonics:
+  `VPACK`, `VZUNPACK`, `VSUNPACK`
+- syntax:
+  `pto.vpack_family %dst, %src {mode = "pack|zunpack|sunpack", element_type = "b8|b16|b32|s8|s16", part = "lower|higher"}`
+- operand roles:
+  `%dst` is the destination vector, `%src` is the source vector, `mode`
+  selects pack versus zero-extension versus sign-extension, `element_type`
+  selects the source lane width, and `part` selects the lower or higher half
+  of the source or destination view.
+- data types:
+  `pack` consumes `b16` or `b32` lanes and truncates them to 8-bit or 16-bit
+  packed results. `zunpack` consumes `b8` or `b16` lanes. `sunpack` consumes
+  `s8` or `s16` lanes.
+- semantics:
+  `pack` extracts the least-significant 8-bit or 16-bit slice of each source
+  lane and writes the packed results into the selected half of `%dst`, filling
+  the other half with zeros. `zunpack` selects the lower or higher half of the
+  source vector and zero-extends each selected lane. `sunpack` selects the same
+  half and sign-extends each selected lane.
+
+### `pto.vslide_family`
+
+- covered ISA mnemonics:
+  `VSLIDE`, `PSLIDE`, `MOVVP`
+- syntax:
+  `pto.vslide_family %dst, %src, %shift_or_part {domain = "vector|predicate|vector_to_predicate", element_type = "b8|b16|b32", part = i?}`
+- operand roles:
+  `%dst` is the destination vector or predicate register, `%src` is the source
+  vector or predicate register pair base, and `%shift_or_part` is the shared
+  register shift amount or extracted subvector part index.
+- data types:
+  Slide widths are selected from `b8`, `b16`, or `b32`. The shift operand is a
+  16-bit shared-register value for slide forms and an immediate part selector
+  for `MOVVP`.
+- semantics:
+  Vector and predicate slide forms take a right-sliding extraction window of one
+  full destination width across `%src` and the next consecutive source register;
+  the base source register MUST be even. `MOVVP` extracts `b16` or `b32` slices
+  from a vector register, expands them to predicate-bit granularity, and writes
+  the result into a predicate register.
+
+### `pto.vpredicate_gen`
+
+- covered ISA mnemonics:
+  `PLT`, `PLTM`
+- syntax:
+  `pto.vpredicate_gen %dst, %limit, %loop_base? {element_type = "b8|b16|b32"}`
+- operand roles:
+  `%dst` is the generated predicate, `%limit` is the element-count threshold,
+  and `%loop_base` is the per-iteration base index used by `PLTM`.
+- data types:
+  `%limit` is a 32-bit shared-register count. `%loop_base` is a 16-bit
+  shared-register loop index.
+- semantics:
+  `PLT` sets destination element `i` true when `i < limit`, then decrements the
+  shared-register count by `VL_t`, saturating the count at zero. `PLTM` sets
+  destination element `i` true when `i + loop_base * VL_t < limit`. Both forms
+  generate fresh predicate state rather than updating only active lanes.
+
+### `pto.vpredicate_logic`
+
+- covered ISA mnemonics:
+  `PAND`, `POR`, `PXOR`
+- syntax:
+  `pto.vpredicate_logic %dst, %lhs, %rhs, %gov {logic = "and|or|xor"} : !pto.mask, !pto.mask, !pto.mask, !pto.mask`
+- operand roles:
+  `%dst` is the destination predicate, `%lhs` and `%rhs` are the input
+  predicates, `%gov` is the governing predicate, and `logic` selects the
+  bitwise operation.
+- data types:
+  All four operands are `!pto.mask` and are interpreted as `b8` predicate
+  elements.
+- semantics:
+  Applies the chosen bitwise logic operation to active predicate elements only.
+  The data type is always `b8`. Inactive elements are zeroed because the
+  governing predicate uses zeroing predication.
+
+### `pto.vpattern`
+
+- covered ISA mnemonics:
+  `VCP`
+- syntax:
+  `pto.vpattern %dst, #pat {element_type = "b16|b32"}`
+- operand roles:
+  `%dst` is the destination vector of integer indices and `#pat` selects the
+  predefined scatter/gather pattern.
+- data types:
+  `%dst` uses `b16` or `b32` integer lane widths according to the selected
+  pattern family.
+- semantics:
+  Materializes one of the ISA-defined unsigned index patterns used by layout
+  transformations before gather or scatter. The pattern value fully determines
+  the lane-to-lane affine formula; for example `chn4to8` maps lane `i` to
+  `floor(i/4) * 8 + (i mod 4)`.
+
+## 17. Arithmetic Extension Families
+
+ISA assertions for this family:
+
+- These families extend the arithmetic surface beyond the directly named
+  `pto.vadd` / `pto.vsub` / `pto.vmul` / `pto.vdiv` forms without changing the
+  ISA rule that inactive lanes do not contribute results.
+- Where the ISA uses the destination as an accumulator input, VPTO MUST model
+  that destination-read explicitly in the operation contract.
+
+### `pto.vmod`
+
+- covered ISA mnemonics:
+  `VMOD`
+- syntax:
+  `pto.vmod %dst, %lhs, %rhs, %pg : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask`
+- operand roles:
+  `%dst` is the destination vector, `%lhs` is the dividend vector, `%rhs` is
+  the divisor vector, and `%pg` is the zeroing predicate.
+- data types:
+  `u16`, `s16`, `u32`, `s32`, `f16`, `f32`
+- semantics:
+  For each active lane, computes `%lhs mod %rhs` and writes the result to `%dst`.
+
+### `pto.vdiv_fixed`
+
+- covered ISA mnemonics:
+  `VDIVF`
+- syntax:
+  `pto.vdiv_fixed %dst, %num, %den, %pg : !pto.vreg<Nxu16>, !pto.vreg<Nxu16>, !pto.vreg<Nxu16>, !pto.mask`
+- operand roles:
+  `%dst` is the destination vector, `%num` is the fixed-point numerator,
+  `%den` is the divisor vector, and `%pg` is the zeroing predicate.
+- data types:
+  All vector operands are `u16`.
+- semantics:
+  For each active lane, computes `(%num << 16) / %den`, keeps the low 16 bits as
+  a `0.16` fixed-point result, and saturates any quotient greater than `0xFFFF`
+  to `0xFFFF`.
+
+### `pto.vfma_dst`
+
+- covered ISA mnemonics:
+  `VMADD`, `VAXPY`
+- syntax:
+  `pto.vfma_dst %dst, %mul_lhs, %mul_rhs, %pg {scalar_rhs = true|false}`
+- operand roles:
+  `%dst` is both accumulator input and result, `%mul_lhs` is the vector source,
+  `%mul_rhs` is the vector or scalar multiplier, and `%pg` is the governing
+  predicate.
+- data types:
+  `VMADD`: `f16`, `bf16`, `f32`
+  `VAXPY`: `f16`, `f32`
+- semantics:
+  `VMADD` computes `%dst = %mul_lhs * %dst + %mul_rhs` on active lanes, using
+  the fused floating-point behavior of the ISA. `VAXPY` computes `%dst =
+  %mul_rhs * %mul_lhs + %dst`, where `%mul_rhs` is a scalar shared-register
+  coefficient broadcast across the active lanes.
+- assertions and exceptions:
+  `VMADD` is not interchangeable with a separate multiply followed by add;
+  the fused rounding path is architecturally visible.
+
+### `pto.vabs_and_diff`
+
+- covered ISA mnemonics:
+  `VABSDIF`, `VNEG`
+- syntax:
+  `pto.vabs_and_diff %dst, %lhs, %rhs?, %pg {mode = "absdiff|neg"}`
+- operand roles:
+  `%dst` is the destination vector, `%lhs` is the source vector, `%rhs` is the
+  second source vector for `absdiff`, and `%pg` is the zeroing predicate.
+- data types:
+  `absdiff` accepts `u8`, `s8`, `u16`, `s16`, `u32`, `s32`, `f16`, or `f32`.
+  `neg` preserves the source element type.
+- semantics:
+  `absdiff` computes `abs(lhs - rhs)` in full precision before the absolute
+  operation and then truncates without implicit saturation. `neg` computes the
+  lane-wise arithmetic negation of `%lhs` on the active lanes.
+
+### `pto.vround_shift`
+
+- covered ISA mnemonics:
+  `VRND`, `VRNDS`, `VRNDI`, `VSHLI`, `VSHRI`
+- syntax:
+  `pto.vround_shift %dst, %src, %amount, %pg {mode = "round|shift_left|shift_right", amount_source = "vector|shared|imm", signed_shift = true|false}`
+- operand roles:
+  `%dst` is the destination vector, `%src` is the input vector, `%amount` is
+  the per-lane, shared-register, or immediate shift amount, and `%pg` is the
+  zeroing predicate.
+- data types:
+  round forms: `s16`, `s32`
+  shift-left forms: `u8`, `u16`, `u32`
+  shift-right forms: `b8`, `b16`, `b32` with `signed_shift` selecting logical
+  versus arithmetic behavior
+- semantics:
+  Round forms compute `(src + (1 << (amount - 1))) >> amount`; if the shift
+  magnitude exceeds the element width, the result is zero. Shift-left performs a
+  logical left shift and yields zero when the shift magnitude exceeds the lane
+  width. Shift-right performs logical or arithmetic right shift according to
+  `signed_shift`; for arithmetic right shift, overlarge positive magnitudes
+  yield `0` for non-negative inputs and `-1` for negative inputs.
+
+### `pto.vavg`
+
+- covered ISA mnemonics:
+  `VAVG`
+- syntax:
+  `pto.vavg %dst, %lhs, %rhs, %pg {round = true|false}`
+- operand roles:
+  `%dst` is the destination vector, `%lhs` and `%rhs` are the averaged source
+  vectors, and `%pg` is the zeroing predicate.
+- data types:
+  `u8`, `s8`, `u16`, `s16`
+- semantics:
+  Computes the lane-wise arithmetic average of `%lhs` and `%rhs` as
+  `(lhs + rhs) >> 1`, optionally rounding toward positive infinity when the
+  `round` bit is set.
+
+### `pto.vtriad`
+
+- covered ISA mnemonics:
+  `VADD3`, `VADIF`, `VSAD`, `VSADDS`
+- syntax:
+  `pto.vtriad %dst, %lhs, %rhs, %pg {mode = "add3|adif|sad|sadds", scalar_rhs = true|false, saturate = true|false}`
+- operand roles:
+  `%dst` is the destination vector and, for `add3`, `adif`, and `sad`, also the
+  accumulator input. `%lhs` and `%rhs` are the additional vector or scalar
+  operands selected by the mode. `%pg` is the zeroing predicate.
+- data types:
+  `add3`, `adif`, and `sad` accept `u8`, `s8`, `u16`, `s16`, `u32`, or `s32`.
+  `sadds` accepts `s16` or `s32`.
+- semantics:
+  `add3` computes `dst = dst + lhs + rhs`.
+  `adif` computes `dst = lhs - rhs + dst`.
+  `sad` computes `dst = abs(lhs - rhs) + dst`.
+  `sadds` adds a scalar shared-register value to `%lhs` with signed saturation.
+
+### `pto.vprelu`
+
+- covered ISA mnemonics:
+  `VPRELU`
+- syntax:
+  `pto.vprelu %dst, %src, %slope, %pg`
+- operand roles:
+  `%dst` is the destination vector, `%src` is the source activation vector,
+  `%slope` is the negative-side multiplier vector, and `%pg` is the zeroing
+  predicate.
+- data types:
+  `f16`, `f32`
+- semantics:
+  For each active lane, computes `%src` when `%src >= 0` and `%src * %slope`
+  otherwise.
+
+### `pto.vsat_addsub`
+
+- covered ISA mnemonics:
+  `VSADD`, `VSSUB`
+- syntax:
+  `pto.vsat_addsub %dst, %lhs, %rhs, %pg {mode = "add|sub"}`
+- operand roles:
+  `%dst` is the destination vector, `%lhs` and `%rhs` are the signed inputs, and
+  `%pg` is the zeroing predicate.
+- data types:
+  `s16`, `s32`
+- semantics:
+  Computes lane-wise signed addition or subtraction and saturates the result to
+  the destination lane range.
+
+### `pto.vrsqrt`
+
+- covered ISA mnemonics:
+  `VRSQRT`
+- syntax:
+  `pto.vrsqrt %dst, %src, %pg`
+- operand roles:
+  `%dst` is the destination vector, `%src` is the source vector, and `%pg` is
+  the zeroing predicate.
+- data types:
+  `f16`, `f32`
+- semantics:
+  For each active lane, computes `1 / sqrt(src)`.
+- assertions and exceptions:
+  A negative input raises an exception. `-0` yields `-inf`.
+
+## 18. Reduction And Compression Families
+
+ISA assertions for this family:
+
+- Reduction families write their scalar or shortened-vector results into the
+  low lanes of the destination vector and zero-fill the remaining lanes.
+- Predicate operands in this chapter select which source elements participate in
+  the reduction; they do not mask the writeback of the reduced result.
+
+### `pto.vreduce_bound`
+
+- covered ISA mnemonics:
+  `VCBMAX`, `VCBMIN`
+- syntax:
+  `pto.vreduce_bound %dst, %match_pred, %src, %pg {mode = "max|min"}`
+- operand roles:
+  `%dst` holds the scalar reduction result in its lowest lane, `%match_pred`
+  marks the source lanes equal to that result, `%src` is the reduced vector, and
+  `%pg` selects the active lanes.
+- data types:
+  `u8`, `s8`, `u16`, `s16`, `u32`, `s32`, `f16`, `f32`
+- semantics:
+  Finds the global maximum or minimum over the active lanes, writes that value
+  to the lowest lane of `%dst`, zero-fills the remaining lanes, and sets the
+  corresponding bits in `%match_pred` for every source lane equal to the chosen
+  bound.
+- assertions and exceptions:
+  For floating-point max, inactive lanes are treated as `-inf`; for floating
+  min, they are treated as `+inf`. For integer max and min, inactive lanes are
+  treated as the literal minimum or maximum value, respectively. If every lane
+  is inactive, the sentinel value is written and `%match_pred` is all-zero.
+  NaN propagates to the result and marks each NaN lane in `%match_pred`. For max
+  the bound comparison treats `+0 > -0`; for min it treats `-0 < +0`. In the
+  match predicate, both `+0` and `-0` lanes compare equal to the selected zero.
+
+### `pto.vreduce_group`
+
+- covered ISA mnemonics:
+  `VCGADD`, `VCGMAX`, `VCGMIN`, `VCPADD`
+- syntax:
+  `pto.vreduce_group %dst, %src, %pg {mode = "add32B|max32B|min32B|pair_add"}`
+- operand roles:
+  `%dst` is the shortened-vector reduction result, `%src` is the source vector,
+  and `%pg` selects the active input lanes.
+- data types:
+  `add32B`, `max32B`, and `min32B` accept `u8`, `s8`, `u16`, `s16`, `u32`,
+  `s32`, `f16`, or `f32`. `pair_add` accepts `f16` or `f32`.
+- semantics:
+  `add32B` reduces all active elements within each 32-byte block and packs the
+  block results contiguously into the low lanes of `%dst`. `max32B` and `min32B`
+  compute the maximum or minimum of each block with the same block-wise packing.
+  `pair_add` reduces every adjacent pair of lanes and writes the pairwise sums
+  into the lower half of `%dst`.
+- assertions and exceptions:
+  Inactive lanes contribute `0` to additive reductions, `-inf` or the literal
+  minimum to max reductions, and `+inf` or the literal maximum to min
+  reductions. If all lanes of an additive reduction are inactive, the reduced
+  value is `0` or `+0`.
+
+### `pto.vsqueeze`
+
+- covered ISA mnemonics:
+  `VSQZ`, `VUSQZ`
+- syntax:
+  `pto.vsqueeze %dst, %src?, %pg {mode = "squeeze|unsqueeze", element_type = "b8|b16|b32", store_hint = true|false, sqzn = "SQZN"?}`
+- operand roles:
+  `%dst` is the squeezed or unsqueezed vector result, `%src` is the input vector
+  for `squeeze`, `%pg` is the governing predicate, `store_hint` carries the
+  ISA's `#st` hint, and `sqzn` names the SPR receiving the surviving-byte count.
+- data types:
+  `squeeze` and `unsqueeze` use `b8`, `b16`, or `b32` lane interpretation.
+- semantics:
+  `squeeze` compacts the active `%src` elements toward the least-significant end
+  of the logical result sequence, writes the packed sequence into `%dst`, and
+  zero-fills the remaining lanes. It writes the number of surviving bytes into
+  `SQZN`. `unsqueeze` computes the prefix count of active predicate bits, with
+  `dst[0] = 0` and `dst[i] = dst[i-1] + 1` when `pg[i-1]` is true.
+- assertions and exceptions:
+  When `store_hint` is set, the current `SQZN` value is queued for a later
+  `VSTUR`; the total number of queued hints MUST match the total number of
+  consuming stateful stores, and a `VSTUR` MUST separate consecutive squeezed
+  results with `store_hint = true` to avoid hardware deadlock.
+
+## 19. Wide Register Families
+
+ISA assertions for this family:
+
+- `W*` families operate on wide-register architectural state and MUST preserve
+  the widening, sign-extension, and lane-selection rules encoded by the mnemonic
+  suffix.
+- The destination of a wide arithmetic op is not interchangeable with a normal
+  vector register, even when the final packed result later returns to `vreg`.
+
+### `pto.wdup`
+
+- covered ISA mnemonics:
+  `WDUPS`
+- syntax:
+  `pto.wdup %dst, %scalar {element_type = "u8|s8|u16|s16"}`
+- operand roles:
+  `%dst` is the destination wide register and `%scalar` is the shared-register
+  source value.
+- data types:
+  The source scalar is interpreted as `u8`, `s8`, `u16`, or `s16` and widened
+  accordingly.
+- semantics:
+  Broadcasts the source scalar into every active wide-register lane, zero- or
+  sign-extending the source subword to the widened lane width required by the
+  selected element type.
+
+### `pto.wmov`
+
+- covered ISA mnemonics:
+  `WMOV`, `WMOVT`
+- syntax:
+  `pto.wmov %dst, %src, %pg? {element_type = "b8|b16", predicated = true|false}`
+- operand roles:
+  `%dst` is the destination wide register, `%src` is the source wide register,
+  and `%pg` is the optional governing predicate for the merging form.
+- data types:
+  The lane interpretation is `b8` or `b16`.
+- semantics:
+  Copies wide-register lanes from `%src` to `%dst`. The predicated form updates
+  only active lanes and uses merging behavior; the unpredicated form copies all
+  lanes.
+
+### `pto.wwide_add`
+
+- covered ISA mnemonics:
+  `WADD`, `WADDA`, `WSUB`, `WSUBA`, `WADDSUB`
+- syntax:
+  `pto.wwide_add %dst, %lhs, %rhs, %pg {mode = "add|add_acc|sub|sub_acc|addsub", element_type = "u8|s8|u16|s16"}`
+- operand roles:
+  `%dst` is either a pure result or an accumulator/result depending on `mode`,
+  `%lhs` and `%rhs` are vector-register sources, and `%pg` is the zeroing
+  predicate.
+- data types:
+  The source vector lanes are `u8`, `s8`, `u16`, or `s16`. The destination wide
+  lanes are the corresponding widened signed or zero-extended integer lanes.
+- semantics:
+  `add` and `sub` compute lane-wise wide addition or subtraction and write the
+  widened result to `%dst`. `add_acc` and `sub_acc` accumulate the widened sum
+  or difference into the incoming `%dst` wide value. `addsub` computes `lhs +
+  rhs - dst`. Signed element types sign-extend to the widened lane width and
+  unsigned types zero-extend.
+
+### `pto.wwide_mul`
+
+- covered ISA mnemonics:
+  `WMUL`, `WMULA`, `WMULS`, `WMULAS`, `WMULM`
+- syntax:
+  `pto.wwide_mul %dst, %lhs, %rhs, %pg? {mode = "mul|mula|muls|mulas|mulm", lhs_type = "...", rhs_type = "...", rhs_source = "vector|shared|vector_pair", part = "even|odd"?}`
+- operand roles:
+  `%dst` is the wide result or accumulator/result, `%lhs` is the vector source,
+  `%rhs` is a vector, shared-register, or paired-vector source depending on the
+  mode, `%pg` is the governing predicate when present, and `part` selects even
+  or odd source-element participation for the forms that consume only half of a
+  wider source lane stream.
+- data types:
+  The allowed source pairings are exactly those encoded by the ISA suffix:
+  `u8s8`, `u8u8`, `u8s16`, `s8s8`, `s8s16`, `u16u16`, `u16s32`, `u16s16`,
+  `u16u32`, `s16s16`, `s16s32`, `s16u32`, and the mixed `u8s16` / `s8s16`
+  `WMULM` forms.
+- semantics:
+  Computes the ISA-defined wide multiplication, multiply-accumulate, or
+  mixed-source multiply variant. The result lane width depends on the operand
+  pairing: 8-bit by 8-bit and 8-bit by 16-bit families widen to 24-bit lanes,
+  while 16-bit by 16-bit and 16-bit by 32-bit families widen to 48-bit lanes.
+  Mixed-pair forms that read `{Vm, Vm+1}` or a shared-register scalar MUST
+  preserve the exact source-lane pairing required by the mnemonic suffix.
+- assertions and exceptions:
+  For `u8s16` / `s8s16` mixed forms, `Vm` denotes the even-numbered base of the
+  `{Vm, Vm+1}` pair. Forms with `#part` consume only even or only odd elements
+  as specified by that selector.
+
+### `pto.wpack`
+
+- covered ISA mnemonics:
+  `WPACK`, `WPACKT`, `WPACKA`, `WPACKI`, `WPACKIT`, `WPACKIA`, `WPACKS`,
+  `WPACKST`, `WPACKSA`
+- syntax:
+  `pto.wpack %dst, %src, %shift, %pg? {shift_source = "vector|shared|imm", transpose = true|false, accum_part = "none|even|odd", round_sat = true|false, result_type = "..."}`
+- operand roles:
+  `%dst` is the destination vector register, `%src` is the wide-register source,
+  `%shift` is the per-lane vector shift, shared-register shift, or immediate
+  shift amount, `%pg` is the zeroing predicate for predicated forms, and
+  `accum_part` selects even or odd packing when the source wide register carries
+  paired substreams.
+- data types:
+  The destination type is one of the ISA suffix-defined results such as
+  `s242u8`, `s242s8`, `s482u16`, `s482s16`, `s242u16`, `s242s16`, `s482s32`,
+  or `s642s32`.
+- semantics:
+  Right-shifts each wide-register lane by the selected shift amount, optionally
+  adds the last shifted-off bit for rounding, optionally saturates the result to
+  the destination lane type, and writes the truncated destination-width value
+  into `%dst`. When the shift amount exceeds 32, the shift is clamped to 32.
+  `result_type` preserves the mnemonic suffix such as `s242u8`, `s482u16`, or
+  `s642s32`.
+
+### `pto.wcvt48`
+
+- covered ISA mnemonics:
+  `WCVT48`
+- syntax:
+  `pto.wcvt48 %dst, %hi32, %lo16, {part = "even|odd"}`
+- operand roles:
+  `%dst` is the destination wide register, `%hi32` supplies the high 32 bits of
+  each wide lane, and `%lo16` supplies the low 16-bit slice taken from even or
+  odd vector lanes.
+- data types:
+  `%hi32` is a 32-bit vector source and `%lo16` is a 16-bit vector source. The
+  destination wide lanes are 48-bit integers.
+- semantics:
+  Concatenates 32 bits from each lane of `%hi32` with 16 bits from the even or
+  odd lanes of `%lo16`, producing 48-bit wide-register lanes written to the
+  selected even or odd half of `%dst`.
+
+## 20. Vision And Histogram Families
+
+ISA assertions for this family:
+
+- These families are not generic arithmetic shorthands; each one preserves its
+  ISA-defined window shape, configuration word layout, and block accumulation
+  rule.
+- Memory-address operands in this section refer to architecturally aligned
+  buffer addresses rather than arbitrary byte pointers.
+
+### `pto.vfifr1`
+
+- covered ISA mnemonics:
+  `FIFR1`, `FMAX`, `FMIN`
+- syntax:
+  `pto.vfifr1 %dst_addr, %src_addr, %cfg_xm, %cfg_xt? {mode = "filter|max|min", input_type = "u8|s8|u16|s16", round = true|false}`
+- operand roles:
+  `%dst_addr` is the destination address, `%src_addr` is the source address,
+  `%cfg_xm` is the configuration register containing the window size, strides,
+  repeat count, and first-row coefficients, and `%cfg_xt` carries the row
+  multiplication factors for filter mode.
+- data types:
+  `filter` accepts `u8`, `s8`, `u16`, or `s16` inputs and produces `s16`
+  outputs. `max` and `min` accept `u8` inputs and produce `u8` outputs.
+- semantics:
+  Executes the fast-image-filter pipeline directly in the vector sequencer.
+  `filter` computes the separable 3-tap or 5-tap FIR described by the
+  coefficient matrix. `max` and `min` compute the corresponding morphological
+  filter over the same streaming window. `cfg_xm` also carries source stride,
+  destination stride, and input-line count, and the line count MUST be at least
+  the selected window size.
+- assertions and exceptions:
+  Source and destination addresses MUST be 32-byte aligned. Filter coefficients
+  are signed 5-bit integers. If rounding is enabled, both the intermediate and
+  final right shifts round by adding the last shifted-off bit and then saturate
+  on overflow.
+
+### `pto.wfifr2`
+
+- covered ISA mnemonics:
+  `WFIFR2`, `WFIFR2A`, `WFIFR2S`
+- syntax:
+  `pto.wfifr2 %dst, %src, %coeffs {mode = "fir|accum|sub", input_type = "u8|s8|u16|s16"}`
+- operand roles:
+  `%dst` is the destination wide register, `%src` is the even-numbered source
+  vector-register pair base, and `%coeffs` is the shared-register coefficient
+  pack holding `C1..C5`.
+- data types:
+  `%src` uses `u8`, `s8`, `u16`, or `s16` input lanes. `%coeffs` contains five
+  signed 5-bit coefficients packed into one shared register.
+- semantics:
+  Reads `VL_16 + 4` source elements from `%src` and `%src + 1`, computes the
+  5-tap one-dimensional FIR defined by the coefficient pack, and writes the
+  result into `%dst`. `accum` adds the FIR result into the incoming wide value;
+  `sub` subtracts the FIR result from the incoming wide value.
+
+### `pto.vintegral`
+
+- covered ISA mnemonics:
+  `VINTEGRALv2`
+- syntax:
+  `pto.vintegral %dst_even, %dst_odd, %src : !pto.vreg<Nxu16>, !pto.vreg<Nxu16>, !pto.vreg<Mxu8>`
+- operand roles:
+  `%dst_even` receives the lower half of the prefix sums, `%dst_odd` receives
+  the upper half, and `%src` is the input vector of `u8` elements.
+- data types:
+  `%src` is `u8`; both results are `u16`.
+- semantics:
+  Computes the integral-prefix sums of the input `u8` lanes and writes the lower
+  half of the `u16` prefix results to `%dst_even` and the upper half to
+  `%dst_odd`. `%dst_even` must name an even register pair base in the ISA model.
+- assertions and exceptions:
+  The second result is incomplete until the program adds `%dst_even` into
+  `%dst_odd`; the final integral vector is `{dst_odd + dst_even, dst_even}`.
+  For vector lengths at or below 256 bytes, this family does not overflow. For
+  longer vectors, overflow truncates to 16 bits before writeback.
+
+### `pto.vhistogram`
+
+- covered ISA mnemonics:
+  `DHISTv2`, `CHISTv2`
+- syntax:
+  `pto.vhistogram %dst, %src, %pg, #bin {mode = "distribution|cumulative"}`
+- operand roles:
+  `%dst` is the destination vector of `u16` bin accumulators, `%src` is the
+  source vector of `u8` samples, `%pg` selects active input elements, and `#bin`
+  chooses which contiguous range of the 256 total histogram bins is represented
+  by the destination vector.
+- data types:
+  `%src` is `u8`, `%dst` is `u16`, and `#bin` is a 4-bit unsigned immediate.
+- semantics:
+  `distribution` accumulates the per-bin counts for the selected bin range.
+  `cumulative` accumulates the cumulative histogram for the same range. `%pg`
+  filters which input elements contribute, but it does not mask destination
+  writes: every destination bin accumulator is updated.
+- assertions and exceptions:
+  `#bin` MUST be less than `256 / VL_16` for the active vector length.
+
+## 21. Detection And Suppression Families
+
+ISA assertions for this family:
+
+- These families are specialized state-transform instructions. Their
+  destination state is defined by the matrix, predicate, and SPR layout rules
+  below and MUST NOT be rewritten as generic reduction ops.
+
+### `pto.prpnset`
+
+- covered ISA mnemonics:
+  `PRPNSET`
+- syntax:
+  `pto.prpnset %index, %pg, %rpn_cor_ir {element_type = "f16"}`
+- operand roles:
+  `%index` is the shared-register selector for the slice of `RPN_COR_IR`,
+  `%pg` is the source predicate, and `%rpn_cor_ir` is the special-register state
+  being updated.
+- data types:
+  The defined contract is `f16` only. `%index` is an integer shared-register
+  selector and `%pg` is the corresponding predicate input.
+- semantics:
+  For `f16`, reduces every 16-element block of `%pg` with OR, selects the slice
+  of `RPN_COR_IR` indexed by `%index`, and ORs each block result into that slice
+  in place.
+- assertions and exceptions:
+  The currently defined ISA contract covers `f16` only; any other type is
+  outside this specification.
+
+### `pto.rpn_cor_diag2`
+
+- covered ISA mnemonics:
+  `RPN_COR_DIAG2`
+- syntax:
+  `pto.rpn_cor_diag2 %dst_addr, %src_addr, %rpn_cor_ir {element_type = "f16"}`
+- operand roles:
+  `%dst_addr` is the destination address for the suppression vector,
+  `%src_addr` is the source address of the suppression matrix, and
+  `%rpn_cor_ir` is the incoming diagonal suppression-state SPR.
+- data types:
+  The defined contract is `f16` only. The destination is a 16-element
+  suppression vector of 16-bit results; the source is a 16x16 matrix of 2-bit
+  suppression entries.
+- semantics:
+  Reads the 16x16x2-bit suppression matrix from `%src_addr`, computes the 16
+  suppression-vector bits using the staged diagonal recurrence with
+  `RPN_COR_IR`, and writes the 16 packed 16-bit suppression outputs to
+  `%dst_addr`.
+- assertions and exceptions:
+  Source and destination addresses MUST be 32-byte aligned. The currently
+  defined ISA contract covers `f16` only.
