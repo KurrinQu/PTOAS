@@ -2,6 +2,17 @@
 
 ## ADDED Requirements
 
+### Requirement: OpSchedulingPass MUST stay within 5.4 scheduling scope
+
+`OpSchedulingPass` MUST 只消费既有的 `pto.fusion.group_id` / `pto.fusion.order` 元数据做物理重排，不得重新决定 fusion group 的成员集合或组内逻辑顺序。
+
+#### Scenario: Scheduler consumes existing planning metadata without regrouping
+
+- **WHEN** `FusionPlanPass` 已经为一组 op 产出 `pto.fusion.group_id` / `pto.fusion.order`
+- **THEN** `OpSchedulingPass` MUST 以这些 metadata 作为唯一的 group 身份与组内顺序来源
+- **AND** MUST NOT 在 5.4 阶段新增、删除、拆分、合并 fusion group
+- **AND** MUST NOT 重新解释哪些 op 应属于同一 fusion group
+
 ### Requirement: OpSchedulingPass MUST compact group members into contiguous block-local spans
 
 `OpSchedulingPass` MUST 在 basic block 内将同一融合组的成员压缩成连续运行片段。
@@ -14,7 +25,7 @@
 
 ### Requirement: OpSchedulingPass MUST preserve legality boundaries
 
-调度不得破坏 SSA、side-effect、barrier 或 region / block 合法性。
+`OpSchedulingPass` MUST 保持 SSA、side-effect、barrier 以及 region / block 合法性，不得通过调度破坏这些边界。
 
 #### Scenario: Scheduler does not cross hard boundaries
 
@@ -28,7 +39,7 @@
 
 ### Requirement: Unrelated treshape MUST NOT act as a global scheduling barrier
 
-`treshape` 不属于 fusion group，但对与其无依赖关系的 group 成员，不得被当作全局调度屏障。
+`OpSchedulingPass` MUST NOT 将与目标 group 无依赖关系的 `pto.treshape` 当作全局调度屏障；`pto.treshape` 不属于 fusion group。
 
 #### Scenario: Group can move across an unrelated treshape
 

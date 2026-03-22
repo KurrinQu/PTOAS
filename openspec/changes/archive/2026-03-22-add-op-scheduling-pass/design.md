@@ -4,6 +4,8 @@
 
 本 design 只覆盖 5.4 `OpSchedulingPass`。
 
+5.3 planning 在本 design 中视为既成事实：本 change 只消费既有 planning metadata，不回退到重新决定 group 成员集合。
+
 前置条件固定为：
 
 - `FusionPlanPass` 已存在
@@ -39,10 +41,26 @@
 **Non-Goals:**
 
 - 不改变 group 划分结果
+- 不新增、删除、拆分或合并既有 fusion group
 - 不做 CFG 变换
 - 不做 5.5+ 后续阶段
 
 ## Decisions
+
+### 决策 0：5.4 只消费 planning 结果，不重新决定 group
+
+`OpSchedulingPass` 的输入契约固定为：
+
+- `FusionPlanPass` 已完成 group 选择
+- `pto.fusion.group_id` 表达 group 身份
+- `pto.fusion.order` 表达组内逻辑顺序
+
+`OpSchedulingPass` 只在这些 metadata 之上做 block-local 物理重排，不新增、删除、拆分、合并 group，也不覆写组内逻辑顺序。
+
+采用该方案的原因：
+
+- 这保持了 5.3 planning 与 5.4 scheduling 的明确阶段边界。
+- 当某个 group 因合法性边界无法被进一步压缩时，问题应回到 planning 或 legality 定义，而不是由 scheduling 临时重选组。
 
 ### 决策 1：调度采用 block-local 稳定拓扑压缩
 
@@ -88,7 +106,7 @@
 
 采用该方案的原因：
 
-- 这让 `OpSchedulingPass` 能直接复用 analysis / planning 阶段对边界的分类结果。
+- 这让 `OpSchedulingPass` 能直接复用 analysis / planning 阶段对边界的分类结果，同时不把 group 决策重新拉回 5.4。
 
 ## Risks / Trade-offs
 

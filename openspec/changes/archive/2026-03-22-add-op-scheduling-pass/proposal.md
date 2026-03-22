@@ -4,6 +4,8 @@
 
 `FusionPlanPass` 只负责逻辑分组，不负责改变指令的物理位置。要让后续 5.5 `fusion_region` 封装成立，还需要一个单独的调度 change，把同组 op 压缩成连续片段。因此第三个独立 change 专门落 5.4 `OpSchedulingPass`。
 
+本 change 以 5.3 `FusionPlanPass` 已经产出的 group metadata 为前提输入，只处理这些既有 group 的物理聚拢，不重新决定哪些 op 成组。
+
 ### 背景与动机
 
 当前仓库里没有一个和 tile fusion 规划解耦的调度阶段，这会带来 4 个直接问题：
@@ -39,6 +41,7 @@
 ### 非目标
 
 - 不重新决定谁属于同一 fusion group。
+- 不新增、删除、拆分或合并 `FusionPlanPass` 已选出的 group。
 - 不改变 CFG。
 - 不做 5.5 `fusion_region` 封装或更后段变换。
 - 不引入新的用户可见 CLI。
