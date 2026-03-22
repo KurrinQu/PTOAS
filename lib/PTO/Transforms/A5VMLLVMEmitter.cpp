@@ -41,6 +41,7 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -1250,19 +1251,17 @@ static LogicalResult rewriteFunctionsToEmitCStyleABI(
   return success();
 }
 
-} // namespace
-
-LogicalResult
-translateA5VMModuleToLLVMText(ModuleOp module, llvm::raw_ostream &os,
-                              const A5VMEmissionOptions &options,
-                              llvm::raw_ostream &diagOS) {
+static std::unique_ptr<llvm::Module>
+buildLLVMModuleFromA5VM(ModuleOp module, llvm::LLVMContext &llvmContext,
+                        const A5VMEmissionOptions &options,
+                        llvm::raw_ostream &diagOS) {
   OwningOpRef<ModuleOp> cloned(cast<ModuleOp>(module->clone()));
   auto vecScopeCounts = collectVecScopeLoopCounts(*cloned);
   auto abiSpecs = collectFunctionABISpecs(*cloned);
 
   if (failed(rewriteA5VMOps(*cloned, diagOS))) {
     diagOS << "A5VM LLVM emission failed: A5VM-to-call rewriting failed\n";
-    return failure();
+    return nullptr;
   }
 
   PassManager pm(cloned->getContext());
@@ -1276,27 +1275,51 @@ translateA5VMModuleToLLVMText(ModuleOp module, llvm::raw_ostream &os,
   pm.addPass(createReconcileUnrealizedCastsPass());
   if (failed(pm.run(*cloned))) {
     diagOS << "A5VM LLVM emission failed: official lowering pipeline failed\n";
-    return failure();
+    return nullptr;
   }
 
   if (failed(applyQueriedTargetAttrs(*cloned, options, diagOS)))
-    return failure();
+    return nullptr;
 
   registerBuiltinDialectTranslation(*cloned->getContext());
   registerLLVMDialectTranslation(*cloned->getContext());
-  llvm::LLVMContext llvmContext;
   auto llvmModule = translateModuleToLLVMIR(cloned.get(), llvmContext);
   if (!llvmModule) {
     diagOS << "A5VM LLVM emission failed: LLVM IR export failed\n";
-    return failure();
+    return nullptr;
   }
 
   attachAIVectorScopeMetadata(*llvmModule, vecScopeCounts);
   if (failed(rewriteFunctionsToEmitCStyleABI(*llvmModule, abiSpecs, diagOS)))
-    return failure();
+    return nullptr;
   llvmModule->setModuleIdentifier("ptoas.hivm.official");
   llvmModule->setSourceFileName("ptoas.hivm.official");
+  return llvmModule;
+}
+
+} // namespace
+
+LogicalResult
+translateA5VMModuleToLLVMText(ModuleOp module, llvm::raw_ostream &os,
+                              const A5VMEmissionOptions &options,
+                              llvm::raw_ostream &diagOS) {
+  llvm::LLVMContext llvmContext;
+  auto llvmModule = buildLLVMModuleFromA5VM(module, llvmContext, options, diagOS);
+  if (!llvmModule)
+    return failure();
   llvmModule->print(os, nullptr);
+  return success();
+}
+
+LogicalResult
+translateA5VMModuleToLLVMBitcode(ModuleOp module, llvm::raw_ostream &os,
+                                 const A5VMEmissionOptions &options,
+                                 llvm::raw_ostream &diagOS) {
+  llvm::LLVMContext llvmContext;
+  auto llvmModule = buildLLVMModuleFromA5VM(module, llvmContext, options, diagOS);
+  if (!llvmModule)
+    return failure();
+  llvm::WriteBitcodeToFile(*llvmModule, os);
   return success();
 }
 

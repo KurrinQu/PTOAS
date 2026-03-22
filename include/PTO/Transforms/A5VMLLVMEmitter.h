@@ -18,6 +18,11 @@ translateA5VMModuleToLLVMText(ModuleOp module, llvm::raw_ostream &os,
                               const A5VMEmissionOptions &options,
                               llvm::raw_ostream &diagOS);
 
+LogicalResult
+translateA5VMModuleToLLVMBitcode(ModuleOp module, llvm::raw_ostream &os,
+                                 const A5VMEmissionOptions &options,
+                                 llvm::raw_ostream &diagOS);
+
 } // namespace mlir::pto
 
 #endif // MLIR_DIALECT_PTO_TRANSFORMS_A5VMLLVMEMITTER_H

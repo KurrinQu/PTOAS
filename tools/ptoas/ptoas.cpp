@@ -176,6 +176,11 @@ static llvm::cl::opt<bool> a5vmEmitHIVMOfficialLLVM(
     llvm::cl::desc("After lowering to A5VM IR, emit textual LLVM/HIVM via the official LLVM dialect export path"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> a5vmEmitHIVMOfficialBitcode(
+    "a5vm-emit-hivm-bc",
+    llvm::cl::desc("After lowering to A5VM IR, emit LLVM bitcode via the official LLVM dialect export path"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<bool> a5vmAllowUnresolved(
     "a5vm-allow-unresolved",
     llvm::cl::desc("Emit explicit unresolved A5VM comments instead of failing"),
@@ -862,6 +867,22 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  if (a5vmEmitHIVMOfficialLLVM && a5vmEmitHIVMOfficialBitcode) {
+    llvm::errs() << "Error: --a5vm-emit-hivm-llvm and --a5vm-emit-hivm-bc "
+                    "cannot be used together.\n";
+    return 1;
+  }
+
+  if (effectiveBackend != PTOBackend::A5VM &&
+      (a5vmEmitHIVMText || a5vmEmitHIVMOfficialLLVM ||
+       a5vmEmitHIVMOfficialBitcode || a5vmPrintIR || dumpA5VMIR ||
+       a5vmPrintIntrinsics || a5vmAllowUnresolved ||
+       !a5vmUnresolvedReport.empty() || !hivmUnresolvedReport.empty())) {
+    llvm::errs() << "Error: A5VM-specific flags require "
+                    "--pto-backend=a5vm.\n";
+    return 1;
+  }
+
   // Read whole input first (so we can auto-detect .ptobc by magic).
   auto fileOrErr = llvm::MemoryBuffer::getFileOrSTDIN(inputFilename);
   if (!fileOrErr) {
@@ -1033,7 +1054,8 @@ int main(int argc, char **argv) {
       llvm::errs() << "\n";
     }
 
-    if (!a5vmEmitHIVMText && !a5vmEmitHIVMOfficialLLVM) {
+    if (!a5vmEmitHIVMText && !a5vmEmitHIVMOfficialLLVM &&
+        !a5vmEmitHIVMOfficialBitcode) {
       module->print(outputFile.os());
       outputFile.os() << "\n";
       outputFile.keep();
@@ -1058,7 +1080,10 @@ int main(int argc, char **argv) {
     }
 
     LogicalResult emissionStatus =
-        a5vmEmitHIVMOfficialLLVM
+        a5vmEmitHIVMOfficialBitcode
+            ? pto::translateA5VMModuleToLLVMBitcode(*module, outputFile.os(),
+                                                    options, llvm::errs())
+            : a5vmEmitHIVMOfficialLLVM
             ? pto::translateA5VMModuleToLLVMText(*module, outputFile.os(),
                                                  options, llvm::errs())
             : pto::translateA5VMModuleToText(*module, outputFile.os(), options,
