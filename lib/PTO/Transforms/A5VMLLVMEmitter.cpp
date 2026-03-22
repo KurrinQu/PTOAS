@@ -436,6 +436,22 @@ static FailureOr<Value> packLoopPair(Operation *anchor, Value low, Value high) {
       .getResult();
 }
 
+static FailureOr<Value> packLoopSize(Operation *anchor, Value loop2, Value loop1) {
+  OpBuilder builder(anchor);
+  builder.setInsertionPoint(anchor);
+
+  Value loop2I64 = castIntegerLikeTo(anchor, loop2, builder.getI64Type());
+  Value loop1I64 = castIntegerLikeTo(anchor, loop1, builder.getI64Type());
+  if (!loop2I64 || !loop1I64)
+    return failure();
+
+  Value shift = getI64Constant(builder, anchor->getLoc(), 21);
+  Value loop2Shifted =
+      builder.create<arith::ShLIOp>(anchor->getLoc(), loop2I64, shift).getResult();
+  return builder.create<arith::OrIOp>(anchor->getLoc(), loop2Shifted, loop1I64)
+      .getResult();
+}
+
 static FailureOr<Value>
 packCopyGmToUbConfig0(Operation *anchor, a5vm::CopyGmToUbufOp op,
                       ValueRange operands) {
@@ -595,9 +611,13 @@ static LogicalResult rewriteA5VMOp(Operation *op, ModuleOp module,
   SmallVector<Value> callArgs;
 
   if (isa<a5vm::SetLoop2StrideOutToUbOp, a5vm::SetLoop1StrideOutToUbOp,
-          a5vm::SetLoopSizeOutToUbOp, a5vm::SetLoop2StrideUbToOutOp,
-          a5vm::SetLoop1StrideUbToOutOp, a5vm::SetLoopSizeUbToOutOp>(op)) {
+          a5vm::SetLoop2StrideUbToOutOp, a5vm::SetLoop1StrideUbToOutOp>(op)) {
     auto packed = packLoopPair(op, op->getOperand(0), op->getOperand(1));
+    if (failed(packed))
+      return failure();
+    callArgs.push_back(*packed);
+  } else if (isa<a5vm::SetLoopSizeOutToUbOp, a5vm::SetLoopSizeUbToOutOp>(op)) {
+    auto packed = packLoopSize(op, op->getOperand(0), op->getOperand(1));
     if (failed(packed))
       return failure();
     callArgs.push_back(*packed);

@@ -617,6 +617,18 @@ private:
       return builder.CreateOr(lhs, low, "loop.pack");
     };
 
+    auto packLoopSize = [&](llvm::Value *loop2, llvm::Value *loop1)
+        -> llvm::Value * {
+      llvm::Value *loop2I64 = castIntegerLikeToI64(loop2);
+      llvm::Value *loop1I64 = castIntegerLikeToI64(loop1);
+      if (!loop2I64 || !loop1I64)
+        return nullptr;
+      llvm::Value *lhs = builder.CreateShl(
+          loop2I64, llvm::ConstantInt::get(getIntegerType(64), 21),
+          "loop.size.hi");
+      return builder.CreateOr(lhs, loop1I64, "loop.size");
+    };
+
     auto packCopyGmToUbConfig0 = [&](llvm::ArrayRef<llvm::Value *> ops)
         -> llvm::Value * {
       if (ops.size() != 12)
@@ -753,13 +765,23 @@ private:
     };
 
     if (isa<a5vm::SetLoop2StrideOutToUbOp, a5vm::SetLoop1StrideOutToUbOp,
-            a5vm::SetLoopSizeOutToUbOp, a5vm::SetLoop2StrideUbToOutOp,
-            a5vm::SetLoop1StrideUbToOutOp, a5vm::SetLoopSizeUbToOutOp>(op)) {
+            a5vm::SetLoop2StrideUbToOutOp, a5vm::SetLoop1StrideUbToOutOp>(op)) {
       if (rawOperands.size() != 2) {
         diagOS << "A5VM emission failed: expected two operands for loop config op\n";
         return failure();
       }
       appendArg(packLoopPair(rawOperands[0], rawOperands[1]));
+    } else if (isa<a5vm::SetLoopSizeOutToUbOp, a5vm::SetLoopSizeUbToOutOp>(op)) {
+      if (rawOperands.size() != 2) {
+        diagOS << "A5VM emission failed: expected two operands for loop size op\n";
+        return failure();
+      }
+      llvm::Value *packed = packLoopSize(rawOperands[0], rawOperands[1]);
+      if (!packed) {
+        diagOS << "A5VM emission failed: could not pack loop size op\n";
+        return failure();
+      }
+      appendArg(packed);
     } else if (isa<a5vm::CopyGmToUbufOp>(op)) {
       if (rawOperands.size() != 12) {
         diagOS << "A5VM emission failed: expected twelve operands for copy_gm_to_ubuf\n";
