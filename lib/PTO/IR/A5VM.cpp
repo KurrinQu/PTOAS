@@ -232,7 +232,7 @@ static LogicalResult verifyCopyUbufToGmOp(CopyOp op, bool expectSourceGM) {
       !isBufferLike(op.getDestination().getType()))
     return op.emitOpError("requires pointer-like source and destination");
 
-  bool hasAllMetadata = op.getLayoutAttr();
+  bool hasAllMetadata = static_cast<bool>(op.getLayoutAttr());
 
   MemoryRole sourceRole = classifyMemoryRole(op.getSource().getType());
   MemoryRole destinationRole = classifyMemoryRole(op.getDestination().getType());
