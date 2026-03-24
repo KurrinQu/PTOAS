@@ -1,5 +1,5 @@
-#include "FusionAnalysis.h"
-#include "FusionOpSemantics.h"
+#include "PTO/Transforms/TileFusion/FusionAnalysis.h"
+#include "PTO/Transforms/TileFusion/FusionOpSemantics.h"
 
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"

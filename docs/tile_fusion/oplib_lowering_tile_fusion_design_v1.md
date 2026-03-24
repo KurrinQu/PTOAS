@@ -16,17 +16,19 @@
 4. [`include/PTO/IR/PTOOps.td`](../../include/PTO/IR/PTOOps.td)
 5. [`include/PTO/Transforms/Passes.td`](../../include/PTO/Transforms/Passes.td)
 6. [`lib/PTO/IR/PTO.cpp`](../../lib/PTO/IR/PTO.cpp)
-7. [`lib/PTO/Transforms/PTOCreateFusionGroups.cpp`](../../lib/PTO/Transforms/PTOCreateFusionGroups.cpp)
-8. [`lib/PTO/Transforms/PTOOutlineFusionGroups.cpp`](../../lib/PTO/Transforms/PTOOutlineFusionGroups.cpp)
-9. [`lib/PTO/Transforms/PTOLowerToOpLibCalls.cpp`](../../lib/PTO/Transforms/PTOLowerToOpLibCalls.cpp)
-10. [`lib/PTO/Transforms/PTOLowLevelLoopFusion.cpp`](../../lib/PTO/Transforms/PTOLowLevelLoopFusion.cpp)
-11. [`lib/PTO/Transforms/PTOViewToMemref.cpp`](../../lib/PTO/Transforms/PTOViewToMemref.cpp)
-12. [`lib/PTO/Transforms/PTOToEmitC.cpp`](../../lib/PTO/Transforms/PTOToEmitC.cpp)
-13. [`oplib/level3/skeletons/README.md`](../../oplib/level3/skeletons/README.md)
-14. [`docs/tile_fusion/a5_oplib_v1_authoring.md`](./a5_oplib_v1_authoring.md)
-15. [`docs/tile_fusion/oplib_ir_spec.md`](./oplib_ir_spec.md)
-16. [`oplib/level3/families/a5_oplib_v1_family_dsl.json`](../../oplib/level3/families/a5_oplib_v1_family_dsl.json)
-17. [`oplib/level3/families/a5_oplib_v1_manifest.yaml`](../../oplib/level3/families/a5_oplib_v1_manifest.yaml)
+7. [`lib/PTO/Transforms/TileFusion/PTOFusionPlan.cpp`](../../lib/PTO/Transforms/TileFusion/PTOFusionPlan.cpp)
+8. [`lib/PTO/Transforms/TileFusion/PTOOpScheduling.cpp`](../../lib/PTO/Transforms/TileFusion/PTOOpScheduling.cpp)
+9. [`lib/PTO/Transforms/TileFusion/PTOFusionRegionGen.cpp`](../../lib/PTO/Transforms/TileFusion/PTOFusionRegionGen.cpp)
+10. [`lib/PTO/Transforms/PTOLowerToOpLibCalls.cpp`](../../lib/PTO/Transforms/PTOLowerToOpLibCalls.cpp)
+11. [`lib/PTO/Transforms/TileFusion/PTOLowLevelLoopFusion.cpp`](../../lib/PTO/Transforms/TileFusion/PTOLowLevelLoopFusion.cpp)
+12. [`lib/PTO/Transforms/TileFusion/PTOFlattenFusionRegion.cpp`](../../lib/PTO/Transforms/TileFusion/PTOFlattenFusionRegion.cpp)
+13. [`lib/PTO/Transforms/PTOViewToMemref.cpp`](../../lib/PTO/Transforms/PTOViewToMemref.cpp)
+14. [`lib/PTO/Transforms/PTOToEmitC.cpp`](../../lib/PTO/Transforms/PTOToEmitC.cpp)
+15. [`oplib/level3/skeletons/README.md`](../../oplib/level3/skeletons/README.md)
+16. [`docs/tile_fusion/a5_oplib_v1_authoring.md`](./a5_oplib_v1_authoring.md)
+17. [`docs/tile_fusion/oplib_ir_spec.md`](./oplib_ir_spec.md)
+18. [`oplib/level3/families/a5_oplib_v1_family_dsl.json`](../../oplib/level3/families/a5_oplib_v1_family_dsl.json)
+19. [`oplib/level3/families/a5_oplib_v1_manifest.yaml`](../../oplib/level3/families/a5_oplib_v1_manifest.yaml)
 
 ## 2. 术语与层次
 
@@ -36,10 +38,10 @@
 | --------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | Manifest / Family Scope     | A5 OpLib V1 在 4.5~4.9 范围内承认的 op family、dtype 与状态                  | 范围较宽，覆盖 arithmetic / reduction / broadcast / compare-select / bitwise |
 | Match Descriptor Scope      | 已实现 `OpLibOpInterface::getOpLibMatchDescriptor()` 的 PTO op 范围          | 大于当前 active lowering 范围                                                |
-| Active OpLib Lowering Scope | `PTOLowerToOpLibCalls.cpp` 中 `shouldLowerViaOpLib()` 当前实际改写的 op 范围 | 当前仅 12 个 arithmetic / tile-scalar op                                     |
-| Tile Fusion Grouping Scope  | `PTOCreateFusionGroups` 当前允许分组的 op 范围                               | 与 active lowering 的 12 个 op 一致                                          |
+| Active OpLib Lowering Scope | `PTOLowerToOpLibCalls.cpp` 中 `shouldLowerViaOpLib()` 当前实际改写的 op 范围 | 由 grouped/single-op lowering allowlist 控制                                 |
+| Tile Fusion Planning Scope  | `PTOFusionPlan.cpp` 中当前尝试规划的 op 范围                                 | 由 planning allowlist 控制，与 grouped lowering 活跃范围接近但不完全等同     |
 
-当前实现中，manifest 范围、descriptor 范围、active lowering 范围、tile fusion grouping 范围并不相同。文档后续所有结论都以此分层为前提。
+当前实现中，manifest 范围、descriptor 范围、active lowering 范围、tile fusion planning 范围并不完全相同。文档后续所有结论都以此分层为前提。
 
 ## 3. 总体架构
 
@@ -48,7 +50,7 @@
 1. `OpLib lowering`
    将单个 PTO op 映射到已导入模板中的一个具体实例，再改写为 `func.call @__pto_oplib_inst_*`。
 2. `tile fusion`
-   在高层 PTO arithmetic 链上做连续分组与 outline，在 helper 内完成 grouped lowering，再在内联后的低层 loop 上做结构化融合。
+   在高层 PTO arithmetic 链上做 planning / scheduling / region 封装，在 `pto.fusion_region` 边界内完成 grouped lowering，再在内联后的低层 loop 上做结构化融合。
 
 总体路径如下：
 
@@ -68,23 +70,27 @@ PTO IR op
   │       -> inline 后得到 mixed IR / vector IR
   │
   └─ 路径 B：tile fusion
-        PTOCreateFusionGroups
+        FusionPlanPass
           -> 写入 pto.fusion.group_id / pto.fusion.order
-        PTOOutlineFusionGroups
-          -> 生成 @__pto_fused_group_*
+        OpSchedulingPass
+          -> 将同组 op 聚拢成连续片段
+        PTOFusionRegionGenPass
+          -> 生成 pto.fusion_region / pto.yield
         PTOInstantiateAndLowerToLibCall
-          -> helper 内逐 op lower 成 OpLib call
+          -> region 内逐 op lower 成 OpLib call
         PTOInlineLibCall
-          -> helper 内出现相邻 loop / vec_scope
+          -> inline 后出现相邻 loop / vec_scope
         PTOLowLevelLoopFusion
-          -> 对 helper 内低层 loop 做结构化融合
+          -> 对低层 loop 做结构化融合
+        PTOFlattenFusionRegionPass
+          -> Emit 前消解 pto.fusion_region
 ```
 
 该架构的关键事实如下：
 
 1. `OpLib lowering` 是 A5 base pipeline 的一部分。
 2. `tile fusion` 由 `--enable-op-fusion` 额外打开。
-3. `PTOLowLevelLoopFusion` 只处理 synthesized fused helper，不处理普通函数中的 single-op lowering 结果。
+3. `PTOLowLevelLoopFusion` 运行在 OP-Lib inline 之后形成的低层 `vec_scope` / loop 结构上；在 `--enable-op-fusion` 路径中，它位于显式 flatten 之前。
 
 ## 4. OpLib Family Skeleton 设计
 
@@ -355,20 +361,21 @@ __VEC_SCOPE__ {
 | Stage 0 | 1    | `importPTOOpLibTemplates`         | A5                        | 导入 concrete template                                           |
 | Stage 1 | 1    | `LoweringSyncToPipe`              | 总是                      | 处理同步管线语义                                                 |
 | Stage 1 | 2    | `PTOValidateSimdIR`               | A5                        | 校验模板体与 SIMD 桥接 IR                                        |
-| Stage 1 | 3    | `PTOViewToMemref`                 | 总是                      | 进入 memref-world，同时保留 `simd.tile_to_memref` backend marker |
+| Stage 1 | 3    | `FusionPlanPass`                  | A5 + `--enable-op-fusion` | 规划 block-local fusion group 并写 metadata                      |
+| Stage 1 | 4    | `OpSchedulingPass`                | A5 + `--enable-op-fusion` | 将同组 op 聚拢为连续片段                                         |
+| Stage 1 | 5    | `PTOFusionRegionGenPass`          | A5 + `--enable-op-fusion` | 生成 `pto.fusion_region` / `pto.yield`                           |
+| Stage 1 | 6    | `PTOViewToMemref`                 | 总是                      | 进入 memref-world，同时保留 structured fusion boundary           |
 | Stage 2 | 1    | `InferPTOLayout`                  | 默认开启                  | 推断布局                                                         |
-| Stage 2 | 2    | `PTOViewToMemref`                 | 总是                      | 进一步收敛 memref-world 表示                                     |
-| Stage 2 | 3    | `PlanMemory`                      | 非 Level-3                | 本地内存规划                                                     |
-| Stage 2 | 4    | `PTOInsertSync`                   | 条件开启                  | 插入 sync；对 grouping 构成断链点                                |
-| Stage 2 | 5    | `PTOCreateFusionGroups`           | A5 + `--enable-op-fusion` | 标注连续 arithmetic chain                                        |
-| Stage 2 | 6    | `PTOOutlineFusionGroups`          | A5 + `--enable-op-fusion` | 生成 `@__pto_fused_group_*`                                      |
-| Stage 2 | 7    | `PTOInstantiateAndLowerToLibCall` | A5                        | single-op / grouped lowering                                     |
-| Stage 2 | 8    | `PTOInlineLibCall`                | A5                        | 内联实例函数                                                     |
-| Stage 2 | 9    | `PTOLowLevelLoopFusion`           | A5 + `--enable-op-fusion` | 对 fused helper 的低层 loop 进行融合                             |
-| Stage 2 | 10   | `Canonicalizer + CSE`             | A5                        | 在 low-level fusion 之后做清理                                   |
-| Stage 2 | 11   | `Canonicalizer + CSE`             | 总是                      | 通用清理                                                         |
+| Stage 2 | 2    | `PlanMemory`                      | 非 Level-3                | 本地内存规划                                                     |
+| Stage 2 | 3    | `PTOInsertSync`                   | 条件开启                  | 插入 sync；对 `pto.fusion_region` 透明                           |
+| Stage 2 | 4    | `PTOInstantiateAndLowerToLibCall` | A5                        | single-op / grouped lowering                                     |
+| Stage 2 | 5    | `PTOInlineLibCall`                | A5                        | 内联实例函数                                                     |
+| Stage 2 | 6    | `PTOLowLevelLoopFusion`           | A5 + `--enable-op-fusion` | 对 inline 后低层 loop 做融合                                     |
+| Stage 2 | 7    | `PTOFlattenFusionRegion`          | A5 + `--enable-op-fusion` | Emit 前消解 `pto.fusion_region`                                  |
+| Stage 2 | 8    | `Canonicalizer + CSE`             | A5                        | 在 region-preserving fusion 阶段之后做清理                       |
+| Stage 2 | 9    | `Canonicalizer + CSE`             | 总是                      | 通用清理                                                         |
 
-当前实现刻意将 A5 内部那一轮 `Canonicalizer + CSE` 放在 `PTOLowLevelLoopFusion` 之后，以避免 single-trip loop 被过早折叠，破坏 low-level fusion 所依赖的规则结构。
+当前实现刻意将 A5 内部那一轮 `Canonicalizer + CSE` 放在 `PTOLowLevelLoopFusion` 与 `PTOFlattenFusionRegion` 之后，以避免 single-trip loop 被过早折叠，破坏 low-level fusion 所依赖的规则结构，并确保 Emit 前不残留 `pto.fusion_region`。
 
 ## 7. 匹配契约
 
@@ -479,9 +486,9 @@ pto.tmul ins(%1, %1 : memref<32x32xf32, ...>, memref<32x32xf32, ...>)
 1. 参与 grouping / lowering 的 PTO op 已经使用 memref 作为 tile-like carrier。
 2. 这并不阻止后续匹配模板，因为 active lowering 允许 lowered memref ABI。
 
-## 9.2 `PTOCreateFusionGroups`
+## 9.2 `FusionPlanPass`
 
-group 创建之后，连续 arithmetic chain 被写入 `pto.fusion.group_id` 与 `pto.fusion.order`：
+planning 完成后，被接受的 block-local group 会写入 `pto.fusion.group_id` 与 `pto.fusion.order`：
 
 ```mlir
 pto.tmuls ins(%1, %cst : memref<32x32xf32, ...>, f32)
@@ -498,55 +505,33 @@ pto.tmul ins(%1, %1 : memref<32x32xf32, ...>, memref<32x32xf32, ...>)
          {pto.fusion.group_id = 0 : i64, pto.fusion.order = 3 : i64}
 ```
 
-该 pass 不做语句重排；它只在同一 block 内识别严格连续的 producer-consumer 链。
+该 pass 不做语句重排；它只输出 group membership 与稳定的组内逻辑顺序，后续物理聚拢职责留给独立的 `OpSchedulingPass`。
 
-## 9.3 `PTOOutlineFusionGroups`
+## 9.3 `OpSchedulingPass`
 
-outline 之后，原 block 中的连续链被替换成对 helper 的调用：
+调度阶段会把属于同一 `group_id` 的 op 压缩为 block-local 连续片段，同时保持 `pto.fusion.order` 递增，并遵守 SSA、side-effect 与 local-boundary 合法性约束。
 
-```mlir
-call @__pto_fused_group_0_0(%cst, %cst_0, %cst_1, %1, %5, %7, %9)
-  : (f32, f32, f32, memref<32x32xf32, ...>, memref<32x32xf32, ...>,
-     memref<32x32xf32, ...>, memref<32x32xf32, ...>) -> ()
+## 9.4 `PTOFusionRegionGenPass`
 
-call @__pto_fused_group_1_1(%1, %5, %7, %9, %cst_2, %cst_3, %3)
-  : (memref<32x32xf32, ...>, memref<32x32xf32, ...>, memref<32x32xf32, ...>,
-     memref<32x32xf32, ...>, f32, f32, memref<32x32xf32, ...>) -> ()
-```
-
-helper 的参数由两部分组成：
-
-1. `externalInputs`
-2. `producedInOrder`
-
-因此 helper 更接近“对原地写 buffer 链的封装函数”，而不是返回 SSA value 的纯函数。
-
-## 9.4 `PTOInstantiateAndLowerToLibCall`
-
-在 helper 内部，PTO op 被逐个改写为实例函数调用：
+封装阶段会把一个已经连续化的 group span 包成一个 `pto.fusion_region`，并通过 `pto.yield` / region results 显式表达该区域对外仍可见的值边界。
 
 ```mlir
-func.func private @__pto_fused_group_0_0(
-    %arg0: f32, %arg1: f32, %arg2: f32,
-    %arg3: memref<32x32xf32, ...>, %arg4: memref<32x32xf32, ...>,
-    %arg5: memref<32x32xf32, ...>, %arg6: memref<32x32xf32, ...>) {
-  call @__pto_oplib_inst_l3_float_tile_scalar_template_tmuls_tile_scalar(
-      %arg3, %arg0, %arg3) : (...)
-  call @__pto_oplib_inst_l3_float_tile_scalar_template_tmaxs_tile_scalar(
-      %arg3, %arg1, %arg3) : (...)
-  call @__pto_oplib_inst_l3_float_tile_scalar_template_tmins_tile_scalar(
-      %arg3, %arg2, %arg3) : (...)
-  call @__pto_oplib_inst_l3_float_binary_elementwise_template_tmul_tile(
-      %arg3, %arg3, %arg4) : (...)
-  return
-}
+%fused = pto.fusion_region {
+  %0 = "pto.tmul"(...)
+  %1 = "pto.tmax"(...)
+  pto.yield %1 : memref<...>
+} : () -> memref<...>
 ```
 
-该阶段保留了 helper 结构，但高层 PTO op 已被替换为 instance call。
+## 9.5 `PTOInstantiateAndLowerToLibCall`
 
-## 9.5 `PTOInlineLibCall`
+在 grouped 路径中，`PTOInstantiateAndLowerToLibCall` 直接把 `pto.fusion_region` 视为 lowering unit，在 region body 内逐个将 PTO op 改写为实例函数调用；single-op 路径则继续处理 fusion region 之外的独立 op。
 
-内联之后，helper 中出现 mixed IR / vector IR：
+该阶段保留了 `pto.fusion_region` 结构边界，但高层 PTO op 已被替换为 instance call。
+
+## 9.6 `PTOInlineLibCall`
+
+内联之后，grouped lowering 单元内部会出现 mixed IR / vector IR：
 
 ```mlir
 func.func private @__pto_fused_group_1_1(..., %arg4: f32, %arg5: f32, %arg6: memref<32x32xf32, ...>) {
@@ -575,7 +560,7 @@ func.func private @__pto_fused_group_1_1(..., %arg4: f32, %arg5: f32, %arg6: mem
 
 该阶段为 `PTOLowLevelLoopFusion` 提供了规则化的 loop / `vec_scope` 结构。
 
-## 9.6 EmitC / CCE 风格输出
+## 9.7 EmitC / CCE 风格输出
 
 在 `PTOToEmitC` 之后，`__pto_fused_group_1_1` 的输出片段如下：
 
@@ -605,23 +590,26 @@ func.func private @__pto_fused_group_1_1(..., %arg4: f32, %arg5: f32, %arg6: mem
 
 ## 10. 当前 active lowering 范围
 
-当前 `PTOLowerToOpLibCalls.cpp` 中 `shouldLowerViaOpLib()` 将 active lowering 范围限制为 12 个 op：
+当前 `PTOLowerToOpLibCalls.cpp` 中 `shouldLowerViaOpLib()` 将 active lowering 范围限制为一组显式 allowlist op：
 
 | 类别                   | op                                                   |
 | ---------------------- | ---------------------------------------------------- |
 | tile-tile arithmetic   | `tadd`, `tsub`, `tmul`, `tdiv`, `tmax`, `tmin`       |
 | tile-scalar arithmetic | `tadds`, `tsubs`, `tmuls`, `tdivs`, `tmaxs`, `tmins` |
+| row-broadcast          | `trowexpandmul`                                      |
+| unary                  | `texp`                                               |
 
 这一范围同时构成：
 
 1. 当前 single-op OpLib lowering 的 active 范围
-2. 当前 tile fusion grouping 的 active 范围
+2. 当前 grouped lowering 的 active 范围
+3. `PTOFusionPlan.cpp` 中 planning allowlist 的近邻子集 / 超集关系需要单独维护，不应假设两者永远完全一致
 
-对这 12 个 active op，`PTOInstantiateAndLowerToLibCall` 在改写结束后还会检查是否存在“应被 lower 但未被 lower”的残留 op。若存在残留，pass 会直接报错，而不是静默回退。
+对这组 active op，`PTOInstantiateAndLowerToLibCall` 在改写结束后还会检查是否存在“应被 lower 但未被 lower”的残留 op。若存在残留，pass 会直接报错，而不是静默回退。
 
 ## 11. 当前 manifest 与 descriptor 的更宽范围
 
-尽管 active lowering 仅有上述 12 个 op，当前 manifest 与 descriptor 已覆盖更宽的 family 范围：
+尽管 active lowering 仅有上述 allowlist op，当前 manifest 与 descriptor 已覆盖更宽的 family 范围：
 
 1. unary / partial arithmetic
 2. compare / select
@@ -634,37 +622,33 @@ func.func private @__pto_fused_group_1_1(..., %arg4: f32, %arg5: f32, %arg6: mem
 
 ## 12. Tile Fusion 设计
 
-## 12.1 `PTOCreateFusionGroups`
+## 12.1 `FusionPlanPass`
 
-当前 `PTOCreateFusionGroups` 的分组条件如下：
+当前 `FusionPlanPass` 的 planning 结论遵循以下边界：
 
-1. op 必须实现 `OpLibOpInterface`
-2. op 必须实现 `PTO_DpsInitOpInterface`
-3. `getOpLibMatchDescriptor()` 必须成功
-4. `desc.opName` 必须位于 12-op allowlist 中
-5. op 只能有一个 DPS init
-6. descriptor 的最后一个 operand 必须是 `dst`
-7. 当前 op 的 tile 输入必须包含前一个 op 的 `dst`
-8. 任何 intervening op 都会打断 chain
+1. 只消费 `PreFusionAnalysis` 产出的 block-local compute node / edge / iteration-domain 信息
+2. 只尝试规划当前 planning allowlist 内的 op
+3. 只输出 `pto.fusion.group_id` / `pto.fusion.order`
+4. 不做物理重排，调度职责留给 `OpSchedulingPass`
 
-该 pass 只在 block 内做线性扫描，不进行跨 block 或 DAG 级重组。
+## 12.2 `OpSchedulingPass`
 
-## 12.2 `PTOOutlineFusionGroups`
+当前 `OpSchedulingPass` 会在 basic block 内把同组成员聚拢为连续片段，同时保持：
 
-当前 outline 逻辑将同一 `group_id` 且 `order` 连续的 op 收集为一个 group，并生成：
+1. `pto.fusion.group_id` 仍是 group 身份的唯一来源
+2. `pto.fusion.order` 仍是组内物理顺序的唯一来源
+3. SSA、side-effect、region 与 local-boundary 合法性不被破坏
 
-```text
-func.func private @__pto_fused_group_<group_id>_<counter>
-```
+## 12.3 `PTOFusionRegionGenPass`
 
-helper 接口按 `externalInputs` + `producedInOrder` 拼接参数列表。helper 自身带有 `pto.fusion.group_id` 属性。
+当前 `PTOFusionRegionGenPass` 将每个已连续化 group span 封装成一个且仅一个 `pto.fusion_region`，并用 `pto.yield` / region results 表达对外可见值集合。
 
-## 12.3 grouped lowering
+## 12.4 grouped lowering
 
 grouped lowering 与 single-op lowering 共享同一套 matcher / selector / instance builder。区别仅在于：
 
-1. single-op 路径遍历普通函数中未分组的 op
-2. grouped 路径在 helper 中按 `group_id + order` 收集后逐个改写
+1. single-op 路径遍历 fusion region 之外的独立 op
+2. grouped 路径把 `pto.fusion_region` 作为 lowering unit 后逐个改写其中的 compute op
 
 当前 grouped lowering 不支持“部分成功”。如果某个组内 op 无法完成 plan / rewrite，整个 group 降低失败。
 
@@ -672,23 +656,16 @@ grouped lowering 与 single-op lowering 共享同一套 matcher / selector / ins
 
 ## 13.1 处理对象
 
-`PTOLowLevelLoopFusion` 当前只处理函数名以 `__pto_fused_group_` 开头的 helper：
+`PTOLowLevelLoopFusion` 当前会遍历所有非 external、且非 `__pto_oplib_*` 的函数，并在其中寻找相邻的 canonical `pto.simd.vec_scope` stage。
 
-```text
-func.func @__pto_fused_group_*
-```
-
-它不处理：
-
-1. 普通函数中的 single-op lowering 结果
-2. 未经过 outline 的代码
+在端到端的 tile fusion 路径中，它主要命中 grouped lowering + inline 之后形成的低层结构。
 
 ## 13.2 处理结构
 
 当前 pass 的描述与实现均表明，它处理的是：
 
 1. 相邻的 canonical `pto.simd.vec_scope` stage
-2. helper 内联后出现的规则 loop nest
+2. grouped lowering 单元内联后出现的规则 loop nest
 3. 与中间 stage result 相关的 store-to-load forwarding
 
 pass 内显式分析 `vector.maskedstore` / `vector.maskedload` 模式，并在条件满足时消除中间存取。
@@ -710,9 +687,9 @@ shape、mask 或嵌套结构不匹配时，pass 保守地保持原状。
 
 1. A5 manifest 范围不等于 active lowering 范围。
 2. descriptor 已实现不等于 pipeline 已启用。
-3. tile fusion grouping 只覆盖 12 个 arithmetic / tile-scalar op。
-4. grouping 只处理严格连续的 block 内 chain，不做 DAG 级融合。
-5. low-level loop fusion 只处理 synthesized fused helper。
+3. tile fusion planning / grouped lowering 仍由显式 allowlist 收敛，不等于 manifest 全量实现范围。
+4. planning / scheduling 只在 block-local 范围内工作，不做跨 block 全局重排。
+5. low-level loop fusion 只处理规则化的 `pto.simd.vec_scope` / loop pattern，不是通用 loop fusion。
 6. backend bridge 依赖 `pto.simd` 标记与 EmitC conversion pattern，不是独立的 CCE dialect。
 
 ## 15. 阅读与维护顺序
@@ -723,16 +700,16 @@ shape、mask 或嵌套结构不匹配时，pass 保守地保持原状。
 2. 再阅读 [`oplib/level3/skeletons/README.md`](../../oplib/level3/skeletons/README.md)、[`oplib/level3/skeletons/`](../../oplib/level3/skeletons) 与 [`oplib/level3/families/a5_oplib_v1_family_dsl.json`](../../oplib/level3/families/a5_oplib_v1_family_dsl.json)，明确 skeleton / snippet / concrete 的分层。
 3. 然后阅读 [`lib/PTO/IR/PTO.cpp`](../../lib/PTO/IR/PTO.cpp) 中各个 op 的 `getOpLibMatchDescriptor()` 实现，明确 family-specific matcher 字段。
 4. 再阅读 [`lib/PTO/Transforms/PTOLowerToOpLibCalls.cpp`](../../lib/PTO/Transforms/PTOLowerToOpLibCalls.cpp)，明确 active gate、template import、instance selection、instance clone 与 rewrite。
-5. 最后阅读 [`lib/PTO/Transforms/PTOCreateFusionGroups.cpp`](../../lib/PTO/Transforms/PTOCreateFusionGroups.cpp)、[`lib/PTO/Transforms/PTOOutlineFusionGroups.cpp`](../../lib/PTO/Transforms/PTOOutlineFusionGroups.cpp)、[`lib/PTO/Transforms/PTOLowLevelLoopFusion.cpp`](../../lib/PTO/Transforms/PTOLowLevelLoopFusion.cpp)，明确 fusion 链条。
+5. 最后阅读 [`lib/PTO/Transforms/TileFusion/PTOFusionPlan.cpp`](../../lib/PTO/Transforms/TileFusion/PTOFusionPlan.cpp)、[`lib/PTO/Transforms/TileFusion/PTOOpScheduling.cpp`](../../lib/PTO/Transforms/TileFusion/PTOOpScheduling.cpp)、[`lib/PTO/Transforms/TileFusion/PTOFusionRegionGen.cpp`](../../lib/PTO/Transforms/TileFusion/PTOFusionRegionGen.cpp)、[`lib/PTO/Transforms/TileFusion/PTOLowLevelLoopFusion.cpp`](../../lib/PTO/Transforms/TileFusion/PTOLowLevelLoopFusion.cpp)、[`lib/PTO/Transforms/TileFusion/PTOFlattenFusionRegion.cpp`](../../lib/PTO/Transforms/TileFusion/PTOFlattenFusionRegion.cpp)，明确 fusion 链条。
 
 建议配合以下测试阅读：
 
 1. [`test/tile_fusion/memref_to_tilebuf_alloc.mlir`](../../test/tile_fusion/memref_to_tilebuf_alloc.mlir)
-2. [`test/tile_fusion/create_fusion_groups.mlir`](../../test/tile_fusion/create_fusion_groups.mlir)
-3. [`test/tile_fusion/materialize_fusion_groups.mlir`](../../test/tile_fusion/materialize_fusion_groups.mlir)
-4. [`test/oplib/oplib_grouped_lowering_chain_coverage.mlir`](../../test/oplib/oplib_grouped_lowering_chain_coverage.mlir)
-5. [`test/tile_fusion/low_level_loop_fusion.mlir`](../../test/tile_fusion/low_level_loop_fusion.mlir)
-6. [`test/tile_fusion/emitc_fused_helper_codegen.mlir`](../../test/tile_fusion/emitc_fused_helper_codegen.mlir)
+2. [`test/tile_fusion/fusion_plan_online_update.mlir`](../../test/tile_fusion/fusion_plan_online_update.mlir)
+3. [`test/tile_fusion/op_scheduling_basic.mlir`](../../test/tile_fusion/op_scheduling_basic.mlir)
+4. [`test/tile_fusion/fusion_region_basic.mlir`](../../test/tile_fusion/fusion_region_basic.mlir)
+5. [`test/tile_fusion/fusion_region_interface.mlir`](../../test/tile_fusion/fusion_region_interface.mlir)
+6. [`test/tile_fusion/low_level_loop_fusion_preserve_single_trip.mlir`](../../test/tile_fusion/low_level_loop_fusion_preserve_single_trip.mlir)
 
 ## 16. 小结
 
@@ -741,5 +718,5 @@ shape、mask 或嵌套结构不匹配时，pass 保守地保持原状。
 1. A5 下始终启用 base OpLib pipeline；`--enable-op-fusion` 仅附加 fusion pass。
 2. `oplib/level3` 采用 Family DSL、snippet、skeleton、concrete template 的分层组织，以减少模板重复并保持 importer 接口稳定。
 3. 模板体采用 mixed IR + `pto.simd` bridge 的设计，通过 `PTOToEmitC` 对接 `__VEC_SCOPE__` 与 CCE 风格向量 API。
-4. 当前 active lowering 与 grouping 仅覆盖 12 个 arithmetic / tile-scalar op。
-5. low-level loop fusion 发生在 outlined helper 内联之后的低层 loop 结构上，而不是发生在高层 PTO op 本身上。
+4. 当前 active grouped lowering 与 planning 仍由显式 allowlist 收敛，不等于 manifest 全量实现范围。
+5. low-level loop fusion 发生在 grouped lowering + inline 之后、explicit flatten 之前的低层 loop 结构上，而不是发生在高层 PTO op 本身上。

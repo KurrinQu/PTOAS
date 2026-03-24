@@ -1,7 +1,7 @@
 #ifndef PTO_TRANSFORMS_FUSIONANALYSIS_H
 #define PTO_TRANSFORMS_FUSIONANALYSIS_H
 
-#include "FusionOpSemantics.h"
+#include "PTO/Transforms/TileFusion/FusionOpSemantics.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Support/LLVM.h"

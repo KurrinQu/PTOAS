@@ -15,7 +15,7 @@
 
 - [x] 3.1 调整 grouped lowering path，使其对上述 12 个 op 的支持范围与 single-op path 保持一致。
 - [x] 3.2 保证 mixed chain grouped lowering 继续复用现有 `OpLibOpInterface`，不引入第二套 matcher 协议。
-- [x] 3.3 修改 `lib/PTO/Transforms/PTOLowLevelLoopFusion.cpp`，把匹配入口从裸相邻 `scf.for` 升级为相邻 `pto.simd.vec_scope` stage。
+- [x] 3.3 修改 `lib/PTO/Transforms/TileFusion/PTOLowLevelLoopFusion.cpp`，把匹配入口从裸相邻 `scf.for` 升级为相邻 `pto.simd.vec_scope` stage。
 - [x] 3.4 在 low-level fusion 重写过程中完成 store-to-load forwarding，并删除仅供后继 stage 消费的中间 `vector.maskedstore`。
 - [x] 3.5 对不满足 canonical shape 的 helper 保持保守 no-op，不做错误合并。
 

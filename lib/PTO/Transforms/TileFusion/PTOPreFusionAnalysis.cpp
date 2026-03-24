@@ -1,6 +1,6 @@
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
-#include "FusionAnalysis.h"
+#include "PTO/Transforms/TileFusion/FusionAnalysis.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
