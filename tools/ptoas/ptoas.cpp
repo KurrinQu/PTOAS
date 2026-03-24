@@ -47,7 +47,6 @@
 #include "llvm/Support/raw_ostream.h"
 #include <cctype>
 #include <cstring>
-#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -60,121 +59,11 @@ using namespace pto;
 #define PTOAS_RELEASE_VERSION "unknown"
 #endif
 
-#ifndef PTOAS_INSTALL_BINDIR
-#define PTOAS_INSTALL_BINDIR "bin"
-#endif
-
-#ifndef PTOAS_INSTALL_DATADIR
-#define PTOAS_INSTALL_DATADIR "share"
-#endif
-
 static void printPTOASVersion(llvm::raw_ostream &os) {
   os << "ptoas " << PTOAS_RELEASE_VERSION << "\n";
 }
 
 namespace {
-namespace fs = std::filesystem;
-
-static std::optional<fs::path> normalizeExistingDirectory(const fs::path &path) {
-  std::error_code ec;
-  if (!fs::exists(path, ec) || !fs::is_directory(path, ec))
-    return std::nullopt;
-
-  fs::path normalized = fs::weakly_canonical(path, ec);
-  if (ec)
-    normalized = path.lexically_normal();
-  return normalized;
-}
-
-static fs::path getExecutablePath(const char *argv0) {
-  std::error_code ec;
-  const fs::path procSelfExe("/proc/self/exe");
-  if (fs::exists(procSelfExe, ec)) {
-    fs::path resolved = fs::read_symlink(procSelfExe, ec);
-    if (!ec && !resolved.empty()) {
-      fs::path normalized = fs::weakly_canonical(resolved, ec);
-      if (!ec)
-        return normalized;
-      return resolved.lexically_normal();
-    }
-  }
-
-  if (argv0 && *argv0) {
-    fs::path fromArgv(argv0);
-    if (fromArgv.is_relative())
-      fromArgv = fs::absolute(fromArgv, ec);
-
-    if (!ec) {
-      fs::path normalized = fs::weakly_canonical(fromArgv, ec);
-      if (!ec)
-        return normalized;
-    }
-    return fromArgv.lexically_normal();
-  }
-
-  return {};
-}
-
-static std::optional<std::string>
-resolveInstalledOpLibDir(const fs::path &executablePath) {
-  if (executablePath.empty())
-    return std::nullopt;
-
-  fs::path bindir(PTOAS_INSTALL_BINDIR);
-  fs::path datadir(PTOAS_INSTALL_DATADIR);
-  if (datadir.is_absolute()) {
-    fs::path candidate = datadir / "ptoas" / "oplib" / "level3";
-    if (auto normalized = normalizeExistingDirectory(candidate))
-      return normalized->string();
-    return std::nullopt;
-  }
-
-  fs::path prefix = executablePath.parent_path();
-  if (!bindir.is_absolute()) {
-    for (const fs::path &component : bindir) {
-      if (component.empty() || component == ".")
-        continue;
-      fs::path parent = prefix.parent_path();
-      if (parent.empty() || parent == prefix)
-        return std::nullopt;
-      prefix = parent;
-    }
-  }
-
-  fs::path candidate = prefix / datadir / "ptoas" / "oplib" / "level3";
-  if (auto normalized = normalizeExistingDirectory(candidate))
-    return normalized->string();
-  return std::nullopt;
-}
-
-static std::optional<std::string>
-resolveRepoOpLibDir(const fs::path &executablePath) {
-  std::error_code ec;
-  fs::path current = executablePath.empty() ? fs::current_path(ec)
-                                            : executablePath.parent_path();
-  if (ec)
-    return std::nullopt;
-
-  while (!current.empty()) {
-    fs::path candidate = current / "oplib" / "level3";
-    if (auto normalized = normalizeExistingDirectory(candidate))
-      return normalized->string();
-
-    fs::path parent = current.parent_path();
-    if (parent.empty() || parent == current)
-      break;
-    current = parent;
-  }
-
-  return std::nullopt;
-}
-
-static std::optional<std::string> resolveDefaultOpLibDir(const char *argv0) {
-  fs::path executablePath = getExecutablePath(argv0);
-  if (auto installedDir = resolveInstalledOpLibDir(executablePath))
-    return installedDir;
-  return resolveRepoOpLibDir(executablePath);
-}
 } // namespace
 
 static LogicalResult reorderEmitCFunctions(ModuleOp module) {
@@ -348,10 +237,10 @@ static llvm::cl::opt<bool> enableInsertSync(
 
 static llvm::cl::opt<bool> enableOpFusion(
     "enable-op-fusion",
-    llvm::cl::desc("Enable A5 OP fusion pipeline "
+    llvm::cl::desc("Enable the A5VM fusion pipeline "
                    "(FusionPlan/OpScheduling/FusionRegionGen/"
-                   "LowerToOpLib/InlineLibCall/LowLevelLoopFusion/"
-                   "FusionLoadStoreElision/FlattenFusionRegion)"),
+                   "PTOToA5VM/LowLevelLoopFusion/FlattenFusionRegion). "
+                   "Ignored by EmitC."),
     llvm::cl::init(false));
 
 static llvm::cl::opt<bool> testOnlyFusionRegionGen(
@@ -366,16 +255,14 @@ static llvm::cl::opt<bool> testOnlyOpScheduling(
 
 static llvm::cl::opt<std::string>
     opLibDir("op-lib-dir",
-             llvm::cl::desc("Directory containing OP-Lib template .mlir files "
-                            "for OP-LIB lowering (A5 only). If omitted, ptoas "
-                            "tries the installed default first and then the "
-                            "repository oplib/level3."),
+             llvm::cl::desc("Deprecated OP-Lib template directory flag. "
+                            "Ignored by both EmitC and A5VM backends."),
              llvm::cl::value_desc("path"), llvm::cl::init(""));
 
 static llvm::cl::opt<bool>
     opFusionDebug("op-fusion-debug",
-                  llvm::cl::desc("Enable verbose debug logs for OP fusion "
-                                 "(grouping/materialization/loop fusion)"),
+                  llvm::cl::desc("Enable verbose debug logs for the A5VM "
+                                 "fusion pipeline"),
                   llvm::cl::init(false));
 
 static llvm::cl::opt<bool> printIRAfterAll(
@@ -779,6 +666,31 @@ static void addSharedPreBackendPasses(OpPassManager &pm,
   }
 
   pm.addPass(createCSEPass());
+}
+
+static void addA5FusionRegionMainlinePreBackendPasses(OpPassManager &pm) {
+  pm.addPass(pto::createPTOValidateSimdIRPass());
+  pm.addNestedPass<mlir::func::FuncOp>(pto::createFusionPlanPass());
+  pm.addNestedPass<mlir::func::FuncOp>(pto::createOpSchedulingPass());
+  pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOFusionRegionGenPass());
+}
+
+static void addA5VMBackendMainlinePasses(OpPassManager &pm,
+                                         bool enableFusionMainline) {
+  // Keep the A5 backend lowering boundary explicit:
+  //   FusionRegionGen -> PTOToA5VM -> PTOLowLevelLoopFusion
+  //   -> PTOFlattenFusionRegion -> backend emission.
+  pm.addPass(pto::createLowerPTOToA5VMPass());
+
+  if (enableFusionMainline) {
+    pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
+    loopFusionOptions.debug = opFusionDebug;
+    pm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));
+    pm.addNestedPass<mlir::func::FuncOp>(
+        pto::createPTOFlattenFusionRegionPass());
+  }
+
+  pm.addPass(mlir::createCSEPass());
 }
 
 static void printA5VMIROpSummary(ModuleOp module, llvm::raw_ostream &os) {
@@ -1367,10 +1279,11 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  const bool enableA5OplibPipeline =
-      (effectiveBackend == PTOBackend::EmitC &&
-       effectiveArch == PTOTargetArch::A5);
-  std::string resolvedOpLibDir = opLibDir;
+  const bool useA5VMBackendPipeline =
+      (effectiveBackend == PTOBackend::A5VM);
+  const bool enableA5FusionMainline =
+      (enableOpFusion && effectiveArch == PTOTargetArch::A5 &&
+       effectiveBackend == PTOBackend::A5VM);
 
   if (effectiveLevel == PTOBuildLevel::Level3) {
     bool missing = false;
@@ -1395,35 +1308,31 @@ int main(int argc, char **argv) {
       return 1;
   }
 
-  if (enableA5OplibPipeline && resolvedOpLibDir.empty()) {
-    auto defaultOpLibDir = resolveDefaultOpLibDir(argv[0]);
-    if (!defaultOpLibDir) {
-      llvm::errs()
-          << "Error: failed to resolve default OpLib directory. Pass "
-             "--op-lib-dir or ensure the install/repository layout is "
-             "available.\n";
-      return 1;
-    }
-    resolvedOpLibDir = *defaultOpLibDir;
-  }
-
-  if (!enableA5OplibPipeline && enableOpFusion) {
+  if (effectiveArch != PTOTargetArch::A5 && enableOpFusion) {
     llvm::errs() << "Warning: --enable-op-fusion is ignored because "
                     "--pto-arch!=a5.\n";
   }
 
-  if (effectiveBackend == PTOBackend::A5VM) {
-    if (enableOpFusion) {
-      llvm::errs() << "Warning: --enable-op-fusion is ignored because "
-                      "--pto-backend=a5vm bypasses the OP-Lib pipeline.\n";
-    }
-    if (!opLibDir.empty()) {
-      llvm::errs() << "Warning: --op-lib-dir is ignored because "
-                      "--pto-backend=a5vm bypasses the OP-Lib pipeline.\n";
-    }
-    if (opFusionDebug) {
+  if (effectiveBackend == PTOBackend::EmitC &&
+      effectiveArch == PTOTargetArch::A5 && enableOpFusion) {
+    llvm::errs() << "Warning: --enable-op-fusion is ignored by the EmitC "
+                    "backend.\n";
+  }
+
+  if (effectiveBackend == PTOBackend::EmitC &&
+      effectiveArch == PTOTargetArch::A5 && opFusionDebug) {
+    llvm::errs() << "Warning: --op-fusion-debug is ignored by the EmitC "
+                    "backend.\n";
+  }
+
+  if (!opLibDir.empty()) {
+    llvm::errs() << "Warning: --op-lib-dir is deprecated and ignored.\n";
+  }
+
+  if (useA5VMBackendPipeline) {
+    if (opFusionDebug && !enableA5FusionMainline) {
       llvm::errs() << "Warning: --op-fusion-debug is ignored because "
-                      "--pto-backend=a5vm bypasses the OP-Lib pipeline.\n";
+                      "A5 fusion mainline is not enabled.\n";
     }
   }
 
@@ -1455,12 +1364,16 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  if (effectiveBackend == PTOBackend::A5VM) {
+  // A5 backend mainline: lower through PTOToA5VM and never wire the legacy
+  // OP-Lib passes into this backend branch.
+  if (useA5VMBackendPipeline) {
     const bool skipPreBackendPasses = inputIsA5VMIR;
 
     if (!skipPreBackendPasses) {
       PassManager preBackendPM(&context);
       maybeEnablePrintIRAfterAll(preBackendPM, inputFuncNames);
+      if (enableA5FusionMainline)
+        addA5FusionRegionMainlinePreBackendPasses(preBackendPM);
       addSharedPreBackendPasses(preBackendPM, effectiveLevel);
       module->getOperation()->setAttr("pto.target_arch",
                                       mlir::StringAttr::get(&context, arch));
@@ -1487,8 +1400,7 @@ int main(int argc, char **argv) {
     if (!skipPreBackendPasses) {
       PassManager backendPM(&context);
       maybeEnablePrintIRAfterAll(backendPM, inputFuncNames);
-      backendPM.addPass(pto::createLowerPTOToA5VMPass());
-      backendPM.addPass(mlir::createCSEPass());
+      addA5VMBackendMainlinePasses(backendPM, enableA5FusionMainline);
       if (failed(backendPM.run(*module))) {
         llvm::errs() << "Error: A5VM backend lowering pass execution failed.\n";
         return 1;
@@ -1559,38 +1471,11 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // Stage 1: front-end lowering plus fusion-region formation.
-  // For the A5 op-fusion path, build pto.fusion_region in tile_buf world
-  // first, then carry that structured boundary through PTOViewToMemref so the
-  // remaining passes can work in memref world without losing region lifetime
-  // information.
-  if (enableA5OplibPipeline) {
-    if (failed(pto::importPTOOpLibTemplates(*module, resolvedOpLibDir,
-                                            opFusionDebug))) {
-      llvm::errs() << "Error: Failed to import OP-Lib templates.\n";
-      return 1;
-    }
-  }
-
   PassManager preCodegenPm(&context);
   maybeEnablePrintIRAfterAll(preCodegenPm, inputFuncNames);
 
-  // preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertCVMovPass());
-  // preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createPTOConvertToDPSPass());
-  // preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertLoadStoreForMixCVPass());
   preCodegenPm.addNestedPass<mlir::func::FuncOp>(
       pto::createLoweringSyncToPipePass());
-  if (enableA5OplibPipeline) {
-    preCodegenPm.addPass(pto::createPTOValidateSimdIRPass());
-    if (enableOpFusion) {
-      preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createFusionPlanPass());
-      preCodegenPm.addNestedPass<mlir::func::FuncOp>(
-          pto::createOpSchedulingPass());
-      preCodegenPm.addNestedPass<mlir::func::FuncOp>(
-          pto::createPTOFusionRegionGenPass());
-    }
-  }
-
   preCodegenPm.addPass(pto::createPTOViewToMemrefPass());
 
   if (failed(preCodegenPm.run(*module))) {
@@ -1598,14 +1483,8 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // Stage 2: memref-world analysis and region-preserving lowering.
-  // The fixed A5 + fusion order is:
-  //   PlanMemory -> InsertSync -> LowerToOpLibCalls -> InlineLibCall
-  //   -> LowLevelLoopFusion -> CSE -> FusionLoadStoreElision
-  //   -> FlattenFusionRegion -> canonicalize/CSE.
-  // LowerToOpLib/inline/loop fusion/load-store cleanup must work in-place on
-  // fusion_region body, while FlattenFusionRegion is the single explicit exit
-  // point before Emit.
+  // EmitC path: lower PTO ops directly to PTO-ISA/EmitC without any OP-Lib
+  // compatibility stages.
   PassManager pm(&context);
   maybeEnablePrintIRAfterAll(pm, inputFuncNames);
   if (!disableInferLayout)
@@ -1627,40 +1506,6 @@ int main(int argc, char **argv) {
   // Conditionally add Sync pass based on flag.
   if (enableInsertSync)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
-
-  if (enableA5OplibPipeline) {
-    // Keep pto.fusion_region alive across the grouped OP-Lib lowering stages.
-    // Flatten only after low-level loop fusion so Emit never sees residual
-    // fusion_region / pto.yield wrappers.
-    pto::PTOInstantiateAndLowerToLibCallOptions instantiateLowerOptions;
-    instantiateLowerOptions.opLibDir = resolvedOpLibDir;
-    instantiateLowerOptions.debug = opFusionDebug;
-    pm.addPass(pto::createPTOInstantiateAndLowerToLibCallPass(
-        instantiateLowerOptions));
-
-    pto::PTOInlineLibCallOptions inlineLibCallOptions;
-    inlineLibCallOptions.debug = opFusionDebug;
-    pm.addPass(pto::createPTOInlineLibCallPass(inlineLibCallOptions));
-
-    if (enableOpFusion) {
-      pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
-      loopFusionOptions.debug = opFusionDebug;
-      pm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));
-      // Deduplicate repeated memref/tile projection scaffolding before the
-      // dedicated load/store cleanup pass without folding loop structure.
-      pm.addNestedPass<mlir::func::FuncOp>(createCSEPass());
-      pm.addNestedPass<mlir::func::FuncOp>(
-          pto::createPTOFusionLoadStoreElisionPass());
-      pm.addNestedPass<mlir::func::FuncOp>(
-          pto::createPTOFlattenFusionRegionPass());
-    }
-
-    // Canonicalize only after the region-preserving fusion stages. Running
-    // this earlier can fold single-trip loops before PTOLowLevelLoopFusion
-    // sees the regular OP-Lib loop nests it expects to merge.
-    pm.addPass(createCanonicalizerPass());
-    pm.addPass(createCSEPass());
-  }
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
 
