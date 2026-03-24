@@ -11,7 +11,6 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 
 namespace mlir {
@@ -38,29 +37,7 @@ struct StageInfo {
   bool hasInnerLoop() const { return static_cast<bool>(innerLoop); }
 };
 
-struct ForwardedStore {
-  Value base;
-  SmallVector<Value, 2> indices;
-  Value mask;
-  Value value;
-};
-
 static bool areEquivalentValues(Value lhs, Value rhs);
-
-static bool areEquivalentValueRanges(ArrayRef<Value> lhs, ArrayRef<Value> rhs) {
-  return lhs.size() == rhs.size() &&
-         llvm::all_of(llvm::zip(lhs, rhs), [](auto pair) {
-           return areEquivalentValues(std::get<0>(pair), std::get<1>(pair));
-         });
-}
-
-static SmallVector<Value, 4> mapValues(ValueRange values, IRMapping &mapping) {
-  SmallVector<Value, 4> mapped;
-  mapped.reserve(values.size());
-  for (Value value : values)
-    mapped.push_back(mapping.lookupOrDefault(value));
-  return mapped;
-}
 
 static Value mapValueOrSelf(Value value, IRMapping &mapping) {
   return mapping.lookupOrDefault(value);
@@ -250,18 +227,6 @@ collectStageRunFrom(pto::SimdVecScopeOp firstScope) {
   return stages;
 }
 
-static const ForwardedStore *findForwardedStore(ArrayRef<ForwardedStore> stores,
-                                                Value base,
-                                                ArrayRef<Value> indices,
-                                                Value mask) {
-  for (const ForwardedStore &store : llvm::reverse(stores))
-    if (areEquivalentValues(store.base, base) &&
-        areEquivalentValueRanges(store.indices, indices) &&
-        areEquivalentMaskValues(store.mask, mask))
-      return &store;
-  return nullptr;
-}
-
 static bool sameLoopNestShape(const StageInfo &lhs, const StageInfo &rhs) {
   if (lhs.hasInnerLoop() != rhs.hasInnerLoop())
     return false;
@@ -280,50 +245,9 @@ static void cloneOpAndMapResults(OpBuilder &builder, Operation *op,
     mapping.map(oldRes, newRes);
 }
 
-static void
-cloneStageLeafOps(OpBuilder &builder, const StageInfo &stage,
-                  IRMapping &mapping, ArrayRef<unsigned> lastStoreStage,
-                  unsigned stageIndex,
-                  SmallVectorImpl<ForwardedStore> &forwardedStores) {
+static void cloneStageLeafOps(OpBuilder &builder, const StageInfo &stage,
+                              IRMapping &mapping) {
   for (Operation *op : stage.leafOps) {
-    if (auto load = dyn_cast<vector::MaskedLoadOp>(op)) {
-      Value base = mapping.lookupOrDefault(load.getBase());
-      SmallVector<Value, 4> indices = mapValues(load.getIndices(), mapping);
-      Value mask = mapping.lookupOrDefault(load.getMask());
-      Value passThru = mapping.lookupOrDefault(load.getPassThru());
-
-      if (const ForwardedStore *forwarded =
-              findForwardedStore(forwardedStores, base, indices, mask)) {
-        mapping.map(load.getResult(), forwarded->value);
-        continue;
-      }
-
-      auto cloned = builder.create<vector::MaskedLoadOp>(
-          load.getLoc(), load.getResult().getType(), base, indices, mask,
-          passThru);
-      cloned->setAttrs(load->getAttrs());
-      mapping.map(load.getResult(), cloned.getResult());
-      continue;
-    }
-
-    if (auto store = dyn_cast<vector::MaskedStoreOp>(op)) {
-      Value base = mapping.lookupOrDefault(store.getBase());
-      SmallVector<Value, 4> indices = mapValues(store.getIndices(), mapping);
-      Value mask = mapping.lookupOrDefault(store.getMask());
-      Value value = mapping.lookupOrDefault(store.getValueToStore());
-
-      if (lastStoreStage[stageIndex] == stageIndex) {
-        auto cloned = builder.create<vector::MaskedStoreOp>(
-            store.getLoc(), base, indices, mask, value);
-        cloned->setAttrs(store->getAttrs());
-      }
-
-      forwardedStores.push_back(ForwardedStore{
-          base, SmallVector<Value, 2>(indices.begin(), indices.end()), mask,
-          value});
-      continue;
-    }
-
     cloneOpAndMapResults(builder, op, mapping);
   }
 }
@@ -338,17 +262,6 @@ static bool fuseStageRun(SmallVectorImpl<StageInfo> &stages) {
       return false;
     if (!sameLoopNestShape(first, stage))
       return false;
-  }
-
-  SmallVector<unsigned, 8> lastStoreStage(stages.size());
-  for (auto [index, stage] : llvm::enumerate(stages)) {
-    unsigned last = index;
-    for (unsigned next = index + 1; next < stages.size(); ++next) {
-      if (areEquivalentValues(stage.store.getBase(),
-                              stages[next].store.getBase()))
-        last = next;
-    }
-    lastStoreStage[index] = last;
   }
 
   OpBuilder blockBuilder(first.scope);
@@ -386,7 +299,6 @@ static bool fuseStageRun(SmallVectorImpl<StageInfo> &stages) {
     for (Operation *op : stage.outerLoopPreludeOps)
       cloneOpAndMapResults(outerBodyBuilder, op, stageMappings[index]);
 
-  SmallVector<ForwardedStore, 8> forwardedStores;
   if (first.hasInnerLoop()) {
     auto fusedInnerLoop = outerBodyBuilder.create<scf::ForOp>(
         first.innerLoop.getLoc(),
@@ -402,12 +314,10 @@ static bool fuseStageRun(SmallVectorImpl<StageInfo> &stages) {
     OpBuilder innerBodyBuilder =
         OpBuilder::atBlockBegin(fusedInnerLoop.getBody());
     for (auto [index, stage] : llvm::enumerate(stages))
-      cloneStageLeafOps(innerBodyBuilder, stage, stageMappings[index],
-                        lastStoreStage, index, forwardedStores);
+      cloneStageLeafOps(innerBodyBuilder, stage, stageMappings[index]);
   } else {
     for (auto [index, stage] : llvm::enumerate(stages))
-      cloneStageLeafOps(outerBodyBuilder, stage, stageMappings[index],
-                        lastStoreStage, index, forwardedStores);
+      cloneStageLeafOps(outerBodyBuilder, stage, stageMappings[index]);
   }
 
   for (StageInfo &stage : llvm::reverse(stages))

@@ -48,7 +48,29 @@ struct FusionValueLiveness {
   Value value;
   std::optional<unsigned> producerNode;
   SmallVector<unsigned, 4> consumerNodes;
+  SmallVector<unsigned, 2> writeInstances;
   std::optional<unsigned> lastLocalConsumer;
+  bool hasExternalUsers = false;
+  bool escapesBlock = false;
+  bool hasLocalBoundaryUsers = false;
+  bool hasLocalHardBoundaryUsers = false;
+};
+
+enum class FusionWriteInstanceEscapeClass {
+  Internal,
+  LocalBoundaryExternal,
+  HardExternal,
+};
+
+struct FusionWriteInstanceLiveness {
+  unsigned id = 0;
+  Value value;
+  Value storageValue;
+  std::optional<unsigned> producerNode;
+  SmallVector<unsigned, 4> consumerNodes;
+  std::optional<unsigned> lastLocalConsumer;
+  FusionWriteInstanceEscapeClass escapeClass =
+      FusionWriteInstanceEscapeClass::Internal;
   bool hasExternalUsers = false;
   bool escapesBlock = false;
   bool hasLocalBoundaryUsers = false;
@@ -71,6 +93,7 @@ struct FusionBlockAnalysis {
   SmallVector<IterationDomainClass, 4> iterationDomainClasses;
   SmallVector<FusionDFGEdge, 8> edges;
   SmallVector<FusionValueLiveness, 8> liveness;
+  SmallVector<FusionWriteInstanceLiveness, 8> writeInstances;
 };
 
 struct PreFusionAnalysisResult {

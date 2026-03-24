@@ -64,6 +64,19 @@ static StringRef stringifyUnprovenReason(
   return "missing_tile_domain";
 }
 
+static StringRef stringifyWriteInstanceEscapeClass(
+    pto::FusionWriteInstanceEscapeClass escapeClass) {
+  switch (escapeClass) {
+  case pto::FusionWriteInstanceEscapeClass::Internal:
+    return "internal";
+  case pto::FusionWriteInstanceEscapeClass::LocalBoundaryExternal:
+    return "local_boundary_external";
+  case pto::FusionWriteInstanceEscapeClass::HardExternal:
+    return "hard_external";
+  }
+  return "internal";
+}
+
 static void appendIndexList(llvm::raw_ostream &os, ArrayRef<unsigned> values) {
   os << "[";
   for (auto [idx, value] : llvm::enumerate(values)) {
@@ -246,6 +259,8 @@ struct PrintPreFusionAnalysisPass
         appendOptionalIndex(os, live.producerNode);
         os << " consumers=";
         appendIndexList(os, live.consumerNodes);
+        os << " write_instances=";
+        appendIndexList(os, live.writeInstances);
         os << " last_local_consumer=";
         appendOptionalIndex(os, live.lastLocalConsumer);
         os << " external_users=" << (live.hasExternalUsers ? "true" : "false")
@@ -254,6 +269,30 @@ struct PrintPreFusionAnalysisPass
            << (live.hasLocalBoundaryUsers ? "true" : "false")
            << " hard_boundary_users="
            << (live.hasLocalHardBoundaryUsers ? "true" : "false") << "\n";
+      }
+
+      for (const pto::FusionWriteInstanceLiveness &writeInstance :
+           blockAnalysis.writeInstances) {
+        os << "    write_instance[" << writeInstance.id
+           << "] value=" << valueLabels.lookup(writeInstance.value)
+           << " storage=" << valueLabels.lookup(writeInstance.storageValue)
+           << " producer=";
+        appendOptionalIndex(os, writeInstance.producerNode);
+        os << " consumers=";
+        appendIndexList(os, writeInstance.consumerNodes);
+        os << " last_local_consumer=";
+        appendOptionalIndex(os, writeInstance.lastLocalConsumer);
+        os << " escape_class="
+           << stringifyWriteInstanceEscapeClass(writeInstance.escapeClass)
+           << " external_users="
+           << (writeInstance.hasExternalUsers ? "true" : "false")
+           << " escapes_block="
+           << (writeInstance.escapesBlock ? "true" : "false")
+           << " boundary_users="
+           << (writeInstance.hasLocalBoundaryUsers ? "true" : "false")
+           << " hard_boundary_users="
+           << (writeInstance.hasLocalHardBoundaryUsers ? "true" : "false")
+           << "\n";
       }
     }
 

@@ -1,6 +1,6 @@
-// RUN: { ptoas %s --enable-op-fusion --op-lib-dir=%S/../../oplib/level3 --pto-arch=a5 --print-ir-after-all --print-ir-after-all-func-filter=__pto_fused_group_11_11 -o /dev/null 2>&1; } | sed -n '/IR Dump After PTOLowLevelLoopFusion/,/IR Dump After Canonicalizer/p' | FileCheck %s
+// RUN: { ptoas %s --enable-op-fusion --op-lib-dir=%S/../../oplib/level3 --pto-arch=a5 --print-ir-after-all --print-ir-after-all-func-filter=__pto_fused_group_11_11 -o /dev/null 2>&1; } | sed -n '/IR Dump After PTOFusionLoadStoreElision/,/IR Dump After Canonicalizer/p' | FileCheck %s
 
-// CHECK-LABEL: IR Dump After PTOLowLevelLoopFusion
+// CHECK-LABEL: IR Dump After PTOFusionLoadStoreElision
 // CHECK-LABEL: func.func private @__pto_fused_group_11_11(
 // CHECK-COUNT-1: pto.simd.vec_scope
 // CHECK-COUNT-2: scf.for

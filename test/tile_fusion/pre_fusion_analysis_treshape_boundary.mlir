@@ -27,5 +27,6 @@ module {
 // CHECK: compute[2] op=tadd family=elementwise domain_class=0 inputs=[external#2, external#2] outputs=[node2.out0] incoming=[] outgoing=[0]
 // CHECK: compute[3] op=tmul family=elementwise domain_class=0 inputs=[node2.out0, external#2] outputs=[node3.out0] incoming=[0] outgoing=[]
 // CHECK: edge[0] producer=2 consumer=3 value=node2.out0
-// CHECK: liveness value=node0.out0 producer=0 consumers=[0]
+// CHECK: liveness value=node0.out0 producer=0 consumers=[0] write_instances=[0]
 // CHECK-SAME: boundary_users=true
+// CHECK: write_instance[0] value=node0.out0 storage=node0.out0 producer=0 consumers=[] last_local_consumer=<none> escape_class=local_boundary_external

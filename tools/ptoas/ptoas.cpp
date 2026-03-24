@@ -347,7 +347,7 @@ static llvm::cl::opt<bool> enableOpFusion(
     llvm::cl::desc("Enable A5 OP fusion pipeline "
                    "(FusionPlan/OpScheduling/FusionRegionGen/"
                    "LowerToOpLib/InlineLibCall/LowLevelLoopFusion/"
-                   "FlattenFusionRegion)"),
+                   "FusionLoadStoreElision/FlattenFusionRegion)"),
     llvm::cl::init(false));
 
 static llvm::cl::opt<bool> testOnlyFusionRegionGen(
@@ -1294,9 +1294,11 @@ int main(int argc, char **argv) {
   // Stage 2: memref-world analysis and region-preserving lowering.
   // The fixed A5 + fusion order is:
   //   PlanMemory -> InsertSync -> LowerToOpLibCalls -> InlineLibCall
-  //   -> LowLevelLoopFusion -> FlattenFusionRegion -> canonicalize/CSE.
-  // LowerToOpLib/inline/loop fusion must work in-place on fusion_region body,
-  // while FlattenFusionRegion is the single explicit exit point before Emit.
+  //   -> LowLevelLoopFusion -> CSE -> FusionLoadStoreElision
+  //   -> FlattenFusionRegion -> canonicalize/CSE.
+  // LowerToOpLib/inline/loop fusion/load-store cleanup must work in-place on
+  // fusion_region body, while FlattenFusionRegion is the single explicit exit
+  // point before Emit.
   PassManager pm(&context);
   maybeEnablePrintIRAfterAll(pm, inputFuncNames);
   if (!disableInferLayout)
@@ -1337,6 +1339,11 @@ int main(int argc, char **argv) {
       pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
       loopFusionOptions.debug = opFusionDebug;
       pm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));
+      // Deduplicate repeated memref/tile projection scaffolding before the
+      // dedicated load/store cleanup pass without folding loop structure.
+      pm.addNestedPass<mlir::func::FuncOp>(createCSEPass());
+      pm.addNestedPass<mlir::func::FuncOp>(
+          pto::createPTOFusionLoadStoreElisionPass());
       pm.addNestedPass<mlir::func::FuncOp>(
           pto::createPTOFlattenFusionRegionPass());
     }

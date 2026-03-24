@@ -17,4 +17,5 @@ module {
 // CHECK: compute[0] op=tadd family=elementwise domain_class=0 inputs=[external#0, external#0] outputs=[node0.out0] incoming=[] outgoing=[0]
 // CHECK: compute[1] op=tmul family=elementwise domain_class=0 inputs=[node0.out0, external#0] outputs=[node1.out0] incoming=[0] outgoing=[]
 // CHECK: edge[0] producer=0 consumer=1 value=node0.out0
-// CHECK: liveness value=node0.out0 producer=0 consumers=[1, 0]
+// CHECK: liveness value=node0.out0 producer=0 consumers=[1, 0] write_instances=[0]
+// CHECK: write_instance[0] value=node0.out0 storage=node0.out0 producer=0 consumers=[1] last_local_consumer=1 escape_class=internal

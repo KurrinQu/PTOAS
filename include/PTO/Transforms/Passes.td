@@ -246,8 +246,7 @@ def PTOLowLevelLoopFusion : Pass<"pto-low-level-loop-fusion", "ModuleOp"> {
       "Fuse adjacent low-level loop nests in synthesized fused functions";
   let description = [{
     Conservatively fuses adjacent canonical pto.simd.vec_scope stages in
-    synthesized fused helpers, performs store-to-load forwarding for internal
-    stage results, and keeps unsupported shapes unchanged.
+    synthesized fused helpers and keeps unsupported shapes unchanged.
   }];
   let constructor = "mlir::pto::createPTOLowLevelLoopFusionPass()";
   let dependentDialects = ["mlir::func::FuncDialect", "mlir::pto::PTODialect",
@@ -257,6 +256,22 @@ def PTOLowLevelLoopFusion : Pass<"pto-low-level-loop-fusion", "ModuleOp"> {
       "debug", "debug", "bool",
       /*default=*/"false",
       "Enable verbose debug logging for low-level loop fusion">];
+}
+
+def PTOFusionLoadStoreElision
+    : Pass<"pto-fusion-load-store-elision", "func::FuncOp"> {
+  let summary =
+      "Elide fusion-local vector load/store round trips before flattening";
+  let description = [{
+    Removes local vector.maskedstore -> vector.maskedload round trips inside
+    canonical fused pto.simd.vec_scope loop nests and centralizes load/store
+    cleanup outside PTOLowLevelLoopFusion so later frontier-aware store
+    elimination can extend the same pass boundary.
+  }];
+  let constructor = "mlir::pto::createPTOFusionLoadStoreElisionPass()";
+  let dependentDialects = ["mlir::func::FuncDialect", "mlir::pto::PTODialect",
+                           "mlir::arith::ArithDialect", "mlir::scf::SCFDialect",
+                           "mlir::vector::VectorDialect"];
 }
 
 def PTOFlattenFusionRegion : Pass<"pto-flatten-fusion-region", "func::FuncOp"> {

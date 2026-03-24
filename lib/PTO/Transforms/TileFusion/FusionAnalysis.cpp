@@ -175,6 +175,37 @@ struct MutableLiveness {
   FusionValueLiveness live;
 };
 
+struct MutableWriteInstance {
+  FusionWriteInstanceLiveness live;
+  unsigned producerBlockOrder = 0;
+};
+
+static FusionWriteInstanceEscapeClass classifyEscapeClass(
+    const FusionWriteInstanceLiveness &live) {
+  if (live.hasExternalUsers || live.escapesBlock ||
+      live.hasLocalHardBoundaryUsers) {
+    return FusionWriteInstanceEscapeClass::HardExternal;
+  }
+  if (live.hasLocalBoundaryUsers)
+    return FusionWriteInstanceEscapeClass::LocalBoundaryExternal;
+  return FusionWriteInstanceEscapeClass::Internal;
+}
+
+static Value getWriteInstanceStorageValue(Operation *op, unsigned outputIndex,
+                                          Value output) {
+  if (auto dpsIface = dyn_cast<pto::PTO_DpsInitOpInterface>(op)) {
+    unsigned tileOutputIndex = 0;
+    for (Value init : dpsIface.getDpsInits()) {
+      if (!isa<pto::TileBufType>(init.getType()))
+        continue;
+      if (tileOutputIndex == outputIndex)
+        return init;
+      ++tileOutputIndex;
+    }
+  }
+  return output;
+}
+
 static unsigned getOrCreateLivenessSlot(DenseMap<Value, unsigned> &slotByValue,
                                         SmallVectorImpl<MutableLiveness> &slots,
                                         Value value) {
@@ -232,6 +263,102 @@ static void finalizeBlockLiveness(
   }
 }
 
+static std::optional<unsigned> findReachingWriteInstance(
+    ArrayRef<unsigned> writeInstanceIds,
+    ArrayRef<MutableWriteInstance> mutableWriteInstances,
+    std::optional<unsigned> userBlockOrder) {
+  if (writeInstanceIds.empty())
+    return std::nullopt;
+
+  if (!userBlockOrder)
+    return writeInstanceIds.back();
+
+  for (unsigned writeInstanceId : llvm::reverse(writeInstanceIds)) {
+    if (mutableWriteInstances[writeInstanceId].producerBlockOrder <
+        *userBlockOrder)
+      return writeInstanceId;
+  }
+  return std::nullopt;
+}
+
+static bool isDpsInitOperandUse(OpOperand &use) {
+  auto dpsIface = dyn_cast<pto::PTO_DpsInitOpInterface>(use.getOwner());
+  if (!dpsIface)
+    return false;
+
+  for (OpOperand &dpsInit : dpsIface.getDpsInitsMutable())
+    if (&dpsInit == &use)
+      return true;
+  return false;
+}
+
+static void finalizeWriteInstances(
+    Block &block, DenseMap<Operation *, FusionOpKind> &kindByOp,
+    DenseMap<Operation *, unsigned> &computeNodeByOp,
+    DenseMap<Operation *, unsigned> &blockOrderByOp,
+    ArrayRef<MutableLiveness> mutableLiveness,
+    SmallVectorImpl<MutableWriteInstance> &mutableWriteInstances) {
+  for (const MutableLiveness &storageState : mutableLiveness) {
+    if (storageState.live.writeInstances.empty())
+      continue;
+
+    for (OpOperand &use : storageState.live.value.getUses()) {
+      if (isDpsInitOperandUse(use))
+        continue;
+
+      Operation *user = use.getOwner();
+      bool isInBlock = user->getBlock() == &block;
+      std::optional<unsigned> userBlockOrder;
+      if (isInBlock) {
+        auto orderIt = blockOrderByOp.find(user);
+        if (orderIt != blockOrderByOp.end())
+          userBlockOrder = orderIt->second;
+      }
+
+      std::optional<unsigned> writeInstanceId = findReachingWriteInstance(
+          storageState.live.writeInstances, mutableWriteInstances, userBlockOrder);
+      if (!writeInstanceId)
+        continue;
+
+      FusionWriteInstanceLiveness &writeLive =
+          mutableWriteInstances[*writeInstanceId].live;
+
+      if (!isInBlock) {
+        writeLive.hasExternalUsers = true;
+        writeLive.escapesBlock = true;
+        continue;
+      }
+
+      auto kindIt = kindByOp.find(user);
+      if (kindIt == kindByOp.end())
+        continue;
+
+      if (user->hasTrait<OpTrait::IsTerminator>())
+        writeLive.escapesBlock = true;
+
+      switch (kindIt->second) {
+      case FusionOpKind::Compute: {
+        auto nodeIt = computeNodeByOp.find(user);
+        if (nodeIt == computeNodeByOp.end())
+          continue;
+        appendUniqueNode(writeLive.consumerNodes, nodeIt->second);
+        writeLive.lastLocalConsumer = nodeIt->second;
+        break;
+      }
+      case FusionOpKind::LocalBoundary:
+        writeLive.hasLocalBoundaryUsers = true;
+        break;
+      case FusionOpKind::HardBoundary:
+        writeLive.hasLocalHardBoundaryUsers = true;
+        break;
+      }
+    }
+  }
+
+  for (MutableWriteInstance &state : mutableWriteInstances)
+    state.live.escapeClass = classifyEscapeClass(state.live);
+}
+
 static FailureOr<FusionBlockAnalysis> analyzeBlock(Block &block) {
   FusionBlockAnalysis analysis;
   analysis.block = &block;
@@ -239,8 +366,10 @@ static FailureOr<FusionBlockAnalysis> analyzeBlock(Block &block) {
   DenseMap<Value, unsigned> producerByValue;
   DenseMap<Value, unsigned> livenessSlotByValue;
   SmallVector<MutableLiveness, 8> mutableLiveness;
+  SmallVector<MutableWriteInstance, 8> mutableWriteInstances;
   DenseMap<Operation *, FusionOpKind> kindByOp;
   DenseMap<Operation *, unsigned> computeNodeByOp;
+  DenseMap<Operation *, unsigned> blockOrderByOp;
   DenseMap<std::pair<int64_t, int64_t>, unsigned> provenClassByKey;
 
   unsigned blockOrder = 0;
@@ -250,6 +379,7 @@ static FailureOr<FusionBlockAnalysis> analyzeBlock(Block &block) {
       op.emitError("failed to normalize fusion op semantics");
       return failure();
     }
+    blockOrderByOp[&op] = blockOrder;
     kindByOp[&op] = semanticsOr->kind;
 
     if (semanticsOr->kind == FusionOpKind::LocalBoundary) {
@@ -282,11 +412,22 @@ static FailureOr<FusionBlockAnalysis> analyzeBlock(Block &block) {
     node.iterationDomainClass = assignIterationDomainClass(
         analysis.iterationDomainClasses, provenClassByKey, domainInfo, node.id);
 
-    for (Value output : node.semantics.tileOutputs) {
+    for (auto [outputIdx, output] : llvm::enumerate(node.semantics.tileOutputs)) {
       producerByValue[output] = node.id;
       unsigned liveSlot =
           getOrCreateLivenessSlot(livenessSlotByValue, mutableLiveness, output);
       mutableLiveness[liveSlot].live.producerNode = node.id;
+
+      MutableWriteInstance writeInstance;
+      writeInstance.live.id = mutableWriteInstances.size();
+      writeInstance.live.value = output;
+      writeInstance.live.storageValue =
+          getWriteInstanceStorageValue(&op, outputIdx, output);
+      writeInstance.live.producerNode = node.id;
+      writeInstance.producerBlockOrder = blockOrder;
+      mutableLiveness[liveSlot].live.writeInstances.push_back(
+          writeInstance.live.id);
+      mutableWriteInstances.push_back(std::move(writeInstance));
     }
 
     for (Value input : node.semantics.tileInputs) {
@@ -316,10 +457,16 @@ static FailureOr<FusionBlockAnalysis> analyzeBlock(Block &block) {
   }
 
   finalizeBlockLiveness(block, kindByOp, computeNodeByOp, mutableLiveness);
+  finalizeWriteInstances(block, kindByOp, computeNodeByOp, blockOrderByOp,
+                         mutableLiveness,
+                         mutableWriteInstances);
 
   analysis.liveness.reserve(mutableLiveness.size());
   for (MutableLiveness &state : mutableLiveness)
     analysis.liveness.push_back(std::move(state.live));
+  analysis.writeInstances.reserve(mutableWriteInstances.size());
+  for (MutableWriteInstance &state : mutableWriteInstances)
+    analysis.writeInstances.push_back(std::move(state.live));
 
   return std::move(analysis);
 }

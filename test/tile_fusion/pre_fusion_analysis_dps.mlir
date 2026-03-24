@@ -31,5 +31,6 @@ module {
 // CHECK: edge[0] producer=0 consumer=1 value=node0.out0
 // CHECK: liveness value=external#0 producer=<none> consumers=[0, 1]
 // CHECK-SAME: hard_boundary_users=true
-// CHECK: liveness value=node1.out0 producer=1 consumers=[1]
+// CHECK: liveness value=node1.out0 producer=1 consumers=[1] write_instances=[1]
 // CHECK-SAME: hard_boundary_users=true
+// CHECK: write_instance[1] value=node1.out0 storage=node1.out0 producer=1 consumers=[] last_local_consumer=<none> escape_class=hard_external
