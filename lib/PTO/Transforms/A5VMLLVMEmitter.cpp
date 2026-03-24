@@ -111,6 +111,7 @@ struct FunctionABISpec {
 };
 
 static Type getElementTypeFromVectorLike(Type type);
+static std::optional<int64_t> getElementCountFromVectorLike(Type type);
 
 static std::string getElementTypeFragment(Type type) {
   if (type.isF16())
@@ -380,6 +381,17 @@ static Type getElementTypeFromVectorLike(Type type) {
   return {};
 }
 
+static std::optional<int64_t> getElementCountFromVectorLike(Type type) {
+  if (auto vecType = dyn_cast<a5vm::VecType>(type))
+    return vecType.getElementCount();
+  if (auto vecType = dyn_cast<VectorType>(type)) {
+    if (vecType.getRank() != 1)
+      return std::nullopt;
+    return vecType.getShape().front();
+  }
+  return std::nullopt;
+}
+
 static Value castIntegerLikeTo(Operation *anchor, Value value, Type targetType) {
   OpBuilder builder(anchor);
   builder.setInsertionPoint(anchor);
@@ -606,20 +618,20 @@ static FailureOr<std::string> getConfirmedCallee(Operation *op) {
     return std::string("llvm.hivm.plt.b32.v300");
   if (auto vlds = dyn_cast<a5vm::VldsOp>(op)) {
     std::string vec = getElementTypeFragment(getElementTypeFromVectorLike(vlds.getResult().getType()));
-    auto vecType = dyn_cast<a5vm::VecType>(vlds.getResult().getType());
-    if (vec.empty() || !vecType)
+    auto lanes = getElementCountFromVectorLike(vlds.getResult().getType());
+    if (vec.empty() || !lanes)
       return failure();
-    return "llvm.hivm.vldsx1.v" + std::to_string(vecType.getElementCount()) +
+    return "llvm.hivm.vldsx1.v" + std::to_string(*lanes) +
            vec;
   }
   if (isa<a5vm::VabsOp>(op))
     return std::string("llvm.hivm.vabs.v64f32.x");
   if (auto vsts = dyn_cast<a5vm::VstsOp>(op)) {
     std::string vec = getElementTypeFragment(getElementTypeFromVectorLike(vsts.getValue().getType()));
-    auto vecType = dyn_cast<a5vm::VecType>(vsts.getValue().getType());
-    if (vec.empty() || !vecType)
+    auto lanes = getElementCountFromVectorLike(vsts.getValue().getType());
+    if (vec.empty() || !lanes)
       return failure();
-    return "llvm.hivm.vstsx1.v" + std::to_string(vecType.getElementCount()) +
+    return "llvm.hivm.vstsx1.v" + std::to_string(*lanes) +
            vec;
   }
   if (auto vcmp = dyn_cast<a5vm::VcmpOp>(op)) {
