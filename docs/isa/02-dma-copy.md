@@ -204,60 +204,80 @@ pto.copy_ubuf_to_ubuf %source, %dest, %sid, %n_burst, %len_burst, %src_stride, %
 
 ---
 
-## Burst / Gap / Pad Model
+## Burst / Stride / Pad Model
 
-The innermost DMA transfer copies `nBurst` rows. Each row transfers `lenBurst` contiguous bytes, then skips to the next row using stride.
+All A5 DMA addresses are **stride-based**: stride is the distance from the start of one row to the start of the next row (`stride >= lenBurst`). There is no separate "gap" parameter.
 
 ### Key Terms
 
 ```
-burst  = lenBurst bytes of contiguous data per row
-gap    = stride - lenBurst (bytes skipped between rows)
-pad    = dst_stride - lenBurst (bytes filled with pad_val in destination)
+burst    = lenBurst contiguous bytes transferred per row
+stride   = distance (bytes) from start of row[r] to start of row[r+1]
+pad      = ub_stride - lenBurst, padded to the 32B alignment boundary
 ```
+
+### Alignment Constraints
+
+- **UB addresses** (both source and destination) must be **32-byte aligned**.
+- **GM→UB padding**: When `data_select_bit = true`, each UB row is padded from `lenBurst` up to the **32B-aligned boundary** of `ub_stride` with `pad_val` (set via `set_mov_pad_val`). This ensures every UB row starts at a 32B-aligned offset.
+- **UB→GM de-padding**: MTE3 reads `lenBurst` bytes from each 32B-aligned UB row (skipping any padding that was added during load), writing only valid data to GM. This effectively strips padding on store.
 
 ### 2D Diagram: GM→UB (pto.copy_gm_to_ubuf)
 
 ```
-GM (source, AS=1):                                UB (destination, AS=6):
+GM (source, AS=1):
 
-            lenBurst                                         lenBurst    pad
-          |<-------->|                                     |<-------->|<---->|
-Row 0:    [##########]--------gap--------                  [##########][0000]
-                     |<--- gm_stride --->|                            |<- ub_stride ->|
-Row 1:    [##########]--------gap--------                  [##########][0000]
-                     |<--- gm_stride --->|                            |<- ub_stride ->|
-Row 2:    [##########]--------gap--------                  [##########][0000]
-          ...                                              ...
-Row N-1:  [##########]                                     [##########][0000]
+          |<--- gm_stride (start-to-start) --->|
+          |<- lenBurst ->|                      |
+Row 0:    [##DATA########].......................|
+Row 1:    [##DATA########].......................|
+Row 2:    [##DATA########].......................|
+          ...
+Row N-1:  [##DATA########]
+
+UB (destination, AS=6, 32B-aligned):
+
+          |<---------- ub_stride (32B-aligned) ---------->|
+          |<- lenBurst ->|<- pad (to 32B boundary) ->|    |
+Row 0:    [##DATA########][000000 PAD 000000000000000]
+Row 1:    [##DATA########][000000 PAD 000000000000000]
+Row 2:    [##DATA########][000000 PAD 000000000000000]
+          ...
+Row N-1:  [##DATA########][000000 PAD 000000000000000]
 
 N = n_burst
-gap = gm_stride - lenBurst  (skipped in GM between rows)
-pad = ub_stride - lenBurst  (zero-filled in UB)
-
-[####] = valid data transferred by DMA
-[0000] = pad_val fill (set via set_mov_pad_val, enabled by data_select_bit=true)
+stride = start of row[r] to start of row[r+1]
+pad    = filled with pad_val to 32B boundary (data_select_bit=true)
+[DATA] = valid data transferred by DMA
+[PAD]  = pad_val fill (set via set_mov_pad_val)
 ```
 
 ### 2D Diagram: UB→GM (pto.copy_ubuf_to_gm)
 
 ```
-UB (source, AS=6):                                GM (destination, AS=1):
+UB (source, AS=6, 32B-aligned start addr):
 
-            lenBurst                                         lenBurst
-          |<-------->|                                     |<-------->|
-Row 0:    [##########]...skip...                           [##########]--------gap--------
-                     |<- src_stride ->|                               |<--- dst_stride --->|
-Row 1:    [##########]...skip...                           [##########]--------gap--------
-                     |<- src_stride ->|                               |<--- dst_stride --->|
-Row 2:    [##########]...skip...                           [##########]--------gap--------
-          ...                                              ...
-Row N-1:  [##########]                                     [##########]
+          |<---------- src_stride (32B-aligned) --------->|
+          |<- lenBurst ->|<-- pad (ignored on read) -->|  |
+Row 0:    [##DATA########][000 pad 000000000000000000]
+Row 1:    [##DATA########][000 pad 000000000000000000]
+Row 2:    [##DATA########][000 pad 000000000000000000]
+          ...
+Row N-1:  [##DATA########][000 pad 000000000000000000]
+
+GM (destination, AS=1):
+
+          |<--- dst_stride (start-to-start) --->|
+          |<- lenBurst ->|                      |
+Row 0:    [##DATA########].......................|
+Row 1:    [##DATA########].......................|
+Row 2:    [##DATA########].......................|
+          ...
+Row N-1:  [##DATA########]
 
 N = n_burst
-Only lenBurst bytes per row are written to GM.
-skip = src_stride - lenBurst  (UB data between rows, not read)
-gap  = dst_stride - lenBurst  (GM space between rows, untouched)
+MTE3 reads only lenBurst bytes from each UB row (de-padding).
+Only lenBurst bytes are written to each GM row.
 ```
 
 ---
@@ -328,27 +348,29 @@ for (int j = 0; j < loop2; j++) {
 Load a 64×128 tile (f16) from a 1024×512 matrix in GM into UB.
 
 ```
-GM layout (1024 × 512 f16, row stride = 1024 bytes):
+GM layout (1024 × 512 f16):
 
     col 0          col 128               col 512
     |              |                     |
-    +--[###TILE###]+---------skip--------+  row R
-    +--[###TILE###]+---------skip--------+  row R+1
+    +--[###TILE###]+.....................+  row R
+    +--[###TILE###]+.....................+  row R+1
     ...
-    +--[###TILE###]+---------skip--------+  row R+63
+    +--[###TILE###]+.....................+  row R+63
+
+    |<----------- gm_stride = 1024B ----------->|
+    |<-lenBurst=256B->|
 
     lenBurst  = 128 × 2 = 256 bytes (128 f16 elements)
-    gm_stride = 512 × 2 = 1024 bytes (full GM row)
-    gap       = 1024 - 256 = 768 bytes (skipped per row)
+    gm_stride = 512 × 2 = 1024 bytes (start-to-start, full GM row)
 
-UB layout (64 × 128 f16, contiguous):
+UB layout (64 × 128 f16, 32B-aligned, contiguous):
 
-    +--[###TILE###]--+  row 0  (256 bytes, no pad)
+    +--[###TILE###]--+  row 0  (256 bytes, 32B-aligned, no pad)
     +--[###TILE###]--+  row 1
     ...
     +--[###TILE###]--+  row 63
 
-    ub_stride = 256 bytes (= lenBurst, so no padding)
+    ub_stride = 256 bytes (= lenBurst, already 32B-aligned, no padding)
 ```
 
 ```mlir
@@ -380,19 +402,28 @@ pto.copy_gm_to_ubuf %gm_ptr, %ub_ptr,
 Load 100 valid columns from GM into a 128-wide UB tile (f16). The remaining 28 columns are zero-padded.
 
 ```
-GM (100 cols valid):               UB (128 cols, 28 padded):
+GM (100 cols valid, contiguous):
 
-    col 0     col 100                  col 0     col 100  col 128
-    |         |                        |         |        |
-    +--[DATA]-+  row 0  (200B)         +--[DATA]-+[00PAD]+  row 0  (256B)
-    +--[DATA]-+  row 1                 +--[DATA]-+[00PAD]+  row 1
-    ...                                ...
-    +--[DATA]-+  row 63                +--[DATA]-+[00PAD]+  row 63
+    |<-lenBurst=200B->|
+    |<- gm_stride=200B (start-to-start) ->|
+    +--[####DATA####]-+  row 0
+    +--[####DATA####]-+  row 1
+    ...
+    +--[####DATA####]-+  row 63
+
+UB (128 cols wide, 32B-aligned, padded):
+
+    |<----------- ub_stride = 256B (32B-aligned) ---------->|
+    |<-lenBurst=200B->|<---- pad = 56B to 32B boundary ---->|
+    +--[####DATA####]-+[0000000 PAD 000000000000000000000000]+  row 0
+    +--[####DATA####]-+[0000000 PAD 000000000000000000000000]+  row 1
+    ...
+    +--[####DATA####]-+[0000000 PAD 000000000000000000000000]+  row 63
 
     lenBurst  = 100 × 2 = 200 bytes
-    gm_stride = 200 bytes (contiguous in GM)
-    ub_stride = 128 × 2 = 256 bytes (tile width in UB)
-    pad       = 256 - 200 = 56 bytes (28 f16 elements)
+    gm_stride = 200 bytes (start-to-start, contiguous in GM)
+    ub_stride = 128 × 2 = 256 bytes (32B-aligned tile width in UB)
+    pad       = 256 - 200 = 56 bytes (padded to 32B boundary with pad_val)
 ```
 
 ```mlir
@@ -423,18 +454,29 @@ pto.copy_gm_to_ubuf %gm_ptr, %ub_ptr,
 Store a 64×128 tile (f16) from UB back to a 1024×512 GM matrix at an offset.
 
 ```
-UB (source, 64 × 128 contiguous):     GM (dest, into 1024 × 512 matrix):
+UB (source, 32B-aligned, 64 × 128 f16):
 
-    +--[###TILE###]--+  row 0             col 0          col 128           col 512
-    +--[###TILE###]--+  row 1             |              |                 |
-    ...                                   +--[###TILE###]+-----untouched---+  row R
-    +--[###TILE###]--+  row 63            +--[###TILE###]+-----untouched---+  row R+1
-                                          ...
-    src_stride = 256 bytes                +--[###TILE###]+-----untouched---+  row R+63
+    |<- src_stride = 256B (32B-aligned) ->|
+    |<- lenBurst = 256B ->|
+    +--[#####TILE#####]---+  row 0
+    +--[#####TILE#####]---+  row 1
+    ...
+    +--[#####TILE#####]---+  row 63
 
-                                          dst_stride = 1024 bytes (full GM row)
-                                          lenBurst   = 256 bytes (tile row)
-                                          gap        = 1024 - 256 = 768 bytes (untouched)
+    (no padding here — lenBurst == src_stride)
+
+GM (dest, into 1024 × 512 matrix):
+
+    |<----------- dst_stride = 1024B (start-to-start) ----------->|
+    |<- lenBurst = 256B ->|                                       |
+    col 0          col 128                                col 512
+    +--[#####TILE#####]---+..............................+  row R
+    +--[#####TILE#####]---+..............................+  row R+1
+    ...
+    +--[#####TILE#####]---+..............................+  row R+63
+
+    MTE3 reads lenBurst bytes from each 32B-aligned UB row,
+    writes only lenBurst bytes per GM row (stride controls row spacing).
 ```
 
 ```mlir
