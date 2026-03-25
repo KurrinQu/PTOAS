@@ -48,7 +48,6 @@ require_env "SAMPLE_NAME" "${SAMPLE_NAME}" "Cmp"
 
 [[ -x "${PTOAS_BIN}" ]] || die "PTOAS_BIN is not executable: ${PTOAS_BIN}"
 [[ -d "${PTO_ISA_ROOT}/include" ]] || die "PTO_ISA_ROOT/include missing: ${PTO_ISA_ROOT}"
-[[ -d "${PTO_ISA_ROOT}/tests/common" ]] || die "PTO_ISA_ROOT/tests/common missing: ${PTO_ISA_ROOT}"
 [[ -d "${ASCEND_HOME_PATH}" ]] || die "ASCEND_HOME_PATH missing: ${ASCEND_HOME_PATH}"
 
 set +u

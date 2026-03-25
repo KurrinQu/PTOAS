@@ -243,7 +243,6 @@ build_one() {
     -include __clang_cce_runtime_wrapper.h \
     -D "${testcase}_kernel_EXPORTS" \
     -I "${PTO_ISA_ROOT}/include" \
-    -I "${PTO_ISA_ROOT}/tests/common" \
     -I "${ASCEND_HOME_PATH}/include" \
     -I "${ASCEND_HOME_PATH}/pkg_inc" \
     -I "${ASCEND_HOME_PATH}/pkg_inc/profiling" \
