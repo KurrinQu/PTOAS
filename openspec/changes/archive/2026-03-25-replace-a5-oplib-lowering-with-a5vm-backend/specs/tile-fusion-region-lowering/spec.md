@@ -1,25 +1,6 @@
-# tile-fusion-region-lowering Specification
+# Tile Fusion Region Lowering Specification
 
-## Purpose
-TBD - created by archiving change advance-tile-fusion-lower-to-libcall. Update Purpose after archive.
-## Requirements
-### Requirement: `pto.fusion_region` MUST be transparent to pre-lowering memory and sync passes
-
-在当前 memref-world 过渡主线中，`PlanMemory` 与 `PTOInsertSync` MUST 把 `pto.fusion_region` 视为局部结构化容器，而不是未知 compute wrapper。
-
-#### Scenario: PlanMemory analyzes local buffers inside fusion_region
-
-- **WHEN** `PlanMemory` 处理一个已经过 `PTOViewToMemref`、且仍包含 `pto.fusion_region` 的函数
-- **THEN** 它 MUST 递归分析 region body 内的 local buffer 读写与生命周期，而不是把 `pto.fusion_region` 当作“touches local buffer”的未知 op
-- **AND** 它 MUST 建立 `pto.yield` operands 与 `pto.fusion_region` results 之间的 alias / external-frontier 关系
-- **AND** 它 MUST NOT 仅因为 local buffer 位于 region body 内部就失败
-
-#### Scenario: InsertSync preserves region-internal dependencies without wrapper sync
-
-- **WHEN** `PTOInsertSync` 处理一个包含 `pto.fusion_region` 的函数
-- **THEN** 它 MUST 递归进入 region body，并基于其中的实际 op 构建 dependency 与 sync 分析
-- **AND** 它 MUST 把 `pto.yield` 视为 region 对外可见结果的 frontier
-- **AND** 它 MUST NOT 仅为了 `pto.fusion_region` wrapper 本身额外生成独立 sync boundary
+## MODIFIED Requirements
 
 ### Requirement: `pto.fusion_region` MUST remain the structured lowering boundary for planned fusion groups until explicit flatten
 
