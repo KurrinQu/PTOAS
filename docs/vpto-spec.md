@@ -228,11 +228,11 @@ It only describes:
 
 It does not describe lowering strategy.
 
-VPTO source programs are not restricted to `pto` operations alone. In practice they also use a small set of shared MLIR dialect ops, most notably `arith` and `scf`, to express scalar constants, scalar/index arithmetic, comparisons, and structured control flow around PTO vector or tile regions. These shared-dialect ops are part of the supported VPTO source surface, but they are not PTO ISA instructions and generally do not map to CCE builtins directly.
+VPTO source programs are not restricted to `pto` operations alone. In practice they also use shared MLIR dialect ops, most notably the full scalar operation surface of `arith` together with structured control-flow ops from `scf`, to express scalar constants, scalar arithmetic, type conversion, comparisons, and structured control flow around PTO vector or tile regions. These shared-dialect ops are part of the supported VPTO source surface, but they are not PTO ISA instructions and generally do not map to CCE builtins directly.
 
 ### Shared MLIR Dialects
 
-- `arith`: primitive scalar and index operations used to build constants, compute offsets and bounds, cast between index and integer types, compare scalar values, and select between scalar results.
+- `arith`: the full scalar `arith` surface is supported in VPTO programs, covering scalar integer, floating-point, boolean, and `index` operations. In current samples the most common uses are still constants, offset/bounds arithmetic, casts, compares, and selects.
 - `scf`: structured control flow used to model counted loops, conditional regions, loop-carried state, and break-like control around PTO compute and data-movement ops.
 - Shared dialect ops remain in standard MLIR form so that PTO analyses and backend passes can reason about control flow and scalar state without re-encoding them as PTO-specific instructions.
 
@@ -375,12 +375,21 @@ pto.mem_bar "VV_ALL"
 ### Shared Dialect Syntax Patterns
 
 VPTO programs may interleave PTO ops with standard MLIR `arith` and `scf` ops.
+The examples below emphasize common index-heavy patterns, but `arith` support is not limited to index arithmetic.
 
 **Scalar / index constant:**
 
 ```mlir
 %c0 = arith.constant 0 : index
 %zero = arith.constant 0.0 : f32
+```
+
+**Scalar arithmetic (integer / float / boolean-style bitwise):**
+
+```mlir
+%sum_i = arith.addi %lhs_i, %rhs_i : i32
+%sum_f = arith.addf %lhs_f, %rhs_f : f32
+%bits = arith.andi %flags0, %flags1 : i32
 ```
 
 **Scalar compare and select:**
@@ -505,7 +514,7 @@ This section provides a categorized overview of all VPTO instructions plus the s
 | 11 | [Compare & Select](isa/11-compare-select.md) | Comparison and conditional selection | 4 | `pto.vcmp`, `pto.vcmps`, `pto.vsel`, `pto.vselr` |
 | 12 | [Data Rearrangement](isa/12-data-rearrangement.md) | In-register data movement and permutation | 11 | `pto.vintlv`, `pto.vdintlv`, `pto.vslide`, `pto.vshift`, `pto.vsqz`, `pto.vusqz`, `pto.vperm`, `pto.vpack`, `pto.vsunpack`, `pto.vzunpack`, `pto.vselr` |
 | 13 | [DSA/SFU Ops](isa/13-dsa-sfu-ops.md) | Fused ops, special functions, UB-to-UB, sorting | ~12 | `pto.vlrelu`, `pto.vprelu`, `pto.vexpdiff`, `pto.vci`, `pto.vtranspose`, `pto.vsort32`, `pto.vmrgsort`, etc. |
-| 14 | [Arith (Shared MLIR Dialect)](isa/14-shared-arith.md) | Scalar constants, scalar/index arithmetic, compares, casts, and selects used around PTO ops | ~12 | `arith.constant`, `arith.addi`, `arith.subi`, `arith.muli`, `arith.cmpi`, `arith.select`, `arith.index_cast`, `arith.index_castui`, `arith.andi`, `arith.xori`, `arith.remui`, `arith.ceildivsi` |
+| 14 | [Arith (Shared MLIR Dialect)](isa/14-shared-arith.md) | Full scalar `arith` surface used around PTO ops; the companion page lists categories and representative examples | all scalar ops | `arith.constant`, `arith.addi`, `arith.addf`, `arith.cmpi`, `arith.cmpf`, `arith.select`, `arith.index_cast`, `arith.extsi`, `arith.trunci`, `arith.andi`, `arith.shli`, etc. |
 | 15 | [SCF (Shared MLIR Dialect)](isa/15-shared-scf.md) | Structured loops, branches, and loop-carried state around PTO regions | 5 | `scf.for`, `scf.if`, `scf.while`, `scf.condition`, `scf.yield` |
 
 ---
@@ -555,12 +564,16 @@ This section provides a categorized overview of all VPTO instructions plus the s
 
 ### Scalar & Control Operations
 
+Group 14 covers the full scalar `arith` surface. The rows below list common VPTO patterns rather than an exhaustive partition of `arith` ops.
+
 | Operation | Group | Description |
 |-----------|-------|-------------|
-| Scalar / Index Constants | 14 | `arith.constant` |
-| Scalar Compare & Select | 14 | `arith.cmpi`, `arith.select` |
-| Scalar / Index Arithmetic | 14 | `arith.addi`, `arith.subi`, `arith.muli`, `arith.remui`, `arith.ceildivsi` |
-| Casts Between Index and Integer | 14 | `arith.index_cast`, `arith.index_castui` |
+| Scalar Constants | 14 | `arith.constant` |
+| Scalar Integer / Index Arithmetic | 14 | `arith.addi`, `arith.subi`, `arith.muli`, `arith.divsi`, `arith.remui`, `arith.ceildivsi`, etc. |
+| Scalar Floating-Point Arithmetic | 14 | `arith.addf`, `arith.subf`, `arith.mulf`, `arith.divf`, `arith.maximumf`, etc. |
+| Scalar Compare & Select | 14 | `arith.cmpi`, `arith.cmpf`, `arith.select` |
+| Scalar Casts / Width Changes | 14 | `arith.index_cast`, `arith.index_castui`, `arith.extsi`, `arith.extui`, `arith.trunci`, `arith.sitofp`, etc. |
+| Scalar Bitwise / Shift Ops | 14 | `arith.andi`, `arith.ori`, `arith.xori`, `arith.shli`, `arith.shrsi`, `arith.shrui`, etc. |
 | Counted Loops | 15 | `scf.for` |
 | Conditional Regions | 15 | `scf.if`, `scf.yield` |
 | Break-like Structured Loops | 15 | `scf.while`, `scf.condition`, `scf.yield` |
