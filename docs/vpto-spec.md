@@ -223,12 +223,11 @@ It only describes:
 - operand and result lists
 - operand and result types
 - important attributes
-- corresponding CCE builtin or CCE wrapper family, when applicable
 - C-style semantics for each operation
 
 It does not describe lowering strategy.
 
-VPTO source programs are not restricted to `pto` operations alone. In practice they also use shared MLIR dialect ops, most notably the full scalar operation surface of `arith` together with structured control-flow ops from `scf`, to express scalar constants, scalar arithmetic, type conversion, comparisons, and structured control flow around PTO vector or tile regions. These shared-dialect ops are part of the supported VPTO source surface, but they are not PTO ISA instructions and generally do not map to CCE builtins directly.
+VPTO source programs are not restricted to `pto` operations alone. In practice they also use shared MLIR dialect ops, most notably the full scalar operation surface of `arith` together with structured control-flow ops from `scf`, to express scalar constants, scalar arithmetic, type conversion, comparisons, and structured control flow around PTO vector or tile regions. These shared-dialect ops are part of the supported VPTO source surface and should be regarded as part of PTO-ISA alongside `pto` dialect operations.
 
 ### Shared MLIR Dialects
 
@@ -287,11 +286,6 @@ VPTO source programs are not restricted to `pto` operations alone. In practice t
 %align = pto.vldas %ub[%c0] : !llvm.ptr<6> -> !pto.align
 %vec = pto.vldus %align, %ub[%c64] : !pto.align, !llvm.ptr<6> -> !pto.vreg<64xf32>
 ```
-
-### Correspondence Categories
-
-- `direct builtin`: maps to one CCE builtin family (`__builtin_cce_*`)
-- `wrapper family`: corresponds to a CCE wrapper that may dispatch to multiple builtins
 
 ---
 
