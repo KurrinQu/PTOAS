@@ -40,7 +40,7 @@ VPTO supports the full scalar operation surface of upstream `arith`. The upstrea
 ## Current PTOAS Coverage
 
 - the current repository examples are still dominated by constants, casts, integer/index arithmetic, compares, and selects because those are the most common surrounding-scalar patterns in existing kernels
-- backend-specific tests such as the A5VM shared-dialect fixture visibly exercise only a representative subset of `arith` ops in a single path
+- backend-specific tests such as the PTO shared-dialect fixture visibly exercise only a representative subset of `arith` ops in a single path
 - the documented VPTO source contract is nevertheless the full scalar `arith` surface, not just the index-heavy subset that appears most often in current samples
 
 This section therefore uses representative categories and examples instead of pretending that the supported `arith` surface is limited to the currently most common sample patterns.

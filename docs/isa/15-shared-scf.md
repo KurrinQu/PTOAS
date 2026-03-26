@@ -26,7 +26,7 @@ Ops such as `scf.execute_region`, `scf.forall`, or `scf.index_switch` are not pa
 
 ## Current PTOAS Coverage
 
-- `scf.for`, `scf.if`, and `scf.yield` are directly exercised in the shared-dialect A5VM fixture and appear widely across PTO samples
+- `scf.for`, `scf.if`, and `scf.yield` are directly exercised in the shared-dialect PTO fixture and appear widely across PTO samples
 - the VPTO `__VEC_SCOPE__` contract is modeled as a specialized `scf.for` annotated with `llvm.loop.aivector_scope`
 - PTO synchronization and memory analyses explicitly reason about `scf.for`, `scf.if`, `scf.yield`, and `scf.while`
 - `scf.while` and `scf.condition` appear in control-flow samples and are handled in PTO-to-EmitC control-flow lowering, but they are less broadly exercised than `for` / `if` on all backend paths
