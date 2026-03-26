@@ -5968,11 +5968,22 @@ dst = merge_sort(src, blockLen)
 
 | Name | Type | Description |
 |------|------|-------------|
-| `src` | `pto.tile_buf` | Input tile |
-| `dst` | `pto.tile_buf` | Output tile |
-| `blockLen` | `I32Attr` | Block length for merge |
+| `src` / `src0..src3` | PTO shaped-like type | Input tile(s) |
+| `blockLen` | `AnyInteger` operand | Block length for format1 |
+| `dst` | PTO shaped-like type | Output tile |
+| `tmp` | PTO shaped-like type | Temporary output tile for format2 |
+| `excuted` | `vector<4xi16>` | Output vector written by format2 |
 
 **Results:** None. Writes into `dst` via DPS pattern.
+
+**Assembly Format:**
+
+```
+  - `pto.tmrgsort` has two accepted forms:
+    - format1: `ins(src, blockLen : src_type, blockLen_type) outs(dst : dst_type)`
+    - format2: `ins(src0, src1, src2, src3 {exhausted = <bool>} : src0_type, src1_type, src2_type, src3_type) outs(dst, tmp, excuted : dst_type, tmp_type, vector<4xi16>)`
+```
+
 
 **Constraints & Verification:**
 
@@ -5993,7 +6004,16 @@ dst = merge_sort(src, blockLen)
 **Basic Example:**
 
 ```mlir
-pto.tmrgsort ins(%src : !pto.tile_buf<...>) outs(%dst : !pto.tile_buf<...>) blockLen = 32
+// format1
+pto.tmrgsort ins(%src, %blockLen : !pto.tile_buf<...>, i32)
+             outs(%dst : !pto.tile_buf<...>)
+
+// format2
+pto.tmrgsort ins(%src0, %src1, %src2, %src3 {exhausted = false} :
+                 !pto.tile_buf<...>, !pto.tile_buf<...>,
+                 !pto.tile_buf<...>, !pto.tile_buf<...>)
+             outs(%dst, %tmp, %excuted :
+                 !pto.tile_buf<...>, !pto.tile_buf<...>, vector<4xi16>)
 ```
 
 ---
