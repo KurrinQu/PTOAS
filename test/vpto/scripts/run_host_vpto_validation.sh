@@ -15,6 +15,8 @@ AICORE_ARCH="${AICORE_ARCH:-dav-c310-vec}"
 HOST_RUNNER="${HOST_RUNNER:-ssh root@localhost}"
 CASE_NAME="${CASE_NAME:-}"
 MODULE_ID="${MODULE_ID:-a5d60abf67864aa0}"
+DEVICE="${DEVICE:-SIM}"
+SIM_LIB_DIR="${SIM_LIB_DIR:-}"
 
 log() {
   echo "[$(date +'%F %T')] $*"
@@ -27,7 +29,9 @@ die() {
 
 run_remote() {
   local cmd="$1"
-  if [[ "${HOST_RUNNER}" == "ssh root@localhost" ]]; then
+  if [[ "${DEVICE}" == "SIM" ]]; then
+    bash -lc "${cmd}"
+  elif [[ "${HOST_RUNNER}" == "ssh root@localhost" ]]; then
     ssh -o StrictHostKeyChecking=no root@localhost "${cmd}"
   else
     eval "${HOST_RUNNER} ${cmd@Q}"
@@ -60,6 +64,31 @@ LD_LLD_BIN="${LD_LLD_BIN:-${ASCEND_HOME_PATH}/bin/ld.lld}"
 CLANG_RESOURCE_DIR="${CLANG_RESOURCE_DIR:-${ASCEND_HOME_PATH}/tools/bisheng_compiler/lib/clang/15.0.5}"
 CCE_STUB_DIR="${CCE_STUB_DIR:-${CLANG_RESOURCE_DIR}/include/cce_stub}"
 
+HOST_ARCH="$(uname -m)"
+HOST_TRIPLE=""
+HOST_TARGET_CPU=""
+HOST_TARGET_ABI=""
+HOST_FEATURE_FLAGS=()
+HOST_OS_DIR=""
+
+case "${HOST_ARCH}" in
+  aarch64)
+    HOST_TRIPLE="aarch64-unknown-linux-gnu"
+    HOST_TARGET_CPU="generic"
+    HOST_TARGET_ABI="aapcs"
+    HOST_FEATURE_FLAGS=(-target-feature +neon -target-feature +v8a)
+    HOST_OS_DIR="aarch64-linux"
+    ;;
+  x86_64)
+    HOST_TRIPLE="x86_64-unknown-linux-gnu"
+    HOST_TARGET_CPU="x86-64"
+    HOST_OS_DIR="x86_64-linux"
+    ;;
+  *)
+    die "unsupported host arch from uname -m: ${HOST_ARCH}"
+    ;;
+esac
+
 command -v "${BISHENG_BIN}" >/dev/null 2>&1 || die "bisheng not found: ${BISHENG_BIN}"
 command -v python3 >/dev/null 2>&1 || die "python3 not found"
 
@@ -86,6 +115,7 @@ for inc in "${BISHENG_SYSTEM_INCLUDES[@]}"; do
 done
 
 mkdir -p "${WORK_SPACE}"
+WORK_SPACE="$(cd "${WORK_SPACE}" && pwd)"
 
 discover_cases() {
   if [[ -n "${CASE_NAME}" ]]; then
@@ -130,9 +160,19 @@ build_host_stub() {
   local case_dir="$1"
   local device_obj="$2"
   local stub_obj="$3"
+  local host_target_args=(
+    -triple "${HOST_TRIPLE}"
+    -target-cpu "${HOST_TARGET_CPU}"
+  )
+  if [[ -n "${HOST_TARGET_ABI}" ]]; then
+    host_target_args+=(-target-abi "${HOST_TARGET_ABI}")
+  fi
+  if [[ ${#HOST_FEATURE_FLAGS[@]} -gt 0 ]]; then
+    host_target_args+=("${HOST_FEATURE_FLAGS[@]}")
+  fi
 
   "${BISHENG_CC1_BIN}" -cc1 \
-    -triple aarch64-unknown-linux-gnu \
+    "${host_target_args[@]}" \
     -fcce-aicpu-legacy-launch \
     -fcce-is-host \
     -cce-launch-with-flagv2-impl \
@@ -156,10 +196,6 @@ build_host_stub() {
     -fno-rounding-math \
     -mconstructor-aliases \
     -funwind-tables=2 \
-    -target-cpu generic \
-    -target-feature +neon \
-    -target-feature +v8a \
-    -target-abi aapcs \
     -fallow-half-arguments-and-returns \
     -mllvm -treat-scalable-fixed-error-as-warning \
     -fcoverage-compilation-dir="${ROOT_DIR}" \
@@ -231,6 +267,16 @@ build_host_executable() {
   local case_name="$1"
   local case_dir="$2"
   local out_dir="$3"
+  local extra_ldflags=()
+  local extra_lib_dirs=()
+  if [[ "${DEVICE}" == "SIM" ]]; then
+    [[ -n "${SIM_LIB_DIR}" && -d "${SIM_LIB_DIR}" ]] ||
+      die "SIM_LIB_DIR is not set or invalid for DEVICE=SIM: ${SIM_LIB_DIR}"
+    extra_lib_dirs+=(-L "${SIM_LIB_DIR}" -Wl,-rpath,"${SIM_LIB_DIR}")
+    extra_ldflags+=(-lruntime_camodel)
+  else
+    extra_ldflags+=(-lruntime)
+  fi
 
   "${BISHENG_BIN}" \
     -xc++ -include stdint.h -include stddef.h -std=c++17 \
@@ -240,10 +286,12 @@ build_host_executable() {
     -I "${ASCEND_HOME_PATH}/include" \
     -L "${out_dir}" \
     -L "${ASCEND_HOME_PATH}/lib64" \
+    "${extra_lib_dirs[@]}" \
     -Wl,-rpath,"${out_dir}" \
     -Wl,-rpath,"${ASCEND_HOME_PATH}/lib64" \
     -o "${out_dir}/${case_name}" \
-    -lruntime -lstdc++ -lascendcl -lm -ltiling_api -lplatform -lc_sec -ldl -lnnopbase \
+    "${extra_ldflags[@]}" \
+    -lstdc++ -lascendcl -lm -ltiling_api -lplatform -lc_sec -ldl -lnnopbase \
     -l"${case_name}_kernel"
 }
 
@@ -301,7 +349,7 @@ build_one() {
 cd "${out_dir}" && \
 export ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" && \
 if [ -f "\$ASCEND_HOME_PATH/set_env.sh" ]; then source "\$ASCEND_HOME_PATH/set_env.sh" >/dev/null 2>&1; fi && \
-LD_LIBRARY_PATH="${out_dir}:\$ASCEND_HOME_PATH/lib64:\${LD_LIBRARY_PATH:-}" "./${case_name}"
+LD_LIBRARY_PATH="${out_dir}:${SIM_LIB_DIR}:\$ASCEND_HOME_PATH/lib64:\${LD_LIBRARY_PATH:-}" "./${case_name}"
 EOF
 )
   run_remote "${remote_run_cmd}"
@@ -311,7 +359,7 @@ EOF
 cd "${out_dir}" && \
 export ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" && \
 if [ -f "\$ASCEND_HOME_PATH/set_env.sh" ]; then source "\$ASCEND_HOME_PATH/set_env.sh" >/dev/null 2>&1; fi && \
-LD_LIBRARY_PATH="${out_dir}:\$ASCEND_HOME_PATH/lib64:\${LD_LIBRARY_PATH:-}" ldd "./${case_name}" | grep "lib${case_name}_kernel.so"
+LD_LIBRARY_PATH="${out_dir}:${SIM_LIB_DIR}:\$ASCEND_HOME_PATH/lib64:\${LD_LIBRARY_PATH:-}" ldd "./${case_name}" | grep "lib${case_name}_kernel.so"
 EOF
 )
   local ldd_output

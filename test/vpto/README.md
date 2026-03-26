@@ -31,7 +31,24 @@ export A5VM_FLAGS="--pto-backend=a5vm --a5vm-emit-hivm-llvm"
 export AICORE_ARCH=dav-c310-vec
 export HOST_RUNNER="ssh root@localhost"
 export CASE_NAME=abs
+export DEVICE=SIM
+export SIM_LIB_DIR=/path/to/camodel/lib
 ```
+
+When `DEVICE=SIM`, the host executable must be linked and run against the
+simulator runtime directory that contains `libruntime_camodel.so` and its
+companions such as `libnpu_drv_camodel.so`. Set `SIM_LIB_DIR` explicitly to the
+matching CANN simulator `lib` directory for your target environment.
+
+Example:
+
+```bash
+export DEVICE=SIM
+export SIM_LIB_DIR=/usr/local/Ascend/cann-9.0.0/aarch64-linux/simulator/dav_3102/lib
+```
+
+The runner does not guarantee automatic simulator directory inference across
+different CANN installs or SoC variants.
 
 ## Case Discovery
 
@@ -93,5 +110,17 @@ source /usr/local/Ascend/cann-9.0.0/set_env.sh
 export WORK_SPACE=$(mktemp -d /tmp/vpto-abs.XXXXXX)
 export PTOAS_BIN=$PWD/build/tools/ptoas/ptoas
 export CASE_NAME=abs
+bash test/vpto/scripts/run_host_vpto_validation.sh
+```
+
+Run a single case on simulator:
+
+```bash
+source /usr/local/Ascend/cann-9.0.0/set_env.sh
+export WORK_SPACE=$(mktemp -d /tmp/vpto-abs-sim.XXXXXX)
+export PTOAS_BIN=$PWD/build/tools/ptoas/ptoas
+export CASE_NAME=abs
+export DEVICE=SIM
+export SIM_LIB_DIR=/usr/local/Ascend/cann-9.0.0/aarch64-linux/simulator/dav_3102/lib
 bash test/vpto/scripts/run_host_vpto_validation.sh
 ```
