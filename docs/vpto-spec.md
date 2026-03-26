@@ -144,7 +144,7 @@ VPTO enforces a strict memory hierarchy. The Unified Buffer (UB) is the only val
 
 **Load/Store Access Patterns**:
 
-For UB↔vreg data movement, besides contiguous load/store (`pto.vlds` NORM, `pto.vsts` NORM_B*), the architecture provides rich access pattern support including strided access, pack/unpack (narrowing/widening), interleave/deinterleave (AoS↔SoA), broadcast, upsample/downsample, channel split/merge, gather/scatter, and squeeze/expand operations. For detailed instruction syntax and distribution modes, refer to the [Vector Load/Store](isa/03-vector-load-store.md) group in the ISA specification.
+For UB↔vreg data movement, besides contiguous load/store, the architecture provides rich access pattern support including strided access, pack/unpack, interleave/deinterleave, broadcast, upsample/downsample, channel split/merge, gather/scatter, and squeeze/expand operations. For detailed instruction syntax and distribution modes, refer to the [Vector Load/Store](isa/03-vector-load-store.md) group in the ISA specification.
 
 #### Synchronization Model
 
@@ -154,7 +154,7 @@ The Ascend 950 architecture employs a cluster-based design with a 1:2 ratio of C
 
 Synchronization between cores within the same cluster is achieved via the core sync mechanism using `pto.set_intra_core` and `pto.wait_intra_core` operations. This enables coordination between Cube and Vector cores sharing the same cluster resources.
 
-**Intra-Core Pipeline Synchronization:**
+**Vector Core Pipeline Synchronization:**
 
 Within a single core, multiple pipelines operate asynchronously:
 
