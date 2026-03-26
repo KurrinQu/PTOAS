@@ -410,6 +410,31 @@ static FailureOr<Value> convertElementOffsetToBytes(Operation *anchor, Value off
       .getResult();
 }
 
+static FailureOr<Value> bridgeAddressToPointerABI(Operation *anchor,
+                                                  Value address) {
+  OpBuilder builder(anchor);
+  builder.setInsertionPoint(anchor);
+  Location loc = anchor->getLoc();
+  MLIRContext *ctx = anchor->getContext();
+
+  if (auto ptrType = dyn_cast<LLVM::LLVMPointerType>(address.getType()))
+    return address;
+
+  if (auto memrefType = dyn_cast<MemRefType>(address.getType())) {
+    unsigned targetAddrSpace = getExternalPointerAddressSpace(memrefType);
+    Type targetPtrType = LLVM::LLVMPointerType::get(ctx, targetAddrSpace);
+    Value ptrAsIndex =
+        builder.create<memref::ExtractAlignedPointerAsIndexOp>(loc, address);
+    Value ptrAsI64 = castIntegerLikeTo(anchor, ptrAsIndex, builder.getI64Type());
+    if (!ptrAsI64)
+      return failure();
+    return builder.create<LLVM::IntToPtrOp>(loc, targetPtrType, ptrAsI64)
+        .getResult();
+  }
+
+  return failure();
+}
+
 static Value getI64Constant(OpBuilder &builder, Location loc, uint64_t value) {
   return builder.create<arith::ConstantOp>(loc, builder.getI64IntegerAttr(value))
       .getResult();
@@ -591,6 +616,25 @@ static FailureOr<StringRef> getConfirmedAbsPathCallee(Operation *op) {
   return failure();
 }
 
+static LogicalResult
+guardNoMemRefIntrinsicArgs(Operation *op, StringRef calleeName,
+                           ValueRange callArgs, llvm::raw_ostream &diagOS) {
+  if (calleeName != "llvm.hivm.vldsx1" && calleeName != "llvm.hivm.vstsx1")
+    return success();
+
+  for (auto [idx, arg] : llvm::enumerate(callArgs)) {
+    Type argType = arg.getType();
+    if (!isa<MemRefType, UnrankedMemRefType>(argType))
+      continue;
+    diagOS << "A5VM LLVM emission failed: intrinsic ABI guard rejected memref "
+              "argument #"
+           << idx << " for " << calleeName << " from "
+           << op->getName().getStringRef() << " (" << argType << ")\n";
+    return failure();
+  }
+  return success();
+}
+
 static LogicalResult rewriteA5VMOp(Operation *op, ModuleOp module,
                                    llvm::raw_ostream &diagOS) {
   auto calleeName = getConfirmedAbsPathCallee(op);
@@ -671,10 +715,14 @@ static LogicalResult rewriteA5VMOp(Operation *op, ModuleOp module,
     Type elementType = getElementTypeFromVectorLike(vlds.getResult().getType());
     auto offsetBytes = convertElementOffsetToBytes(
         op, op->getOperand(1), elementType);
+    auto basePtr = bridgeAddressToPointerABI(op, op->getOperand(0));
     auto dist = parseLoadDistImmediate(vlds.getDist().value_or("NORM"));
-    if (!elementType || failed(offsetBytes) || !dist)
+    if (!elementType || failed(offsetBytes) || failed(basePtr) || !dist) {
+      diagOS << "A5VM LLVM emission failed: cannot bridge vlds address to "
+                "pointer ABI\n";
       return failure();
-    callArgs.push_back(op->getOperand(0));
+    }
+    callArgs.push_back(*basePtr);
     callArgs.push_back(*offsetBytes);
     callArgs.push_back(getI32Constant(builder, loc, *dist));
     callArgs.push_back(getI32Constant(builder, loc, 0));
@@ -693,12 +741,16 @@ static LogicalResult rewriteA5VMOp(Operation *op, ModuleOp module,
     Type elementType = getElementTypeFromVectorLike(vsts.getValue().getType());
     auto offsetBytes = convertElementOffsetToBytes(
         op, op->getOperand(2), elementType);
+    auto basePtr = bridgeAddressToPointerABI(op, op->getOperand(1));
     auto dist = parseStoreDistImmediate(vsts.getValue().getType(),
                                         vsts.getDist().value_or(""));
-    if (!elementType || failed(offsetBytes) || !dist)
+    if (!elementType || failed(offsetBytes) || failed(basePtr) || !dist) {
+      diagOS << "A5VM LLVM emission failed: cannot bridge vsts address to "
+                "pointer ABI\n";
       return failure();
+    }
     callArgs.push_back(op->getOperand(0));
-    callArgs.push_back(op->getOperand(1));
+    callArgs.push_back(*basePtr);
     callArgs.push_back(*offsetBytes);
     callArgs.push_back(getI32Constant(builder, loc, *dist));
     callArgs.push_back(getI32Constant(builder, loc, 0));
@@ -708,6 +760,9 @@ static LogicalResult rewriteA5VMOp(Operation *op, ModuleOp module,
            << op->getName().getStringRef() << "\n";
     return failure();
   }
+
+  if (failed(guardNoMemRefIntrinsicArgs(op, *calleeName, callArgs, diagOS)))
+    return failure();
 
   SmallVector<Type> argTypes;
   for (Value arg : callArgs)
@@ -741,6 +796,72 @@ static LogicalResult rewriteA5VMOps(ModuleOp module, llvm::raw_ostream &diagOS) 
       hasA5VM = true;
   });
   return success(!hasA5VM);
+}
+
+static Type normalizeTypeForOfficialLLVMLowering(Type type, Builder &builder) {
+  type = convertA5VMType(type, builder);
+
+  if (auto memrefType = dyn_cast<MemRefType>(type)) {
+    auto addrAttr =
+        dyn_cast_or_null<pto::AddressSpaceAttr>(memrefType.getMemorySpace());
+    if (!addrAttr)
+      return type;
+    unsigned addrSpace = getExternalPointerAddressSpace(memrefType);
+    return MemRefType::get(memrefType.getShape(), memrefType.getElementType(),
+                           memrefType.getLayout(),
+                           builder.getI64IntegerAttr(addrSpace));
+  }
+
+  if (auto memrefType = dyn_cast<UnrankedMemRefType>(type)) {
+    auto addrAttr =
+        dyn_cast_or_null<pto::AddressSpaceAttr>(memrefType.getMemorySpace());
+    if (!addrAttr)
+      return type;
+    // Official MemRef-to-LLVM conversion requires integer memory spaces.
+    return UnrankedMemRefType::get(memrefType.getElementType(),
+                                   builder.getI64IntegerAttr(
+                                       static_cast<int64_t>(AddressSpace::GM)));
+  }
+
+  return type;
+}
+
+static void normalizeFuncSignaturesForOfficialLLVMLowering(ModuleOp module) {
+  Builder builder(module.getContext());
+
+  for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
+    FunctionType oldType = funcOp.getFunctionType();
+    SmallVector<Type> newInputs;
+    SmallVector<Type> newResults;
+    bool changed = false;
+
+    newInputs.reserve(oldType.getNumInputs());
+    for (Type input : oldType.getInputs()) {
+      Type normalized = normalizeTypeForOfficialLLVMLowering(input, builder);
+      changed |= (normalized != input);
+      newInputs.push_back(normalized);
+    }
+
+    newResults.reserve(oldType.getNumResults());
+    for (Type result : oldType.getResults()) {
+      Type normalized = normalizeTypeForOfficialLLVMLowering(result, builder);
+      changed |= (normalized != result);
+      newResults.push_back(normalized);
+    }
+
+    if (!changed)
+      continue;
+
+    auto newType = builder.getFunctionType(newInputs, newResults);
+    funcOp.setFunctionTypeAttr(TypeAttr::get(newType));
+
+    if (funcOp.isExternal())
+      continue;
+    Block &entry = funcOp.getBody().front();
+    for (auto [arg, newType] : llvm::zip(entry.getArguments(), newInputs))
+      if (arg.getType() != newType)
+        arg.setType(newType);
+  }
 }
 
 static llvm::StringMap<unsigned>
@@ -1283,6 +1404,7 @@ buildLLVMModuleFromA5VM(ModuleOp module, llvm::LLVMContext &llvmContext,
     diagOS << "A5VM LLVM emission failed: A5VM-to-call rewriting failed\n";
     return nullptr;
   }
+  normalizeFuncSignaturesForOfficialLLVMLowering(*cloned);
 
   PassManager pm(cloned->getContext());
   pm.enableVerifier();

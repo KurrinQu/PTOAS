@@ -841,6 +841,12 @@ private:
         diagOS << "A5VM emission failed: expected two operands for vlds\n";
         return failure();
       }
+      if (!rawOperands[0]->getType()->isPointerTy()) {
+        diagOS << "A5VM emission failed: intrinsic ABI guard expected pointer "
+                  "base for vlds, got "
+               << *rawOperands[0]->getType() << "\n";
+        return failure();
+      }
       llvm::Value *offsetBytes =
           convertElementOffsetToBytes(rawOperands[1],
                                       cast<a5vm::VecType>(vlds.getResult().getType())
@@ -857,6 +863,12 @@ private:
     } else if (auto vsts = dyn_cast<a5vm::VstsOp>(op)) {
       if (rawOperands.size() != 4) {
         diagOS << "A5VM emission failed: expected four operands for vsts\n";
+        return failure();
+      }
+      if (!rawOperands[1]->getType()->isPointerTy()) {
+        diagOS << "A5VM emission failed: intrinsic ABI guard expected pointer "
+                  "base for vsts, got "
+               << *rawOperands[1]->getType() << "\n";
         return failure();
       }
       llvm::Value *offsetBytes =
@@ -949,6 +961,45 @@ private:
         return failure();
       }
       bind(constant.getResult(), value);
+      return success();
+    }
+
+    if (auto pointerCast = dyn_cast<PointerCastOp>(op)) {
+      if (pointerCast.getAddrs().empty()) {
+        diagOS << "A5VM emission failed: pto.pointer_cast requires at least one "
+                  "address operand\n";
+        return failure();
+      }
+      if (pointerCast.getAddrs().size() != 1) {
+        diagOS << "A5VM emission failed: pto.pointer_cast with multiple address "
+                  "operands is not yet supported in Abs path\n";
+        return failure();
+      }
+      llvm::Value *addrValue = lookup(pointerCast.getAddrs().front());
+      llvm::Value *addrI64 = castIntegerLikeToI64(addrValue);
+      llvm::Type *dstType = convertType(pointerCast.getResult().getType());
+      if (!addrI64 || !dstType || !dstType->isPointerTy()) {
+        diagOS << "A5VM emission failed: unsupported pto.pointer_cast lowering "
+                  "to pointer ABI\n";
+        return failure();
+      }
+      bind(pointerCast.getResult(),
+           builder.CreateIntToPtr(addrI64, dstType, "pto.pointer_cast"));
+      return success();
+    }
+
+    if (auto bindTile = dyn_cast<BindTileOp>(op)) {
+      llvm::Value *source = lookup(bindTile.getSource());
+      llvm::Type *dstType = convertType(bindTile.getResult().getType());
+      if (!source || !dstType || !dstType->isPointerTy() ||
+          !source->getType()->isPointerTy()) {
+        diagOS << "A5VM emission failed: unsupported pto.bind_tile bridge to "
+                  "pointer ABI\n";
+        return failure();
+      }
+      if (source->getType() != dstType)
+        source = builder.CreateAddrSpaceCast(source, dstType, "pto.bind_tile");
+      bind(bindTile.getResult(), source);
       return success();
     }
 

@@ -1485,6 +1485,24 @@ Value materializeBufferPointer(Value value, Type elementType,
   return alignedPtr;
 }
 
+Value materializeBufferLikeAddress(Value value, Type elementType,
+                                   Attribute memorySpace,
+                                   PatternRewriter &rewriter, Location loc) {
+  if (!value)
+    return {};
+
+  if (auto bind = value.getDefiningOp<BindTileOp>())
+    return materializeBufferLikeAddress(bind.getSource(), elementType, memorySpace,
+                                        rewriter, loc);
+
+  // Keep memref semantics through the A5VM mainline whenever possible.
+  Value memrefValue = materializeTileBufferView(value, rewriter, loc);
+  if (memrefValue && isa<BaseMemRefType>(memrefValue.getType()))
+    return memrefValue;
+
+  return materializeBufferPointer(value, elementType, memorySpace, rewriter, loc);
+}
+
 Value offsetBufferPointer(Value basePtr, Type elementType, Value elementOffset,
                           PatternRewriter &rewriter, Location loc) {
   if (!basePtr)
@@ -2240,12 +2258,12 @@ LogicalResult buildRowReduceVecScope(StringRef family,
   if (!vecType)
     return emitError(loc) << "unsupported A5VM row-reduce element type";
 
-  Value srcBuffer = materializeBufferPointer(src, contract.elementType,
-                                             getMemorySpace(src), rewriter, loc);
-  Value dstBuffer = materializeBufferPointer(dst, contract.elementType,
-                                             getMemorySpace(dst), rewriter, loc);
+  Value srcBuffer = materializeBufferLikeAddress(src, contract.elementType,
+                                                 getMemorySpace(src), rewriter, loc);
+  Value dstBuffer = materializeBufferLikeAddress(dst, contract.elementType,
+                                                 getMemorySpace(dst), rewriter, loc);
   if (!srcBuffer || !dstBuffer)
-    return emitError(loc) << "requires pointer-backed tile buffers for row-reduce lowering";
+    return emitError(loc) << "requires buffer-like tile buffers for row-reduce lowering";
 
   if (contract.validRows == ShapedType::kDynamic ||
       contract.validCols == ShapedType::kDynamic)
@@ -2319,11 +2337,17 @@ LogicalResult buildRowReduceVecScope(StringRef family,
 
   Value nextAcc;
   if (family == "rowsum")
-    nextAcc = rewriter.create<a5vm::VaddOp>(loc, vecType, acc, reduced);
+    nextAcc = rewriter.create<a5vm::VaddOp>(
+        loc, vecType, acc, reduced,
+        buildAllPredicateMask(rewriter, loc, contract.elementType));
   else if (family == "rowmax")
-    nextAcc = rewriter.create<a5vm::VmaxOp>(loc, vecType, acc, reduced);
+    nextAcc = rewriter.create<a5vm::VmaxOp>(
+        loc, vecType, acc, reduced,
+        buildAllPredicateMask(rewriter, loc, contract.elementType));
   else
-    nextAcc = rewriter.create<a5vm::VminOp>(loc, vecType, acc, reduced);
+    nextAcc = rewriter.create<a5vm::VminOp>(
+        loc, vecType, acc, reduced,
+        buildAllPredicateMask(rewriter, loc, contract.elementType));
   rewriter.create<scf::YieldOp>(loc, nextAcc);
 
   rewriter.setInsertionPointAfter(repeatLoop);
@@ -2341,19 +2365,19 @@ LogicalResult buildColReduceVecScope(StringRef family,
   if (!vecType)
     return emitError(loc) << "unsupported A5VM col-reduce element type";
 
-  Value srcBuffer = materializeBufferPointer(src, contract.elementType,
-                                             getMemorySpace(src), rewriter, loc);
-  Value dstBuffer = materializeBufferPointer(dst, contract.elementType,
-                                             getMemorySpace(dst), rewriter, loc);
+  Value srcBuffer = materializeBufferLikeAddress(src, contract.elementType,
+                                                 getMemorySpace(src), rewriter, loc);
+  Value dstBuffer = materializeBufferLikeAddress(dst, contract.elementType,
+                                                 getMemorySpace(dst), rewriter, loc);
   if (!srcBuffer || !dstBuffer)
-    return emitError(loc) << "requires pointer-backed tile buffers for col-reduce lowering";
+    return emitError(loc) << "requires buffer-like tile buffers for col-reduce lowering";
 
   Value tmpBuffer;
   if (contract.isBinary) {
-    tmpBuffer = materializeBufferPointer(tmp, contract.elementType, getMemorySpace(tmp),
-                                         rewriter, loc);
+    tmpBuffer = materializeBufferLikeAddress(tmp, contract.elementType, getMemorySpace(tmp),
+                                             rewriter, loc);
     if (!tmpBuffer)
-      return emitError(loc) << "binary colsum lowering requires pointer-backed tmp tile";
+      return emitError(loc) << "binary colsum lowering requires a buffer-like tmp tile";
   }
 
   int64_t srcRowStride = deriveStaticRowStride(src);
@@ -2408,11 +2432,17 @@ LogicalResult buildColReduceVecScope(StringRef family,
         rewriter.create<a5vm::VldsOp>(loc, vecType, srcBuffer, srcOffset, StringAttr()).getResult();
     Value nextAcc;
     if (family == "colmax")
-      nextAcc = rewriter.create<a5vm::VmaxOp>(loc, vecType, acc, srcVec);
+      nextAcc = rewriter.create<a5vm::VmaxOp>(
+          loc, vecType, acc, srcVec,
+          buildAllPredicateMask(rewriter, loc, contract.elementType));
     else if (family == "colmin")
-      nextAcc = rewriter.create<a5vm::VminOp>(loc, vecType, acc, srcVec);
+      nextAcc = rewriter.create<a5vm::VminOp>(
+          loc, vecType, acc, srcVec,
+          buildAllPredicateMask(rewriter, loc, contract.elementType));
     else
-      nextAcc = rewriter.create<a5vm::VaddOp>(loc, vecType, acc, srcVec);
+      nextAcc = rewriter.create<a5vm::VaddOp>(
+          loc, vecType, acc, srcVec,
+          buildAllPredicateMask(rewriter, loc, contract.elementType));
     rewriter.create<scf::YieldOp>(loc, nextAcc);
 
     rewriter.setInsertionPointAfter(rowLoop);
@@ -2425,7 +2455,11 @@ LogicalResult buildColReduceVecScope(StringRef family,
 
   Value tmpRowStrideValue = rewriter.create<arith::ConstantIndexOp>(loc, tmpRowStride);
   auto reducePair = [&](Value lhs, Value rhs) -> Value {
-    return rewriter.create<a5vm::VaddOp>(loc, vecType, lhs, rhs).getResult();
+    return rewriter
+        .create<a5vm::VaddOp>(
+            loc, vecType, lhs, rhs,
+            buildAllPredicateMask(rewriter, loc, contract.elementType))
+        .getResult();
   };
 
   int64_t nLoopStatic = contract.validRows / 2;
@@ -2629,11 +2663,17 @@ LogicalResult buildPartBinaryRegion(StringRef family, Value src0Buffer, Value sr
   Value rhs = rewriter.create<a5vm::VldsOp>(loc, vecType, src1Buffer, src1Offset, StringAttr()).getResult();
   Value out;
   if (family == "partadd")
-    out = rewriter.create<a5vm::VaddOp>(loc, vecType, lhs, rhs);
+    out = rewriter.create<a5vm::VaddOp>(
+        loc, vecType, lhs, rhs,
+        buildAllPredicateMask(rewriter, loc, vecType.getElementType()));
   else if (family == "partmax")
-    out = rewriter.create<a5vm::VmaxOp>(loc, vecType, lhs, rhs);
+    out = rewriter.create<a5vm::VmaxOp>(
+        loc, vecType, lhs, rhs,
+        buildAllPredicateMask(rewriter, loc, vecType.getElementType()));
   else if (family == "partmin")
-    out = rewriter.create<a5vm::VminOp>(loc, vecType, lhs, rhs);
+    out = rewriter.create<a5vm::VminOp>(
+        loc, vecType, lhs, rhs,
+        buildAllPredicateMask(rewriter, loc, vecType.getElementType()));
   else
     return emitError(loc) << "unsupported part family: " << family;
   rewriter.create<a5vm::VstsOp>(loc, out, dstBuffer, dstOffset, StringAttr(),
@@ -2649,14 +2689,14 @@ LogicalResult buildPartVecScope(StringRef family, const A5VMPartContract &contra
   auto vecType = getA5VMVecType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return emitError(loc) << "unsupported A5VM part element type";
-  Value src0Buffer = materializeBufferPointer(src0, contract.elementType, getMemorySpace(src0),
-                                              rewriter, loc);
-  Value src1Buffer = materializeBufferPointer(src1, contract.elementType, getMemorySpace(src1),
-                                              rewriter, loc);
-  Value dstBuffer = materializeBufferPointer(dst, contract.elementType, getMemorySpace(dst),
-                                             rewriter, loc);
+  Value src0Buffer = materializeBufferLikeAddress(src0, contract.elementType,
+                                                  getMemorySpace(src0), rewriter, loc);
+  Value src1Buffer = materializeBufferLikeAddress(src1, contract.elementType,
+                                                  getMemorySpace(src1), rewriter, loc);
+  Value dstBuffer = materializeBufferLikeAddress(dst, contract.elementType,
+                                                 getMemorySpace(dst), rewriter, loc);
   if (!src0Buffer || !src1Buffer || !dstBuffer)
-    return emitError(loc) << "requires pointer-backed tile buffers for part lowering";
+    return emitError(loc) << "requires buffer-like tile buffers for part lowering";
   int64_t src0Stride = deriveStaticRowStride(src0);
   int64_t src1Stride = deriveStaticRowStride(src1);
   int64_t dstStride = deriveStaticRowStride(dst);
@@ -2766,12 +2806,12 @@ LogicalResult buildUnaryVecScope(StringRef family,
   if (!vecType)
     return emitError(loc) << "unsupported A5VM unary element type";
 
-  Value srcBuffer = materializeBufferPointer(src, contract.elementType,
-                                             getMemorySpace(src), rewriter, loc);
-  Value dstBuffer = materializeBufferPointer(dst, contract.elementType,
-                                             getMemorySpace(dst), rewriter, loc);
+  Value srcBuffer = materializeBufferLikeAddress(src, contract.elementType,
+                                                 getMemorySpace(src), rewriter, loc);
+  Value dstBuffer = materializeBufferLikeAddress(dst, contract.elementType,
+                                                 getMemorySpace(dst), rewriter, loc);
   if (!srcBuffer || !dstBuffer)
-    return emitError(loc) << "requires pointer-backed tile buffers for unary lowering";
+    return emitError(loc) << "requires buffer-like tile buffers for unary lowering";
 
   int64_t vectorWidth = vecType.getElementCount();
   Value validRowsValue;
@@ -2850,14 +2890,14 @@ LogicalResult buildBinaryVecScope(StringRef family,
   if (!vecType)
     return emitError(loc) << "unsupported A5VM binary element type";
 
-  Value src0Buffer = materializeBufferPointer(src0, contract.elementType,
-                                              getMemorySpace(src0), rewriter, loc);
-  Value src1Buffer = materializeBufferPointer(src1, contract.elementType,
-                                              getMemorySpace(src1), rewriter, loc);
-  Value dstBuffer = materializeBufferPointer(dst, contract.elementType,
-                                             getMemorySpace(dst), rewriter, loc);
+  Value src0Buffer = materializeBufferLikeAddress(src0, contract.elementType,
+                                                  getMemorySpace(src0), rewriter, loc);
+  Value src1Buffer = materializeBufferLikeAddress(src1, contract.elementType,
+                                                  getMemorySpace(src1), rewriter, loc);
+  Value dstBuffer = materializeBufferLikeAddress(dst, contract.elementType,
+                                                 getMemorySpace(dst), rewriter, loc);
   if (!src0Buffer || !src1Buffer || !dstBuffer)
-    return emitError(loc) << "requires pointer-backed tile buffers for binary lowering";
+    return emitError(loc) << "requires buffer-like tile buffers for binary lowering";
 
   int64_t vectorWidth = vecType.getElementCount();
   Value validRowsValue = contract.validRowsValue;
@@ -2899,23 +2939,32 @@ LogicalResult buildBinaryVecScope(StringRef family,
 
   Value computed;
   if (family == "add")
-    computed = rewriter.create<a5vm::VaddOp>(loc, vecType, lhs.getResult(), rhs.getResult());
+    computed = rewriter.create<a5vm::VaddOp>(loc, vecType, lhs.getResult(),
+                                             rhs.getResult(), predicate);
   else if (family == "sub")
-    computed = rewriter.create<a5vm::VsubOp>(loc, vecType, lhs.getResult(), rhs.getResult());
+    computed = rewriter.create<a5vm::VsubOp>(loc, vecType, lhs.getResult(),
+                                             rhs.getResult(), predicate);
   else if (family == "mul")
-    computed = rewriter.create<a5vm::VmulOp>(loc, vecType, lhs.getResult(), rhs.getResult());
+    computed = rewriter.create<a5vm::VmulOp>(loc, vecType, lhs.getResult(),
+                                             rhs.getResult(), predicate);
   else if (family == "div")
-    computed = rewriter.create<a5vm::VdivOp>(loc, vecType, lhs.getResult(), rhs.getResult());
+    computed = rewriter.create<a5vm::VdivOp>(loc, vecType, lhs.getResult(),
+                                             rhs.getResult(), predicate);
   else if (family == "max")
-    computed = rewriter.create<a5vm::VmaxOp>(loc, vecType, lhs.getResult(), rhs.getResult());
+    computed = rewriter.create<a5vm::VmaxOp>(loc, vecType, lhs.getResult(),
+                                             rhs.getResult(), predicate);
   else if (family == "min")
-    computed = rewriter.create<a5vm::VminOp>(loc, vecType, lhs.getResult(), rhs.getResult());
+    computed = rewriter.create<a5vm::VminOp>(loc, vecType, lhs.getResult(),
+                                             rhs.getResult(), predicate);
   else if (family == "and")
-    computed = rewriter.create<a5vm::VandOp>(loc, vecType, lhs.getResult(), rhs.getResult());
+    computed = rewriter.create<a5vm::VandOp>(loc, vecType, lhs.getResult(),
+                                             rhs.getResult(), predicate);
   else if (family == "or")
-    computed = rewriter.create<a5vm::VorOp>(loc, vecType, lhs.getResult(), rhs.getResult());
+    computed = rewriter.create<a5vm::VorOp>(loc, vecType, lhs.getResult(),
+                                            rhs.getResult(), predicate);
   else if (family == "xor")
-    computed = rewriter.create<a5vm::VxorOp>(loc, vecType, lhs.getResult(), rhs.getResult());
+    computed = rewriter.create<a5vm::VxorOp>(loc, vecType, lhs.getResult(),
+                                             rhs.getResult(), predicate);
   else
     return emitError(loc) << "unsupported A5VM binary family: " << family;
   rewriter.create<a5vm::VstsOp>(loc, computed, dstBuffer, offset, StringAttr(),
@@ -2931,10 +2980,10 @@ LogicalResult buildExpandScalarVecScope(const A5VMUnaryContract &contract,
   if (!vecType)
     return emitError(loc) << "unsupported A5VM expands element type";
 
-  Value dstBuffer = materializeBufferPointer(dst, contract.elementType,
-                                             getMemorySpace(dst), rewriter, loc);
+  Value dstBuffer = materializeBufferLikeAddress(dst, contract.elementType,
+                                                 getMemorySpace(dst), rewriter, loc);
   if (!dstBuffer)
-    return emitError(loc) << "requires pointer-backed tile buffer for expands lowering";
+    return emitError(loc) << "requires a buffer-like tile buffer for expands lowering";
 
   Value validRowsValue = materializeIndexValue(contract.validRowsValue,
                                                contract.validRows, rewriter, loc);
@@ -2990,13 +3039,13 @@ LogicalResult buildScalarUnaryVecScope(StringRef family,
   if (!vecType)
     return emitError(loc) << "unsupported A5VM scalar-unary element type";
 
-  Value srcBuffer = materializeBufferPointer(src, contract.elementType,
-                                             getMemorySpace(src), rewriter, loc);
-  Value dstBuffer = materializeBufferPointer(dst, contract.elementType,
-                                             getMemorySpace(dst), rewriter, loc);
+  Value srcBuffer = materializeBufferLikeAddress(src, contract.elementType,
+                                                 getMemorySpace(src), rewriter, loc);
+  Value dstBuffer = materializeBufferLikeAddress(dst, contract.elementType,
+                                                 getMemorySpace(dst), rewriter, loc);
   if (!srcBuffer || !dstBuffer)
     return emitError(loc)
-           << "requires pointer-backed tile buffers for scalar-unary lowering";
+           << "requires buffer-like tile buffers for scalar-unary lowering";
 
   Value validRowsValue = materializeIndexValue(contract.validRowsValue,
                                                contract.validRows, rewriter, loc);
@@ -3063,13 +3112,13 @@ LogicalResult buildScalarBitwiseVecScope(StringRef family,
   if (!vecType)
     return emitError(loc) << "unsupported A5VM scalar-bitwise element type";
 
-  Value srcBuffer = materializeBufferPointer(src, contract.elementType,
-                                             getMemorySpace(src), rewriter, loc);
-  Value dstBuffer = materializeBufferPointer(dst, contract.elementType,
-                                             getMemorySpace(dst), rewriter, loc);
+  Value srcBuffer = materializeBufferLikeAddress(src, contract.elementType,
+                                                 getMemorySpace(src), rewriter, loc);
+  Value dstBuffer = materializeBufferLikeAddress(dst, contract.elementType,
+                                                 getMemorySpace(dst), rewriter, loc);
   if (!srcBuffer || !dstBuffer)
     return emitError(loc)
-           << "requires pointer-backed tile buffers for scalar-bitwise lowering";
+           << "requires buffer-like tile buffers for scalar-bitwise lowering";
 
   Value validRowsValue;
   Value validColsValue;
@@ -3116,11 +3165,14 @@ LogicalResult buildScalarBitwiseVecScope(StringRef family,
 
   Value computed;
   if (family == "ands")
-    computed = rewriter.create<a5vm::VandOp>(loc, vecType, loaded.getResult(), scalarVec);
+    computed = rewriter.create<a5vm::VandOp>(loc, vecType, loaded.getResult(),
+                                             scalarVec, predicate);
   else if (family == "ors")
-    computed = rewriter.create<a5vm::VorOp>(loc, vecType, loaded.getResult(), scalarVec);
+    computed = rewriter.create<a5vm::VorOp>(loc, vecType, loaded.getResult(),
+                                            scalarVec, predicate);
   else if (family == "xors")
-    computed = rewriter.create<a5vm::VxorOp>(loc, vecType, loaded.getResult(), scalarVec);
+    computed = rewriter.create<a5vm::VxorOp>(loc, vecType, loaded.getResult(),
+                                             scalarVec, predicate);
   else
     return emitError(loc) << "unsupported A5VM scalar-bitwise family: " << family;
   rewriter.create<a5vm::VstsOp>(loc, computed, dstBuffer, offset, StringAttr(),
@@ -3142,13 +3194,13 @@ LogicalResult buildScalarDivVecScope(const A5VMUnaryContract &contract,
   if (!vecType)
     return emitError(loc) << "unsupported A5VM divs element type";
 
-  Value srcBuffer = materializeBufferPointer(src, contract.elementType,
-                                             getMemorySpace(src), rewriter, loc);
-  Value dstBuffer = materializeBufferPointer(dst, contract.elementType,
-                                             getMemorySpace(dst), rewriter, loc);
+  Value srcBuffer = materializeBufferLikeAddress(src, contract.elementType,
+                                                 getMemorySpace(src), rewriter, loc);
+  Value dstBuffer = materializeBufferLikeAddress(dst, contract.elementType,
+                                                 getMemorySpace(dst), rewriter, loc);
   if (!srcBuffer || !dstBuffer)
     return emitError(loc)
-           << "requires pointer-backed tile buffers for divs lowering";
+           << "requires buffer-like tile buffers for divs lowering";
 
   Value validRowsValue = materializeIndexValue(contract.validRowsValue,
                                                contract.validRows, rewriter, loc);
@@ -3194,7 +3246,9 @@ LogicalResult buildScalarDivVecScope(const A5VMUnaryContract &contract,
           loc, vecType, scalar, rewriter.getStringAttr("POS_LOWEST"),
           rewriter.getStringAttr("MODE_ZEROING"));
       computed =
-          rewriter.create<a5vm::VdivOp>(loc, vecType, scalarVec, loaded);
+          rewriter.create<a5vm::VdivOp>(
+              loc, vecType, scalarVec, loaded,
+              buildAllPredicateMask(rewriter, loc, contract.elementType));
     } else {
       Value one = rewriter.create<arith::ConstantOp>(
           loc, contract.elementType, rewriter.getFloatAttr(contract.elementType, 1.0));
@@ -3207,8 +3261,12 @@ LogicalResult buildScalarDivVecScope(const A5VMUnaryContract &contract,
         loc, vecType, scalar, rewriter.getStringAttr("POS_LOWEST"),
         rewriter.getStringAttr("MODE_ZEROING"));
     computed = scalarFirst
-                   ? rewriter.create<a5vm::VdivOp>(loc, vecType, scalarVec, loaded)
-                   : rewriter.create<a5vm::VdivOp>(loc, vecType, loaded, scalarVec);
+                   ? rewriter.create<a5vm::VdivOp>(
+                         loc, vecType, scalarVec, loaded,
+                         buildAllPredicateMask(rewriter, loc, contract.elementType))
+                   : rewriter.create<a5vm::VdivOp>(
+                         loc, vecType, loaded, scalarVec,
+                         buildAllPredicateMask(rewriter, loc, contract.elementType));
   } else {
     return emitError(loc)
            << "divs lowering currently supports only f16 and f32 element types";
@@ -3257,13 +3315,13 @@ LogicalResult buildRowExpandVecScope(const A5VMExpandContract &contract,
   if (!vecType)
     return emitError(loc) << "unsupported A5VM rowexpand element type";
 
-  Value srcBuffer = materializeBufferPointer(src, contract.elementType,
-                                             getMemorySpace(src), rewriter, loc);
-  Value dstBuffer = materializeBufferPointer(dst, contract.elementType,
-                                             getMemorySpace(dst), rewriter, loc);
+  Value srcBuffer = materializeBufferLikeAddress(src, contract.elementType,
+                                                 getMemorySpace(src), rewriter, loc);
+  Value dstBuffer = materializeBufferLikeAddress(dst, contract.elementType,
+                                                 getMemorySpace(dst), rewriter, loc);
   if (!srcBuffer || !dstBuffer)
     return emitError(loc)
-           << "requires pointer-backed tile buffers for rowexpand lowering";
+           << "requires buffer-like tile buffers for rowexpand lowering";
 
   auto [srcRows, srcCols] = getStaticTileRowsCols(src);
   auto [dstRows, dstCols] = getStaticTileRowsCols(dst);
@@ -3320,13 +3378,13 @@ LogicalResult buildColExpandVecScope(const A5VMExpandContract &contract,
   if (!vecType)
     return emitError(loc) << "unsupported A5VM colexpand element type";
 
-  Value srcBuffer = materializeBufferPointer(src, contract.elementType,
-                                             getMemorySpace(src), rewriter, loc);
-  Value dstBuffer = materializeBufferPointer(dst, contract.elementType,
-                                             getMemorySpace(dst), rewriter, loc);
+  Value srcBuffer = materializeBufferLikeAddress(src, contract.elementType,
+                                                 getMemorySpace(src), rewriter, loc);
+  Value dstBuffer = materializeBufferLikeAddress(dst, contract.elementType,
+                                                 getMemorySpace(dst), rewriter, loc);
   if (!srcBuffer || !dstBuffer)
     return emitError(loc)
-           << "requires pointer-backed tile buffers for colexpand lowering";
+           << "requires buffer-like tile buffers for colexpand lowering";
 
   auto [dstRows, dstCols] = getStaticTileRowsCols(dst);
   if (dstRows == ShapedType::kDynamic || dstCols == ShapedType::kDynamic)
@@ -3980,14 +4038,14 @@ LogicalResult lowerTRSQRT(TRsqrtOp op, PatternRewriter &rewriter) {
   if (!vecType)
     return op.emitOpError("trsqrt lowering requires a supported A5VM vector element type");
 
-  Value srcBuffer = materializeBufferPointer(op.getSrc(), contract.elementType,
-                                             getMemorySpace(op.getSrc()), rewriter,
-                                             op.getLoc());
-  Value dstBuffer = materializeBufferPointer(op.getDst(), contract.elementType,
-                                             getMemorySpace(op.getDst()), rewriter,
-                                             op.getLoc());
+  Value srcBuffer = materializeBufferLikeAddress(op.getSrc(), contract.elementType,
+                                                 getMemorySpace(op.getSrc()), rewriter,
+                                                 op.getLoc());
+  Value dstBuffer = materializeBufferLikeAddress(op.getDst(), contract.elementType,
+                                                 getMemorySpace(op.getDst()), rewriter,
+                                                 op.getLoc());
   if (!srcBuffer || !dstBuffer)
-    return op.emitOpError("trsqrt lowering requires pointer-backed tile buffers");
+    return op.emitOpError("trsqrt lowering requires buffer-like tile buffers");
 
   Value validRowsValue = materializeIndexValue(contract.validRowsValue,
                                                contract.validRows, rewriter, op.getLoc());
@@ -4044,7 +4102,7 @@ LogicalResult lowerTRSQRT(TRsqrtOp op, PatternRewriter &rewriter) {
                                              predicate,
                                              rewriter.getStringAttr("MODE_ZEROING"));
   auto result = rewriter.create<a5vm::VdivOp>(op.getLoc(), vecType, ones.getResult(),
-                                              sqrt.getResult());
+                                              sqrt.getResult(), predicate);
   rewriter.create<a5vm::VstsOp>(
       op.getLoc(), result.getResult(), dstBuffer, dstOffset, StringAttr(), predicate);
   return success();
@@ -4126,14 +4184,14 @@ LogicalResult lowerTCVT(TCvtOp op, PatternRewriter &rewriter) {
   if (!srcVecType || !dstVecType)
     return op.emitOpError("tcvt lowering requires legal A5VM vector types");
 
-  Value srcBuffer = materializeBufferPointer(op.getSrc(), contract.elementType,
-                                             getMemorySpace(op.getSrc()), rewriter,
-                                             op.getLoc());
-  Value dstBuffer = materializeBufferPointer(op.getDst(), dstElementType,
-                                             getMemorySpace(op.getDst()), rewriter,
-                                             op.getLoc());
+  Value srcBuffer = materializeBufferLikeAddress(op.getSrc(), contract.elementType,
+                                                 getMemorySpace(op.getSrc()), rewriter,
+                                                 op.getLoc());
+  Value dstBuffer = materializeBufferLikeAddress(op.getDst(), dstElementType,
+                                                 getMemorySpace(op.getDst()), rewriter,
+                                                 op.getLoc());
   if (!srcBuffer || !dstBuffer)
-    return op.emitOpError("tcvt lowering requires pointer-backed tile buffers");
+    return op.emitOpError("tcvt lowering requires buffer-like tile buffers");
 
   Value validRowsValue = materializeIndexValue(contract.validRowsValue,
                                                contract.validRows, rewriter,
@@ -4198,7 +4256,9 @@ LogicalResult lowerTCVT(TCvtOp op, PatternRewriter &rewriter) {
         op.getLoc(), dstVecType, lower.getResult(), *roundMode,
         rewriter.getStringAttr("RS_ENABLE"), rewriter.getStringAttr("PART_EVEN"));
     Value merged =
-        rewriter.create<a5vm::VorOp>(op.getLoc(), dstVecType, even, odd);
+        rewriter.create<a5vm::VorOp>(
+            op.getLoc(), dstVecType, even, odd,
+            buildAllPredicateMask(rewriter, op.getLoc(), dstElementType));
     rewriter.create<a5vm::VstsOp>(
         op.getLoc(), merged, dstBuffer, offset, StringAttr(),
         buildAllPredicateMask(rewriter, op.getLoc(), dstElementType));
@@ -4328,14 +4388,14 @@ LogicalResult lowerTCmpS(TCmpSOp op, PatternRewriter &rewriter) {
   if (op.getScalar().getType() != contract.elementType)
     return op.emitOpError("tcmps lowering requires scalar type to match source element type");
 
-  Value srcBuffer = materializeBufferPointer(op.getSrc(), contract.elementType,
-                                             getMemorySpace(op.getSrc()), rewriter,
-                                             op.getLoc());
-  Value dstBuffer = materializeBufferPointer(op.getDst(), getElementType(op.getDst()),
-                                             getMemorySpace(op.getDst()), rewriter,
-                                             op.getLoc());
+  Value srcBuffer = materializeBufferLikeAddress(op.getSrc(), contract.elementType,
+                                                 getMemorySpace(op.getSrc()), rewriter,
+                                                 op.getLoc());
+  Value dstBuffer = materializeBufferLikeAddress(op.getDst(), getElementType(op.getDst()),
+                                                 getMemorySpace(op.getDst()), rewriter,
+                                                 op.getLoc());
   if (!srcBuffer || !dstBuffer)
-    return op.emitOpError("tcmps lowering requires pointer-backed tile buffers");
+    return op.emitOpError("tcmps lowering requires buffer-like tile buffers");
 
   StringAttr cmpMode = rewriter.getStringAttr(stringifyCmpModeAttr(op.getCmpModeAttr()));
   return buildPackedCmp32VecScope(
@@ -4386,17 +4446,17 @@ LogicalResult lowerTCmp(TCmpOp op, PatternRewriter &rewriter) {
   if (!dstElemType || !dstElemType.isUnsignedInteger(8))
     return op.emitOpError("tcmp lowering currently requires ui8 destination tiles");
 
-  Value src0Buffer = materializeBufferPointer(op.getSrc0(), contract.elementType,
-                                              getMemorySpace(op.getSrc0()), rewriter,
-                                              op.getLoc());
-  Value src1Buffer = materializeBufferPointer(op.getSrc1(), contract.elementType,
-                                              getMemorySpace(op.getSrc1()), rewriter,
-                                              op.getLoc());
-  Value dstBuffer = materializeBufferPointer(op.getDst(), getElementType(op.getDst()),
-                                             getMemorySpace(op.getDst()), rewriter,
-                                             op.getLoc());
+  Value src0Buffer = materializeBufferLikeAddress(op.getSrc0(), contract.elementType,
+                                                  getMemorySpace(op.getSrc0()), rewriter,
+                                                  op.getLoc());
+  Value src1Buffer = materializeBufferLikeAddress(op.getSrc1(), contract.elementType,
+                                                  getMemorySpace(op.getSrc1()), rewriter,
+                                                  op.getLoc());
+  Value dstBuffer = materializeBufferLikeAddress(op.getDst(), getElementType(op.getDst()),
+                                                 getMemorySpace(op.getDst()), rewriter,
+                                                 op.getLoc());
   if (!src0Buffer || !src1Buffer || !dstBuffer)
-    return op.emitOpError("tcmp lowering requires pointer-backed tile buffers");
+    return op.emitOpError("tcmp lowering requires buffer-like tile buffers");
 
   StringAttr cmpMode = rewriter.getStringAttr(stringifyCmpModeAttr(op.getCmpModeAttr()));
   return buildPackedCmp32VecScope(
@@ -4628,14 +4688,14 @@ LogicalResult lowerTFillPadCommon(FillPadOpTy op, PatternRewriter &rewriter,
   if (!vecType)
     return op.emitOpError("fillpad lowering requires supported A5VM vector element type");
 
-  Value srcBuffer = materializeBufferPointer(op.getSrc(), contract.elementType,
-                                             getMemorySpace(op.getSrc()), rewriter,
-                                             op.getLoc());
-  Value dstBuffer = materializeBufferPointer(op.getDst(), contract.elementType,
-                                             getMemorySpace(op.getDst()), rewriter,
-                                             op.getLoc());
+  Value srcBuffer = materializeBufferLikeAddress(op.getSrc(), contract.elementType,
+                                                 getMemorySpace(op.getSrc()), rewriter,
+                                                 op.getLoc());
+  Value dstBuffer = materializeBufferLikeAddress(op.getDst(), contract.elementType,
+                                                 getMemorySpace(op.getDst()), rewriter,
+                                                 op.getLoc());
   if (!srcBuffer || !dstBuffer)
-    return op.emitOpError("fillpad lowering requires pointer-backed tile buffers");
+    return op.emitOpError("fillpad lowering requires buffer-like tile buffers");
 
   auto config = lookupTileConfig(op.getDst());
   PadValueAttr padAttr = config ? dyn_cast<PadValueAttr>(config.getPad()) : PadValueAttr{};
@@ -5537,17 +5597,17 @@ LogicalResult lowerTSelS(TSelSOp op, PatternRewriter &rewriter) {
   if (!vecType)
     return op.emitOpError("tsels lowering requires a supported A5VM vector element type");
 
-  Value maskBuffer = materializeBufferPointer(op.getMask(), contract.elementType,
-                                              getMemorySpace(op.getMask()), rewriter,
-                                              op.getLoc());
-  Value srcBuffer = materializeBufferPointer(op.getSrc(), contract.elementType,
-                                             getMemorySpace(op.getSrc()), rewriter,
-                                             op.getLoc());
-  Value dstBuffer = materializeBufferPointer(op.getDst(), contract.elementType,
-                                             getMemorySpace(op.getDst()), rewriter,
-                                             op.getLoc());
+  Value maskBuffer = materializeBufferLikeAddress(op.getMask(), contract.elementType,
+                                                  getMemorySpace(op.getMask()), rewriter,
+                                                  op.getLoc());
+  Value srcBuffer = materializeBufferLikeAddress(op.getSrc(), contract.elementType,
+                                                 getMemorySpace(op.getSrc()), rewriter,
+                                                 op.getLoc());
+  Value dstBuffer = materializeBufferLikeAddress(op.getDst(), contract.elementType,
+                                                 getMemorySpace(op.getDst()), rewriter,
+                                                 op.getLoc());
   if (!maskBuffer || !srcBuffer || !dstBuffer)
-    return op.emitOpError("tsels lowering requires pointer-backed tile buffers");
+    return op.emitOpError("tsels lowering requires buffer-like tile buffers");
 
   Value validRowsValue = materializeIndexValue(contract.validRowsValue,
                                                contract.validRows, rewriter, op.getLoc());
@@ -5650,20 +5710,20 @@ LogicalResult lowerTSel(TSelOp op, PatternRewriter &rewriter) {
   if (tileRows == ShapedType::kDynamic || tileCols == ShapedType::kDynamic ||
       maskTileRows == ShapedType::kDynamic || maskTileCols == ShapedType::kDynamic)
     return op.emitOpError("tsel lowering requires static tile rows and cols");
-  Value maskBuffer = materializeBufferPointer(op.getMask(), getElementType(op.getMask()),
-                                              getMemorySpace(op.getMask()), rewriter,
-                                              op.getLoc());
-  Value src0Buffer = materializeBufferPointer(op.getSrc0(), contract.elementType,
-                                              getMemorySpace(op.getSrc0()), rewriter,
-                                              op.getLoc());
-  Value src1Buffer = materializeBufferPointer(op.getSrc1(), contract.elementType,
-                                              getMemorySpace(op.getSrc1()), rewriter,
-                                              op.getLoc());
-  Value dstBuffer = materializeBufferPointer(op.getDst(), contract.elementType,
-                                             getMemorySpace(op.getDst()), rewriter,
-                                             op.getLoc());
+  Value maskBuffer = materializeBufferLikeAddress(op.getMask(), getElementType(op.getMask()),
+                                                  getMemorySpace(op.getMask()), rewriter,
+                                                  op.getLoc());
+  Value src0Buffer = materializeBufferLikeAddress(op.getSrc0(), contract.elementType,
+                                                  getMemorySpace(op.getSrc0()), rewriter,
+                                                  op.getLoc());
+  Value src1Buffer = materializeBufferLikeAddress(op.getSrc1(), contract.elementType,
+                                                  getMemorySpace(op.getSrc1()), rewriter,
+                                                  op.getLoc());
+  Value dstBuffer = materializeBufferLikeAddress(op.getDst(), contract.elementType,
+                                                 getMemorySpace(op.getDst()), rewriter,
+                                                 op.getLoc());
   if (!maskBuffer || !src0Buffer || !src1Buffer || !dstBuffer)
-    return op.emitOpError("tsel lowering requires pointer-backed tile buffers");
+    return op.emitOpError("tsel lowering requires buffer-like tile buffers");
 
   auto vecType = getA5VMVecType(rewriter.getContext(), contract.elementType);
   if (!vecType)
@@ -6202,18 +6262,18 @@ LogicalResult lowerTRowExpandBinaryLike(OpTy op, PatternRewriter &rewriter,
     return op.emitOpError() << family
                             << " lowering requires valid cols divisible by vector width";
 
-  Value baseBuffer = materializeBufferPointer(baseSrc, elementType,
-                                              getMemorySpace(baseSrc), rewriter,
-                                              op.getLoc());
-  Value expandBuffer = materializeBufferPointer(expandSrc, elementType,
-                                                getMemorySpace(expandSrc), rewriter,
-                                                op.getLoc());
-  Value dstBuffer = materializeBufferPointer(op.getDst(), elementType,
-                                             getMemorySpace(op.getDst()), rewriter,
-                                             op.getLoc());
+  Value baseBuffer = materializeBufferLikeAddress(baseSrc, elementType,
+                                                  getMemorySpace(baseSrc), rewriter,
+                                                  op.getLoc());
+  Value expandBuffer = materializeBufferLikeAddress(expandSrc, elementType,
+                                                    getMemorySpace(expandSrc), rewriter,
+                                                    op.getLoc());
+  Value dstBuffer = materializeBufferLikeAddress(op.getDst(), elementType,
+                                                 getMemorySpace(op.getDst()), rewriter,
+                                                 op.getLoc());
   if (!baseBuffer || !expandBuffer || !dstBuffer)
     return op.emitOpError() << family
-                            << " lowering requires pointer-backed tile buffers";
+                            << " lowering requires buffer-like tile buffers";
 
   int64_t dstRowStride = deriveStaticRowStride(op.getDst());
   int64_t baseRowStride = deriveStaticRowStride(baseSrc);
@@ -6291,14 +6351,20 @@ LogicalResult lowerTRowExpandBinaryLike(OpTy op, PatternRewriter &rewriter,
   Value computed;
   if (family == "trowexpandmul") {
     computed =
-        rewriter.create<a5vm::VmulOp>(op.getLoc(), vecType, baseVec, expandVec);
+        rewriter.create<a5vm::VmulOp>(
+            op.getLoc(), vecType, baseVec, expandVec,
+            buildAllPredicateMask(rewriter, op.getLoc(), elementType));
   } else if (family == "trowexpanddiv") {
     if (src0EqDst)
       computed =
-          rewriter.create<a5vm::VdivOp>(op.getLoc(), vecType, baseVec, expandVec);
+          rewriter.create<a5vm::VdivOp>(
+              op.getLoc(), vecType, baseVec, expandVec,
+              buildAllPredicateMask(rewriter, op.getLoc(), elementType));
     else
       computed =
-          rewriter.create<a5vm::VdivOp>(op.getLoc(), vecType, expandVec, baseVec);
+          rewriter.create<a5vm::VdivOp>(
+              op.getLoc(), vecType, expandVec, baseVec,
+              buildAllPredicateMask(rewriter, op.getLoc(), elementType));
   } else {
     return op.emitOpError() << "unsupported rowexpand binary family";
   }
@@ -6367,17 +6433,17 @@ LogicalResult lowerTRowExpandSub(TRowExpandSubOp op, PatternRewriter &rewriter) 
   if (dstValidCols % vecType.getElementCount() != 0)
     return op.emitOpError("trowexpandsub lowering requires valid cols divisible by vector width");
 
-  Value baseBuffer = materializeBufferPointer(baseSrc, elementType,
-                                              getMemorySpace(baseSrc), rewriter,
-                                              op.getLoc());
-  Value expandBuffer = materializeBufferPointer(expandSrc, elementType,
-                                                getMemorySpace(expandSrc), rewriter,
-                                                op.getLoc());
-  Value dstBuffer = materializeBufferPointer(op.getDst(), elementType,
-                                             getMemorySpace(op.getDst()), rewriter,
-                                             op.getLoc());
+  Value baseBuffer = materializeBufferLikeAddress(baseSrc, elementType,
+                                                  getMemorySpace(baseSrc), rewriter,
+                                                  op.getLoc());
+  Value expandBuffer = materializeBufferLikeAddress(expandSrc, elementType,
+                                                    getMemorySpace(expandSrc), rewriter,
+                                                    op.getLoc());
+  Value dstBuffer = materializeBufferLikeAddress(op.getDst(), elementType,
+                                                 getMemorySpace(op.getDst()), rewriter,
+                                                 op.getLoc());
   if (!baseBuffer || !expandBuffer || !dstBuffer)
-    return op.emitOpError("trowexpandsub lowering requires pointer-backed tile buffers");
+    return op.emitOpError("trowexpandsub lowering requires buffer-like tile buffers");
 
   int64_t dstRowStride = deriveStaticRowStride(op.getDst());
   int64_t baseRowStride = deriveStaticRowStride(baseSrc);
@@ -6450,8 +6516,16 @@ LogicalResult lowerTRowExpandSub(TRowExpandSubOp op, PatternRewriter &rewriter) 
                                         StringAttr())
                   .getResult();
   Value sub = src0EqDst
-                  ? rewriter.create<a5vm::VsubOp>(op.getLoc(), vecType, lhs, expandedVec).getResult()
-                  : rewriter.create<a5vm::VsubOp>(op.getLoc(), vecType, expandedVec, lhs).getResult();
+                  ? rewriter
+                        .create<a5vm::VsubOp>(
+                            op.getLoc(), vecType, lhs, expandedVec,
+                            buildAllPredicateMask(rewriter, op.getLoc(), elementType))
+                        .getResult()
+                  : rewriter
+                        .create<a5vm::VsubOp>(
+                            op.getLoc(), vecType, expandedVec, lhs,
+                            buildAllPredicateMask(rewriter, op.getLoc(), elementType))
+                        .getResult();
   rewriter.create<a5vm::VstsOp>(
       op.getLoc(), sub, dstBuffer, outOffset, StringAttr(),
       buildAllPredicateMask(rewriter, op.getLoc(), elementType));

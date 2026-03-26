@@ -188,6 +188,10 @@ static bool isBufferLike(Type type) {
   return isa<BaseMemRefType, LLVM::LLVMPointerType>(type);
 }
 
+static bool isPointerBuffer(Type type) {
+  return isa<LLVM::LLVMPointerType>(type);
+}
+
 static LogicalResult verifySyncToken(Operation *op, StringAttr token,
                                      StringRef role) {
   if (!token || token.getValue().empty())
@@ -572,7 +576,7 @@ void VldsOp::getEffects(
 
 LogicalResult VldsOp::verify() {
   if (!isBufferLike(getSource().getType()))
-    return emitOpError("requires a pointer-like source");
+    return emitOpError("requires a buffer-like source (memref or !llvm.ptr)");
 
   if (failed(verifyVecTypeLike(*this, getResult().getType(), "result type")))
     return failure();
@@ -600,7 +604,7 @@ void VldasOp::getEffects(
 
 LogicalResult VldasOp::verify() {
   if (!isBufferLike(getSource().getType()))
-    return emitOpError("requires a pointer-like source");
+    return emitOpError("requires a buffer-like source (memref or !llvm.ptr)");
   if (failed(verifyAlignTypeLike(*this, getResult().getType(), "result type")))
     return failure();
   if (classifyMemoryRole(getSource().getType()) == MemoryRole::GM)
@@ -619,7 +623,7 @@ LogicalResult VldusOp::verify() {
       failed(verifyVecTypeLike(*this, getResult().getType(), "result type")))
     return failure();
   if (!isBufferLike(getSource().getType()))
-    return emitOpError("requires a pointer-like source");
+    return emitOpError("requires a buffer-like source (memref or !llvm.ptr)");
   if (classifyMemoryRole(getSource().getType()) == MemoryRole::GM)
     return emitOpError("requires a UB-backed source");
   return success();
@@ -753,7 +757,7 @@ void PldsOp::getEffects(
 
 LogicalResult PldsOp::verify() {
   if (!isBufferLike(getSource().getType()))
-    return emitOpError("requires a pointer-like source");
+    return emitOpError("requires a buffer-like source (memref or !llvm.ptr)");
   if (failed(verifyMaskTypeLike(*this, getResult().getType(), "result type")))
     return failure();
   MemoryRole sourceRole = classifyMemoryRole(getSource().getType());
@@ -770,7 +774,7 @@ void PldOp::getEffects(
 
 LogicalResult PldOp::verify() {
   if (!isBufferLike(getSource().getType()))
-    return emitOpError("requires a pointer-like source");
+    return emitOpError("requires a buffer-like source (memref or !llvm.ptr)");
   if (failed(verifyMaskTypeLike(*this, getResult().getType(), "result type")))
     return failure();
   if (classifyMemoryRole(getSource().getType()) == MemoryRole::GM)
@@ -790,7 +794,7 @@ void PldiOp::getEffects(
 
 LogicalResult PldiOp::verify() {
   if (!isBufferLike(getSource().getType()))
-    return emitOpError("requires a pointer-like source");
+    return emitOpError("requires a buffer-like source (memref or !llvm.ptr)");
   if (failed(verifyMaskTypeLike(*this, getResult().getType(), "result type")))
     return failure();
   if (classifyMemoryRole(getSource().getType()) == MemoryRole::GM)
@@ -924,6 +928,8 @@ static LogicalResult verifyBinaryVecOp(BinaryOp op) {
   if (failed(verifyVecTypeLike(op, op.getLhs().getType(), "lhs type")))
     return failure();
   if (failed(verifyVecTypeLike(op, op.getRhs().getType(), "rhs type")))
+    return failure();
+  if (failed(verifyMaskTypeLike(op, op.getMask().getType(), "mask type")))
     return failure();
   if (failed(verifyVecTypeLike(op, op.getResult().getType(), "result type")))
     return failure();
@@ -1154,7 +1160,7 @@ void VsldOp::getEffects(
 
 LogicalResult VsldOp::verify() {
   if (!isBufferLike(getSource().getType()))
-    return emitOpError("requires a pointer-like source");
+    return emitOpError("requires a buffer-like source (memref or !llvm.ptr)");
   if (failed(verifyVecTypeLike(*this, getResult().getType(), "result type")))
     return failure();
   if (classifyMemoryRole(getSource().getType()) == MemoryRole::GM)
@@ -1172,7 +1178,7 @@ void Vldx2Op::getEffects(
 
 LogicalResult Vldx2Op::verify() {
   if (!isBufferLike(getSource().getType()))
-    return emitOpError("requires a pointer-like source");
+    return emitOpError("requires a buffer-like source (memref or !llvm.ptr)");
   if (classifyMemoryRole(getSource().getType()) == MemoryRole::GM)
     return emitOpError("requires a UB-backed source");
   if (!getOffset().getType().isIndex())
@@ -1201,7 +1207,8 @@ LogicalResult VstsOp::verify() {
     return failure();
 
   if (!isBufferLike(getDestination().getType()))
-    return emitOpError("requires a pointer-like destination");
+    return emitOpError(
+        "requires a buffer-like destination (memref or !llvm.ptr)");
 
   MemoryRole destinationRole = classifyMemoryRole(getDestination().getType());
   if (destinationRole == MemoryRole::GM)
@@ -1226,7 +1233,8 @@ LogicalResult Vstx2Op::verify() {
   if (getLow().getType() != getHigh().getType())
     return emitOpError("requires low/high values to share one vector type");
   if (!isBufferLike(getDestination().getType()))
-    return emitOpError("requires a pointer-like destination");
+    return emitOpError(
+        "requires a buffer-like destination (memref or !llvm.ptr)");
   if (classifyMemoryRole(getDestination().getType()) == MemoryRole::GM)
     return emitOpError("requires a UB-backed destination");
   if (!getOffset().getType().isIndex())
@@ -1275,7 +1283,7 @@ void VsldbOp::getEffects(
 
 LogicalResult VsldbOp::verify() {
   if (!isBufferLike(getSource().getType()))
-    return emitOpError("requires a pointer-like source");
+    return emitOpError("requires a buffer-like source (memref or !llvm.ptr)");
   if (classifyMemoryRole(getSource().getType()) == MemoryRole::GM)
     return emitOpError("requires a UB-backed source");
   if (failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")) ||
@@ -1302,7 +1310,8 @@ LogicalResult PstOp::verify() {
   if (failed(verifyMaskTypeLike(*this, getValue().getType(), "value type")))
     return failure();
   if (!isBufferLike(getDestination().getType()))
-    return emitOpError("requires a pointer-like destination");
+    return emitOpError(
+        "requires a buffer-like destination (memref or !llvm.ptr)");
   if (classifyMemoryRole(getDestination().getType()) == MemoryRole::GM)
     return emitOpError("requires a UB-backed destination");
   if (!getOffset().getType().isIndex())
@@ -1323,7 +1332,8 @@ LogicalResult PstiOp::verify() {
   if (failed(verifyMaskTypeLike(*this, getValue().getType(), "value type")))
     return failure();
   if (!isBufferLike(getDestination().getType()))
-    return emitOpError("requires a pointer-like destination");
+    return emitOpError(
+        "requires a buffer-like destination (memref or !llvm.ptr)");
   if (classifyMemoryRole(getDestination().getType()) == MemoryRole::GM)
     return emitOpError("requires a UB-backed destination");
   if (!isSupportedPredicateStoreDist(getDist()))
@@ -1335,7 +1345,8 @@ LogicalResult PstsOp::verify() {
   if (failed(verifyMaskTypeLike(*this, getValue().getType(), "value type")))
     return failure();
   if (!isBufferLike(getDestination().getType()))
-    return emitOpError("requires a pointer-like destination");
+    return emitOpError(
+        "requires a buffer-like destination (memref or !llvm.ptr)");
   MemoryRole destinationRole = classifyMemoryRole(getDestination().getType());
   if (destinationRole == MemoryRole::GM)
     return emitOpError("requires a UB-backed destination");
@@ -1353,7 +1364,8 @@ LogicalResult VsstOp::verify() {
   if (failed(verifyVecTypeLike(*this, getValue().getType(), "value type")))
     return failure();
   if (!isBufferLike(getDestination().getType()))
-    return emitOpError("requires a pointer-like destination");
+    return emitOpError(
+        "requires a buffer-like destination (memref or !llvm.ptr)");
   if (classifyMemoryRole(getDestination().getType()) == MemoryRole::GM)
     return emitOpError("requires a UB-backed destination");
   if (!isSupportedStrideToken(getStride()))
@@ -1373,7 +1385,8 @@ LogicalResult VsstbOp::verify() {
       failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")))
     return failure();
   if (!isBufferLike(getDestination().getType()))
-    return emitOpError("requires a pointer-like destination");
+    return emitOpError(
+        "requires a buffer-like destination (memref or !llvm.ptr)");
   if (classifyMemoryRole(getDestination().getType()) == MemoryRole::GM)
     return emitOpError("requires a UB-backed destination");
   return success();
@@ -1390,7 +1403,8 @@ LogicalResult VstaOp::verify() {
   if (failed(verifyAlignTypeLike(*this, getValue().getType(), "value type")))
     return failure();
   if (!isBufferLike(getDestination().getType()))
-    return emitOpError("requires a pointer-like destination");
+    return emitOpError(
+        "requires a buffer-like destination (memref or !llvm.ptr)");
   if (classifyMemoryRole(getDestination().getType()) == MemoryRole::GM)
     return emitOpError("requires a UB-backed destination");
   if (!getOffset().getType().isIndex())
@@ -1409,7 +1423,8 @@ LogicalResult VstasOp::verify() {
   if (failed(verifyAlignTypeLike(*this, getValue().getType(), "value type")))
     return failure();
   if (!isBufferLike(getDestination().getType()))
-    return emitOpError("requires a pointer-like destination");
+    return emitOpError(
+        "requires a buffer-like destination (memref or !llvm.ptr)");
   if (classifyMemoryRole(getDestination().getType()) == MemoryRole::GM)
     return emitOpError("requires a UB-backed destination");
   return success();
@@ -1426,7 +1441,8 @@ LogicalResult VstarOp::verify() {
   if (failed(verifyAlignTypeLike(*this, getValue().getType(), "value type")))
     return failure();
   if (!isBufferLike(getDestination().getType()))
-    return emitOpError("requires a pointer-like destination");
+    return emitOpError(
+        "requires a buffer-like destination (memref or !llvm.ptr)");
   if (classifyMemoryRole(getDestination().getType()) == MemoryRole::GM)
     return emitOpError("requires a UB-backed destination");
   return success();
@@ -1445,8 +1461,9 @@ LogicalResult PstuOp::verify() {
       failed(verifyMaskTypeLike(*this, getValue().getType(), "value type")) ||
       failed(verifyAlignTypeLike(*this, getAlignOut().getType(), "align_out type")))
     return failure();
-  if (!isBufferLike(getBase().getType()) || !isBufferLike(getBaseOut().getType()))
-    return emitOpError("requires pointer-like base and base_out");
+  if (!isPointerBuffer(getBase().getType()) ||
+      !isPointerBuffer(getBaseOut().getType()))
+    return emitOpError("requires pointer-only base and base_out");
   if (getBase().getType() != getBaseOut().getType())
     return emitOpError("requires base and base_out to have identical types");
   if (classifyMemoryRole(getBase().getType()) == MemoryRole::GM)
@@ -1468,8 +1485,8 @@ LogicalResult VstuOp::verify() {
       failed(verifyVecTypeLike(*this, getValue().getType(), "value type")) ||
       failed(verifyAlignTypeLike(*this, getAlignOut().getType(), "align_out type")))
     return failure();
-  if (!isBufferLike(getBase().getType()))
-    return emitOpError("requires a pointer-like base");
+  if (!isPointerBuffer(getBase().getType()))
+    return emitOpError("requires a pointer-only base");
   if (classifyMemoryRole(getBase().getType()) == MemoryRole::GM)
     return emitOpError("requires a UB-backed base");
   if (!getOffsetIn().getType().isIndex() || !getOffsetOut().getType().isIndex())
@@ -1492,8 +1509,9 @@ LogicalResult VstusOp::verify() {
       failed(verifyVecTypeLike(*this, getValue().getType(), "value type")) ||
       failed(verifyAlignTypeLike(*this, getAlignOut().getType(), "align_out type")))
     return failure();
-  if (!isBufferLike(getBase().getType()) || !isBufferLike(getBaseOut().getType()))
-    return emitOpError("requires pointer-like base and base_out");
+  if (!isPointerBuffer(getBase().getType()) ||
+      !isPointerBuffer(getBaseOut().getType()))
+    return emitOpError("requires pointer-only base and base_out");
   if (getBase().getType() != getBaseOut().getType())
     return emitOpError("requires base and base_out to have identical types");
   if (classifyMemoryRole(getBase().getType()) == MemoryRole::GM)
@@ -1516,8 +1534,8 @@ LogicalResult VsturOp::verify() {
       failed(verifyVecTypeLike(*this, getValue().getType(), "value type")) ||
       failed(verifyAlignTypeLike(*this, getAlignOut().getType(), "align_out type")))
     return failure();
-  if (!isBufferLike(getBase().getType()))
-    return emitOpError("requires a pointer-like base");
+  if (!isPointerBuffer(getBase().getType()))
+    return emitOpError("requires a pointer-only base");
   if (classifyMemoryRole(getBase().getType()) == MemoryRole::GM)
     return emitOpError("requires a UB-backed base");
   if (!isSupportedPostMode(getMode()))

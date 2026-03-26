@@ -1,6 +1,6 @@
 # VPTO Spec
 
-Updated: 2026-03-20
+Updated: 2026-03-26
 
 ## Table Of Contents
 
@@ -178,6 +178,8 @@ It does not describe lowering strategy.
   `TODO(user): extend this type entry to describe how the mask data type is represented in VPTO syntax and semantics.`
 - `align`: `!pto.align`
 - `buf`: buffer-like LLVM pointer type accepted by the dialect
+- `buf_like`: `memref<...>` or `!llvm.ptr<AS>` for stateless/predicate
+  `vld*/vst*` families
 - `idx`: `index`
 - `i32`: `i32`
 - `i64`: `i64`
@@ -703,10 +705,18 @@ Builtin naming policy in this document:
 
 ## 4. Vector, Predicate And Align Loads
 
+Address-form policy for this section:
+
+- `buf_like` means either `memref<...>` or `!llvm.ptr<AS>`.
+- Compiler-generated IR should prefer `memref<...>` for `vld*/vst*`
+  stateless/predicate families.
+- Low-level hand-authored code may continue to use `!llvm.ptr<AS>` for
+  ABI-sensitive control and backward compatibility.
+
 ### `pto.vlds`
 
 - syntax:
-  `%result = pto.vlds %source[%offset] {dist = "DIST"} : !llvm.ptr<AS> -> !pto.vreg<NxT>`
+  `%result = pto.vlds %source[%offset] {dist = "DIST"} : buf_like -> !pto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -718,7 +728,7 @@ Builtin naming policy in this document:
 ### `pto.vldas`
 
 - syntax:
-  `%result = pto.vldas %source[%offset] : !llvm.ptr<AS> -> !pto.align`
+  `%result = pto.vldas %source[%offset] : buf_like -> !pto.align`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -728,7 +738,7 @@ Builtin naming policy in this document:
 ### `pto.vldus`
 
 - syntax:
-  `%result = pto.vldus %align, %source[%offset] : !pto.align, !llvm.ptr<AS> -> !pto.vreg<NxT>`
+  `%result = pto.vldus %align, %source[%offset] : !pto.align, buf_like -> !pto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -738,7 +748,7 @@ Builtin naming policy in this document:
 ### `pto.vplds`
 
 - syntax:
-  `%result = pto.vplds %source[%offset] {dist = "DIST"} : !llvm.ptr<AS> -> !pto.mask`
+  `%result = pto.vplds %source[%offset] {dist = "DIST"} : buf_like -> !pto.mask`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -748,7 +758,7 @@ Builtin naming policy in this document:
 ### `pto.vpld`
 
 - syntax:
-  `%result = pto.vpld %source[%offset], "DIST" : !llvm.ptr<AS>, index -> !pto.mask`
+  `%result = pto.vpld %source[%offset], "DIST" : buf_like, index -> !pto.mask`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -758,7 +768,7 @@ Builtin naming policy in this document:
 ### `pto.vpldi`
 
 - syntax:
-  `%result = pto.vpldi %source, %offset, "DIST" : !llvm.ptr<AS>, i32 -> !pto.mask`
+  `%result = pto.vpldi %source, %offset, "DIST" : buf_like, i32 -> !pto.mask`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -768,7 +778,7 @@ Builtin naming policy in this document:
 ### `pto.vldx2`
 
 - syntax:
-  `%low, %high = pto.vldx2 %source[%offset], "DIST" : !llvm.ptr<AS>, index -> !pto.vreg<NxT>, !pto.vreg<NxT>`
+  `%low, %high = pto.vldx2 %source[%offset], "DIST" : buf_like, index -> !pto.vreg<NxT>, !pto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -808,7 +818,7 @@ Builtin naming policy in this document:
 ### `pto.vsld`
 
 - syntax:
-  `%result = pto.vsld %source[%offset], "STRIDE" : !llvm.ptr<AS> -> !pto.vreg<NxT>`
+  `%result = pto.vsld %source[%offset], "STRIDE" : buf_like -> !pto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1477,10 +1487,17 @@ Builtin naming policy in this document:
 
 ## 13. Stateless Stores
 
+Address-form policy for this section:
+
+- `buf_like` means either `memref<...>` or `!llvm.ptr<AS>`.
+- Compiler-generated IR should prefer `memref<...>` in stateless/predicate
+  `vst*` families.
+- Low-level hand-authored code may continue to use `!llvm.ptr<AS>`.
+
 ### `pto.vsts`
 
 - syntax:
-  `pto.vsts %value, %destination[%offset] {dist = "DIST"} : !pto.vreg<NxT>, !llvm.ptr<AS>`
+  `pto.vsts %value, %destination[%offset] {dist = "DIST"} : !pto.vreg<NxT>, buf_like`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1500,7 +1517,7 @@ Builtin naming policy in this document:
 ### `pto.vsts_pred`
 
 - syntax:
-  `pto.vsts_pred %value, %destination[%offset], %active_lanes {dist = "DIST"} : !pto.vreg<NxT>, !llvm.ptr<AS>, index`
+  `pto.vsts_pred %value, %destination[%offset], %active_lanes {dist = "DIST"} : !pto.vreg<NxT>, buf_like, index`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1509,7 +1526,7 @@ Builtin naming policy in this document:
 ### `pto.vpsts`
 
 - syntax:
-  `pto.vpsts %value, %destination[%offset] : !pto.mask, !llvm.ptr<AS>`
+  `pto.vpsts %value, %destination[%offset] : !pto.mask, buf_like`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1519,7 +1536,7 @@ Builtin naming policy in this document:
 ### `pto.vpst`
 
 - syntax:
-  `pto.vpst %value, %destination[%offset], "DIST" : !pto.mask, !llvm.ptr<AS>, index`
+  `pto.vpst %value, %destination[%offset], "DIST" : !pto.mask, buf_like, index`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1529,7 +1546,7 @@ Builtin naming policy in this document:
 ### `pto.vpsti`
 
 - syntax:
-  `pto.vpsti %value, %destination, %offset, "DIST" : !pto.mask, !llvm.ptr<AS>, i32`
+  `pto.vpsti %value, %destination, %offset, "DIST" : !pto.mask, buf_like, i32`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1539,7 +1556,7 @@ Builtin naming policy in this document:
 ### `pto.vsst`
 
 - syntax:
-  `pto.vsst %value, %destination[%offset], "STRIDE" : !pto.vreg<NxT>, !llvm.ptr<AS>`
+  `pto.vsst %value, %destination[%offset], "STRIDE" : !pto.vreg<NxT>, buf_like`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1549,7 +1566,7 @@ Builtin naming policy in this document:
 ### `pto.vstx2`
 
 - syntax:
-  `pto.vstx2 %low, %high, %destination[%offset], "DIST", %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !llvm.ptr<AS>, index, !pto.mask`
+  `pto.vstx2 %low, %high, %destination[%offset], "DIST", %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, buf_like, index, !pto.mask`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1559,7 +1576,7 @@ Builtin naming policy in this document:
 ### `pto.vsstb`
 
 - syntax:
-  `pto.vsstb %value, %destination, %offset, %mask : !pto.vreg<NxT>, !llvm.ptr<AS>, i32, !pto.mask`
+  `pto.vsstb %value, %destination, %offset, %mask : !pto.vreg<NxT>, buf_like, i32, !pto.mask`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1569,7 +1586,7 @@ Builtin naming policy in this document:
 ### `pto.vsta`
 
 - syntax:
-  `pto.vsta %value, %destination[%offset] : !pto.align, !llvm.ptr<AS>, index`
+  `pto.vsta %value, %destination[%offset] : !pto.align, buf_like, index`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1579,7 +1596,7 @@ Builtin naming policy in this document:
 ### `pto.vstas`
 
 - syntax:
-  `pto.vstas %value, %destination, %offset : !pto.align, !llvm.ptr<AS>, i32`
+  `pto.vstas %value, %destination, %offset : !pto.align, buf_like, i32`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1589,7 +1606,7 @@ Builtin naming policy in this document:
 ### `pto.vstar`
 
 - syntax:
-  `pto.vstar %value, %destination : !pto.align, !llvm.ptr<AS>`
+  `pto.vstar %value, %destination : !pto.align, buf_like`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1599,6 +1616,9 @@ Builtin naming policy in this document:
 ## 14. Stateful Store Ops
 
 These ops make CCE reference-updated state explicit as SSA results.
+Unlike stateless/predicate `vld*/vst*` families, stateful `%base/%base_out`
+remain pointer-only (`!llvm.ptr<AS>`), and `memref` is intentionally not
+accepted for these operands in the current contract.
 
 ### `pto.vpstu`
 
