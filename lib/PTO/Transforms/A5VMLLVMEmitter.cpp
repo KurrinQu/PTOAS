@@ -12,19 +12,25 @@
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/HIVMIntrinsicNaming.h"
 
+#include "mlir/Conversion/LLVMCommon/MemRefBuilder.h"
+#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Func/Transforms/FuncConversions.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
@@ -411,7 +417,492 @@ static Type convertA5VMType(Type type, Builder &builder) {
     return VectorType::get({256}, builder.getI1Type());
   if (isa<a5vm::AlignType>(type))
     return VectorType::get({32}, builder.getIntegerType(8));
+  if (auto ptrType = dyn_cast<pto::PtrType>(type)) {
+    return LLVM::LLVMPointerType::get(
+        builder.getContext(),
+        static_cast<unsigned>(ptrType.getMemorySpace().getAddressSpace()));
+  }
   return type;
+}
+
+static bool hasPtoPtrType(TypeRange types) {
+  return llvm::any_of(types, [](Type type) { return isa<pto::PtrType>(type); });
+}
+
+static bool hasPtoMemRefMemorySpace(Type type) {
+  if (auto memRefType = dyn_cast<MemRefType>(type))
+    return isa<pto::AddressSpaceAttr>(memRefType.getMemorySpace());
+  if (auto functionType = dyn_cast<FunctionType>(type))
+    return llvm::any_of(functionType.getInputs(), hasPtoMemRefMemorySpace) ||
+           llvm::any_of(functionType.getResults(), hasPtoMemRefMemorySpace);
+  return false;
+}
+
+static bool hasPtoMemRefMemorySpace(TypeRange types) {
+  return llvm::any_of(types, [](Type type) {
+    return hasPtoMemRefMemorySpace(type);
+  });
+}
+
+struct ConvertPtoMemRefSpaceCarrierOp final : ConversionPattern {
+  ConvertPtoMemRefSpaceCarrierOp(TypeConverter &typeConverter,
+                                 MLIRContext *context)
+      : ConversionPattern(typeConverter, MatchAnyOpTypeTag(), 1, context) {}
+
+  LogicalResult
+  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (!hasPtoMemRefMemorySpace(op->getOperandTypes()) &&
+        !hasPtoMemRefMemorySpace(op->getResultTypes()))
+      return failure();
+    if (op->getNumRegions() != 0)
+      return rewriter.notifyMatchFailure(
+          op, "region ops with PTO memref spaces are handled structurally");
+
+    FailureOr<Operation *> converted =
+        convertOpResultTypes(op, operands, *typeConverter, rewriter);
+    if (failed(converted))
+      return failure();
+    return success();
+  }
+};
+
+struct ConvertMemRefReinterpretCastSpaceOp final
+    : OpConversionPattern<memref::ReinterpretCastOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(memref::ReinterpretCastOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Type convertedResultType = getTypeConverter()->convertType(op.getType());
+    auto memRefResultType = dyn_cast_or_null<MemRefType>(convertedResultType);
+    if (!memRefResultType)
+      return rewriter.notifyMatchFailure(op, "expected memref result type");
+
+    rewriter.replaceOpWithNewOp<memref::ReinterpretCastOp>(
+        op, memRefResultType, adaptor.getSource(), adaptor.getOffsets(),
+        adaptor.getSizes(), adaptor.getStrides(), op.getStaticOffsets(),
+        op.getStaticSizes(), op.getStaticStrides());
+    return success();
+  }
+};
+
+struct ConvertMemRefSubViewSpaceOp final
+    : OpConversionPattern<memref::SubViewOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(memref::SubViewOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Type convertedResultType = getTypeConverter()->convertType(op.getType());
+    auto memRefResultType = dyn_cast_or_null<MemRefType>(convertedResultType);
+    if (!memRefResultType)
+      return rewriter.notifyMatchFailure(op, "expected memref result type");
+
+    rewriter.replaceOpWithNewOp<memref::SubViewOp>(
+        op, memRefResultType, adaptor.getSource(), op.getMixedOffsets(),
+        op.getMixedSizes(), op.getMixedStrides());
+    return success();
+  }
+};
+
+struct ConvertMemRefSpaceUnrealizedCastOp final
+    : OpConversionPattern<UnrealizedConversionCastOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(UnrealizedConversionCastOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (op->getNumOperands() != 1 || op->getNumResults() != 1)
+      return failure();
+    if (!hasPtoMemRefMemorySpace(op->getOperandTypes()) &&
+        !hasPtoMemRefMemorySpace(op->getResultTypes()))
+      return failure();
+
+    Type convertedResultType = getTypeConverter()->convertType(op.getResult(0).getType());
+    if (!convertedResultType)
+      return failure();
+
+    Value input = adaptor.getOperands().front();
+    if (input.getType() == convertedResultType) {
+      rewriter.replaceOp(op, input);
+      return success();
+    }
+    return failure();
+  }
+};
+
+static LogicalResult normalizePtoMemRefSpaces(ModuleOp module,
+                                              llvm::raw_ostream &diagOS) {
+  MLIRContext *context = module.getContext();
+  TypeConverter typeConverter;
+  typeConverter.addConversion([](Type type) { return type; });
+  typeConverter.addConversion([&](MemRefType type) -> Type {
+    auto addrSpace = dyn_cast_or_null<pto::AddressSpaceAttr>(type.getMemorySpace());
+    if (!addrSpace)
+      return type;
+    return MemRefType::get(
+        type.getShape(), type.getElementType(), type.getLayout(),
+        IntegerAttr::get(IntegerType::get(context, 64),
+                         static_cast<int64_t>(addrSpace.getAddressSpace())));
+  });
+  typeConverter.addTypeAttributeConversion(
+      [](MemRefType, pto::AddressSpaceAttr attr) -> Attribute {
+        return IntegerAttr::get(IntegerType::get(attr.getContext(), 64),
+                                static_cast<int64_t>(attr.getAddressSpace()));
+      });
+  auto materializeMemRefCast = [](OpBuilder &builder, Type resultType,
+                                  ValueRange inputs, Location loc) -> Value {
+    if (inputs.size() != 1)
+      return {};
+    return builder
+        .create<UnrealizedConversionCastOp>(loc, TypeRange{resultType}, inputs)
+        .getResult(0);
+  };
+  typeConverter.addSourceMaterialization(materializeMemRefCast);
+  typeConverter.addTargetMaterialization(materializeMemRefCast);
+  typeConverter.addArgumentMaterialization(materializeMemRefCast);
+
+  ConversionTarget target(*context);
+  target.addLegalOp<ModuleOp>();
+  target.addDynamicallyLegalOp<func::FuncOp>(
+      [&](func::FuncOp op) {
+        return typeConverter.isSignatureLegal(op.getFunctionType()) &&
+               typeConverter.isLegal(&op.getBody());
+      });
+  target.addDynamicallyLegalOp<func::CallOp>(
+      [&](func::CallOp op) { return typeConverter.isLegal(op); });
+  target.addDynamicallyLegalOp<func::ReturnOp>(
+      [&](func::ReturnOp op) { return typeConverter.isLegal(op); });
+  target.addDynamicallyLegalOp<cf::BranchOp, cf::CondBranchOp>(
+      [&](Operation *op) {
+        return isLegalForBranchOpInterfaceTypeConversionPattern(op,
+                                                                typeConverter);
+      });
+  target.markUnknownOpDynamicallyLegal([&](Operation *op) {
+    return typeConverter.isLegal(op->getOperandTypes()) &&
+           typeConverter.isLegal(op->getResultTypes());
+  });
+
+  RewritePatternSet patterns(context);
+  scf::populateSCFStructuralTypeConversionsAndLegality(typeConverter, patterns,
+                                                       target);
+  populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(patterns,
+                                                                 typeConverter);
+  populateCallOpTypeConversionPattern(patterns, typeConverter);
+  populateBranchOpInterfaceTypeConversionPattern(patterns, typeConverter);
+  populateReturnOpTypeConversionPattern(patterns, typeConverter);
+  patterns.add<ConvertMemRefReinterpretCastSpaceOp, ConvertMemRefSubViewSpaceOp,
+               ConvertMemRefSpaceUnrealizedCastOp>(
+      typeConverter, context);
+  patterns.add<ConvertPtoMemRefSpaceCarrierOp>(typeConverter, context);
+
+  if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
+    diagOS << "A5VM LLVM emission failed: memref address-space normalization "
+              "failed\n";
+    return failure();
+  }
+
+  SmallVector<UnrealizedConversionCastOp> castsToFold;
+  module.walk([&](UnrealizedConversionCastOp castOp) {
+    if (castOp->getNumOperands() != 1 || castOp->getNumResults() != 1)
+      return;
+    if (!hasPtoMemRefMemorySpace(castOp->getOperandTypes()) &&
+        !hasPtoMemRefMemorySpace(castOp->getResultTypes()))
+      return;
+    Type convertedResultType = typeConverter.convertType(castOp.getResult(0).getType());
+    if (convertedResultType && convertedResultType == castOp.getOperand(0).getType())
+      castsToFold.push_back(castOp);
+  });
+  for (UnrealizedConversionCastOp castOp : castsToFold) {
+    castOp.getResult(0).replaceAllUsesWith(castOp.getOperand(0));
+    castOp.erase();
+  }
+
+  WalkResult leftover = module.walk([&](Operation *op) {
+    if (hasPtoMemRefMemorySpace(op->getOperandTypes()) ||
+        hasPtoMemRefMemorySpace(op->getResultTypes())) {
+      diagOS << "A5VM LLVM emission failed: residual PTO memref address space on op "
+             << op->getName().getStringRef() << "\n";
+      op->print(diagOS);
+      diagOS << "\n";
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  if (leftover.wasInterrupted())
+    return failure();
+  return success();
+}
+
+struct ConvertPtoAddPtrOp final : OpConversionPattern<pto::AddPtrOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(pto::AddPtrOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto convertedResultType =
+        getTypeConverter()->convertType(op.getResult().getType());
+    auto llvmPtrType = dyn_cast_or_null<LLVM::LLVMPointerType>(convertedResultType);
+    if (!llvmPtrType)
+      return rewriter.notifyMatchFailure(op, "expected LLVM pointer result type");
+
+    Value offset = adaptor.getOffset();
+    if (offset.getType().isIndex())
+      offset = rewriter.create<arith::IndexCastUIOp>(op.getLoc(),
+                                                     rewriter.getI64Type(), offset);
+
+    rewriter.replaceOpWithNewOp<LLVM::GEPOp>(op, llvmPtrType,
+                                             op.getPtr().getType().cast<pto::PtrType>().getElementType(),
+                                             adaptor.getPtr(), ValueRange{offset});
+    return success();
+  }
+};
+
+struct ConvertPtoCastPtrOp final : OpConversionPattern<pto::CastPtrOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(pto::CastPtrOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Type convertedResultType =
+        getTypeConverter()->convertType(op.getResult().getType());
+    if (!convertedResultType)
+      return rewriter.notifyMatchFailure(op, "could not convert castptr result type");
+
+    Value input = adaptor.getInput();
+    Type inputType = input.getType();
+    if (inputType == convertedResultType) {
+      rewriter.replaceOp(op, input);
+      return success();
+    }
+
+    if (auto llvmPtrType = dyn_cast<LLVM::LLVMPointerType>(convertedResultType)) {
+      if (isa<IntegerType>(inputType)) {
+        rewriter.replaceOpWithNewOp<LLVM::IntToPtrOp>(op, llvmPtrType, input);
+        return success();
+      }
+      if (auto memRefType = dyn_cast<MemRefType>(inputType)) {
+        auto resultPtrType = cast<pto::PtrType>(op.getResult().getType());
+        unsigned llvmAddressSpace = static_cast<unsigned>(
+            resultPtrType.getMemorySpace().getAddressSpace());
+        auto canonicalMemRefType = MemRefType::get(
+            memRefType.getShape(), memRefType.getElementType(),
+            memRefType.getLayout(), rewriter.getI64IntegerAttr(llvmAddressSpace));
+        if (inputType != canonicalMemRefType)
+          input = rewriter.create<memref::MemorySpaceCastOp>(op.getLoc(),
+                                                             canonicalMemRefType,
+                                                             input);
+        LLVMTypeConverter llvmTypeConverter(rewriter.getContext());
+        Type llvmDescriptorType =
+            llvmTypeConverter.convertType(cast<MemRefType>(input.getType()));
+        if (!llvmDescriptorType)
+          return rewriter.notifyMatchFailure(op, "could not convert memref to LLVM descriptor");
+        Value descriptor =
+            rewriter
+                .create<UnrealizedConversionCastOp>(op.getLoc(),
+                                                    TypeRange{llvmDescriptorType},
+                                                    input)
+                .getResult(0);
+        MemRefDescriptor memrefDescriptor(descriptor);
+        Value alignedPtr = memrefDescriptor.alignedPtr(rewriter, op.getLoc());
+        auto alignedPtrType = dyn_cast_or_null<LLVM::LLVMPointerType>(alignedPtr.getType());
+        if (!alignedPtrType)
+          return rewriter.notifyMatchFailure(op, "expected LLVM pointer from memref descriptor");
+        if (alignedPtrType.getAddressSpace() == llvmPtrType.getAddressSpace()) {
+          rewriter.replaceOpWithNewOp<LLVM::BitcastOp>(op, llvmPtrType, alignedPtr);
+          return success();
+        }
+        rewriter.replaceOpWithNewOp<LLVM::AddrSpaceCastOp>(op, llvmPtrType, alignedPtr);
+        return success();
+      }
+      auto sourcePtrType = dyn_cast<LLVM::LLVMPointerType>(inputType);
+      if (!sourcePtrType)
+        return rewriter.notifyMatchFailure(op, "expected integer, memref, or LLVM pointer input");
+      if (sourcePtrType.getAddressSpace() == llvmPtrType.getAddressSpace()) {
+        rewriter.replaceOpWithNewOp<LLVM::BitcastOp>(op, llvmPtrType, input);
+        return success();
+      }
+      return rewriter.notifyMatchFailure(op, "cross-address-space ptr casts are unsupported");
+    }
+
+    if (auto resultIntType = dyn_cast<IntegerType>(convertedResultType)) {
+      if (auto inputPtrType = dyn_cast<LLVM::LLVMPointerType>(inputType)) {
+        rewriter.replaceOpWithNewOp<LLVM::PtrToIntOp>(op, resultIntType, input);
+        return success();
+      }
+      if (auto inputIntType = dyn_cast<IntegerType>(inputType)) {
+        unsigned srcWidth = inputIntType.getWidth();
+        unsigned dstWidth = resultIntType.getWidth();
+        if (srcWidth == dstWidth) {
+          rewriter.replaceOp(op, input);
+          return success();
+        }
+        if (srcWidth < dstWidth) {
+          rewriter.replaceOpWithNewOp<LLVM::ZExtOp>(op, resultIntType, input);
+          return success();
+        }
+        rewriter.replaceOpWithNewOp<LLVM::TruncOp>(op, resultIntType, input);
+        return success();
+      }
+    }
+
+    return rewriter.notifyMatchFailure(op, "unsupported castptr conversion");
+  }
+};
+
+struct ConvertPtoLoadScalarOp final : OpConversionPattern<pto::LoadScalarOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(pto::LoadScalarOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto llvmPtrType = dyn_cast<LLVM::LLVMPointerType>(adaptor.getPtr().getType());
+    if (!llvmPtrType)
+      return rewriter.notifyMatchFailure(op, "expected LLVM pointer operand");
+
+    Value offset = adaptor.getOffset();
+    if (offset.getType().isIndex())
+      offset = rewriter.create<arith::IndexCastUIOp>(op.getLoc(),
+                                                     rewriter.getI64Type(), offset);
+
+    Value elemPtr = adaptor.getPtr();
+    if (!matchPattern(offset, m_Zero())) {
+      elemPtr = rewriter.create<LLVM::GEPOp>(op.getLoc(), llvmPtrType,
+                                             op.getValue().getType(), adaptor.getPtr(),
+                                             ValueRange{offset});
+    }
+
+    rewriter.replaceOpWithNewOp<LLVM::LoadOp>(op, op.getValue().getType(), elemPtr);
+    return success();
+  }
+};
+
+struct ConvertPtoStoreScalarOp final : OpConversionPattern<pto::StoreScalarOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(pto::StoreScalarOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto llvmPtrType = dyn_cast<LLVM::LLVMPointerType>(adaptor.getPtr().getType());
+    if (!llvmPtrType)
+      return rewriter.notifyMatchFailure(op, "expected LLVM pointer operand");
+
+    Value offset = adaptor.getOffset();
+    if (offset.getType().isIndex())
+      offset = rewriter.create<arith::IndexCastUIOp>(op.getLoc(),
+                                                     rewriter.getI64Type(), offset);
+
+    Value elemPtr = adaptor.getPtr();
+    if (!matchPattern(offset, m_Zero())) {
+      elemPtr = rewriter.create<LLVM::GEPOp>(op.getLoc(), llvmPtrType,
+                                             adaptor.getValue().getType(),
+                                             adaptor.getPtr(), ValueRange{offset});
+    }
+
+    rewriter.replaceOpWithNewOp<LLVM::StoreOp>(op, adaptor.getValue(), elemPtr);
+    return success();
+  }
+};
+
+struct ConvertPtoUnrealizedCastOp final
+    : OpConversionPattern<UnrealizedConversionCastOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(UnrealizedConversionCastOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (op->getNumOperands() != 1 || op->getNumResults() != 1)
+      return rewriter.notifyMatchFailure(op, "only 1:1 casts are supported");
+
+    Type convertedResultType =
+        getTypeConverter()->convertType(op.getResult(0).getType());
+    if (!convertedResultType)
+      return rewriter.notifyMatchFailure(op, "could not convert cast result type");
+
+    Value input = adaptor.getOperands().front();
+    if (auto llvmPtrType = dyn_cast<LLVM::LLVMPointerType>(convertedResultType)) {
+      if (input.getType().isInteger(64)) {
+        rewriter.replaceOpWithNewOp<LLVM::IntToPtrOp>(op, llvmPtrType, input);
+        return success();
+      }
+    }
+    if (input.getType() == convertedResultType) {
+      rewriter.replaceOp(op, input);
+      return success();
+    }
+
+    auto cast = rewriter.create<UnrealizedConversionCastOp>(
+        op.getLoc(), TypeRange{convertedResultType}, input);
+    rewriter.replaceOp(op, cast.getResults());
+    return success();
+  }
+};
+
+struct ConvertPtoPtrCarrierOp final : ConversionPattern {
+  ConvertPtoPtrCarrierOp(TypeConverter &typeConverter, MLIRContext *context)
+      : ConversionPattern(typeConverter, MatchAnyOpTypeTag(), 1, context) {}
+
+  LogicalResult
+  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (isa<pto::AddPtrOp, pto::CastPtrOp, pto::LoadScalarOp, pto::StoreScalarOp,
+            UnrealizedConversionCastOp>(op))
+      return failure();
+    if (!hasPtoPtrType(op->getOperandTypes()) && !hasPtoPtrType(op->getResultTypes()))
+      return failure();
+    if (op->getNumRegions() != 0)
+      return rewriter.notifyMatchFailure(op, "region ops with pto.ptr are unsupported");
+
+    SmallVector<Type> convertedResultTypes;
+    if (failed(typeConverter->convertTypes(op->getResultTypes(), convertedResultTypes)))
+      return failure();
+
+    OperationState state(op->getLoc(), op->getName().getStringRef());
+    state.addOperands(operands);
+    state.addTypes(convertedResultTypes);
+    state.addAttributes(op->getAttrs());
+    state.addSuccessors(op->getSuccessors());
+
+    Operation *newOp = rewriter.create(state);
+    rewriter.replaceOp(op, newOp->getResults());
+    return success();
+  }
+};
+
+static LogicalResult normalizePtoPtrsToLLVM(ModuleOp module, llvm::raw_ostream &diagOS) {
+  MLIRContext *context = module.getContext();
+  TypeConverter typeConverter;
+  typeConverter.addConversion([](Type type) { return type; });
+  typeConverter.addConversion([&](pto::PtrType type) -> Type {
+    return LLVM::LLVMPointerType::get(
+        context, static_cast<unsigned>(type.getMemorySpace().getAddressSpace()));
+  });
+
+  ConversionTarget target(*context);
+  target.markUnknownOpDynamicallyLegal([](Operation *op) {
+    return !hasPtoPtrType(op->getOperandTypes()) && !hasPtoPtrType(op->getResultTypes());
+  });
+  target.addLegalOp<ModuleOp>();
+  target.addIllegalOp<pto::AddPtrOp, pto::CastPtrOp, pto::LoadScalarOp,
+                      pto::StoreScalarOp>();
+  target.addDynamicallyLegalOp<UnrealizedConversionCastOp>([](UnrealizedConversionCastOp op) {
+    return !hasPtoPtrType(op->getOperandTypes()) && !hasPtoPtrType(op->getResultTypes());
+  });
+
+  RewritePatternSet patterns(context);
+  scf::populateSCFStructuralTypeConversionsAndLegality(typeConverter, patterns,
+                                                       target);
+  patterns.add<ConvertPtoAddPtrOp, ConvertPtoCastPtrOp, ConvertPtoLoadScalarOp,
+               ConvertPtoStoreScalarOp, ConvertPtoUnrealizedCastOp>(
+      typeConverter, context);
+  patterns.add<ConvertPtoPtrCarrierOp>(typeConverter, context);
+
+  if (failed(applyFullConversion(module, target, std::move(patterns)))) {
+    diagOS << "A5VM LLVM emission failed: pto.ptr normalization failed\n";
+    return failure();
+  }
+  return success();
 }
 
 static Type getElementTypeFromVectorLike(Type type) {
@@ -1862,6 +2353,12 @@ buildLLVMModuleFromA5VM(ModuleOp module, llvm::LLVMContext &llvmContext,
   OwningOpRef<ModuleOp> cloned(cast<ModuleOp>(module->clone()));
   auto vecScopeCounts = collectVecScopeLoopCounts(*cloned);
   auto abiSpecs = collectFunctionABISpecs(*cloned);
+
+  if (failed(normalizePtoMemRefSpaces(*cloned, diagOS)))
+    return nullptr;
+
+  if (failed(normalizePtoPtrsToLLVM(*cloned, diagOS)))
+    return nullptr;
 
   if (failed(rewriteA5VMOps(*cloned, diagOS))) {
     diagOS << "A5VM LLVM emission failed: A5VM-to-call rewriting failed\n";

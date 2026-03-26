@@ -1,4 +1,4 @@
-// RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm --a5vm-print-ir %s -o /dev/null 2>&1 | FileCheck %s
+// RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm --emit-a5vm %s -o - 2>/dev/null | FileCheck %s
 // RUN: ./build/tools/ptoas/ptoas --pto-arch a5 --pto-backend=a5vm --a5vm-emit-hivm-llvm %s -o - 2>/dev/null | FileCheck --check-prefix=CHECK-HIVM %s
 
 // CHECK-LABEL: func.func @copy_dynamic_transfer_operands
@@ -15,21 +15,23 @@
 // CHECK: a5vm.set_loop1_stride_outtoub %[[LOOP_STRIDE]], %[[LOOP_STRIDE]]
 // CHECK: a5vm.set_loop_size_outtoub %[[C1_I64]], %[[C1_I64]]
 // CHECK: a5vm.copy_gm_to_ubuf %{{.*}}, %{{.*}}, %[[ROW_I64]], %[[COL_I64]], %[[ZERO_I64]], %[[NBURST]], %[[LEN_BURST]], %[[ZERO_I64]], %[[ZERO_I64]], %[[ZERO_I64]], %[[STRIDE_BYTES]], %[[STRIDE_BYTES]]
-// CHECK-SAME: layout = "nd"
 // CHECK-SAME: data_select_bit = false
+// CHECK-SAME: layout = "nd"
 // CHECK-SAME: ub_pad = false
+// CHECK-SAME: : !pto.ptr<i8, gm>, !pto.ptr<f32, ub>
 // CHECK: a5vm.set_loop_size_ubtoout %[[C1_I64]], %[[C1_I64]]
 // CHECK: a5vm.set_loop1_stride_ubtoout %[[LOOP_STRIDE]], %[[LOOP_STRIDE]]
 // CHECK: a5vm.set_loop2_stride_ubtoout %[[LOOP_STRIDE]], %[[LOOP_STRIDE]]
 // CHECK: a5vm.copy_ubuf_to_gm %{{.*}}, %{{.*}}, %[[ROW_I64]], %[[COL_I64]], %[[ZERO_I64]], %[[NBURST]], %[[LEN_BURST]], %[[ZERO_I64]], %[[STRIDE_BYTES]], %[[STRIDE_BYTES]]
 // CHECK-SAME: layout = "nd"
+// CHECK-SAME: : !pto.ptr<f32, ub>, !pto.ptr<i8, gm>
 // CHECK-NOT: valid_rows =
 // CHECK-NOT: valid_cols =
 // CHECK-HIVM-LABEL: define dso_local void @copy_dynamic_transfer_operands
 // CHECK-HIVM: call void @llvm.hivm.SET.LOOP2.STRIDE.OUTTOUB
 // CHECK-HIVM: call void @llvm.hivm.SET.LOOP1.STRIDE.OUTTOUB
 // CHECK-HIVM: call void @llvm.hivm.SET.LOOP.SIZE.OUTTOUB
-// CHECK-HIVM: call void @llvm.hivm.MOV.OUT.TO.UB.ALIGN.V2.f32.DV
+// CHECK-HIVM: call void @llvm.hivm.MOV.OUT.TO.UB.ALIGN.V2.u32.DV
 // CHECK-HIVM: call void @llvm.hivm.SET.LOOP.SIZE.UBTOOUT
 // CHECK-HIVM: call void @llvm.hivm.SET.LOOP1.STRIDE.UBTOOUT
 // CHECK-HIVM: call void @llvm.hivm.SET.LOOP2.STRIDE.UBTOOUT

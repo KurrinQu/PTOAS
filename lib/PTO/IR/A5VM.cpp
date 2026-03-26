@@ -9,7 +9,6 @@
 #include "PTO/IR/A5VM.h"
 #include "PTO/IR/PTO.h"
 
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectImplementation.h"
@@ -147,12 +146,12 @@ enum class MemoryRole {
 static MemoryRole classifyMemoryRole(Type type) {
   auto memrefType = dyn_cast<BaseMemRefType>(type);
   if (!memrefType) {
-    if (auto ptrType = dyn_cast<LLVM::LLVMPointerType>(type)) {
-      switch (ptrType.getAddressSpace()) {
-      case static_cast<unsigned>(pto::AddressSpace::GM):
-      case static_cast<unsigned>(pto::AddressSpace::Zero):
+    if (auto ptrType = dyn_cast<pto::PtrType>(type)) {
+      switch (ptrType.getMemorySpace().getAddressSpace()) {
+      case pto::AddressSpace::GM:
+      case pto::AddressSpace::Zero:
         return MemoryRole::GM;
-      case static_cast<unsigned>(pto::AddressSpace::VEC):
+      case pto::AddressSpace::VEC:
         return MemoryRole::UB;
       default:
         return MemoryRole::Other;
@@ -193,7 +192,7 @@ static MemoryRole classifyMemoryRole(Type type) {
 }
 
 static bool isBufferLike(Type type) {
-  return isa<BaseMemRefType, LLVM::LLVMPointerType>(type);
+  return isa<BaseMemRefType, pto::PtrType>(type);
 }
 
 static LogicalResult verifySyncToken(Operation *op, StringAttr token,

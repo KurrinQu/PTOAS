@@ -140,9 +140,9 @@ static llvm::cl::opt<std::string> ptoBackend(
     llvm::cl::value_desc("emitc|a5vm"),
     llvm::cl::init("emitc"));
 
-static llvm::cl::opt<bool> a5vmPrintIR(
-    "a5vm-print-ir",
-    llvm::cl::desc("Print post-pass A5VM backend IR to stderr"),
+static llvm::cl::opt<bool> emitA5VM(
+    "emit-a5vm",
+    llvm::cl::desc("Write final post-pass A5VM IR to -o"),
     llvm::cl::init(false));
 
 static llvm::cl::opt<std::string> a5vmLoweringStrategy(
@@ -150,11 +150,6 @@ static llvm::cl::opt<std::string> a5vmLoweringStrategy(
     llvm::cl::desc("A5VM vector lowering strategy: post-update or no-post-update"),
     llvm::cl::value_desc("post-update|no-post-update"),
     llvm::cl::init("post-update"));
-
-static llvm::cl::opt<bool> dumpA5VMIR(
-    "dump-a5vm-ir",
-    llvm::cl::desc("Print post-pass A5VM backend IR to stderr"),
-    llvm::cl::init(false));
 
 static llvm::cl::opt<bool> ptoPrintSeamIR(
     "pto-print-seam-ir",
@@ -299,20 +294,6 @@ static void addBackendLoweringPasses(OpPassManager &pm,
   }
   pm.addPass(emitc::createFormExpressionsPass());
   pm.addPass(mlir::createCSEPass());
-}
-
-static void printA5VMIROpSummary(ModuleOp module, llvm::raw_ostream &os) {
-  for (func::FuncOp func : module.getOps<func::FuncOp>()) {
-    for (Operation &op : func.getBody().front().getOperations()) {
-      os << "A5VM IR op: " << op.getName().getStringRef() << "\n";
-      for (Region &region : op.getRegions()) {
-        for (Block &block : region) {
-          for (Operation &nested : block.getOperations())
-            os << "A5VM IR op: " << nested.getName().getStringRef() << "\n";
-        }
-      }
-    }
-  }
 }
 
 static LogicalResult emitSharedPreBackendSeamIR(ModuleOp module,
@@ -879,9 +860,17 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  if (emitA5VM &&
+      (a5vmEmitHIVMText || a5vmEmitHIVMOfficialLLVM ||
+       a5vmEmitHIVMOfficialBitcode)) {
+    llvm::errs() << "Error: --emit-a5vm cannot be used together with HIVM "
+                    "emission flags.\n";
+    return 1;
+  }
+
   if (effectiveBackend != PTOBackend::A5VM &&
       (a5vmEmitHIVMText || a5vmEmitHIVMOfficialLLVM ||
-       a5vmEmitHIVMOfficialBitcode || a5vmPrintIR || dumpA5VMIR ||
+       a5vmEmitHIVMOfficialBitcode || emitA5VM ||
        a5vmPrintIntrinsics || a5vmAllowUnresolved ||
        !a5vmUnresolvedReport.empty() || !hivmUnresolvedReport.empty())) {
     llvm::errs() << "Error: A5VM-specific flags require "
@@ -1054,14 +1043,8 @@ int main(int argc, char **argv) {
   }
 
   if (effectiveBackend == PTOBackend::A5VM) {
-    if (a5vmPrintIR || dumpA5VMIR) {
-      printA5VMIROpSummary(*module, llvm::errs());
-      module->print(llvm::errs());
-      llvm::errs() << "\n";
-    }
-
-    if (!a5vmEmitHIVMText && !a5vmEmitHIVMOfficialLLVM &&
-        !a5vmEmitHIVMOfficialBitcode) {
+    if (emitA5VM || (!a5vmEmitHIVMText && !a5vmEmitHIVMOfficialLLVM &&
+                     !a5vmEmitHIVMOfficialBitcode)) {
       module->print(outputFile.os());
       outputFile.os() << "\n";
       outputFile.keep();
@@ -1069,7 +1052,7 @@ int main(int argc, char **argv) {
     }
 
     pto::A5VMEmissionOptions options;
-    options.dumpA5VMIR = a5vmPrintIR || dumpA5VMIR;
+    options.dumpA5VMIR = false;
     options.printIntrinsicSelections = a5vmPrintIntrinsics;
     options.allowUnresolved = a5vmAllowUnresolved;
     options.unresolvedReportPath =

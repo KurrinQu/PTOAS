@@ -328,6 +328,11 @@ private:
     if (auto ptrType = dyn_cast<LLVM::LLVMPointerType>(type))
       return llvm::PointerType::get(llvmContext, ptrType.getAddressSpace());
 
+    if (auto ptrType = dyn_cast<pto::PtrType>(type))
+      return llvm::PointerType::get(
+          llvmContext,
+          static_cast<unsigned>(ptrType.getMemorySpace().getAddressSpace()));
+
     if (auto memrefType = dyn_cast<BaseMemRefType>(type)) {
       unsigned addressSpace = 0;
       Attribute memorySpace = memrefType.getMemorySpace();
@@ -468,8 +473,15 @@ private:
       return builder.CreatePtrToInt(input, dstType);
     if (input->getType()->isIntegerTy() && dstType->isPointerTy())
       return builder.CreateIntToPtr(input, dstType);
-    if (input->getType()->isPointerTy() && dstType->isPointerTy())
+    if (input->getType()->isPointerTy() && dstType->isPointerTy()) {
+      auto *srcPtrType = dyn_cast<llvm::PointerType>(input->getType());
+      auto *dstPtrType = dyn_cast<llvm::PointerType>(dstType);
+      if (!srcPtrType || !dstPtrType)
+        return nullptr;
+      if (srcPtrType->getAddressSpace() == dstPtrType->getAddressSpace())
+        return builder.CreateBitCast(input, dstType);
       return builder.CreateAddrSpaceCast(input, dstType);
+    }
     if (input->getType()->isIntegerTy() && dstType->isIntegerTy()) {
       unsigned srcWidth = input->getType()->getIntegerBitWidth();
       unsigned dstWidth = dstType->getIntegerBitWidth();
@@ -1098,6 +1110,76 @@ private:
       if (!result)
         return failure();
       bind(intToPtr.getRes(), result);
+      return success();
+    }
+
+    if (auto bitcast = dyn_cast<LLVM::BitcastOp>(op)) {
+      llvm::Value *input = lookup(bitcast.getArg());
+      llvm::Value *result = emitCastLike(input, bitcast.getType());
+      if (!result)
+        return failure();
+      bind(bitcast.getRes(), result);
+      return success();
+    }
+
+    if (auto cast = dyn_cast<UnrealizedConversionCastOp>(op)) {
+      if (cast->getNumOperands() != 1 || cast->getNumResults() != 1) {
+        diagOS << "A5VM emission failed: unsupported unrealized cast arity\n";
+        return failure();
+      }
+      llvm::Value *input = lookup(cast.getInputs().front());
+      llvm::Type *resultType = convertType(cast.getResults().front().getType());
+      if (!input || !resultType) {
+        diagOS << "A5VM emission failed: unsupported unrealized cast types\n";
+        return failure();
+      }
+      if (input->getType() == resultType) {
+        bind(cast.getResults().front(), input);
+        return success();
+      }
+      llvm::Value *result =
+          emitCastLike(input, cast.getResults().front().getType());
+      if (!result)
+        return failure();
+      bind(cast.getResults().front(), result);
+      return success();
+    }
+
+    if (auto addPtr = dyn_cast<pto::AddPtrOp>(op)) {
+      llvm::Value *base = lookup(addPtr.getPtr());
+      llvm::Value *offset = lookup(addPtr.getOffset());
+      if (!base || !offset) {
+        diagOS << "A5VM emission failed: unresolved addptr operands\n";
+        return failure();
+      }
+      llvm::Value *offsetI64 = castIntegerLikeToI64(offset);
+      if (!offsetI64) {
+        diagOS << "A5VM emission failed: unsupported addptr offset type\n";
+        return failure();
+      }
+      auto ptrType = dyn_cast<pto::PtrType>(addPtr.getResult().getType());
+      if (!ptrType) {
+        diagOS << "A5VM emission failed: addptr result must be !pto.ptr\n";
+        return failure();
+      }
+      bind(addPtr.getResult(),
+           builder.CreateGEP(convertScalarType(ptrType.getElementType()), base,
+                             offsetI64, "addptr"));
+      return success();
+    }
+
+    if (auto castPtr = dyn_cast<pto::CastPtrOp>(op)) {
+      llvm::Value *input = lookup(castPtr.getInput());
+      if (!input) {
+        diagOS << "A5VM emission failed: unresolved castptr operand\n";
+        return failure();
+      }
+      llvm::Value *result = emitCastLike(input, castPtr.getResult().getType());
+      if (!result) {
+        diagOS << "A5VM emission failed: unsupported castptr types\n";
+        return failure();
+      }
+      bind(castPtr.getResult(), result);
       return success();
     }
 

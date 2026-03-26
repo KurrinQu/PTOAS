@@ -1,11 +1,11 @@
-// RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm --a5vm-print-ir %s -o /dev/null 2>&1 | FileCheck %s
+// RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm --emit-a5vm %s -o - 2>/dev/null | FileCheck %s
 
 // CHECK-LABEL: func.func @pto_backend_a5vm_wiring
-// CHECK: A5VM IR op: a5vm.copy_gm_to_ubuf
-// CHECK: A5VM IR op: a5vm.vlds
-// CHECK: A5VM IR op: a5vm.vabs
-// CHECK: A5VM IR op: a5vm.vsts
-// CHECK: A5VM IR op: a5vm.copy_ubuf_to_gm
+// CHECK: a5vm.copy_gm_to_ubuf
+// CHECK: a5vm.vlds
+// CHECK: a5vm.vabs
+// CHECK: a5vm.vsts
+// CHECK: a5vm.copy_ubuf_to_gm
 // CHECK-NOT: emitc.call_opaque
 module {
   func.func @pto_backend_a5vm_wiring(%src: !pto.ptr<f32>, %dst: !pto.ptr<f32>) {

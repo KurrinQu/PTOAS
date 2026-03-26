@@ -493,8 +493,20 @@ Value adjustPointerByElemOffset(Value ptr, Value elemOffsetI64, int64_t elemByte
     Value elemBytesValue = rewriter.create<arith::ConstantIntOp>(loc, elemBytes, 64);
     byteOffset = createI64Mul(offset, elemBytesValue, rewriter, loc);
   }
-  return rewriter.create<LLVM::GEPOp>(loc, ptr.getType(), rewriter.getI8Type(),
-                                      ptr, ValueRange{byteOffset});
+  if (auto ptrType = dyn_cast<PtrType>(ptr.getType())) {
+    auto bytePtrType = PtrType::get(rewriter.getContext(), rewriter.getI8Type(),
+                                    ptrType.getMemorySpace());
+    Value bytePtr = ptrType == bytePtrType
+                        ? ptr
+                        : rewriter.create<CastPtrOp>(loc, bytePtrType, ptr).getResult();
+    Value byteOffsetIndex =
+        byteOffset.getType().isIndex()
+            ? byteOffset
+            : rewriter.create<arith::IndexCastUIOp>(loc, rewriter.getIndexType(),
+                                                    byteOffset);
+    return rewriter.create<AddPtrOp>(loc, bytePtrType, bytePtr, byteOffsetIndex);
+  }
+  return {};
 }
 
 LogicalResult buildVecNdLoadPlan(ArrayRef<OpFoldResult> shape,
@@ -976,6 +988,8 @@ Attribute getMemorySpace(Value value) {
     return tileType.getMemorySpace();
   if (auto memrefType = dyn_cast<MemRefType>(type))
     return memrefType.getMemorySpace();
+  if (auto ptrType = dyn_cast<PtrType>(type))
+    return ptrType.getMemorySpace();
   return {};
 }
 
@@ -1399,12 +1413,14 @@ Attribute getGmMemorySpace(MLIRContext *context) {
   return AddressSpaceAttr::get(context, AddressSpace::GM);
 }
 
-unsigned getLLVMAddressSpace(Attribute memorySpace) {
+AddressSpaceAttr getNormalizedPtrMemorySpace(Attribute memorySpace,
+                                             MLIRContext *context) {
   if (auto addrSpace = dyn_cast_or_null<AddressSpaceAttr>(memorySpace))
-    return static_cast<unsigned>(addrSpace.getAddressSpace());
+    return addrSpace;
   if (auto intAttr = dyn_cast_or_null<IntegerAttr>(memorySpace))
-    return static_cast<unsigned>(intAttr.getInt());
-  return static_cast<unsigned>(AddressSpace::GM);
+    return AddressSpaceAttr::get(context,
+                                 static_cast<AddressSpace>(intAttr.getInt()));
+  return AddressSpaceAttr::get(context, AddressSpace::GM);
 }
 
 Value materializeMemRefView(Value value, ArrayRef<int64_t> shape, Type elementType,
@@ -1439,6 +1455,13 @@ Value materializeBufferPointer(Value value, Type elementType,
   if (!value)
     return {};
 
+  auto ptrMemorySpace =
+      getNormalizedPtrMemorySpace(memorySpace, rewriter.getContext());
+  auto ptrType = PtrType::get(rewriter.getContext(), elementType, ptrMemorySpace);
+
+  if (value.getType() == ptrType)
+    return value;
+
   if (auto bind = value.getDefiningOp<BindTileOp>())
     return materializeBufferPointer(bind.getSource(), elementType, memorySpace,
                                     rewriter, loc);
@@ -1446,48 +1469,15 @@ Value materializeBufferPointer(Value value, Type elementType,
   if (auto cast = value.getDefiningOp<PointerCastOp>()) {
     if (cast.getAddrs().empty())
       return {};
-    auto ptrType =
-        LLVM::LLVMPointerType::get(rewriter.getContext(),
-                                   getLLVMAddressSpace(memorySpace));
-    return rewriter.create<LLVM::IntToPtrOp>(loc, ptrType, cast.getAddrs().front());
+    return rewriter.create<CastPtrOp>(loc, ptrType, cast.getAddrs().front())
+        .getResult();
   }
 
   Value memrefValue = materializeTileBufferView(value, rewriter, loc);
   auto memrefType = dyn_cast_or_null<MemRefType>(memrefValue.getType());
   if (!memrefValue || !memrefType)
     return {};
-
-  unsigned llvmAddressSpace = getLLVMAddressSpace(
-      memrefType.getMemorySpace() ? memrefType.getMemorySpace() : memorySpace);
-  auto canonicalMemRefType = MemRefType::get(
-      memrefType.getShape(), memrefType.getElementType(), memrefType.getLayout(),
-      rewriter.getI64IntegerAttr(llvmAddressSpace));
-  if (memrefValue.getType() != canonicalMemRefType)
-    memrefValue = rewriter.create<memref::MemorySpaceCastOp>(loc,
-                                                             canonicalMemRefType,
-                                                             memrefValue);
-
-  LLVMTypeConverter typeConverter(rewriter.getContext());
-  Type llvmDescriptorType = typeConverter.convertType(canonicalMemRefType);
-  if (!llvmDescriptorType)
-    return {};
-
-  Value descriptor =
-      rewriter
-          .create<UnrealizedConversionCastOp>(loc, TypeRange{llvmDescriptorType},
-                                              memrefValue)
-          .getResult(0);
-  MemRefDescriptor memrefDescriptor(descriptor);
-  Value alignedPtr = memrefDescriptor.alignedPtr(rewriter, loc);
-  if (!alignedPtr)
-    return {};
-
-  auto ptrType = dyn_cast<LLVM::LLVMPointerType>(alignedPtr.getType());
-  if (!ptrType)
-    return {};
-  if (ptrType.getAddressSpace() != getLLVMAddressSpace(memorySpace))
-    return {};
-  return alignedPtr;
+  return rewriter.create<CastPtrOp>(loc, ptrType, memrefValue).getResult();
 }
 
 Value offsetBufferPointer(Value basePtr, Type elementType, Value elementOffset,
@@ -1495,12 +1485,16 @@ Value offsetBufferPointer(Value basePtr, Type elementType, Value elementOffset,
   if (!basePtr)
     return {};
 
-  Value offsetI64 = elementOffset.getType().isIndex()
-                        ? rewriter.create<arith::IndexCastUIOp>(
-                              loc, rewriter.getI64Type(), elementOffset)
-                        : elementOffset;
-  return rewriter.create<LLVM::GEPOp>(loc, basePtr.getType(), elementType, basePtr,
-                                      ValueRange{offsetI64});
+  if (auto ptrType = dyn_cast<PtrType>(basePtr.getType())) {
+    Value offsetIndex =
+        elementOffset.getType().isIndex()
+            ? elementOffset
+            : rewriter.create<arith::IndexCastUIOp>(loc,
+                                                    rewriter.getIndexType(),
+                                                    elementOffset);
+    return rewriter.create<AddPtrOp>(loc, ptrType, basePtr, offsetIndex);
+  }
+  return {};
 }
 
 Value buildPackedCountI64(PatternRewriter &rewriter, Location loc,
@@ -5090,11 +5084,7 @@ LogicalResult lowerTCI(TCIOp op, PatternRewriter &rewriter) {
       op.getDescending()
           ? rewriter.create<arith::SubIOp>(op.getLoc(), op.getS(), ivAsElem).getResult()
           : rewriter.create<arith::AddIOp>(op.getLoc(), op.getS(), ivAsElem).getResult();
-  Value ivI64 = rewriter.create<arith::IndexCastUIOp>(op.getLoc(), rewriter.getI64Type(), iv);
-  Value elemPtr =
-      adjustPointerByElemOffset(dstBuffer, ivI64, getElementByteSize(elementType),
-                                rewriter, op.getLoc());
-  rewriter.create<LLVM::StoreOp>(op.getLoc(), stored, elemPtr);
+  rewriter.create<pto::StoreScalarOp>(op.getLoc(), dstBuffer, iv, stored);
   return success();
 }
 

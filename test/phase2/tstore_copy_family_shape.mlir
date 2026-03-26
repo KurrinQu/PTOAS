@@ -1,4 +1,4 @@
-// RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm --a5vm-print-ir %s -o /dev/null 2>&1 | FileCheck %s
+// RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm --emit-a5vm %s -o - 2>/dev/null | FileCheck %s
 
 // CHECK-LABEL: func.func @tstore_copy_family_shape
 // CHECK: %[[ZERO_I64:.*]] = arith.constant 0 : i64
@@ -15,6 +15,7 @@
 // CHECK: a5vm.set_loop2_stride_ubtoout %[[LOOP_STRIDE]], %[[LOOP_STRIDE]]
 // CHECK: a5vm.copy_ubuf_to_gm %{{.*}}, %{{.*}}, %[[VALID]], %[[VALID]], %[[ZERO_I64]], %[[NBURST]], %[[LEN_BURST]], %[[ZERO_I64]], %[[STRIDE_BYTES]], %[[STRIDE_BYTES]]
 // CHECK-SAME: layout = "nd"
+// CHECK-SAME: : !pto.ptr<f32, ub>, !pto.ptr<i8, gm>
 // CHECK-NOT: g_shape =
 // CHECK-NOT: g_strides =
 // CHECK-NOT: dst_strides =

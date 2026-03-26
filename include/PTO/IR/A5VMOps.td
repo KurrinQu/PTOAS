@@ -22,8 +22,8 @@ def A5VM_AlignTypeConstraint : Type<CPred<"::llvm::isa<::mlir::a5vm::AlignType>(
                                     "A5VM align type">;
 
 def A5VM_BufferType : Type<
-  CPred<"::llvm::isa<::mlir::LLVM::LLVMPointerType>($_self)">,
-  "LLVM pointer type">;
+  CPred<"::llvm::isa<::mlir::pto::PtrType>($_self)">,
+  "pointer-like buffer type">;
 
 class A5VM_Op<string mnemonic, list<Trait> traits = []>
     : Op<A5VM_Dialect, mnemonic, traits>;
