@@ -10,7 +10,6 @@ Operations that convert between data types (float/int, narrowing/widening).
 ## `pto.vcvt`
 
 - **syntax:** `%result = pto.vcvt %input {round_mode = "ROUND_MODE", sat = "SAT_MODE", part = "PART_MODE"} : !pto.vreg<NxT0> -> !pto.vreg<MxT1>`
-- **CCE:** `__builtin_cce_vcvt*`, `__builtin_cce_vcvtfi_*`, `__builtin_cce_vcvtif_*`, `__builtin_cce_vcvtff_*`
 - **semantics:** Type conversion between float/int types with rounding control.
 
 ```c
@@ -87,7 +86,6 @@ For conversions that change width (e.g., f32→f16), use even/odd parts and comb
 ## `pto.vtrc`
 
 - **syntax:** `%result = pto.vtrc %input, "ROUND_MODE" : !pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vtrc_*`
 - **semantics:** Truncate/round float to integer-valued float (stays in float type).
 
 ```c

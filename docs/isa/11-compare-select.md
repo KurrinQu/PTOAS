@@ -12,7 +12,6 @@ Operations that compare vectors and conditionally select elements.
 ### `pto.vcmp`
 
 - **syntax:** `%result = pto.vcmp %src0, %src1, %seed, "CMP_MODE" : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.mask`
-- **CCE:** `__builtin_cce_vcmp_<op>_*_z`
 - **semantics:** Element-wise comparison, output predicate mask.
 
 ```c
@@ -44,7 +43,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vcmps`
 
 - **syntax:** `%result = pto.vcmps %src, %scalar, %seed, "CMP_MODE" : !pto.vreg<NxT>, T, !pto.mask -> !pto.mask`
-- **CCE:** `__builtin_cce_vcmps_<op>_*_z`
 - **semantics:** Compare vector against scalar.
 
 ```c
@@ -67,7 +65,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vsel`
 
 - **syntax:** `%result = pto.vsel %src0, %src1, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vsel_*`
 - **semantics:** Per-lane select based on mask.
 
 ```c
@@ -87,7 +84,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vselr`
 
 - **syntax:** `%result = pto.vselr %src0, %src1 : !pto.vreg<NxT>, !pto.vreg<NxI> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vselr_*`
 - **semantics:** Select with reversed mask semantics.
 
 ```c

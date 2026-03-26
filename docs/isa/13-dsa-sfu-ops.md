@@ -12,7 +12,6 @@ Fused operations, special functions, and UB-to-UB operations that leverage hardw
 ### `pto.vlrelu`
 
 - **syntax:** `%result = pto.vlrelu %input, %alpha : !pto.vreg<NxT>, T -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vlrelu_*`
 - **A5 types:** f16, f32
 - **semantics:** Leaky ReLU with scalar alpha.
 
@@ -127,7 +126,6 @@ for (int i = 0; i < 128; i++)
 ### `pto.vmull`
 
 - **syntax:** `%low, %high = pto.vmull %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>, !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vmull_*`
 - **A5 types:** i32/u32 (native 32×32→64 widening multiply)
 - **semantics:** Widening multiply with high/low results.
 
@@ -144,7 +142,6 @@ for (int i = 0; i < 64; i++) {
 ### `pto.vmula`
 
 - **syntax:** `%result = pto.vmula %acc, %lhs, %rhs, %mask {mode = "MODE"} : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vmula_*_m`
 - **semantics:** Multiply-accumulate with mode control.
 
 ```c
@@ -164,7 +161,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vci`
 
 - **syntax:** `%result = pto.vci %index {order = "ORDER"} : integer -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vci_*`
 - **semantics:** Generate lane index vector.
 
 ```c
@@ -180,7 +176,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vtranspose`
 
-- **syntax:** `pto.vtranspose %dest, %src, %config : !llvm.ptr<6>, !llvm.ptr<6>, i64`
+- **syntax:** `pto.vtranspose %dest, %src, %config : !pto.ptr<T, ub>, !pto.ptr<T, ub>, i64`
 - **semantics:** UB-to-UB transpose operation (not vreg-to-vreg).
 
 **Note:** This operates on UB memory directly, not on vector registers.
@@ -191,15 +187,14 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vsort32`
 
-- **syntax:** `pto.vsort32 %dest, %src, %config : !llvm.ptr<6>, !llvm.ptr<6>, i64`
+- **syntax:** `pto.vsort32 %dest, %src, %config : !pto.ptr<T, ub>, !pto.ptr<T, ub>, i64`
 - **semantics:** Sort 32 elements in UB.
 
 ---
 
 ### `pto.vmrgsort`
 
-- **syntax:** `pto.vmrgsort4 %dest, %src0, %src1, %src2, %src3, %count, %config : !llvm.ptr<6>, !llvm.ptr<6> x4, i64, i64`
-- **CCE:** `__builtin_cce_vmrgsort4_*`
+- **syntax:** `pto.vmrgsort4 %dest, %src0, %src1, %src2, %src3, %count, %config : !pto.ptr<T, ub>, !pto.ptr<T, ub> x4, i64, i64`
 - **semantics:** Merge-sort 4 pre-sorted input vectors.
 
 ---
@@ -208,7 +203,7 @@ for (int i = 0; i < N; i++)
 
 ```mlir
 // Softmax with fused expdiff
-%max_broadcast = pto.vlds %ub_max[%c0] {dist = "BRC_B32"} : !llvm.ptr<6> -> !pto.vreg<64xf32>
+%max_broadcast = pto.vlds %ub_max[%c0] {dist = "BRC_B32"} : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
 %exp_stable = pto.vexpdiff %logits, %max_broadcast : !pto.vreg<64xf32>, !pto.vreg<64xf32> -> !pto.vreg<64xf32>
 
 // Leaky ReLU activation

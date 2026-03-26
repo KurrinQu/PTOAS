@@ -12,7 +12,6 @@ Element-wise operations that take one vector input and produce one vector output
 ### `pto.vabs`
 
 - **syntax:** `%result = pto.vabs %input : !pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vabs_*`
 - **A5 types:** i8-i32, f16, f32
 
 ```c
@@ -25,7 +24,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vneg`
 
 - **syntax:** `%result = pto.vneg %input : !pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vneg_*`
 - **A5 types:** i8-i32, f16, f32
 
 ```c
@@ -40,7 +38,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vexp`
 
 - **syntax:** `%result = pto.vexp %input : !pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vexp_*`
 - **A5 types:** f16, f32
 
 ```c
@@ -53,7 +50,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vln`
 
 - **syntax:** `%result = pto.vln %input : !pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vln_*`
 - **A5 types:** f16, f32
 
 ```c
@@ -66,7 +62,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vsqrt`
 
 - **syntax:** `%result = pto.vsqrt %input : !pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vsqrt_*`
 - **A5 types:** f16, f32
 
 ```c
@@ -79,7 +74,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vrsqrt`
 
 - **syntax:** `%result = pto.vrsqrt %input : !pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vrsqrt_*`
 - **A5 types:** f16, f32
 
 ```c
@@ -92,7 +86,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vrec`
 
 - **syntax:** `%result = pto.vrec %input : !pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vrec_*`
 - **A5 types:** f16, f32
 
 ```c
@@ -107,7 +100,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vrelu`
 
 - **syntax:** `%result = pto.vrelu %input : !pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vrelu_*`
 - **A5 types:** f16, f32
 
 ```c
@@ -122,7 +114,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vnot`
 
 - **syntax:** `%result = pto.vnot %input : !pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vnot_*`
 - **A5 types:** all integer types
 
 ```c
@@ -135,7 +126,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vbcnt`
 
 - **syntax:** `%result = pto.vbcnt %input : !pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vbcnt_*`
 - **A5 types:** all integer types
 
 ```c
@@ -148,7 +138,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vcls`
 
 - **syntax:** `%result = pto.vcls %input : !pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vcls_*`
 - **A5 types:** all integer types
 
 ```c

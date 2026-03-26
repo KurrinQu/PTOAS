@@ -12,7 +12,6 @@ Operations that combine a vector with a scalar value, applying the scalar to eve
 ### `pto.vadds`
 
 - **syntax:** `%result = pto.vadds %input, %scalar : !pto.vreg<NxT>, T -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vadds_*`
 
 ```c
 for (int i = 0; i < N; i++)
@@ -24,7 +23,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vsubs`
 
 - **syntax:** `%result = pto.vsubs %input, %scalar : !pto.vreg<NxT>, T -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vsubs_*`
 
 ```c
 for (int i = 0; i < N; i++)
@@ -36,7 +34,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vmuls`
 
 - **syntax:** `%result = pto.vmuls %input, %scalar : !pto.vreg<NxT>, T -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vmuls_*`
 
 ```c
 for (int i = 0; i < N; i++)
@@ -48,7 +45,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vmaxs`
 
 - **syntax:** `%result = pto.vmaxs %input, %scalar : !pto.vreg<NxT>, T -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vmaxs_*`
 
 ```c
 for (int i = 0; i < N; i++)
@@ -60,7 +56,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vmins`
 
 - **syntax:** `%result = pto.vmins %input, %scalar : !pto.vreg<NxT>, T -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vmins_*`
 
 ```c
 for (int i = 0; i < N; i++)
@@ -74,7 +69,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vands`
 
 - **syntax:** `%result = pto.vands %input, %scalar : !pto.vreg<NxT>, T -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vands_*`
 
 ```c
 for (int i = 0; i < N; i++)
@@ -86,7 +80,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vors`
 
 - **syntax:** `%result = pto.vors %input, %scalar : !pto.vreg<NxT>, T -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vors_*`
 
 ```c
 for (int i = 0; i < N; i++)
@@ -98,7 +91,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vxors`
 
 - **syntax:** `%result = pto.vxors %input, %scalar : !pto.vreg<NxT>, T -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vxors_*`
 
 ```c
 for (int i = 0; i < N; i++)
@@ -112,7 +104,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vshls`
 
 - **syntax:** `%result = pto.vshls %input, %scalar : !pto.vreg<NxT>, T -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vshls_*`
 
 ```c
 for (int i = 0; i < N; i++)
@@ -124,7 +115,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vshrs`
 
 - **syntax:** `%result = pto.vshrs %input, %scalar : !pto.vreg<NxT>, T -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vshrs_*`
 
 ```c
 for (int i = 0; i < N; i++)
@@ -138,7 +128,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vaddcs`
 
 - **syntax:** `%result, %carry = pto.vaddcs %lhs, %rhs, %carry_in, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask, !pto.mask -> !pto.vreg<NxT>, !pto.mask`
-- **CCE:** `__builtin_cce_vaddcs_*`
 - **semantics:** Add with carry-in and carry-out.
 
 ```c
@@ -154,7 +143,6 @@ for (int i = 0; i < N; i++) {
 ### `pto.vsubcs`
 
 - **syntax:** `%result, %borrow = pto.vsubcs %lhs, %rhs, %borrow_in, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask, !pto.mask -> !pto.vreg<NxT>, !pto.mask`
-- **CCE:** `__builtin_cce_vsubcs_*`
 - **semantics:** Subtract with borrow-in and borrow-out.
 
 ```c

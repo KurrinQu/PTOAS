@@ -6,7 +6,7 @@
 
 The upstream MLIR `arith` dialect defines primitive arithmetic, comparison, select, and cast operations over signless integer, index, floating-point, and boolean-compatible scalar values. In VPTO programs, the full scalar operation surface of `arith` is supported. These ops are used around PTO instructions to build constants, compute offsets and loop bounds, perform general scalar math, derive valid-shape metadata, and form predicates for `scf` control flow.
 
-These ops are part of the supported VPTO source surface, but they are not PTO ISA instructions and do not map to CCE builtins directly.
+These ops are part of the supported VPTO source surface, but they are not PTO ISA instructions.
 
 ---
 

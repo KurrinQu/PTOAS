@@ -12,7 +12,6 @@ Operations that rearrange data within or between vector registers without memory
 ### `pto.vintlv`
 
 - **syntax:** `%low, %high = pto.vintlv %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>, !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vintlv_*`
 - **semantics:** Interleave elements from two sources.
 
 ```c
@@ -26,7 +25,6 @@ Operations that rearrange data within or between vector registers without memory
 ### `pto.vdintlv`
 
 - **syntax:** `%low, %high = pto.vdintlv %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>, !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vdintlv_*`
 - **semantics:** Deinterleave elements into even/odd.
 
 ```c
@@ -119,7 +117,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vselr`
 
 - **syntax:** `%result = pto.vselr %src0, %src1 : !pto.vreg<NxT>, !pto.vreg<NxI> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vselr_*`
 - **semantics:** Register select with reversed mask semantics.
 
 ```c

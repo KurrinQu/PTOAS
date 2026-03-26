@@ -12,7 +12,6 @@ These ops create vectors from scalar values and manipulate predicate registers.
 ### `pto.vbr`
 
 - **syntax:** `%result = pto.vbr %value : T -> !pto.vreg<NxT>`
-- **CCE:** broadcast/materialization family
 - **semantics:** Broadcast scalar to all vector lanes.
 
 ```c
@@ -30,7 +29,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vdup`
 
 - **syntax:** `%result = pto.vdup %input {position = "POSITION", mode = "MODE"} : T|!pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vdup_*`
 - **semantics:** Duplicate scalar or vector element to all lanes.
 
 ```c
@@ -43,7 +41,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vdupi`
 
 - **syntax:** `%result = pto.vdupi %imm : i32 -> !pto.vreg<NxT>`
-- **CCE:** immediate broadcast family
 - **semantics:** Broadcast immediate constant to all lanes.
 
 ```c
@@ -58,7 +55,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vpset_b8` / `pto.vpset_b16` / `pto.vpset_b32`
 
 - **syntax:** `%result = pto.vpset_b32 "PAT_*" : !pto.mask`
-- **CCE:** `__builtin_cce_pset_b8/b16/b32`
 - **semantics:** Generate predicate from pattern.
 
 **Patterns:**
@@ -87,7 +83,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vpge_b8` / `pto.vpge_b16` / `pto.vpge_b32`
 
 - **syntax:** `%result = pto.vpge_b32 "PAT_*" : !pto.mask`
-- **CCE:** `__builtin_cce_pge_b8/b16/b32`
 - **semantics:** Generate tail mask — first N lanes active.
 
 ```c
@@ -107,7 +102,6 @@ for (int i = 0; i < TOTAL_LANES; i++)
 ### `pto.vppack`
 
 - **syntax:** `%result = pto.vppack %input, "PART" : !pto.mask -> !pto.mask`
-- **CCE:** `ppack(...)`
 - **semantics:** Narrowing pack of predicate register.
 
 **Part tokens:** `LOWER`, `HIGHER`
@@ -117,7 +111,6 @@ for (int i = 0; i < TOTAL_LANES; i++)
 ### `pto.vpunpack`
 
 - **syntax:** `%result = pto.vpunpack %input, "PART" : !pto.mask -> !pto.mask`
-- **CCE:** `punpack(...)`
 - **semantics:** Widening unpack of predicate register.
 
 ---
@@ -163,7 +156,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vpnot`
 
 - **syntax:** `%result = pto.vpnot %input, %mask : !pto.mask, !pto.mask -> !pto.mask`
-- **CCE:** `pnot(...)`
 - **semantics:** Predicate bitwise NOT.
 
 ```c
@@ -176,7 +168,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vpsel`
 
 - **syntax:** `%result = pto.vpsel %src0, %src1, %sel : !pto.mask, !pto.mask, !pto.mask -> !pto.mask`
-- **CCE:** `psel(...)`
 - **semantics:** Predicate select (mux).
 
 ```c

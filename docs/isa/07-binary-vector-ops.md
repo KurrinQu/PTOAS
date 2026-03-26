@@ -12,7 +12,6 @@ Element-wise operations that take two vector inputs and produce one vector outpu
 ### `pto.vadd`
 
 - **syntax:** `%result = pto.vadd %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vadd_*`
 - **A5 types:** i8-i64, f16, bf16, f32
 
 ```c
@@ -25,7 +24,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vsub`
 
 - **syntax:** `%result = pto.vsub %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vsub_*`
 - **A5 types:** i8-i64, f16, bf16, f32
 
 ```c
@@ -38,7 +36,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vmul`
 
 - **syntax:** `%result = pto.vmul %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vmul_*`
 - **A5 types:** i16-i32, f16, bf16, f32 (**NOT** i8/u8)
 
 ```c
@@ -51,7 +48,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vdiv`
 
 - **syntax:** `%result = pto.vdiv %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vdiv_*`
 - **A5 types:** f16, f32 only (no integer division)
 
 ```c
@@ -64,7 +60,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vmax`
 
 - **syntax:** `%result = pto.vmax %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vmax_*`
 - **A5 types:** i8-i32, f16, bf16, f32
 
 ```c
@@ -77,7 +72,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vmin`
 
 - **syntax:** `%result = pto.vmin %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vmin_*`
 - **A5 types:** i8-i32, f16, bf16, f32
 
 ```c
@@ -92,7 +86,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vand`
 
 - **syntax:** `%result = pto.vand %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vand_*`
 - **A5 types:** all integer types
 
 ```c
@@ -105,7 +98,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vor`
 
 - **syntax:** `%result = pto.vor %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vor_*`
 - **A5 types:** all integer types
 
 ```c
@@ -118,7 +110,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vxor`
 
 - **syntax:** `%result = pto.vxor %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vxor_*`
 - **A5 types:** all integer types
 
 ```c
@@ -133,7 +124,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vshl`
 
 - **syntax:** `%result = pto.vshl %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vshl_*`
 - **A5 types:** all integer types
 
 ```c
@@ -146,7 +136,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vshr`
 
 - **syntax:** `%result = pto.vshr %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vshr_*`
 - **A5 types:** all integer types
 
 ```c
@@ -161,7 +150,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vaddc`
 
 - **syntax:** `%result, %carry = pto.vaddc %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>, !pto.mask`
-- **CCE:** `__builtin_cce_vaddc_*`
 - **semantics:** Add with carry output.
 
 ```c
@@ -177,7 +165,6 @@ for (int i = 0; i < N; i++) {
 ### `pto.vsubc`
 
 - **syntax:** `%result, %borrow = pto.vsubc %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>, !pto.mask`
-- **CCE:** `__builtin_cce_vsubc_*`
 - **semantics:** Subtract with borrow output.
 
 ```c

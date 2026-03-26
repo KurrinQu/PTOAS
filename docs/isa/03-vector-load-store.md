@@ -11,8 +11,7 @@ Vector loads move data from Unified Buffer (UB) to vector registers (`vreg`). Ve
 
 ### `pto.vlds`
 
-- **syntax:** `%result = pto.vlds %source[%offset] {dist = "DIST"} : !llvm.ptr<6> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vldsx1_*`
+- **syntax:** `%result = pto.vlds %source[%offset] {dist = "DIST"} : !pto.ptr<T, ub> -> !pto.vreg<NxT>`
 - **semantics:** Vector load with distribution mode.
 
 **Distribution modes:**
@@ -31,34 +30,32 @@ Vector loads move data from Unified Buffer (UB) to vector registers (`vreg`). Ve
 
 **Example — Contiguous load:**
 ```mlir
-%v = pto.vlds %ub[%offset] {dist = "NORM"} : !llvm.ptr<6> -> !pto.vreg<64xf32>
+%v = pto.vlds %ub[%offset] {dist = "NORM"} : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
 ```
 
 **Example — Broadcast scalar to all lanes:**
 ```mlir
-%v = pto.vlds %ub[%c0] {dist = "BRC_B32"} : !llvm.ptr<6> -> !pto.vreg<64xf32>
+%v = pto.vlds %ub[%c0] {dist = "BRC_B32"} : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
 ```
 
 ---
 
 ### `pto.vldas`
 
-- **syntax:** `%result = pto.vldas %source[%offset] : !llvm.ptr<6> -> !pto.align`
-- **CCE:** `__builtin_cce_vldas_*`
+- **syntax:** `%result = pto.vldas %source[%offset] : !pto.ptr<T, ub> -> !pto.align`
 - **semantics:** Prime alignment buffer for subsequent unaligned load.
 
 ---
 
 ### `pto.vldus`
 
-- **syntax:** `%result = pto.vldus %align, %source[%offset] : !pto.align, !llvm.ptr<6> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vldus_*`
+- **syntax:** `%result = pto.vldus %align, %source[%offset] : !pto.align, !pto.ptr<T, ub> -> !pto.vreg<NxT>`
 - **semantics:** Unaligned load using primed align state.
 
 **Unaligned load pattern:**
 ```mlir
-%align = pto.vldas %ub[%c0] : !llvm.ptr<6> -> !pto.align
-%vec = pto.vldus %align, %ub[%c64] : !pto.align, !llvm.ptr<6> -> !pto.vreg<64xf32>
+%align = pto.vldas %ub[%c0] : !pto.ptr<f32, ub> -> !pto.align
+%vec = pto.vldus %align, %ub[%c64] : !pto.align, !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
 ```
 
 ---
@@ -67,8 +64,7 @@ Vector loads move data from Unified Buffer (UB) to vector registers (`vreg`). Ve
 
 ### `pto.vldx2`
 
-- **syntax:** `%low, %high = pto.vldx2 %source[%offset], "DIST" : !llvm.ptr<6>, index -> !pto.vreg<NxT>, !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vldx2_*`
+- **syntax:** `%low, %high = pto.vldx2 %source[%offset], "DIST" : !pto.ptr<T, ub>, index -> !pto.vreg<NxT>, !pto.vreg<NxT>`
 - **semantics:** Dual load with deinterleave (AoS → SoA conversion).
 
 **Distribution modes:** `DINTLV_B8`, `DINTLV_B16`, `DINTLV_B32`, `BDINTLV`
@@ -83,7 +79,7 @@ for (int i = 0; i < 64; i++) {
 
 **Example — Load interleaved XY pairs into separate X/Y vectors:**
 ```mlir
-%x, %y = pto.vldx2 %ub[%offset], "DINTLV_B32" : !llvm.ptr<6>, index -> !pto.vreg<64xf32>, !pto.vreg<64xf32>
+%x, %y = pto.vldx2 %ub[%offset], "DINTLV_B32" : !pto.ptr<f32, ub>, index -> !pto.vreg<64xf32>, !pto.vreg<64xf32>
 ```
 
 ---
@@ -92,8 +88,7 @@ for (int i = 0; i < 64; i++) {
 
 ### `pto.vsld`
 
-- **syntax:** `%result = pto.vsld %source[%offset], "STRIDE" : !llvm.ptr<6> -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vsld_*`
+- **syntax:** `%result = pto.vsld %source[%offset], "STRIDE" : !pto.ptr<T, ub> -> !pto.vreg<NxT>`
 - **semantics:** Strided load with fixed stride pattern.
 
 **Stride modes:** `STRIDE_S3_B16`, `STRIDE_S4_B64`, `STRIDE_S8_B32`, `STRIDE_S2_B64`
@@ -102,8 +97,7 @@ for (int i = 0; i < 64; i++) {
 
 ### `pto.vsldb`
 
-- **syntax:** `%result = pto.vsldb %source, %offset, %mask : !llvm.ptr<6>, i32, !pto.mask -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vsldb_*`
+- **syntax:** `%result = pto.vsldb %source, %offset, %mask : !pto.ptr<T, ub>, i32, !pto.mask -> !pto.vreg<NxT>`
 - **semantics:** Block-strided load for 2D tile access.
 
 ---
@@ -112,8 +106,7 @@ for (int i = 0; i < 64; i++) {
 
 ### `pto.vgather2`
 
-- **syntax:** `%result = pto.vgather2 %source, %offsets, %active_lanes : !llvm.ptr<6>, !pto.vreg<NxI>, index -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vgather2_*`
+- **syntax:** `%result = pto.vgather2 %source, %offsets, %active_lanes : !pto.ptr<T, ub>, !pto.vreg<NxI>, index -> !pto.vreg<NxT>`
 - **semantics:** Indexed gather from UB.
 
 ```c
@@ -125,8 +118,7 @@ for (int i = 0; i < active_lanes; i++)
 
 ### `pto.vgatherb`
 
-- **syntax:** `%result = pto.vgatherb %source, %offsets, %active_lanes : !llvm.ptr<6>, !pto.vreg<NxI>, index -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vgatherb_*`
+- **syntax:** `%result = pto.vgatherb %source, %offsets, %active_lanes : !pto.ptr<T, ub>, !pto.vreg<NxI>, index -> !pto.vreg<NxT>`
 - **semantics:** Byte-granularity indexed gather from UB.
 
 ```c
@@ -138,8 +130,7 @@ for (int i = 0; i < active_lanes; i++)
 
 ### `pto.vgather2_bc`
 
-- **syntax:** `%result = pto.vgather2_bc %source, %offsets, %mask : !llvm.ptr<6>, !pto.vreg<NxI>, !pto.mask -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vgather2_bc_*`
+- **syntax:** `%result = pto.vgather2_bc %source, %offsets, %mask : !pto.ptr<T, ub>, !pto.vreg<NxI>, !pto.mask -> !pto.vreg<NxT>`
 - **semantics:** Gather with broadcast, conditioned by mask.
 
 ---
@@ -148,8 +139,7 @@ for (int i = 0; i < active_lanes; i++)
 
 ### `pto.vsts`
 
-- **syntax:** `pto.vsts %value, %dest[%offset] {dist = "DIST"} : !pto.vreg<NxT>, !llvm.ptr<6>`
-- **CCE:** `__builtin_cce_vstsx1_*`
+- **syntax:** `pto.vsts %value, %dest[%offset] {dist = "DIST"} : !pto.vreg<NxT>, !pto.ptr<T, ub>`
 - **semantics:** Vector store with distribution mode.
 
 **Distribution modes:**
@@ -163,14 +153,14 @@ for (int i = 0; i < active_lanes; i++)
 
 **Example — Contiguous store:**
 ```mlir
-pto.vsts %v, %ub[%offset] {dist = "NORM_B32"} : !pto.vreg<64xf32>, !llvm.ptr<6>
+pto.vsts %v, %ub[%offset] {dist = "NORM_B32"} : !pto.vreg<64xf32>, !pto.ptr<f32, ub>
 ```
 
 ---
 
 ### `pto.vsts_pred`
 
-- **syntax:** `pto.vsts_pred %value, %dest[%offset], %active_lanes {dist = "DIST"} : !pto.vreg<NxT>, !llvm.ptr<6>, index`
+- **syntax:** `pto.vsts_pred %value, %dest[%offset], %active_lanes {dist = "DIST"} : !pto.vreg<NxT>, !pto.ptr<T, ub>, index`
 - **semantics:** Predicated vector store.
 
 ---
@@ -179,8 +169,7 @@ pto.vsts %v, %ub[%offset] {dist = "NORM_B32"} : !pto.vreg<64xf32>, !llvm.ptr<6>
 
 ### `pto.vstx2`
 
-- **syntax:** `pto.vstx2 %low, %high, %dest[%offset], "DIST", %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !llvm.ptr<6>, index, !pto.mask`
-- **CCE:** `__builtin_cce_vstx2_*`
+- **syntax:** `pto.vstx2 %low, %high, %dest[%offset], "DIST", %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.ptr<T, ub>, index, !pto.mask`
 - **semantics:** Dual interleaved store (SoA → AoS conversion).
 
 **Distribution modes:** `INTLV_B8`, `INTLV_B16`, `INTLV_B32`
@@ -199,16 +188,14 @@ for (int i = 0; i < 64; i++) {
 
 ### `pto.vsst`
 
-- **syntax:** `pto.vsst %value, %dest[%offset], "STRIDE" : !pto.vreg<NxT>, !llvm.ptr<6>`
-- **CCE:** `__builtin_cce_vsst_*`
+- **syntax:** `pto.vsst %value, %dest[%offset], "STRIDE" : !pto.vreg<NxT>, !pto.ptr<T, ub>`
 - **semantics:** Strided store with fixed stride pattern.
 
 ---
 
 ### `pto.vsstb`
 
-- **syntax:** `pto.vsstb %value, %dest, %offset, %mask : !pto.vreg<NxT>, !llvm.ptr<6>, i32, !pto.mask`
-- **CCE:** `__builtin_cce_vsstb_*`
+- **syntax:** `pto.vsstb %value, %dest, %offset, %mask : !pto.vreg<NxT>, !pto.ptr<T, ub>, i32, !pto.mask`
 - **semantics:** Block-strided store for 2D tile access.
 
 ---
@@ -217,8 +204,7 @@ for (int i = 0; i < 64; i++) {
 
 ### `pto.vscatter`
 
-- **syntax:** `pto.vscatter %value, %dest, %offsets, %active_lanes : !pto.vreg<NxT>, !llvm.ptr<6>, !pto.vreg<NxI>, index`
-- **CCE:** `__builtin_cce_vscatter_*`
+- **syntax:** `pto.vscatter %value, %dest, %offsets, %active_lanes : !pto.vreg<NxT>, !pto.ptr<T, ub>, !pto.vreg<NxI>, index`
 - **semantics:** Indexed scatter to UB.
 
 ```c
@@ -232,36 +218,32 @@ for (int i = 0; i < active_lanes; i++)
 
 ### `pto.vsta`
 
-- **syntax:** `pto.vsta %value, %dest[%offset] : !pto.align, !llvm.ptr<6>, index`
-- **CCE:** `__builtin_cce_vsta_*`
+- **syntax:** `pto.vsta %value, %dest[%offset] : !pto.align, !pto.ptr<T, ub>, index`
 - **semantics:** Flush alignment state to memory.
 
 ---
 
 ### `pto.vstas`
 
-- **syntax:** `pto.vstas %value, %dest, %offset : !pto.align, !llvm.ptr<6>, i32`
-- **CCE:** `__builtin_cce_vstas_*`
+- **syntax:** `pto.vstas %value, %dest, %offset : !pto.align, !pto.ptr<T, ub>, i32`
 - **semantics:** Flush alignment state with scalar offset.
 
 ---
 
 ### `pto.vstar`
 
-- **syntax:** `pto.vstar %value, %dest : !pto.align, !llvm.ptr<6>`
-- **CCE:** `__builtin_cce_vstar_*`
+- **syntax:** `pto.vstar %value, %dest : !pto.align, !pto.ptr<T, ub>`
 - **semantics:** Flush remaining alignment state.
 
 ---
 
 ## Stateful Store Ops
 
-These ops make CCE reference-updated state explicit as SSA results.
+These ops make reference-updated state explicit as SSA results.
 
 ### `pto.vstu`
 
-- **syntax:** `%align_out, %offset_out = pto.vstu %align_in, %offset_in, %value, %base, "MODE" : !pto.align, index, !pto.vreg<NxT>, !llvm.ptr<6> -> !pto.align, index`
-- **CCE:** `__builtin_cce_vstu_*`
+- **syntax:** `%align_out, %offset_out = pto.vstu %align_in, %offset_in, %value, %base, "MODE" : !pto.align, index, !pto.vreg<NxT>, !pto.ptr<T, ub> -> !pto.align, index`
 - **semantics:** Unaligned store with align + offset state update.
 
 **Mode tokens:** `POST_UPDATE`, `NO_POST_UPDATE`
@@ -270,14 +252,12 @@ These ops make CCE reference-updated state explicit as SSA results.
 
 ### `pto.vstus`
 
-- **syntax:** `%align_out, %base_out = pto.vstus %align_in, %offset, %value, %base, "MODE" : !pto.align, i32, !pto.vreg<NxT>, !llvm.ptr<6> -> !pto.align, !llvm.ptr<6>`
-- **CCE:** `__builtin_cce_vstus_*`
+- **syntax:** `%align_out, %base_out = pto.vstus %align_in, %offset, %value, %base, "MODE" : !pto.align, i32, !pto.vreg<NxT>, !pto.ptr<T, ub> -> !pto.align, !pto.ptr<T, ub>`
 - **semantics:** Unaligned store with scalar offset and state update.
 
 ---
 
 ### `pto.vstur`
 
-- **syntax:** `%align_out = pto.vstur %align_in, %value, %base, "MODE" : !pto.align, !pto.vreg<NxT>, !llvm.ptr<6> -> !pto.align`
-- **CCE:** `__builtin_cce_vstur_*`
+- **syntax:** `%align_out = pto.vstur %align_in, %value, %base, "MODE" : !pto.align, !pto.vreg<NxT>, !pto.ptr<T, ub> -> !pto.align`
 - **semantics:** Unaligned store with residual flush and state update.
