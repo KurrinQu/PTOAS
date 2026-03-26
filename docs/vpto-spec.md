@@ -341,29 +341,14 @@ The mask is 256 bits in length, where each bit controls 1 byte of data. This mea
 The native hardware predication mode is **ZEROING** — inactive lanes produce zero:
 
 ```c
-dst[i] = mask[i] ? op(src0[i], src1[i]) : 0    // ZEROING mode (default)
+dst[i] = mask[i] ? op(src0[i], src1[i]) : 0    // ZEROING mode
 ```
 
-This is the default behavior for all predicated operations in VPTO IR.
-
-- producers:
-  `pto.vpset_b8`, `pto.vpset_b16`, `pto.vpset_b32`,
-  `pto.vpge_b8`, `pto.vpge_b16`, `pto.vpge_b32`,
-  `pto.vplds`, `pto.vpld`, `pto.vpldi`,
-  `pto.vcmp`, `pto.vcmps`
-- consumers:
-  `pto.vsel`,
-  `pto.vaddc`, `pto.vsubc`, `pto.vaddcs`, `pto.vsubcs`,
-  `pto.vpnot`, `pto.vpsel`,
-  `pto.vgather2_bc`,
-  `pto.vstx2`, `pto.vsstb`,
-  `pto.vpsts`, `pto.vpst`, `pto.vpsti`,
-  `pto.vpstu`,
-  `pto.vmula`
-
 ```mlir
-%mask = pto.vcmp %lhs, %rhs, %seed, "lt" : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask -> !pto.mask
-%out = pto.vsel %x, %y, %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
+// Predicated add: inactive lanes produce zero
+%mask = pto.vpset_b32 "PAT_VL32" : !pto.mask   // first 32 lanes active
+%result = pto.vadd %a, %b, %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
+// result[0..31] = a[0..31] + b[0..31], result[32..63] = 0
 ```
 
 #### `!pto.align`
