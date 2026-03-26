@@ -1534,6 +1534,15 @@ Value materializeBufferLikeAddress(Value value, Type elementType,
   return materializeBufferPointer(value, elementType, memorySpace, rewriter, loc);
 }
 
+Value materializeBufferBaseForStrategy(Value value, Type elementType,
+                                       Attribute memorySpace,
+                                       A5VMLoweringStrategy strategy,
+                                       PatternRewriter &rewriter, Location loc) {
+  if (strategy == A5VMLoweringStrategy::PostUpdate)
+    return materializeBufferPointer(value, elementType, memorySpace, rewriter, loc);
+  return materializeBufferLikeAddress(value, elementType, memorySpace, rewriter, loc);
+}
+
 Value offsetBufferPointer(Value basePtr, Type elementType, Value elementOffset,
                           PatternRewriter &rewriter, Location loc) {
   if (!basePtr)
@@ -2338,10 +2347,10 @@ LogicalResult buildRowReduceVecScope(StringRef family,
   if (!vecType)
     return emitError(loc) << "unsupported A5VM row-reduce element type";
 
-  Value srcBuffer = materializeBufferLikeAddress(src, contract.elementType,
-                                                 getMemorySpace(src), rewriter, loc);
-  Value dstBuffer = materializeBufferLikeAddress(dst, contract.elementType,
-                                                 getMemorySpace(dst), rewriter, loc);
+  Value srcBuffer = materializeBufferBaseForStrategy(
+      src, contract.elementType, getMemorySpace(src), strategy, rewriter, loc);
+  Value dstBuffer = materializeBufferBaseForStrategy(
+      dst, contract.elementType, getMemorySpace(dst), strategy, rewriter, loc);
   if (!srcBuffer || !dstBuffer)
     return emitError(loc) << "requires buffer-like tile buffers for row-reduce lowering";
 
@@ -2962,10 +2971,10 @@ LogicalResult buildUnaryVecScope(StringRef family,
   if (!vecType)
     return emitError(loc) << "unsupported A5VM unary element type";
 
-  Value srcBuffer = materializeBufferLikeAddress(src, contract.elementType,
-                                                 getMemorySpace(src), rewriter, loc);
-  Value dstBuffer = materializeBufferLikeAddress(dst, contract.elementType,
-                                                 getMemorySpace(dst), rewriter, loc);
+  Value srcBuffer = materializeBufferBaseForStrategy(
+      src, contract.elementType, getMemorySpace(src), strategy, rewriter, loc);
+  Value dstBuffer = materializeBufferBaseForStrategy(
+      dst, contract.elementType, getMemorySpace(dst), strategy, rewriter, loc);
   if (!srcBuffer || !dstBuffer)
     return emitError(loc) << "requires buffer-like tile buffers for unary lowering";
 
@@ -3152,12 +3161,12 @@ LogicalResult buildBinaryVecScope(StringRef family,
   if (!vecType)
     return emitError(loc) << "unsupported A5VM binary element type";
 
-  Value src0Buffer = materializeBufferLikeAddress(src0, contract.elementType,
-                                                  getMemorySpace(src0), rewriter, loc);
-  Value src1Buffer = materializeBufferLikeAddress(src1, contract.elementType,
-                                                  getMemorySpace(src1), rewriter, loc);
-  Value dstBuffer = materializeBufferLikeAddress(dst, contract.elementType,
-                                                 getMemorySpace(dst), rewriter, loc);
+  Value src0Buffer = materializeBufferBaseForStrategy(
+      src0, contract.elementType, getMemorySpace(src0), strategy, rewriter, loc);
+  Value src1Buffer = materializeBufferBaseForStrategy(
+      src1, contract.elementType, getMemorySpace(src1), strategy, rewriter, loc);
+  Value dstBuffer = materializeBufferBaseForStrategy(
+      dst, contract.elementType, getMemorySpace(dst), strategy, rewriter, loc);
   if (!src0Buffer || !src1Buffer || !dstBuffer)
     return emitError(loc) << "requires buffer-like tile buffers for binary lowering";
 
@@ -3391,7 +3400,10 @@ LogicalResult buildExpandScalarVecScope(const A5VMUnaryContract &contract,
 
   Value dstBuffer = materializeBufferLikeAddress(dst, contract.elementType,
                                                  getMemorySpace(dst), rewriter, loc);
-  if (!dstBuffer)
+  Value dstPointerBuffer = materializeBufferPointer(dst, contract.elementType,
+                                                    getMemorySpace(dst), rewriter,
+                                                    loc);
+  if (!dstBuffer || !dstPointerBuffer)
     return emitError(loc) << "requires a buffer-like tile buffer for expands lowering";
 
   Value validRowsValue = materializeIndexValue(contract.validRowsValue,
@@ -3434,7 +3446,7 @@ LogicalResult buildExpandScalarVecScope(const A5VMUnaryContract &contract,
         loc, rewriter.getI32Type(), totalElementsValue);
     auto chunkLoop = rewriter.create<scf::ForOp>(
         loc, c0, totalElementsValue, vectorStepValue,
-        ValueRange{dstBuffer, scalarInit});
+        ValueRange{dstPointerBuffer, scalarInit});
     rewriter.setInsertionPointToStart(chunkLoop.getBody());
     Value dstPtr = chunkLoop.getRegionIterArgs()[0];
     Value remaining = chunkLoop.getRegionIterArgs()[1];
@@ -3491,10 +3503,10 @@ LogicalResult buildScalarUnaryVecScope(StringRef family,
   if (!vecType)
     return emitError(loc) << "unsupported A5VM scalar-unary element type";
 
-  Value srcBuffer = materializeBufferLikeAddress(src, contract.elementType,
-                                                 getMemorySpace(src), rewriter, loc);
-  Value dstBuffer = materializeBufferLikeAddress(dst, contract.elementType,
-                                                 getMemorySpace(dst), rewriter, loc);
+  Value srcBuffer = materializeBufferBaseForStrategy(
+      src, contract.elementType, getMemorySpace(src), strategy, rewriter, loc);
+  Value dstBuffer = materializeBufferBaseForStrategy(
+      dst, contract.elementType, getMemorySpace(dst), strategy, rewriter, loc);
   if (!srcBuffer || !dstBuffer)
     return emitError(loc)
            << "requires buffer-like tile buffers for scalar-unary lowering";
@@ -3740,10 +3752,10 @@ LogicalResult buildScalarDivVecScope(const A5VMUnaryContract &contract,
   if (!vecType)
     return emitError(loc) << "unsupported A5VM divs element type";
 
-  Value srcBuffer = materializeBufferLikeAddress(src, contract.elementType,
-                                                 getMemorySpace(src), rewriter, loc);
-  Value dstBuffer = materializeBufferLikeAddress(dst, contract.elementType,
-                                                 getMemorySpace(dst), rewriter, loc);
+  Value srcBuffer = materializeBufferBaseForStrategy(
+      src, contract.elementType, getMemorySpace(src), strategy, rewriter, loc);
+  Value dstBuffer = materializeBufferBaseForStrategy(
+      dst, contract.elementType, getMemorySpace(dst), strategy, rewriter, loc);
   if (!srcBuffer || !dstBuffer)
     return emitError(loc)
            << "requires buffer-like tile buffers for divs lowering";
@@ -3942,10 +3954,10 @@ LogicalResult buildRowExpandVecScope(const A5VMExpandContract &contract,
   if (!vecType)
     return emitError(loc) << "unsupported A5VM rowexpand element type";
 
-  Value srcBuffer = materializeBufferLikeAddress(src, contract.elementType,
-                                                 getMemorySpace(src), rewriter, loc);
-  Value dstBuffer = materializeBufferLikeAddress(dst, contract.elementType,
-                                                 getMemorySpace(dst), rewriter, loc);
+  Value srcBuffer = materializeBufferBaseForStrategy(
+      src, contract.elementType, getMemorySpace(src), strategy, rewriter, loc);
+  Value dstBuffer = materializeBufferBaseForStrategy(
+      dst, contract.elementType, getMemorySpace(dst), strategy, rewriter, loc);
   if (!srcBuffer || !dstBuffer)
     return emitError(loc)
            << "requires buffer-like tile buffers for rowexpand lowering";
@@ -6824,10 +6836,14 @@ LogicalResult lowerTRowExpandBinaryLike(OpTy op, PatternRewriter &rewriter,
   Value expandBuffer = materializeBufferLikeAddress(expandSrc, elementType,
                                                     getMemorySpace(expandSrc), rewriter,
                                                     op.getLoc());
+  Value expandPointerBuffer = materializeBufferPointer(expandSrc, elementType,
+                                                       getMemorySpace(expandSrc),
+                                                       rewriter, op.getLoc());
   Value dstBuffer = materializeBufferLikeAddress(op.getDst(), elementType,
                                                  getMemorySpace(op.getDst()), rewriter,
                                                  op.getLoc());
-  if (!baseBuffer || !expandBuffer || !dstBuffer)
+  if (!baseBuffer || !expandBuffer || !dstBuffer ||
+      (expandIsColMajor && !expandPointerBuffer))
     return op.emitOpError() << family
                             << " lowering requires buffer-like tile buffers";
 
@@ -6875,7 +6891,7 @@ LogicalResult lowerTRowExpandBinaryLike(OpTy op, PatternRewriter &rewriter,
 
   Value expandVec;
   if (expandIsColMajor) {
-    Value expandBase = offsetBufferPointer(expandBuffer, elementType, expandRowOffset,
+    Value expandBase = offsetBufferPointer(expandPointerBuffer, elementType, expandRowOffset,
                                           rewriter, op.getLoc());
     auto alignType = a5vm::AlignType::get(rewriter.getContext());
     Value expandAlign =
@@ -7000,10 +7016,14 @@ LogicalResult lowerTRowExpandSub(TRowExpandSubOp op, PatternRewriter &rewriter) 
   Value expandBuffer = materializeBufferLikeAddress(expandSrc, elementType,
                                                     getMemorySpace(expandSrc), rewriter,
                                                     op.getLoc());
+  Value expandPointerBuffer = materializeBufferPointer(expandSrc, elementType,
+                                                       getMemorySpace(expandSrc),
+                                                       rewriter, op.getLoc());
   Value dstBuffer = materializeBufferLikeAddress(op.getDst(), elementType,
                                                  getMemorySpace(op.getDst()), rewriter,
                                                  op.getLoc());
-  if (!baseBuffer || !expandBuffer || !dstBuffer)
+  if (!baseBuffer || !expandBuffer || !dstBuffer ||
+      (expandIsColMajor && !expandPointerBuffer))
     return op.emitOpError("trowexpandsub lowering requires buffer-like tile buffers");
 
   int64_t dstRowStride = deriveStaticRowStride(op.getDst());
@@ -7050,7 +7070,7 @@ LogicalResult lowerTRowExpandSub(TRowExpandSubOp op, PatternRewriter &rewriter) 
                                             rewriter.getStringAttr("BLK"))
                       .getResult();
   } else {
-    Value expandBase = offsetBufferPointer(expandBuffer, elementType, expandRowOffset,
+    Value expandBase = offsetBufferPointer(expandPointerBuffer, elementType, expandRowOffset,
                                           rewriter, op.getLoc());
     auto alignType = a5vm::AlignType::get(rewriter.getContext());
     Value expandAlign =
