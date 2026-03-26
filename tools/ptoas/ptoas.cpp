@@ -8,6 +8,7 @@
 
 #include "PTO/IR/A5VM.h"
 #include "PTO/IR/PTO.h"
+#include "PTO/Transforms/A5VMLowering.h"
 #include "PTO/Transforms/A5VMTextEmitter.h"
 #include "PTO/Transforms/A5VMLLVMEmitter.h"
 #include "PTO/Transforms/Passes.h"

@@ -10,6 +10,7 @@
 
 #include "PTO/IR/A5VM.h"
 #include "PTO/IR/PTO.h"
+#include "PTO/Transforms/A5VMLowering.h"
 #include "PTO/Transforms/HIVMIntrinsicNaming.h"
 
 #include "mlir/Conversion/LLVMCommon/MemRefBuilder.h"
@@ -652,9 +653,9 @@ struct ConvertPtoAddPtrOp final : OpConversionPattern<pto::AddPtrOp> {
       offset = rewriter.create<arith::IndexCastUIOp>(op.getLoc(),
                                                      rewriter.getI64Type(), offset);
 
-    rewriter.replaceOpWithNewOp<LLVM::GEPOp>(op, llvmPtrType,
-                                             op.getPtr().getType().cast<pto::PtrType>().getElementType(),
-                                             adaptor.getPtr(), ValueRange{offset});
+    rewriter.replaceOpWithNewOp<LLVM::GEPOp>(
+        op, llvmPtrType, cast<pto::PtrType>(op.getPtr().getType()).getElementType(),
+        adaptor.getPtr(), ValueRange{offset});
     return success();
   }
 };
@@ -682,43 +683,9 @@ struct ConvertPtoCastPtrOp final : OpConversionPattern<pto::CastPtrOp> {
         rewriter.replaceOpWithNewOp<LLVM::IntToPtrOp>(op, llvmPtrType, input);
         return success();
       }
-      if (auto memRefType = dyn_cast<MemRefType>(inputType)) {
-        auto resultPtrType = cast<pto::PtrType>(op.getResult().getType());
-        unsigned llvmAddressSpace = static_cast<unsigned>(
-            resultPtrType.getMemorySpace().getAddressSpace());
-        auto canonicalMemRefType = MemRefType::get(
-            memRefType.getShape(), memRefType.getElementType(),
-            memRefType.getLayout(), rewriter.getI64IntegerAttr(llvmAddressSpace));
-        if (inputType != canonicalMemRefType)
-          input = rewriter.create<memref::MemorySpaceCastOp>(op.getLoc(),
-                                                             canonicalMemRefType,
-                                                             input);
-        LLVMTypeConverter llvmTypeConverter(rewriter.getContext());
-        Type llvmDescriptorType =
-            llvmTypeConverter.convertType(cast<MemRefType>(input.getType()));
-        if (!llvmDescriptorType)
-          return rewriter.notifyMatchFailure(op, "could not convert memref to LLVM descriptor");
-        Value descriptor =
-            rewriter
-                .create<UnrealizedConversionCastOp>(op.getLoc(),
-                                                    TypeRange{llvmDescriptorType},
-                                                    input)
-                .getResult(0);
-        MemRefDescriptor memrefDescriptor(descriptor);
-        Value alignedPtr = memrefDescriptor.alignedPtr(rewriter, op.getLoc());
-        auto alignedPtrType = dyn_cast_or_null<LLVM::LLVMPointerType>(alignedPtr.getType());
-        if (!alignedPtrType)
-          return rewriter.notifyMatchFailure(op, "expected LLVM pointer from memref descriptor");
-        if (alignedPtrType.getAddressSpace() == llvmPtrType.getAddressSpace()) {
-          rewriter.replaceOpWithNewOp<LLVM::BitcastOp>(op, llvmPtrType, alignedPtr);
-          return success();
-        }
-        rewriter.replaceOpWithNewOp<LLVM::AddrSpaceCastOp>(op, llvmPtrType, alignedPtr);
-        return success();
-      }
       auto sourcePtrType = dyn_cast<LLVM::LLVMPointerType>(inputType);
       if (!sourcePtrType)
-        return rewriter.notifyMatchFailure(op, "expected integer, memref, or LLVM pointer input");
+        return rewriter.notifyMatchFailure(op, "expected integer or LLVM pointer input");
       if (sourcePtrType.getAddressSpace() == llvmPtrType.getAddressSpace()) {
         rewriter.replaceOpWithNewOp<LLVM::BitcastOp>(op, llvmPtrType, input);
         return success();
@@ -878,12 +845,37 @@ static LogicalResult normalizePtoPtrsToLLVM(ModuleOp module, llvm::raw_ostream &
     return LLVM::LLVMPointerType::get(
         context, static_cast<unsigned>(type.getMemorySpace().getAddressSpace()));
   });
+  auto materializePtrCast = [](OpBuilder &builder, Type resultType,
+                               ValueRange inputs, Location loc) -> Value {
+    if (inputs.size() != 1)
+      return {};
+    return builder
+        .create<UnrealizedConversionCastOp>(loc, TypeRange{resultType}, inputs)
+        .getResult(0);
+  };
+  typeConverter.addSourceMaterialization(materializePtrCast);
+  typeConverter.addTargetMaterialization(materializePtrCast);
+  typeConverter.addArgumentMaterialization(materializePtrCast);
 
   ConversionTarget target(*context);
-  target.markUnknownOpDynamicallyLegal([](Operation *op) {
-    return !hasPtoPtrType(op->getOperandTypes()) && !hasPtoPtrType(op->getResultTypes());
-  });
   target.addLegalOp<ModuleOp>();
+  target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
+    return typeConverter.isSignatureLegal(op.getFunctionType()) &&
+           typeConverter.isLegal(&op.getBody());
+  });
+  target.addDynamicallyLegalOp<func::CallOp>(
+      [&](func::CallOp op) { return typeConverter.isLegal(op); });
+  target.addDynamicallyLegalOp<func::ReturnOp>(
+      [&](func::ReturnOp op) { return typeConverter.isLegal(op); });
+  target.addDynamicallyLegalOp<cf::BranchOp, cf::CondBranchOp>(
+      [&](Operation *op) {
+        return isLegalForBranchOpInterfaceTypeConversionPattern(op,
+                                                                typeConverter);
+      });
+  target.markUnknownOpDynamicallyLegal([&](Operation *op) {
+    return typeConverter.isLegal(op->getOperandTypes()) &&
+           typeConverter.isLegal(op->getResultTypes());
+  });
   target.addIllegalOp<pto::AddPtrOp, pto::CastPtrOp, pto::LoadScalarOp,
                       pto::StoreScalarOp>();
   target.addDynamicallyLegalOp<UnrealizedConversionCastOp>([](UnrealizedConversionCastOp op) {
@@ -893,15 +885,37 @@ static LogicalResult normalizePtoPtrsToLLVM(ModuleOp module, llvm::raw_ostream &
   RewritePatternSet patterns(context);
   scf::populateSCFStructuralTypeConversionsAndLegality(typeConverter, patterns,
                                                        target);
+  populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(patterns,
+                                                                 typeConverter);
+  populateCallOpTypeConversionPattern(patterns, typeConverter);
+  populateBranchOpInterfaceTypeConversionPattern(patterns, typeConverter);
+  populateReturnOpTypeConversionPattern(patterns, typeConverter);
   patterns.add<ConvertPtoAddPtrOp, ConvertPtoCastPtrOp, ConvertPtoLoadScalarOp,
                ConvertPtoStoreScalarOp, ConvertPtoUnrealizedCastOp>(
       typeConverter, context);
   patterns.add<ConvertPtoPtrCarrierOp>(typeConverter, context);
 
-  if (failed(applyFullConversion(module, target, std::move(patterns)))) {
+  if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
     diagOS << "A5VM LLVM emission failed: pto.ptr normalization failed\n";
     return failure();
   }
+
+  SmallVector<UnrealizedConversionCastOp> castsToFold;
+  module.walk([&](UnrealizedConversionCastOp castOp) {
+    if (castOp->getNumOperands() != 1 || castOp->getNumResults() != 1)
+      return;
+    if (!hasPtoPtrType(castOp->getOperandTypes()) &&
+        !hasPtoPtrType(castOp->getResultTypes()))
+      return;
+    Type convertedResultType = typeConverter.convertType(castOp.getResult(0).getType());
+    if (convertedResultType && convertedResultType == castOp.getOperand(0).getType())
+      castsToFold.push_back(castOp);
+  });
+  for (UnrealizedConversionCastOp castOp : castsToFold) {
+    castOp.getResult(0).replaceAllUsesWith(castOp.getOperand(0));
+    castOp.erase();
+  }
+
   return success();
 }
 
@@ -2352,7 +2366,9 @@ buildLLVMModuleFromA5VM(ModuleOp module, llvm::LLVMContext &llvmContext,
                         llvm::raw_ostream &diagOS) {
   OwningOpRef<ModuleOp> cloned(cast<ModuleOp>(module->clone()));
   auto vecScopeCounts = collectVecScopeLoopCounts(*cloned);
-  auto abiSpecs = collectFunctionABISpecs(*cloned);
+
+  if (failed(convertA5VMFunctionBoundariesToPtr(*cloned, &diagOS)))
+    return nullptr;
 
   if (failed(normalizePtoMemRefSpaces(*cloned, diagOS)))
     return nullptr;
@@ -2391,8 +2407,6 @@ buildLLVMModuleFromA5VM(ModuleOp module, llvm::LLVMContext &llvmContext,
   }
 
   if (failed(attachAIVectorScopeMetadata(*llvmModule, vecScopeCounts, diagOS)))
-    return nullptr;
-  if (failed(rewriteFunctionsToEmitCStyleABI(*llvmModule, abiSpecs, diagOS)))
     return nullptr;
   attachHIVMKernelAnnotations(*llvmModule);
   llvmModule->setModuleIdentifier("ptoas.hivm.official");

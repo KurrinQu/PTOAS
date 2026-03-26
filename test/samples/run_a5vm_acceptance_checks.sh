@@ -5,6 +5,7 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 PTOAS_BIN="${PTOAS_BIN:-${ROOT_DIR}/build/tools/ptoas/ptoas}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 OUT_DIR="${PTOAS_SAMPLE_ACCEPTANCE_OUT:-${ROOT_DIR}/build/test-sample-acceptance}"
+A5_SAMPLE_FLAGS=(--pto-arch a5 --pto-backend=a5vm --enable-insert-sync)
 
 require_pattern() {
   local pattern="$1"
@@ -79,19 +80,19 @@ rm -rf "${STRATEGY_OUT}"
 mkdir -p "${STRATEGY_OUT}"
 
 "${PYTHON_BIN}" "${ROOT_DIR}/test/samples/Abs/abs.py" > "${STRATEGY_OUT}/abs.pto"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --emit-a5vm \
   "${STRATEGY_OUT}/abs.pto" -o "${STRATEGY_OUT}/abs-post.a5vm" \
   >/dev/null 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --emit-a5vm \
   "${STRATEGY_OUT}/abs.pto" -o "${STRATEGY_OUT}/abs-nopost.a5vm" \
   >/dev/null 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/abs.pto" -o "${STRATEGY_OUT}/abs-post.ll"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/abs.pto" -o "${STRATEGY_OUT}/abs-nopost.ll"
@@ -109,19 +110,19 @@ require_no_pattern 'llvm\.hivm\.vldsx1\.post\.v64f32|llvm\.hivm\.vstsx1\.post\.v
   "Abs no-post-update LLVM still contains .post intrinsics"
 
 "${PYTHON_BIN}" "${ROOT_DIR}/test/samples/Div/div.py" > "${STRATEGY_OUT}/div.pto"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --emit-a5vm \
   "${STRATEGY_OUT}/div.pto" -o "${STRATEGY_OUT}/div-post.a5vm" \
   >/dev/null 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --emit-a5vm \
   "${STRATEGY_OUT}/div.pto" -o "${STRATEGY_OUT}/div-nopost.a5vm" \
   >/dev/null 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/div.pto" -o "${STRATEGY_OUT}/div-post.ll"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/div.pto" -o "${STRATEGY_OUT}/div-nopost.ll"
@@ -139,19 +140,19 @@ require_no_pattern 'llvm\.hivm\.vldsx1\.post\.v64f32|llvm\.hivm\.vstsx1\.post\.v
   "Div no-post-update LLVM still contains .post intrinsics"
 
 "${PYTHON_BIN}" "${ROOT_DIR}/test/samples/Rowexpand/rowexpand.py" > "${STRATEGY_OUT}/rowexpand.pto"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --emit-a5vm \
   "${STRATEGY_OUT}/rowexpand.pto" -o "${STRATEGY_OUT}/rowexpand-post.a5vm" \
   >/dev/null 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --emit-a5vm \
   "${STRATEGY_OUT}/rowexpand.pto" -o "${STRATEGY_OUT}/rowexpand-nopost.a5vm" \
   >/dev/null 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/rowexpand.pto" -o "${STRATEGY_OUT}/rowexpand-post.ll"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/rowexpand.pto" -o "${STRATEGY_OUT}/rowexpand-nopost.ll"
@@ -169,19 +170,19 @@ require_no_pattern 'llvm\.hivm\.vldsx1\.post\.v64f32|llvm\.hivm\.vstsx1\.post\.v
   "Rowexpand no-post-update LLVM still contains .post intrinsics"
 
 "${PYTHON_BIN}" "${ROOT_DIR}/test/samples/Adds/adds.py" > "${STRATEGY_OUT}/adds.pto"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --emit-a5vm \
   "${STRATEGY_OUT}/adds.pto" -o "${STRATEGY_OUT}/adds-post.a5vm" \
   >/dev/null 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --emit-a5vm \
   "${STRATEGY_OUT}/adds.pto" -o "${STRATEGY_OUT}/adds-nopost.a5vm" \
   >/dev/null 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/adds.pto" -o "${STRATEGY_OUT}/adds-post.ll"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/adds.pto" -o "${STRATEGY_OUT}/adds-nopost.ll"
@@ -201,19 +202,19 @@ require_no_pattern 'llvm\.hivm\.vldsx1\.post\.v64f32|llvm\.hivm\.vstsx1\.post\.v
   "Adds no-post-update LLVM still contains .post intrinsics"
 
 "${PYTHON_BIN}" "${ROOT_DIR}/test/samples/Maxs/maxs.py" > "${STRATEGY_OUT}/maxs.pto"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --emit-a5vm \
   "${STRATEGY_OUT}/maxs.pto" -o "${STRATEGY_OUT}/maxs-post.a5vm" \
   >/dev/null 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --emit-a5vm \
   "${STRATEGY_OUT}/maxs.pto" -o "${STRATEGY_OUT}/maxs-nopost.a5vm" \
   >/dev/null 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/maxs.pto" -o "${STRATEGY_OUT}/maxs-post.ll"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/maxs.pto" -o "${STRATEGY_OUT}/maxs-nopost.ll"
@@ -233,19 +234,19 @@ require_no_pattern 'llvm\.hivm\.vldsx1\.post\.v64f32|llvm\.hivm\.vstsx1\.post\.v
   "Maxs no-post-update LLVM still contains .post intrinsics"
 
 "${PYTHON_BIN}" "${ROOT_DIR}/test/samples/Mins/mins.py" > "${STRATEGY_OUT}/mins.pto"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --emit-a5vm \
   "${STRATEGY_OUT}/mins.pto" -o "${STRATEGY_OUT}/mins-post.a5vm" \
   >/dev/null 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --emit-a5vm \
   "${STRATEGY_OUT}/mins.pto" -o "${STRATEGY_OUT}/mins-nopost.a5vm" \
   >/dev/null 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/mins.pto" -o "${STRATEGY_OUT}/mins-post.ll"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/mins.pto" -o "${STRATEGY_OUT}/mins-nopost.ll"
@@ -265,19 +266,19 @@ require_no_pattern 'llvm\.hivm\.vldsx1\.post\.v64f32|llvm\.hivm\.vstsx1\.post\.v
   "Mins no-post-update LLVM still contains .post intrinsics"
 
 "${PYTHON_BIN}" "${ROOT_DIR}/test/samples/Lrelu/lrelu.py" > "${STRATEGY_OUT}/lrelu.pto"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --emit-a5vm \
   "${STRATEGY_OUT}/lrelu.pto" -o "${STRATEGY_OUT}/lrelu-post.a5vm" \
   >/dev/null 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --emit-a5vm \
   "${STRATEGY_OUT}/lrelu.pto" -o "${STRATEGY_OUT}/lrelu-nopost.a5vm" \
   >/dev/null 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/lrelu.pto" -o "${STRATEGY_OUT}/lrelu-post.ll"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/lrelu.pto" -o "${STRATEGY_OUT}/lrelu-nopost.ll"
@@ -297,19 +298,19 @@ require_no_pattern 'llvm\.hivm\.vldsx1\.post\.v64f32|llvm\.hivm\.vstsx1\.post\.v
   "Lrelu no-post-update LLVM still contains .post intrinsics"
 
 "${PYTHON_BIN}" "${ROOT_DIR}/test/samples/Muls/muls.py" > "${STRATEGY_OUT}/muls.pto"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --emit-a5vm \
   "${STRATEGY_OUT}/muls.pto" -o "${STRATEGY_OUT}/muls-post.a5vm" \
   >/dev/null 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --emit-a5vm \
   "${STRATEGY_OUT}/muls.pto" -o "${STRATEGY_OUT}/muls-nopost.a5vm" \
   >/dev/null 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/muls.pto" -o "${STRATEGY_OUT}/muls-post.ll"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/muls.pto" -o "${STRATEGY_OUT}/muls-nopost.ll"
@@ -327,19 +328,19 @@ require_no_pattern 'llvm\.hivm\.vldsx1\.post\.v64f32|llvm\.hivm\.vstsx1\.post\.v
   "Muls no-post-update LLVM still contains .post intrinsics"
 
 "${PYTHON_BIN}" "${ROOT_DIR}/test/samples/Divs/divs.py" > "${STRATEGY_OUT}/divs.pto"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --emit-a5vm \
   "${STRATEGY_OUT}/divs.pto" -o "${STRATEGY_OUT}/divs-post.a5vm" \
   >/dev/null 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --emit-a5vm \
   "${STRATEGY_OUT}/divs.pto" -o "${STRATEGY_OUT}/divs-nopost.a5vm" \
   >/dev/null 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/divs.pto" -o "${STRATEGY_OUT}/divs-post.ll"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/divs.pto" -o "${STRATEGY_OUT}/divs-nopost.ll"
@@ -603,7 +604,7 @@ SUBS_OUT="${OUT_DIR}/subs"
 rm -rf "${SUBS_OUT}"
 mkdir -p "${SUBS_OUT}"
 "${PYTHON_BIN}" "${ROOT_DIR}/test/samples/Subs/subs.py" > "${SUBS_OUT}/subs.pto"
-if "${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm --emit-a5vm \
+if "${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" --emit-a5vm \
     "${SUBS_OUT}/subs.pto" -o "${SUBS_OUT}/subs-pto.cpp" \
     > "${SUBS_OUT}/run.log" 2>&1; then
   echo "error: Subs sample unexpectedly compiled despite unresolved A5 baseline" >&2

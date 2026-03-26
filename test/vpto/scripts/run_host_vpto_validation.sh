@@ -160,6 +160,7 @@ build_host_stub() {
   local case_dir="$1"
   local device_obj="$2"
   local stub_obj="$3"
+  local module_id="$4"
   local host_target_args=(
     -triple "${HOST_TRIPLE}"
     -target-cpu "${HOST_TARGET_CPU}"
@@ -228,7 +229,7 @@ build_host_stub() {
     -mllvm -cce-aicore-addr-transform \
     -mllvm -cce-aicore-dcci-insert-for-scalar=false \
     -fcce-include-aibinary "${device_obj}" \
-    -fcce-device-module-id "${MODULE_ID}" \
+    -fcce-device-module-id "${module_id}" \
     -target-feature +outline-atomics \
     -faddrsig \
     -D__GCC_HAVE_DWARF2_CFI_ASM=1 \
@@ -242,11 +243,12 @@ link_kernel_so() {
   local launch_obj="$3"
   local repack_obj="$4"
   local repack_so="$5"
+  local module_id="$6"
 
   "${CCE_LD_BIN}" \
     "${LD_LLD_BIN}" \
     -x \
-    -cce-lite-bin-module-id "${MODULE_ID}" \
+    -cce-lite-bin-module-id "${module_id}" \
     -cce-aicore-arch="${AICORE_ARCH}" \
     -r \
     -o "${repack_obj}" \
@@ -299,6 +301,8 @@ build_one() {
   local case_name="$1"
   local case_dir="${CASES_ROOT}/${case_name}"
   local out_dir="${WORK_SPACE}/${case_name}"
+  local case_module_id
+  case_module_id="$(printf '%s' "${MODULE_ID}-${case_name}" | md5sum | cut -c1-16)"
   local llvm_ir="${out_dir}/${case_name}.ll"
   local device_obj="${out_dir}/${case_name}.o"
   local launch_obj="${out_dir}/launch.o"
@@ -331,10 +335,10 @@ build_one() {
 
   log "[$case_name] step 3/6: build launch object and host fatobj stub"
   build_launch_object "${case_dir}" "${launch_obj}"
-  build_host_stub "${case_dir}" "${device_obj}" "${host_stub_obj}"
+  build_host_stub "${case_dir}" "${device_obj}" "${host_stub_obj}" "${case_module_id}"
 
   log "[$case_name] step 4/6: link kernel shared library"
-  link_kernel_so "${case_name}" "${host_stub_obj}" "${launch_obj}" "${repack_obj}" "${repack_so}"
+  link_kernel_so "${case_name}" "${host_stub_obj}" "${launch_obj}" "${repack_obj}" "${repack_so}" "${case_module_id}"
 
   log "[$case_name] step 5/6: build host executable and golden"
   build_host_executable "${case_name}" "${case_dir}" "${out_dir}"

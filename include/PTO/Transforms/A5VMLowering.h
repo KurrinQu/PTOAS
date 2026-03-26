@@ -10,9 +10,11 @@
 #define MLIR_DIALECT_PTO_TRANSFORMS_A5VMLOWERING_H_
 
 #include "PTO/IR/PTO.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Support/LLVM.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace mlir {
 namespace pto {
@@ -241,6 +243,8 @@ LogicalResult lowerWaitFlag(WaitFlagOp op, PatternRewriter &rewriter);
 LogicalResult lowerBarrier(BarrierOp op, PatternRewriter &rewriter);
 LogicalResult lowerGetBuf(GetBufOp op, PatternRewriter &rewriter);
 LogicalResult lowerRlsBuf(RlsBufOp op, PatternRewriter &rewriter);
+LogicalResult convertA5VMFunctionBoundariesToPtr(
+    ModuleOp module, llvm::raw_ostream *diagOS = nullptr);
 
 } // namespace pto
 } // namespace mlir
