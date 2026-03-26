@@ -1,5 +1,5 @@
 module attributes {pto.target_arch = "a5"} {
-  func.func @rowsum_kernel_2d(%arg0: memref<?xf32>, %arg1: memref<?xf32>) {
+  func.func @rowmax_kernel_2d(%arg0: memref<?xf32>, %arg1: memref<?xf32>) {
     %c4096_i64 = arith.constant 4096 : i64
     %c0_i64 = arith.constant 0 : i64
     %c1 = arith.constant 1 : index
@@ -26,7 +26,7 @@ module attributes {pto.target_arch = "a5"} {
     %6 = llvm.inttoptr %c4096_i64 : i64 to !llvm.ptr<6>
     %c0 = arith.constant 0 : index
     %c64 = arith.constant 64 : index
-    %cst = arith.constant 0.000000e+00 : f32
+    %cst = arith.constant 0xFF800000 : f32
     scf.for %arg2 = %c0 to %c1 step %c1 {
       %12 = arith.index_castui %c1 : index to i32
       %mask, %scalar_out = a5vm.plt_b32 %12 : i32 -> !a5vm.mask, i32
@@ -39,8 +39,8 @@ module attributes {pto.target_arch = "a5"} {
         %c32_i32 = arith.constant 32 : i32
         %mask_2, %scalar_out_3 = a5vm.plt_b32 %c32_i32 : i32 -> !a5vm.mask, i32
         %result, %updated_source = a5vm.vlds_post %17[%c64] {dist = "NORM"} : !llvm.ptr<6> -> !a5vm.vec<64xf32>, !llvm.ptr<6>
-        %19 = a5vm.vcadd %result, %mask_2 {mode = "MODE_ZEROING"} : !a5vm.vec<64xf32>, !a5vm.mask -> !a5vm.vec<64xf32>
-        %20 = a5vm.vadd %18, %19 : !a5vm.vec<64xf32>, !a5vm.vec<64xf32> -> !a5vm.vec<64xf32>
+        %19 = a5vm.vcmax %result, %mask_2 {mode = "MODE_ZEROING"} : !a5vm.vec<64xf32>, !a5vm.mask -> !a5vm.vec<64xf32>
+        %20 = a5vm.vmax %18, %19 : !a5vm.vec<64xf32>, !a5vm.vec<64xf32> -> !a5vm.vec<64xf32>
         %21 = a5vm.vsts_post %20, %arg4[%c32], %mask {dist = "ONEPT_B32"} : !a5vm.vec<64xf32>, !llvm.ptr<6>, !a5vm.mask -> !llvm.ptr<6>
         scf.yield %21 : !llvm.ptr<6>
       }
@@ -61,3 +61,4 @@ module attributes {pto.target_arch = "a5"} {
     return
   }
 }
+
