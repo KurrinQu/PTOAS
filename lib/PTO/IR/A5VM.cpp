@@ -21,6 +21,8 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <optional>
+
 using namespace mlir;
 using namespace mlir::a5vm;
 
@@ -108,6 +110,12 @@ static bool isSupportedPostMode(StringRef mode) {
 
 static bool isSupportedVstuMode(StringRef mode) {
   return mode == "POST_UPDATE" || mode == "NO_POST_UPDATE";
+}
+
+static std::optional<StringRef> getOptionalPostModeAttr(Operation *op) {
+  if (auto mode = op->getAttrOfType<StringAttr>("mode"))
+    return mode.getValue();
+  return std::nullopt;
 }
 
 static unsigned getIntOrFloatBitWidth(Type type) {
@@ -570,28 +578,37 @@ void VldsOp::getEffects(
   effects.emplace_back(MemoryEffects::Read::get(), &getSourceMutable());
 }
 
-LogicalResult VldsOp::verify() {
-  if (!isBufferLike(getSource().getType()))
-    return emitOpError("requires a pointer-like source");
+template <typename LoadOp>
+static LogicalResult verifyVldsCommon(LoadOp op) {
+  if (!isBufferLike(op.getSource().getType()))
+    return op.emitOpError("requires a pointer-like source");
 
-  if (failed(verifyVecTypeLike(*this, getResult().getType(), "result type")))
+  if (failed(verifyVecTypeLike(op, op.getResult().getType(), "result type")))
     return failure();
 
-  MemoryRole sourceRole = classifyMemoryRole(getSource().getType());
+  MemoryRole sourceRole = classifyMemoryRole(op.getSource().getType());
   if (sourceRole == MemoryRole::GM)
-    return emitOpError("requires a UB-backed source");
+    return op.emitOpError("requires a UB-backed source");
 
-  if (getDistAttr()) {
-    StringRef dist = *getDist();
+  if (op.getDistAttr()) {
+    StringRef dist = *op.getDist();
     if (dist != "NORM" && dist != "BLK" && dist != "DINTLV_B32" &&
         dist != "UNPK_B16")
-      return emitOpError(
+      return op.emitOpError(
           "supports only NORM, BLK, DINTLV_B32, and UNPK_B16 distributions");
   }
 
   return success();
 }
 
+LogicalResult VldsOp::verify() {
+  if (failed(verifyVldsCommon(*this)))
+    return failure();
+  if (std::optional<StringRef> mode = getOptionalPostModeAttr(getOperation());
+      mode && !isSupportedPostMode(*mode))
+    return emitOpError("requires mode to be POST_UPDATE or NO_POST_UPDATE");
+  return success();
+}
 void VldsPostOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
@@ -599,27 +616,10 @@ void VldsPostOp::getEffects(
 }
 
 LogicalResult VldsPostOp::verify() {
-  if (!isBufferLike(getSource().getType()))
-    return emitOpError("requires a pointer-like source");
-
-  if (getNextSource().getType() != getSource().getType())
-    return emitOpError("requires next_source to match source type");
-
-  if (failed(verifyVecTypeLike(*this, getResult().getType(), "result type")))
+  if (failed(verifyVldsCommon(*this)))
     return failure();
-
-  MemoryRole sourceRole = classifyMemoryRole(getSource().getType());
-  if (sourceRole == MemoryRole::GM)
-    return emitOpError("requires a UB-backed source");
-
-  if (getDistAttr()) {
-    StringRef dist = *getDist();
-    if (dist != "NORM" && dist != "BLK" && dist != "DINTLV_B32" &&
-        dist != "UNPK_B16")
-      return emitOpError(
-          "supports only NORM, BLK, DINTLV_B32, and UNPK_B16 distributions");
-  }
-
+  if (getUpdatedSource().getType() != getSource().getType())
+    return emitOpError("requires updated source result to match source type");
   return success();
 }
 
@@ -1225,22 +1225,31 @@ void VstsOp::getEffects(
   effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
 }
 
-LogicalResult VstsOp::verify() {
-  if (failed(verifyVecTypeLike(*this, getValue().getType(), "value type")))
+template <typename StoreOp>
+static LogicalResult verifyVstsCommon(StoreOp op) {
+  if (failed(verifyVecTypeLike(op, op.getValue().getType(), "value type")))
     return failure();
-  if (failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")))
+  if (failed(verifyMaskTypeLike(op, op.getMask().getType(), "mask type")))
     return failure();
 
-  if (!isBufferLike(getDestination().getType()))
-    return emitOpError("requires a pointer-like destination");
+  if (!isBufferLike(op.getDestination().getType()))
+    return op.emitOpError("requires a pointer-like destination");
 
-  MemoryRole destinationRole = classifyMemoryRole(getDestination().getType());
+  MemoryRole destinationRole = classifyMemoryRole(op.getDestination().getType());
   if (destinationRole == MemoryRole::GM)
-    return emitOpError("requires a UB-backed destination");
+    return op.emitOpError("requires a UB-backed destination");
 
   return success();
 }
 
+LogicalResult VstsOp::verify() {
+  if (failed(verifyVstsCommon(*this)))
+    return failure();
+  if (std::optional<StringRef> mode = getOptionalPostModeAttr(getOperation());
+      mode && !isSupportedPostMode(*mode))
+    return emitOpError("requires mode to be POST_UPDATE or NO_POST_UPDATE");
+  return success();
+}
 void VstsPostOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
@@ -1249,20 +1258,11 @@ void VstsPostOp::getEffects(
 }
 
 LogicalResult VstsPostOp::verify() {
-  if (failed(verifyVecTypeLike(*this, getValue().getType(), "value type")))
+  if (failed(verifyVstsCommon(*this)))
     return failure();
-  if (failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")))
-    return failure();
-
-  if (!isBufferLike(getDestination().getType()))
-    return emitOpError("requires a pointer-like destination");
-  if (getNextDestination().getType() != getDestination().getType())
-    return emitOpError("requires next_destination to match destination type");
-
-  MemoryRole destinationRole = classifyMemoryRole(getDestination().getType());
-  if (destinationRole == MemoryRole::GM)
-    return emitOpError("requires a UB-backed destination");
-
+  if (getUpdatedDestination().getType() != getDestination().getType())
+    return emitOpError(
+        "requires updated destination result to match destination type");
   return success();
 }
 

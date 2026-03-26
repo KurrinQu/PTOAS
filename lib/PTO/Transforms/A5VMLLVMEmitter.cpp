@@ -51,6 +51,8 @@
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <optional>
+
 using namespace mlir;
 
 namespace mlir::pto {
@@ -731,8 +733,17 @@ static FailureOr<std::string> getConfirmedCallee(Operation *op) {
     auto lanes = getElementCountFromVectorLike(vlds.getResult().getType());
     if (vec.empty() || !lanes)
       return failure();
-    return "llvm.hivm.vldsx1.v" + std::to_string(*lanes) +
-           vec;
+    std::string name = "llvm.hivm.vldsx1";
+    name += ".v" + std::to_string(*lanes) + vec;
+    return name;
+  }
+  if (auto vldsPost = dyn_cast<a5vm::VldsPostOp>(op)) {
+    std::string vec =
+        getElementTypeFragment(getElementTypeFromVectorLike(vldsPost.getResult().getType()));
+    auto lanes = getElementCountFromVectorLike(vldsPost.getResult().getType());
+    if (vec.empty() || !lanes)
+      return failure();
+    return "llvm.hivm.vldsx1.post.v" + std::to_string(*lanes) + vec;
   }
   if (auto vldsPost = dyn_cast<a5vm::VldsPostOp>(op)) {
     std::string vec =
@@ -801,6 +812,38 @@ static FailureOr<std::string> getConfirmedCallee(Operation *op) {
       return failure();
     return "llvm.hivm.vmuls.v" + std::to_string(*lanes) + vec + ".x";
   }
+  if (auto binary = dyn_cast<a5vm::VaddsOp>(op)) {
+    std::string vec =
+        getElementTypeFragment(getElementTypeFromVectorLike(binary.getResult().getType()));
+    auto lanes = getElementCountFromVectorLike(binary.getResult().getType());
+    if (vec.empty() || !lanes)
+      return failure();
+    return "llvm.hivm.vadds.v" + std::to_string(*lanes) + vec + ".x";
+  }
+  if (auto binary = dyn_cast<a5vm::VmaxsOp>(op)) {
+    std::string vec =
+        getElementTypeFragment(getElementTypeFromVectorLike(binary.getResult().getType()));
+    auto lanes = getElementCountFromVectorLike(binary.getResult().getType());
+    if (vec.empty() || !lanes)
+      return failure();
+    return "llvm.hivm.vmaxs.v" + std::to_string(*lanes) + vec + ".x";
+  }
+  if (auto binary = dyn_cast<a5vm::VminsOp>(op)) {
+    std::string vec =
+        getElementTypeFragment(getElementTypeFromVectorLike(binary.getResult().getType()));
+    auto lanes = getElementCountFromVectorLike(binary.getResult().getType());
+    if (vec.empty() || !lanes)
+      return failure();
+    return "llvm.hivm.vmins.v" + std::to_string(*lanes) + vec + ".x";
+  }
+  if (auto binary = dyn_cast<a5vm::VlreluOp>(op)) {
+    std::string vec =
+        getElementTypeFragment(getElementTypeFromVectorLike(binary.getResult().getType()));
+    auto lanes = getElementCountFromVectorLike(binary.getResult().getType());
+    if (vec.empty() || !lanes)
+      return failure();
+    return "llvm.hivm.vlrelu.v" + std::to_string(*lanes) + vec + ".x";
+  }
   if (auto binary = dyn_cast<a5vm::VdivOp>(op)) {
     std::string vec =
         getElementTypeFragment(getElementTypeFromVectorLike(binary.getResult().getType()));
@@ -854,8 +897,17 @@ static FailureOr<std::string> getConfirmedCallee(Operation *op) {
     auto lanes = getElementCountFromVectorLike(vsts.getValue().getType());
     if (vec.empty() || !lanes)
       return failure();
-    return "llvm.hivm.vstsx1.v" + std::to_string(*lanes) +
-           vec;
+    std::string name = "llvm.hivm.vstsx1";
+    name += ".v" + std::to_string(*lanes) + vec;
+    return name;
+  }
+  if (auto vstsPost = dyn_cast<a5vm::VstsPostOp>(op)) {
+    std::string vec = getElementTypeFragment(
+        getElementTypeFromVectorLike(vstsPost.getValue().getType()));
+    auto lanes = getElementCountFromVectorLike(vstsPost.getValue().getType());
+    if (vec.empty() || !lanes)
+      return failure();
+    return "llvm.hivm.vstsx1.post.v" + std::to_string(*lanes) + vec;
   }
   if (auto vstsPost = dyn_cast<a5vm::VstsPostOp>(op)) {
     std::string vec =
@@ -1076,10 +1128,11 @@ static LogicalResult rewriteA5VMOp(Operation *op, ModuleOp module,
       return failure();
     }
     callArgs.push_back(*mask);
-  } else if (auto vmuls = dyn_cast<a5vm::VmulsOp>(op)) {
-    callArgs.push_back(vmuls.getInput());
-    callArgs.push_back(vmuls.getScalar());
-    auto laneCount = getElementCountFromVectorLike(vmuls.getResult().getType());
+  } else if (isa<a5vm::VmulsOp, a5vm::VaddsOp, a5vm::VmaxsOp, a5vm::VminsOp,
+                 a5vm::VlreluOp>(op)) {
+    callArgs.push_back(op->getOperand(0));
+    callArgs.push_back(op->getOperand(1));
+    auto laneCount = getElementCountFromVectorLike(op->getResult(0).getType());
     if (!laneCount) {
       diagOS << "A5VM LLVM emission failed: could not determine lane count for "
              << op->getName().getStringRef() << "\n";

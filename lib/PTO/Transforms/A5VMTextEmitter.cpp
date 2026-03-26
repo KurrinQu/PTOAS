@@ -932,8 +932,7 @@ private:
     bool skipGenericAttrs =
         isa<a5vm::CopyGmToUbufOp, a5vm::CopyUbufToGmOp, a5vm::SetFlagOp,
             a5vm::WaitFlagOp, a5vm::PipeBarrierOp, a5vm::PltB32Op,
-            a5vm::VldsOp, a5vm::VldsPostOp, a5vm::VstsOp,
-            a5vm::VstsPostOp>(op);
+            a5vm::VldsOp, a5vm::VldsPostOp, a5vm::VstsOp, a5vm::VstsPostOp>(op);
     for (NamedAttribute attr : op->getAttrs()) {
       if (skipGenericAttrs)
         continue;
@@ -954,7 +953,7 @@ private:
       resultType = llvm::StructType::get(llvmContext, {maskType, scalarOutType});
     } else if (auto vldsPost = dyn_cast<a5vm::VldsPostOp>(op)) {
       llvm::Type *vecType = convertType(vldsPost.getResult().getType());
-      llvm::Type *ptrType = convertType(vldsPost.getNextSource().getType());
+      llvm::Type *ptrType = convertType(vldsPost.getUpdatedSource().getType());
       if (!vecType || !ptrType) {
         diagOS << "A5VM emission failed: unsupported result type for "
                << op->getName().getStringRef() << "\n";
@@ -985,7 +984,7 @@ private:
       bind(plt.getScalarOut(), builder.CreateExtractValue(call, {1}));
     } else if (auto vldsPost = dyn_cast<a5vm::VldsPostOp>(op)) {
       bind(vldsPost.getResult(), builder.CreateExtractValue(call, {0}));
-      bind(vldsPost.getNextSource(), builder.CreateExtractValue(call, {1}));
+      bind(vldsPost.getUpdatedSource(), builder.CreateExtractValue(call, {1}));
     } else if (op->getNumResults() == 1) {
       bind(op->getResult(0), call);
     }

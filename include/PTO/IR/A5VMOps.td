@@ -192,15 +192,12 @@ def A5VM_VldsPostOp : A5VM_Op<"vlds_post", [
     OptionalAttr<StrAttr>:$dist
   );
 
-  let results = (outs
-    A5VM_VectorType:$result,
-    A5VM_BufferType:$next_source
-  );
+  let results = (outs A5VM_VectorType:$result, A5VM_BufferType:$updated_source);
 
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    $source `[` $offset `]` attr-dict `:` type($source) `->` type($result) `,` type($next_source)
+    $source `[` $offset `]` attr-dict `:` type($source) `->` type($result) `,` type($updated_source)
   }];
 }
 
@@ -906,12 +903,12 @@ def A5VM_VstsPostOp : A5VM_Op<"vsts_post", [
     A5VM_MaskTypeConstraint:$mask
   );
 
-  let results = (outs A5VM_BufferType:$next_destination);
+  let results = (outs A5VM_BufferType:$updated_destination);
 
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    $value `,` $destination `[` $offset `]` `,` $mask attr-dict `:` type($value) `,` type($destination) `,` type($mask) `->` type($next_destination)
+    $value `,` $destination `[` $offset `]` `,` $mask attr-dict `:` type($value) `,` type($destination) `,` type($mask) `->` type($updated_destination)
   }];
 }
 
