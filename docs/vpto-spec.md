@@ -300,23 +300,23 @@ result = ptr + offset;  // offset counted in elements, not bytes
 
 #### Pointer-Based Vector Access Example
 
-The following lowered-style fragment shows how typed PTO pointers flow through pointer construction, pointer arithmetic, structured control flow, and A5VM memory ops:
+The following lowered-style fragment shows how typed PTO pointers flow through pointer construction, pointer arithmetic, structured control flow, and PTO memory ops:
 
 ```mlir
 %0 = pto.castptr %c0 : i64 to !pto.ptr<f32, ub>
 %1 = pto.addptr %0, %c1024 : !pto.ptr<f32, ub> -> !pto.ptr<f32, ub>
 scf.for %arg2 = %c0 to %c1 step %c1 {
   %16 = scf.for %arg3 = %c0 to %11 step %c64 iter_args(%arg4 = %12) -> (i32) {
-    %mask, %scalar_out = a5vm.plt_b32 %arg4 : i32 -> !a5vm.mask, i32
-    %17 = a5vm.vlds %1[%arg3] : !pto.ptr<f32, ub> -> !a5vm.vec<64xf32>
-    %18 = a5vm.vabs %17, %mask {mode = "MODE_ZEROING"} : !a5vm.vec<64xf32>, !a5vm.mask -> !a5vm.vec<64xf32>
-    a5vm.vsts %18, %10[%arg3], %mask : !a5vm.vec<64xf32>, !pto.ptr<f32, ub>, !a5vm.mask
+    %mask, %scalar_out = pto.plt_b32 %arg4 : i32 -> !pto.mask, i32
+    %17 = pto.vlds %1[%arg3] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
+    %18 = pto.vabs %17, %mask {mode = "MODE_ZEROING"} : !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
+    pto.vsts %18, %10[%arg3], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask
     scf.yield %scalar_out : i32
   }
 } {llvm.loop.aivector_scope}
 ```
 
-In this pattern, `pto.castptr` materializes a typed UB pointer, `pto.addptr` shifts the base by 1024 `f32` elements, and the subsequent `[%arg3]` indexing on `a5vm.vlds` / `a5vm.vsts` applies an additional element offset relative to that base.
+In this pattern, `pto.castptr` materializes a typed UB pointer, `pto.addptr` shifts the base by 1024 `f32` elements, and the subsequent `[%arg3]` indexing on `pto.vlds` / `pto.vsts` applies an additional element offset relative to that base.
 
 ### Special Types
 
