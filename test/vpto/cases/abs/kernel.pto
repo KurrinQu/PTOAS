@@ -39,7 +39,7 @@ module attributes {pto.target_arch = "a5"} {
         %20:3 = scf.for %arg3 = %c0 to %12 step %c64 iter_args(%arg4 = %0, %arg5 = %11, %arg6 = %13) -> (!pto.ptr<f32, ub>, !pto.ptr<f32, ub>, i32) {
           %mask, %scalar_out = a5vm.plt_b32 %arg6 : i32 -> !a5vm.mask, i32
           %result, %updated_source = a5vm.vlds_post %arg4[%c64] : !pto.ptr<f32, ub> -> !a5vm.vec<64xf32>, !pto.ptr<f32, ub>
-          %21 = a5vm.vabs %result, %mask {mode = "MODE_ZEROING"} : !a5vm.vec<64xf32>, !a5vm.mask -> !a5vm.vec<64xf32>
+          %21 = a5vm.vabs %result, %mask : !a5vm.vec<64xf32>, !a5vm.mask -> !a5vm.vec<64xf32>
           %22 = a5vm.vsts_post %21, %arg5[%c64], %mask : !a5vm.vec<64xf32>, !pto.ptr<f32, ub>, !a5vm.mask -> !pto.ptr<f32, ub>
           scf.yield %updated_source, %22, %scalar_out : !pto.ptr<f32, ub>, !pto.ptr<f32, ub>, i32
         }
@@ -52,7 +52,7 @@ module attributes {pto.target_arch = "a5"} {
             %23 = arith.muli %arg4, %c64 : index
             %24 = arith.addi %21, %23 : index
             %25 = a5vm.vlds %0[%24] : !pto.ptr<f32, ub> -> !a5vm.vec<64xf32>
-            %26 = a5vm.vabs %25, %mask {mode = "MODE_ZEROING"} : !a5vm.vec<64xf32>, !a5vm.mask -> !a5vm.vec<64xf32>
+            %26 = a5vm.vabs %25, %mask : !a5vm.vec<64xf32>, !a5vm.mask -> !a5vm.vec<64xf32>
             a5vm.vsts %26, %11[%24], %mask : !a5vm.vec<64xf32>, !pto.ptr<f32, ub>, !a5vm.mask
             scf.yield %scalar_out : i32
           }

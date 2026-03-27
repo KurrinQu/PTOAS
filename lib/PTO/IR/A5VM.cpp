@@ -98,11 +98,6 @@ static bool isSupportedVstx2DistToken(StringRef dist) {
   return dist == "INTLV_B8" || dist == "INTLV_B16" || dist == "INTLV_B32";
 }
 
-static bool isSupportedPredicateMode(StringRef mode) {
-  return mode == "MODE_ZEROING" || mode == "MODE_UNKNOWN" ||
-         mode == "MODE_MERGING";
-}
-
 static bool isSupportedPostMode(StringRef mode) {
   return mode == "NO_POST_UPDATE" || mode == "POST_UPDATE";
 }
@@ -933,8 +928,6 @@ LogicalResult VabsOp::verify() {
     return failure();
   if (getInput().getType() != getResult().getType())
     return emitOpError("requires matching register vector shape");
-  if (getMode() && !isSupportedPredicateMode(*getMode()))
-    return emitOpError("requires supported predicate mode");
   return success();
 }
 
@@ -948,8 +941,6 @@ static LogicalResult verifyUnaryVecOp(UnaryOp op) {
     return failure();
   if (op.getInput().getType() != op.getResult().getType())
     return op.emitOpError("requires matching register vector shape");
-  if (op.getMode() && !isSupportedPredicateMode(*op.getMode()))
-    return op.emitOpError("requires supported predicate mode");
   return success();
 }
 
@@ -981,6 +972,8 @@ static LogicalResult verifyBinaryVecOp(BinaryOp op) {
   if (failed(verifyVecTypeLike(op, op.getLhs().getType(), "lhs type")))
     return failure();
   if (failed(verifyVecTypeLike(op, op.getRhs().getType(), "rhs type")))
+    return failure();
+  if (failed(verifyMaskTypeLike(op, op.getMask().getType(), "mask type")))
     return failure();
   if (failed(verifyVecTypeLike(op, op.getResult().getType(), "result type")))
     return failure();
@@ -1198,8 +1191,6 @@ LogicalResult VmulaOp::verify() {
       getAcc().getType() != getRhs().getType() ||
       getAcc().getType() != getResult().getType())
     return emitOpError("requires acc, lhs, rhs, and result to share one vector type");
-  if (getModeAttr() && !isSupportedPredicateMode(*getMode()))
-    return emitOpError("requires mode to be MODE_ZEROING, MODE_UNKNOWN, or MODE_MERGING");
   return success();
 }
 

@@ -42,7 +42,7 @@ module attributes {pto.target_arch = "a5"} {
         %18 = pto.addptr %7, %17 : <f32, ub> -> <f32, ub>
         %19 = a5vm.vldas %18 : !pto.ptr<f32, ub> -> !a5vm.align
         %result, %updated_align, %updated_source = a5vm.vldus %18, %19 : !pto.ptr<f32, ub>, !a5vm.align -> !a5vm.vec<64xf32>, !a5vm.align, !pto.ptr<f32, ub>
-        %20 = a5vm.vdup %result {mode = "MODE_ZEROING", position = "POS_LOWEST"} : !a5vm.vec<64xf32> -> !a5vm.vec<64xf32>
+        %20 = a5vm.vdup %result {position = "POS_LOWEST"} : !a5vm.vec<64xf32> -> !a5vm.vec<64xf32>
         scf.for %arg5 = %c0 to %c32 step %c64 {
           %21 = arith.subi %c32, %arg5 : index
           %22 = arith.cmpi slt, %21, %c64 : index
@@ -51,7 +51,7 @@ module attributes {pto.target_arch = "a5"} {
           %25 = arith.index_castui %23 : index to i32
           %mask, %scalar_out = a5vm.plt_b32 %25 : i32 -> !a5vm.mask, i32
           %26 = a5vm.vlds %0[%24] : !pto.ptr<f32, ub> -> !a5vm.vec<64xf32>
-          %27 = a5vm.vmul %26, %20 : !a5vm.vec<64xf32>, !a5vm.vec<64xf32> -> !a5vm.vec<64xf32>
+          %27 = a5vm.vmul %26, %20, %mask : !a5vm.vec<64xf32>, !a5vm.vec<64xf32>, !a5vm.mask -> !a5vm.vec<64xf32>
           a5vm.vsts %27, %12[%24], %mask : !a5vm.vec<64xf32>, !pto.ptr<f32, ub>, !a5vm.mask
         }
       }

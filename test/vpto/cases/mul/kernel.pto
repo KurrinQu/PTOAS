@@ -45,7 +45,7 @@ module attributes {pto.target_arch = "a5"} {
           %mask, %scalar_out = a5vm.plt_b32 %arg8 : i32 -> !a5vm.mask, i32
           %result, %updated_source = a5vm.vlds_post %arg5[%c64] : !pto.ptr<f32, ub> -> !a5vm.vec<64xf32>, !pto.ptr<f32, ub>
           %result_0, %updated_source_1 = a5vm.vlds_post %arg6[%c64] : !pto.ptr<f32, ub> -> !a5vm.vec<64xf32>, !pto.ptr<f32, ub>
-          %21 = a5vm.vmul %result, %result_0 : !a5vm.vec<64xf32>, !a5vm.vec<64xf32> -> !a5vm.vec<64xf32>
+          %21 = a5vm.vmul %result, %result_0, %mask : !a5vm.vec<64xf32>, !a5vm.vec<64xf32>, !a5vm.mask -> !a5vm.vec<64xf32>
           %22 = a5vm.vsts_post %21, %arg7[%c64], %mask : !a5vm.vec<64xf32>, !pto.ptr<f32, ub>, !a5vm.mask -> !pto.ptr<f32, ub>
           scf.yield %updated_source, %updated_source_1, %22, %scalar_out : !pto.ptr<f32, ub>, !pto.ptr<f32, ub>, !pto.ptr<f32, ub>, i32
         }
@@ -64,7 +64,7 @@ module attributes {pto.target_arch = "a5"} {
             %mask, %scalar_out = a5vm.plt_b32 %28 : i32 -> !a5vm.mask, i32
             %29 = a5vm.vlds %0[%23] : !pto.ptr<f32, ub> -> !a5vm.vec<64xf32>
             %30 = a5vm.vlds %7[%23] : !pto.ptr<f32, ub> -> !a5vm.vec<64xf32>
-            %31 = a5vm.vmul %29, %30 : !a5vm.vec<64xf32>, !a5vm.vec<64xf32> -> !a5vm.vec<64xf32>
+            %31 = a5vm.vmul %29, %30, %mask : !a5vm.vec<64xf32>, !a5vm.vec<64xf32>, !a5vm.mask -> !a5vm.vec<64xf32>
             a5vm.vsts %31, %11[%23], %mask : !a5vm.vec<64xf32>, !pto.ptr<f32, ub>, !a5vm.mask
           }
         }

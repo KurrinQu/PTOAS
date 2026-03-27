@@ -1057,30 +1057,6 @@ static FailureOr<Value> buildPsetB32Mask(IRRewriter &builder, Location loc,
   return failure();
 }
 
-static FailureOr<Value> inferBinaryOpMask(Operation *op, IRRewriter &builder,
-                                          Location loc) {
-  Value inferredMask;
-  for (Operation *user : op->getResult(0).getUsers()) {
-    Value mask;
-    if (auto vsts = dyn_cast<a5vm::VstsOp>(user))
-      mask = vsts.getMask();
-    else if (auto vstsPost = dyn_cast<a5vm::VstsPostOp>(user))
-      mask = vstsPost.getMask();
-    else
-      continue;
-    if (!inferredMask) {
-      inferredMask = mask;
-      continue;
-    }
-    if (mask != inferredMask)
-      return failure();
-  }
-
-  if (inferredMask)
-    return inferredMask;
-  return buildAllTrueMask(builder, loc);
-}
-
 static FailureOr<Value> packLoopPair(Operation *anchor, Value low, Value high) {
   OpBuilder builder(anchor);
   builder.setInsertionPoint(anchor);
@@ -1636,15 +1612,10 @@ static LogicalResult rewriteA5VMOp(Operation *op, ModuleOp module,
     callArgs.push_back(vdup.getInput());
     callArgs.push_back(*mask);
     callArgs.push_back(getI32Constant(builder, loc, 1));
-  } else if (isa<a5vm::VaddOp, a5vm::VsubOp, a5vm::VmulOp, a5vm::VdivOp, a5vm::VmaxOp>(op)) {
+  } else if (isa<a5vm::VaddOp, a5vm::VsubOp, a5vm::VmulOp, a5vm::VdivOp, a5vm::VmaxOp,
+                 a5vm::VminOp, a5vm::VandOp, a5vm::VorOp, a5vm::VxorOp, a5vm::VshlOp,
+                 a5vm::VshrOp>(op)) {
     callArgs.append(op->operand_begin(), op->operand_end());
-    auto mask = inferBinaryOpMask(op, builder, loc);
-    if (failed(mask)) {
-      diagOS << "A5VM LLVM emission failed: could not infer a unique mask for "
-             << op->getName().getStringRef() << "\n";
-      return failure();
-    }
-    callArgs.push_back(*mask);
   } else if (isa<a5vm::VmulsOp, a5vm::VaddsOp, a5vm::VmaxsOp, a5vm::VminsOp,
                  a5vm::VlreluOp>(op)) {
     callArgs.push_back(op->getOperand(0));

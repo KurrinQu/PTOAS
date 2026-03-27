@@ -250,8 +250,7 @@ def A5VM_VbrOp : A5VM_Op<"vbr", [Pure]> {
 def A5VM_VdupOp : A5VM_Op<"vdup", [Pure]> {
   let arguments = (ins
     AnyType:$input,
-    OptionalAttr<StrAttr>:$position,
-    OptionalAttr<StrAttr>:$mode
+    OptionalAttr<StrAttr>:$position
   );
   let results = (outs A5VM_VectorType:$result);
 
@@ -475,8 +474,7 @@ def A5VM_PstiOp : A5VM_Op<"psti", [
 def A5VM_VabsOp : A5VM_Op<"vabs", [Pure]> {
   let arguments = (ins
     A5VM_VectorType:$input,
-    A5VM_MaskTypeConstraint:$mask,
-    OptionalAttr<StrAttr>:$mode
+    A5VM_MaskTypeConstraint:$mask
   );
   let results = (outs A5VM_VectorType:$result);
 
@@ -490,8 +488,7 @@ def A5VM_VabsOp : A5VM_Op<"vabs", [Pure]> {
 class A5VM_UnaryVecOp<string mnemonic> : A5VM_Op<mnemonic, [Pure]> {
   let arguments = (ins
     A5VM_VectorType:$input,
-    A5VM_MaskTypeConstraint:$mask,
-    OptionalAttr<StrAttr>:$mode
+    A5VM_MaskTypeConstraint:$mask
   );
   let results = (outs A5VM_VectorType:$result);
 
@@ -515,14 +512,15 @@ def A5VM_VcminOp : A5VM_UnaryVecOp<"vcmin">;
 class A5VM_BinaryVecOp<string mnemonic> : A5VM_Op<mnemonic, [Pure]> {
   let arguments = (ins
     A5VM_VectorType:$lhs,
-    A5VM_VectorType:$rhs
+    A5VM_VectorType:$rhs,
+    A5VM_MaskTypeConstraint:$mask
   );
   let results = (outs A5VM_VectorType:$result);
 
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    $lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)
+    $lhs `,` $rhs `,` $mask attr-dict `:` type($lhs) `,` type($rhs) `,` type($mask) `->` type($result)
   }];
 }
 
@@ -1107,8 +1105,7 @@ def A5VM_VmulaOp : A5VM_Op<"vmula", [Pure]> {
     A5VM_VectorType:$acc,
     A5VM_VectorType:$lhs,
     A5VM_VectorType:$rhs,
-    A5VM_MaskTypeConstraint:$mask,
-    OptionalAttr<StrAttr>:$mode
+    A5VM_MaskTypeConstraint:$mask
   );
   let results = (outs A5VM_VectorType:$result);
 
