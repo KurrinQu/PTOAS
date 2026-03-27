@@ -3228,26 +3228,35 @@ LogicalResult buildBinaryVecScope(StringRef family,
       src1Cols == ShapedType::kDynamic || dstCols == ShapedType::kDynamic)
     return emitError(loc) << "binary lowering requires static row strides and cols";
 
-  auto buildBinaryValue = [&](Value lhs, Value rhs) -> FailureOr<Value> {
-    Value fullMask = buildAllPredicateMask(rewriter, loc, contract.elementType);
+  auto buildBinaryValue = [&](Value lhs, Value rhs,
+                              Value predicate) -> FailureOr<Value> {
     if (family == "add")
-      return rewriter.create<a5vm::VaddOp>(loc, vecType, lhs, rhs, fullMask).getResult();
+      return rewriter.create<a5vm::VaddOp>(loc, vecType, lhs, rhs, predicate)
+          .getResult();
     if (family == "sub")
-      return rewriter.create<a5vm::VsubOp>(loc, vecType, lhs, rhs, fullMask).getResult();
+      return rewriter.create<a5vm::VsubOp>(loc, vecType, lhs, rhs, predicate)
+          .getResult();
     if (family == "mul")
-      return rewriter.create<a5vm::VmulOp>(loc, vecType, lhs, rhs, fullMask).getResult();
+      return rewriter.create<a5vm::VmulOp>(loc, vecType, lhs, rhs, predicate)
+          .getResult();
     if (family == "div")
-      return rewriter.create<a5vm::VdivOp>(loc, vecType, lhs, rhs, fullMask).getResult();
+      return rewriter.create<a5vm::VdivOp>(loc, vecType, lhs, rhs, predicate)
+          .getResult();
     if (family == "max")
-      return rewriter.create<a5vm::VmaxOp>(loc, vecType, lhs, rhs, fullMask).getResult();
+      return rewriter.create<a5vm::VmaxOp>(loc, vecType, lhs, rhs, predicate)
+          .getResult();
     if (family == "min")
-      return rewriter.create<a5vm::VminOp>(loc, vecType, lhs, rhs, fullMask).getResult();
+      return rewriter.create<a5vm::VminOp>(loc, vecType, lhs, rhs, predicate)
+          .getResult();
     if (family == "and")
-      return rewriter.create<a5vm::VandOp>(loc, vecType, lhs, rhs, fullMask).getResult();
+      return rewriter.create<a5vm::VandOp>(loc, vecType, lhs, rhs, predicate)
+          .getResult();
     if (family == "or")
-      return rewriter.create<a5vm::VorOp>(loc, vecType, lhs, rhs, fullMask).getResult();
+      return rewriter.create<a5vm::VorOp>(loc, vecType, lhs, rhs, predicate)
+          .getResult();
     if (family == "xor")
-      return rewriter.create<a5vm::VxorOp>(loc, vecType, lhs, rhs, fullMask).getResult();
+      return rewriter.create<a5vm::VxorOp>(loc, vecType, lhs, rhs, predicate)
+          .getResult();
     return failure();
   };
 
@@ -3321,7 +3330,8 @@ LogicalResult buildBinaryVecScope(StringRef family,
       lhsValue = lhs.getResult();
       rhsValue = rhs.getResult();
     }
-    FailureOr<Value> computed = buildBinaryValue(lhsValue, rhsValue);
+    FailureOr<Value> computed =
+        buildBinaryValue(lhsValue, rhsValue, predicateState.mask);
     if (failed(computed))
       return emitError(loc) << "unsupported A5VM binary family: " << family;
     if (strategy == A5VMLoweringStrategy::PostUpdate) {
@@ -3368,7 +3378,7 @@ LogicalResult buildBinaryVecScope(StringRef family,
       auto rhs = rewriter.create<a5vm::VldsOp>(loc, vecType, src1Buffer, src1Offset,
                                                StringAttr());
       FailureOr<Value> computed =
-          buildBinaryValue(lhs.getResult(), rhs.getResult());
+          buildBinaryValue(lhs.getResult(), rhs.getResult(), predicateState.mask);
       if (failed(computed))
         return emitError(loc) << "unsupported A5VM binary family: " << family;
       rewriter.create<a5vm::VstsOp>(loc, *computed, dstBuffer, dstOffset,
@@ -3396,7 +3406,8 @@ LogicalResult buildBinaryVecScope(StringRef family,
         rewriter.create<a5vm::VldsOp>(loc, vecType, src0Buffer, src0Offset, StringAttr());
     auto rhs =
         rewriter.create<a5vm::VldsOp>(loc, vecType, src1Buffer, src1Offset, StringAttr());
-    FailureOr<Value> computed = buildBinaryValue(lhs.getResult(), rhs.getResult());
+    FailureOr<Value> computed =
+        buildBinaryValue(lhs.getResult(), rhs.getResult(), predicate);
     if (failed(computed))
       return emitError(loc) << "unsupported A5VM binary family: " << family;
     rewriter.create<a5vm::VstsOp>(loc, *computed, dstBuffer, dstOffset,

@@ -118,6 +118,10 @@ static Value getCanonicalTrackedValue(Value value) {
     if (!def)
       break;
 
+    if (auto bind = dyn_cast<pto::BindTileOp>(def)) {
+      value = bind.getSource();
+      continue;
+    }
     if (auto cast = dyn_cast<memref::CastOp>(def)) {
       value = cast.getSource();
       continue;
@@ -149,6 +153,43 @@ static Value getCanonicalTrackedValue(Value value) {
     break;
   }
   return value;
+}
+
+static bool normalizeFusionRegionYieldFrontier(pto::FusionRegionOp fusionRegion) {
+  Block &body = fusionRegion.getBody().front();
+  auto yieldOp = dyn_cast<pto::YieldOp>(body.getTerminator());
+  if (!yieldOp)
+    return false;
+
+  bool changed = false;
+  for (auto [index, yielded] : llvm::enumerate(yieldOp.getValues())) {
+    auto bind = yielded.getDefiningOp<pto::BindTileOp>();
+    if (!bind)
+      continue;
+
+    Value normalized = bind.getSource();
+    if (!normalized || normalized == yielded)
+      continue;
+
+    Value regionResult = fusionRegion.getResult(index);
+    Type originalResultType = regionResult.getType();
+
+    yieldOp->setOperand(index, normalized);
+    if (regionResult.getType() != normalized.getType())
+      regionResult.setType(normalized.getType());
+
+    if (originalResultType != normalized.getType() && !regionResult.use_empty()) {
+      OpBuilder builder(fusionRegion);
+      builder.setInsertionPointAfter(fusionRegion);
+      auto rebound = builder.create<pto::BindTileOp>(
+          bind.getLoc(), originalResultType, regionResult, bind.getValidRow(),
+          bind.getValidCol(), bind.getConfig());
+      rebound->setAttrs(bind->getAttrDictionary());
+      regionResult.replaceAllUsesExcept(rebound.getResult(), rebound);
+    }
+    changed = true;
+  }
+  return changed;
 }
 
 static Operation *getTopLevelAncestorInBlock(Operation *op, Block *block) {
@@ -212,6 +253,13 @@ static Block *getLeafLoopBody(scf::ForOp carrierLoop) {
   return leafBody;
 }
 
+static bool isSupportedStraightLineBlock(Block &body) {
+  for (Operation &op : body.without_terminator())
+    if (!isSupportedLeafOp(&op))
+      return false;
+  return true;
+}
+
 static Value inferA5VMLoadUserMask(a5vm::VldsOp load) {
   Value inferredMask;
   for (OpOperand &use : load.getResult().getUses()) {
@@ -266,9 +314,13 @@ static void pruneTrackedStoresForLoadBase(SmallVectorImpl<TrackedStore> &stores,
 
 static bool shouldElideTailStore(const TrackedStore &store,
                                  const FusionRegionStoreContext &context,
-                                 Operation *scopeOp) {
+                                 Operation *scopeOp,
+                                 const llvm::SmallPtrSetImpl<Operation *> &scheduledForErase) {
   Value canonicalBase = getCanonicalTrackedValue(store.base);
   if (!canonicalBase)
+    return false;
+  Operation *localScopeOp = scopeOp ? scopeOp : store.op;
+  if (!localScopeOp)
     return false;
   // Yielded frontier is still region-observable in v1, so its final
   // materializing store must be preserved even if there is no reload.
@@ -277,6 +329,8 @@ static bool shouldElideTailStore(const TrackedStore &store,
 
   for (OpOperand &use : canonicalBase.getUses()) {
     Operation *owner = use.getOwner();
+    if (!owner || scheduledForErase.contains(owner))
+      continue;
     if (context.regionOp->isProperAncestor(owner)) {
       // Uses nested under the current carrier loop are fine: erasing the tail
       // store only affects memory materialization, while SSA users still
@@ -286,9 +340,12 @@ static bool shouldElideTailStore(const TrackedStore &store,
       Operation *topLevelUser = getTopLevelAncestorInBlock(owner, context.body);
       if (!topLevelUser)
         return false;
-      if (topLevelUser == scopeOp)
+      if (scheduledForErase.contains(topLevelUser))
         continue;
-      if (scopeOp->isBeforeInBlock(topLevelUser))
+      if (topLevelUser == localScopeOp)
+        continue;
+      if (localScopeOp->getBlock() == topLevelUser->getBlock() &&
+          localScopeOp->isBeforeInBlock(topLevelUser))
         return false;
       continue;
     }
@@ -299,6 +356,8 @@ static bool shouldElideTailStore(const TrackedStore &store,
         getTopLevelAncestorInBlock(owner, context.parentBlock);
     if (!topLevelUser)
       return false;
+    if (scheduledForErase.contains(topLevelUser))
+      continue;
     if (topLevelUser == context.regionOp)
       continue;
     if (context.regionOp->isBeforeInBlock(topLevelUser))
@@ -374,7 +433,7 @@ static bool elideLoadStoreRoundTripsInLeafBody(
 
   if (context) {
     for (const TrackedStore &store : trackedStores) {
-      if (!shouldElideTailStore(store, *context, scopeOp))
+      if (!shouldElideTailStore(store, *context, scopeOp, scheduledForErase))
         continue;
       scheduleErase(store.op);
       changed = true;
@@ -397,6 +456,10 @@ struct PTOFusionLoadStoreElisionPass
     if (func.isExternal())
       return;
 
+    func.walk([&](pto::FusionRegionOp fusionRegion) {
+      (void)normalizeFusionRegionYieldFrontier(fusionRegion);
+    });
+
     llvm::DenseMap<Operation *, FusionRegionStoreContext> regionContexts;
     func.walk([&](pto::FusionRegionOp fusionRegion) {
       std::optional<FusionRegionStoreContext> context =
@@ -405,6 +468,18 @@ struct PTOFusionLoadStoreElisionPass
         return;
       regionContexts.try_emplace(fusionRegion.getOperation(),
                                  std::move(*context));
+    });
+
+    func.walk([&](pto::FusionRegionOp fusionRegion) {
+      auto it = regionContexts.find(fusionRegion.getOperation());
+      if (it == regionContexts.end())
+        return;
+
+      Block &body = fusionRegion.getBody().front();
+      if (!isSupportedStraightLineBlock(body))
+        return;
+
+      (void)elideLoadStoreRoundTripsInLeafBody(body, &it->second, nullptr);
     });
 
     auto runElisionForLeafBody = [&](Block *leafBody, Operation *scopeOp,
