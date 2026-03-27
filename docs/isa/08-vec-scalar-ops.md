@@ -64,7 +64,7 @@ for (int i = 0; i < N; i++)
 - **inputs:** `%input`, `%scalar`, and `%mask` as above.
 - **outputs:** `%result` is the lane-wise product.
 - **constraints and limitations:** Supported element types are hardware-family
-  specific; the current VPTO surface documents the common numeric cases.
+  specific; the current PTO micro Instruction documentation covers the common numeric cases.
 
 ---
 
