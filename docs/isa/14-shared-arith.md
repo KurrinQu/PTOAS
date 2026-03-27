@@ -4,13 +4,13 @@
 > **Dialect:** `arith`
 > **Upstream Reference:** https://mlir.llvm.org/docs/Dialects/ArithOps/
 
-The upstream MLIR `arith` dialect defines primitive arithmetic, comparison, select, and cast operations over signless integer, index, floating-point, and boolean-compatible scalar values. In VPTO programs, the full scalar operation surface of `arith` is supported. These ops are used around PTO instructions to build constants, compute offsets and loop bounds, perform general scalar math, derive valid-shape metadata, and form predicates for `scf` control flow.
+The upstream MLIR `arith` dialect defines primitive arithmetic, comparison, select, and cast operations over signless integer, index, floating-point, and boolean-compatible scalar values. Within PTO micro Instruction code, the full scalar operation surface of `arith` is supported. These ops are used around PTO instructions to build constants, compute offsets and loop bounds, perform general scalar math, derive valid-shape metadata, and form predicates for `scf` control flow.
 
-These ops are part of the supported VPTO source surface, but they are not PTO ISA instructions.
+These ops are part of the documented PTO micro Instruction surface, but they are not PTO ISA instructions.
 
 ---
 
-## Role in VPTO Programs
+## Role in PTO micro Instruction Code
 
 - materialize scalar constants used by PTO scalar operands and loop bounds
 - compute scalar/index offsets for tensor views, partitioning, and dynamic shapes
@@ -24,9 +24,9 @@ Prefer PTO ops for vector or tile payload math. Use `arith` for scalar computati
 
 ## Supported Surface
 
-VPTO supports the full scalar operation surface of upstream `arith`. The upstream `arith` dialect reference remains authoritative for the exhaustive op-by-op syntax and semantics. The categories below summarize how that support is used in VPTO programs.
+The documented PTO micro Instruction surface supports the full scalar operation surface of upstream `arith`. The upstream `arith` dialect reference remains authoritative for the exhaustive op-by-op syntax and semantics. The categories below summarize how that support is used in PTO micro Instruction code.
 
-| Category | Representative Ops | Typical VPTO Use |
+| Category | Representative Ops | Typical Use in PTO micro Instruction Code |
 |----------|--------------------|------------------|
 | Constants | `arith.constant` | integer, floating-point, boolean, and `index` constants |
 | Integer / Index Arithmetic | `arith.addi`, `arith.subi`, `arith.muli`, `arith.divsi`, `arith.divui`, `arith.ceildivsi`, `arith.ceildivui`, `arith.floordivsi`, `arith.remsi`, `arith.remui` | offsets, bounds, chunk sizes, scalar math |
@@ -41,7 +41,7 @@ VPTO supports the full scalar operation surface of upstream `arith`. The upstrea
 
 - the current repository examples are still dominated by constants, casts, integer/index arithmetic, compares, and selects because those are the most common surrounding-scalar patterns in existing kernels
 - backend-specific tests such as the PTO shared-dialect fixture visibly exercise only a representative subset of `arith` ops in a single path
-- the documented VPTO source contract is nevertheless the full scalar `arith` surface, not just the index-heavy subset that appears most often in current samples
+- the documented PTO micro Instruction source-level contract is nevertheless the full scalar `arith` surface, not just the index-heavy subset that appears most often in current samples
 
 This section therefore uses representative categories and examples instead of pretending that the supported `arith` surface is limited to the currently most common sample patterns.
 

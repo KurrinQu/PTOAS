@@ -1,4 +1,4 @@
-# VPTO Spec — Merged Draft (A5)
+# PTO micro Instruction Spec — Merged Draft (A5)
 
 > **Status:** DRAFT for review
 > **Base:** [vpto-spec.md](https://github.com/mouliangyu/PTOAS/blob/feature-vpto-backend/docs/vpto-spec.md) (2026-03-20)
@@ -11,15 +11,15 @@
 
 ### Overview
 
-This document defines the Vector PTO (VPTO) Intermediate Representation (IR), a compiler-internal and externally facing specification designed to represent vector compute kernels within the PTO architecture. Much like NVVM provides a robust IR for GPU architectures, VPTO serves as the direct bridge between high-level programming models and the underlying hardware ISA, providing a precise, low-level representation of vector workloads explicitly designed for the Ascend 950 architecture.
+This document defines the PTO micro Instruction, a compiler-internal and externally facing specification designed to represent vector compute kernels within the PTO architecture. Much like NVVM provides a robust IR for GPU architectures, the PTO micro Instruction serves as the direct bridge between high-level programming models and the underlying hardware ISA, providing a precise, low-level representation of vector workloads explicitly designed for the Ascend 950 architecture.
 
 #### Position in the Stack and Layer Modeled
 
-VPTO operates as a very low-level intermediate representation within the PTO compiler stack. It is uniquely designed to accurately and comprehensively express all architectural information of the Ascend 950 hardware. It specifically models the bare-metal vector execution layer, making hardware-specific capabilities and constraints, such as exact vector lane configurations, memory space hierarchies, and hardware-specific fusion semantics, fully transparent and controllable.
+The PTO micro Instruction operates as a very low-level intermediate representation within the PTO compiler stack. It is uniquely designed to accurately and comprehensively express all architectural information of the Ascend 950 hardware. It specifically models the bare-metal vector execution layer, making hardware-specific capabilities and constraints, such as exact vector lane configurations, memory space hierarchies, and hardware-specific fusion semantics, fully transparent and controllable.
 
-#### Why External Developers Read or Author VPTO
+#### Why External Developers Read or Author PTO micro Instruction
 
-While the majority of users will interact with the PTO architecture via higher-level frameworks, external developers may need to read or author VPTO IR directly for several key reasons:
+While the majority of users will interact with the PTO architecture via higher-level frameworks, external developers may need to read or author PTO micro Instruction directly for several key reasons:
 
 - Custom Toolchain Development: build custom compiler frontends or domain-specific languages (DSLs) that target the Ascend 950 architecture with maximum hardware utilization.
 - Performance Engineering: inspect the output of high-level compiler passes, verify fine-grained optimization behaviors, and pinpoint performance bottlenecks at the architectural level.
@@ -27,10 +27,10 @@ While the majority of users will interact with the PTO architecture via higher-l
 
 #### Relationship to CCE
 
-VPTO is designed to express the full semantic capabilities of the Compute Cube Engine (CCE), but with significant structural and pipeline advantages for compiler development.
+The PTO micro Instruction is designed to express the full semantic capabilities of the Compute Cube Engine (CCE), but with significant structural and pipeline advantages for compiler development.
 
-- Bypassing the C/Clang Pipeline: while CCE heavily relies on C/C++ extensions parsed by Clang, VPTO operates entirely independently of the C language frontend. By bypassing Clang AST generation and frontend processing, utilizing VPTO significantly reduces overall compilation time and memory overhead.
-- Enhanced IR Verification: because VPTO is a strongly typed, SSA-based (Static Single Assignment) compiler IR rather than a C-wrapper API, it provides a much more rigorous and detailed IR verification process. Structural inconsistencies, invalid memory access patterns, and operand type mismatches are caught immediately with precise, explicit diagnostic feedback, providing developers with much higher visibility into kernel correctness than traditional CCE error reporting.
+- Bypassing the C/Clang Pipeline: while CCE heavily relies on C/C++ extensions parsed by Clang, the PTO micro Instruction operates entirely independently of the C language frontend. By bypassing Clang AST generation and frontend processing, utilizing the PTO micro Instruction significantly reduces overall compilation time and memory overhead.
+- Enhanced IR Verification: because the PTO micro Instruction is a strongly typed, SSA-based (Static Single Assignment) compiler IR rather than a C-wrapper API, it provides a much more rigorous and detailed IR verification process. Structural inconsistencies, invalid memory access patterns, and operand type mismatches are caught immediately with precise, explicit diagnostic feedback, providing developers with much higher visibility into kernel correctness than traditional CCE error reporting.
 
 #### Intended Audience
 
@@ -38,11 +38,11 @@ This document is written for compiler engineers, library writers, and advanced p
 
 ### Getting Started
 
-The Vector PTO (VPTO) IR is architected as a performance-critical layer within the compiler stack, specifically designed to exploit the **Decoupled Access-Execute** (DAE) nature of the Ascend 950 hardware.
+The PTO micro Instruction is architected as a performance-critical layer within the compiler stack, specifically designed to exploit the **Decoupled Access-Execute** (DAE) nature of the Ascend 950 hardware.
 
 #### Hardware Pipeline Modeling
 
-The IR is structured to mirror the three primary hardware pipelines of the Ascend 950 architecture. Correct VPTO authoring requires managing the interaction between these asynchronous units:
+The IR is structured to mirror the three primary hardware pipelines of the Ascend 950 architecture. Correct PTO micro Instruction authoring requires managing the interaction between these asynchronous units:
 
 **MTE2** (Memory Transfer Engine - Inbound): Responsible for moving data from Global Memory (GM) to the Unified Buffer (UB).
 
@@ -73,7 +73,7 @@ Elements per VLane by data type:
 
 #### Memory and Synchronization Model
 
-VPTO enforces a strict memory hierarchy. The Unified Buffer (UB) is the only valid operand source for vector compute instructions. Consequently, the architecture of a VPTO program is defined by the explicit management of data movement:
+The PTO micro Instruction enforces a strict memory hierarchy. The Unified Buffer (UB) is the only valid operand source for vector compute instructions. Consequently, the architecture of a PTO micro Instruction program is defined by the explicit management of data movement:
 
 **Address Space Isolation**: The IR uses `!pto.ptr<element-type, space>` to distinguish between GM (`!pto.ptr<T, gm>`) and UB (`!pto.ptr<T, ub>`). The verifier ensures that vector compute operations do not access GM directly; data must first be moved into UB.
 
@@ -110,7 +110,7 @@ For UB↔vreg data movement, besides contiguous load/store, the architecture pro
 
 #### Synchronization Model
 
-The Ascend 950 architecture employs a cluster-based design with a 1:2 ratio of Cube cores to Vector cores. VPTO provides multiple levels of synchronization to manage concurrent execution across pipelines and cores:
+The Ascend 950 architecture employs a cluster-based design with a 1:2 ratio of Cube cores to Vector cores. The PTO micro Instruction provides multiple levels of synchronization to manage concurrent execution across pipelines and cores:
 
 **Inter-Core Synchronization (within a cluster):**
 
@@ -147,7 +147,7 @@ Without proper barriers, loads may see stale data or stores may be reordered inc
 
 `__VEC_SCOPE__` is the IR-level representation of a Vector Function (VF) launch. In the PTO architecture, it defines the hardware interface between the Scalar Unit and the Vector Thread.
 
-It is not a dedicated `pto` op. In VPTO IR, this scope is modeled as a specialized `scf.for` loop annotated with `llvm.loop.aivector_scope`. This gives the compiler a natural structural boundary for identifying the code block that must be lowered into a discrete VF hardware instruction sequence.
+It is not a dedicated `pto` op. In the PTO micro Instruction, this scope is modeled as a specialized `scf.for` loop annotated with `llvm.loop.aivector_scope`. This gives the compiler a natural structural boundary for identifying the code block that must be lowered into a discrete VF hardware instruction sequence.
 
 **Scalar-Vector Interface:**
 
@@ -206,7 +206,7 @@ pto.copy_ubuf_to_gm %8, %14, %3, %3, %c0_i64, %c32_i64, %4, %c0_i64, %c128_i64, 
 
 ### Scope
 
-This document is the interface specification centered on the `mlir::pto` dialect and the shared MLIR surface used alongside it in VPTO programs.
+This document is the interface specification centered on the `mlir::pto` dialect and the shared MLIR surface used alongside it in PTO micro Instruction programs.
 
 It only describes:
 
@@ -218,18 +218,18 @@ It only describes:
 
 It does not describe lowering strategy.
 
-VPTO source programs are not restricted to `pto` operations alone. In practice they also use shared MLIR dialect ops, most notably the full scalar operation surface of `arith` together with structured control-flow ops from `scf`, to express scalar constants, scalar arithmetic, type conversion, comparisons, and structured control flow around PTO vector or tile regions. These shared-dialect ops are part of the supported VPTO source surface and should be regarded as part of PTO-ISA alongside `pto` dialect operations.
+PTO micro Instruction source programs are not restricted to `pto` operations alone. In practice they also use shared MLIR dialect ops, most notably the full scalar operation surface of `arith` together with structured control-flow ops from `scf`, to express scalar constants, scalar arithmetic, type conversion, comparisons, and structured control flow around PTO vector or tile regions. These shared-dialect ops are part of the supported PTO micro Instruction source surface and should be regarded as part of PTO-ISA alongside `pto` dialect operations.
 
 ### Shared MLIR Dialects
 
-- `arith`: the full scalar `arith` surface is supported in VPTO programs, covering scalar integer, floating-point, boolean, and `index` operations. In current samples the most common uses are still constants, offset/bounds arithmetic, casts, compares, and selects.
+- `arith`: the full scalar `arith` surface is supported in PTO micro Instruction programs, covering scalar integer, floating-point, boolean, and `index` operations. In current samples the most common uses are still constants, offset/bounds arithmetic, casts, compares, and selects.
 - `scf`: structured control flow used to model counted loops, conditional regions, loop-carried state, and break-like control around PTO compute and data-movement ops.
 - Shared dialect ops remain in standard MLIR form so that PTO analyses and backend passes can reason about control flow and scalar state without re-encoding them as PTO-specific instructions.
 
 ### Core Types
 
 ### Element Types
-`vreg<T>`: `!pto.vreg<NxT>` Fixed-width VPTO vector type with total width exactly 256 bytes (2048 bits). `N` is the lane count, `T` is the element type, and `N * bitwidth(T) = 2048`.
+`vreg<T>`: `!pto.vreg<NxT>` Fixed-width PTO micro Instruction vector type with total width exactly 256 bytes (2048 bits). `N` is the lane count, `T` is the element type, and `N * bitwidth(T) = 2048`.
 
 | Type | Bits | Description |
 |------|------|-------------|
@@ -245,7 +245,7 @@ VPTO source programs are not restricted to `pto` operations alone. In practice t
 
 ### Address Space Conventions
 
-VPTO memory operands use `!pto.ptr<element-type, space>`. This specification models the following memory-space attributes:
+PTO micro Instruction memory operands use `!pto.ptr<element-type, space>`. This specification models the following memory-space attributes:
 
 | Space | Interpretation |
 |-------|----------------|
@@ -261,7 +261,7 @@ Typical pointer construction and pointer arithmetic follow the same `!pto.ptr<..
 
 ### `!pto.ptr<T, space>`
 
-`!pto.ptr<T, space>` is the typed pointer form used for explicit memory operands in VPTO.
+`!pto.ptr<T, space>` is the typed pointer form used for explicit memory operands in PTO micro Instruction.
 
 - `T` is the element type associated with the pointed-to storage.
 - `space` is the memory domain, typically `gm` or `ub` in this specification.
@@ -372,7 +372,7 @@ This section defines the MLIR syntax patterns and C-style semantic notation used
 
 ### MLIR Op Syntax Patterns
 
-All VPTO operations follow standard MLIR syntax. The common patterns are:
+All PTO micro Instruction operations follow standard MLIR syntax. The common patterns are:
 
 **Unary (one vector in, one vector out):**
 
@@ -451,7 +451,7 @@ pto.wait_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
 
 ### Shared Dialect Syntax Patterns
 
-VPTO programs may interleave PTO ops with standard MLIR `arith` and `scf` ops.
+PTO micro Instruction programs may interleave PTO ops with standard MLIR `arith` and `scf` ops.
 The examples below emphasize common index-heavy patterns, but `arith` support is not limited to index arithmetic.
 
 **Scalar / index constant:**
@@ -569,7 +569,7 @@ for (int g = 0; g < 8; g++) {
 ## Part III: ISA Instruction Reference
 # Part III: ISA Instruction Reference — Summary
 
-This section provides a categorized overview of all VPTO instructions plus the shared MLIR `arith` and `scf` ops that may appear in VPTO programs. Detailed documentation for each group is available in the linked files.
+This section provides a categorized overview of all PTO micro Instruction operations plus the shared MLIR `arith` and `scf` ops that may appear in PTO micro Instruction programs. Detailed documentation for each group is available in the linked files.
 
 ---
 
@@ -638,7 +638,7 @@ This section provides a categorized overview of all VPTO instructions plus the s
 
 ### Scalar & Control Operations
 
-Group 14 covers the full scalar `arith` surface. The rows below list common VPTO patterns rather than an exhaustive partition of `arith` ops.
+Group 14 covers the full scalar `arith` surface. The rows below list common PTO micro Instruction patterns rather than an exhaustive partition of `arith` ops.
 
 | Operation | Group | Description |
 |-----------|-------|-------------|

@@ -18,7 +18,7 @@ Vector loads move data from Unified Buffer (UB) to vector registers (`vreg`). Ve
   instruction explicitly documents a different behavior.
 - `%result` is the destination vector register value in SSA form.
 - `!pto.align` is the SSA carrier for alignment-buffer state used by unaligned
-  load/store families. VPTO makes that state explicit rather than implicit.
+  load/store families. The PTO micro Instruction representation makes that state explicit rather than implicit.
 
 ---
 
@@ -96,7 +96,7 @@ Vector loads move data from Unified Buffer (UB) to vector registers (`vreg`). Ve
 - **constraints and limitations:**
   A matching `pto.vldas` MUST appear before the first dependent `pto.vldus`
   stream in the same vector loop. Both the alignment state and the base address
-  advance across the stream, and VPTO exposes those updates as SSA results.
+  advance across the stream, and the PTO micro Instruction representation exposes those updates as SSA results.
 
 **Unaligned load pattern:**
 ```mlir

@@ -4,15 +4,15 @@
 > **Dialect:** `scf`
 > **Upstream Reference:** https://mlir.llvm.org/docs/Dialects/SCFDialect/
 
-The upstream MLIR `scf` dialect defines structured control flow operations with regions, including counted loops, conditional regions, and while-style loops. In VPTO programs, `scf` is the control shell around PTO ops: it sequences DMA, vector, and tile operations; carries scalar or tile state across iterations; and preserves analyzable control flow for PTO-specific analyses and lowerings.
+The upstream MLIR `scf` dialect defines structured control flow operations with regions, including counted loops, conditional regions, and while-style loops. In PTO micro Instruction code, `scf` is the control shell around PTO ops: it sequences DMA, vector, and tile operations; carries scalar or tile state across iterations; and preserves analyzable control flow for PTO-specific analyses and lowerings.
 
-These ops are part of the supported VPTO source surface, but they are shared MLIR control-flow constructs rather than PTO ISA instructions.
+These ops are part of the documented PTO micro Instruction surface, but they are shared MLIR control-flow constructs rather than PTO ISA instructions.
 
 ---
 
 ## Supported Ops
 
-| Op | Role in VPTO Programs | Notes |
+| Op | Role in PTO micro Instruction Code | Notes |
 |----|------------------------|-------|
 | `scf.for` | counted loops and loop-carried values | also used for `__VEC_SCOPE__` dummy-loop form |
 | `scf.if` | structured conditional execution | may yield values or act as side-effect-only branch |
@@ -20,14 +20,14 @@ These ops are part of the supported VPTO source surface, but they are shared MLI
 | `scf.while` | break-like or stateful loops | useful for source-level structured control |
 | `scf.condition` | loop-continue / loop-exit decision for `scf.while` | placed in the "before" region |
 
-Ops such as `scf.execute_region`, `scf.forall`, or `scf.index_switch` are not part of the documented VPTO shared-dialect surface here.
+Ops such as `scf.execute_region`, `scf.forall`, or `scf.index_switch` are not part of the documented shared-dialect portion of the PTO micro Instruction surface here.
 
 ---
 
 ## Current PTOAS Coverage
 
 - `scf.for`, `scf.if`, and `scf.yield` are directly exercised in the shared-dialect PTO fixture and appear widely across PTO samples
-- the VPTO `__VEC_SCOPE__` contract is modeled as a specialized `scf.for` annotated with `llvm.loop.aivector_scope`
+- the `__VEC_SCOPE__` contract in PTO micro Instruction is modeled as a specialized `scf.for` annotated with `llvm.loop.aivector_scope`
 - PTO synchronization and memory analyses explicitly reason about `scf.for`, `scf.if`, `scf.yield`, and `scf.while`
 - `scf.while` and `scf.condition` appear in control-flow samples and are handled in PTO-to-EmitC control-flow lowering, but they are less broadly exercised than `for` / `if` on all backend paths
 

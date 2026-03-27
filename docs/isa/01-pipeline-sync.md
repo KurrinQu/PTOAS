@@ -3,7 +3,7 @@
 > **Category:** Synchronization primitives for coordinating pipeline execution
 > **Pipelines:** MTE2 (GM→UB), PIPE_V (Vector), MTE3 (UB→GM)
 
-VPTO operates on the Ascend 950's **Decoupled Access-Execute** architecture. The MTE and Vector pipelines run asynchronously, requiring explicit synchronization to prevent data hazards.
+The PTO micro Instruction model operates on the Ascend 950's **Decoupled Access-Execute** architecture. The MTE and Vector pipelines run asynchronously, requiring explicit synchronization to prevent data hazards.
 
 ---
 

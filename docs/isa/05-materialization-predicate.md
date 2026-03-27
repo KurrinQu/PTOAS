@@ -51,7 +51,7 @@ for (int i = 0; i < N; i++)
   `%result` is the duplicated vector.
 - **constraints and limitations:**
   `position` selects which source element or scalar position is duplicated. The
-  current VPTO surface represents that selector as an attribute rather than a
+  current PTO micro Instruction representation models that selector as an attribute rather than a
   separate operand.
 
 ```c

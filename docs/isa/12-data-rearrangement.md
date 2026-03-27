@@ -32,7 +32,7 @@ Operations that rearrange data within or between vector registers without memory
 - **inputs:** `%lhs` and `%rhs` are the two source vectors.
 - **outputs:** `%low` and `%high` are the two destination vectors.
 - **constraints and limitations:** The two outputs form a paired interleave
-  result. VPTO exposes that pair as two SSA results, and the pair ordering MUST
+  result. The PTO micro Instruction representation exposes that pair as two SSA results, and the pair ordering MUST
   be preserved.
 
 ---
@@ -49,7 +49,7 @@ Operations that rearrange data within or between vector registers without memory
 ```
 
 - **inputs:** `%lhs` and `%rhs` represent the interleaved source stream in the
-  current VPTO surface.
+  current PTO micro Instruction representation.
 - **outputs:** `%low` and `%high` are the separated destination vectors.
 - **constraints and limitations:** The two outputs form the even/odd
   deinterleave result pair, and their ordering MUST be preserved.
