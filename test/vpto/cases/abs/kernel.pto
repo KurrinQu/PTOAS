@@ -48,10 +48,10 @@ module attributes {pto.target_arch = "a5"} {
     pto.set_loop_size_outtoub %c1_i64, %c1_i64 : i64, i64
 
     // DMA copy: GM[arg0] -> UB[0]
-    // Args: src, dst, valid_rows=32, valid_cols=32, sid=0, n_burst=32, len_burst=128,
+    // Args: src, dst, sid=0, n_burst=32, len_burst=128,
     //       left_pad=0, right_pad=0, data_select=false, l2_cache=0, gm_stride=128, ub_stride=128
     %false = arith.constant false
-    pto.copy_gm_to_ubuf %arg0, %ub_in, %c32_i64, %c32_i64, %c0_i64, %c32_i64, %c128_i64, %c0_i64, %c0_i64, %false, %c0_i64, %c128_i64, %c128_i64 : !pto.ptr<f32, gm>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i64, i64, i1, i64, i64, i64
+    pto.copy_gm_to_ubuf %arg0, %ub_in, c0_i64, %c32_i64, %c128_i64, %c0_i64, %c0_i64, %false, %c0_i64, %c128_i64, %c128_i64 : !pto.ptr<f32, gm>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i64, i64, i1, i64, i64, i64
 
     // =========================================================================
     // Sync: MTE2 -> V pipe handoff (wait for DMA to complete before compute)
