@@ -255,6 +255,22 @@ def PTOLowerSimdToVector : Pass<"pto-lower-simd-to-vector", "ModuleOp"> {
                            "mlir::memref::MemRefDialect"];
 }
 
+def PTOA5VMIfCanonicalize
+    : Pass<"pto-a5vm-if-canonicalize", "func::FuncOp"> {
+  let summary =
+      "Canonicalize only scf.if cleanup patterns before A5 low-level fusion";
+  let description = [{
+    Applies the builtin `scf.if` canonicalization patterns to pre-existing
+    `scf.if` operations without running the global Canonicalizer. This keeps the
+    pre-loop-fusion cleanup focused on removing residual constant-control-flow
+    structure while preserving surrounding `scf.for` loop headers.
+  }];
+  let constructor = "mlir::pto::createPTOA5VMIfCanonicalizePass()";
+  let dependentDialects = ["mlir::func::FuncDialect",
+                           "mlir::arith::ArithDialect",
+                           "mlir::scf::SCFDialect"];
+}
+
 def PTOLowLevelLoopFusion : Pass<"pto-low-level-loop-fusion", "ModuleOp"> {
   let summary =
       "Fuse adjacent A5VM post-lowering loop nests inside pto.fusion_region";

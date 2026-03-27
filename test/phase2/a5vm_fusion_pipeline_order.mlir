@@ -12,7 +12,7 @@
 // CHECK-LABEL: IR Dump After CSE
 // CHECK-LABEL: IR Dump After PTOA5VMVersionSelection
 // CHECK-LABEL: IR Dump After PTOToA5VM
-// CHECK-LABEL: IR Dump After Canonicalizer
+// CHECK-LABEL: IR Dump After PTOA5VMIfCanonicalize
 // CHECK-LABEL: IR Dump After PTOLowLevelLoopFusion
 // CHECK-LABEL: IR Dump After CSE
 // CHECK-LABEL: IR Dump After PTOFusionPredicateElision

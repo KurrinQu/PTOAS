@@ -685,7 +685,7 @@ static void addA5VMBackendMainlinePasses(OpPassManager &pm,
   // Keep the A5 backend lowering boundary explicit:
   //   FusionRegionGen -> shared pre-backend normalization
   //   -> PTOA5VMVersionSelection -> PTOToA5VM
-  //   -> Canonicalizer
+  //   -> PTOA5VMIfCanonicalize
   //   -> PTOLowLevelLoopFusion -> CSE -> PTOFusionPredicateElision
   //   -> PTOFusionLoadStoreElision -> PTOFlattenFusionRegion
   //   -> backend emission.
@@ -698,7 +698,7 @@ static void addA5VMBackendMainlinePasses(OpPassManager &pm,
   }
 
   if (enableFusionMainline) {
-    pm.addPass(createCanonicalizerPass());
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOA5VMIfCanonicalizePass());
     pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
     loopFusionOptions.debug = opFusionDebug;
     pm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));

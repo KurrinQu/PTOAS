@@ -72,6 +72,7 @@ std::unique_ptr<Pass> createFusionPlanPass();
 std::unique_ptr<Pass> createOpSchedulingPass();
 std::unique_ptr<Pass> createPTOFusionRegionGenPass();
 std::unique_ptr<Pass> createPTOA5VMVersionSelectionPass();
+std::unique_ptr<Pass> createPTOA5VMIfCanonicalizePass();
 LogicalResult importPTOOpLibTemplates(ModuleOp module, StringRef opLibDir,
                                       bool debug = false);
 std::unique_ptr<Pass> createPTOInstantiateAndLowerToLibCallPass(
