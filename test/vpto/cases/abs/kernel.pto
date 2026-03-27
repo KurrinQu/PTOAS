@@ -74,7 +74,7 @@ module attributes {pto.target_arch = "a5"} {
         %vec_in = pto.vlds %ub_in[%arg3] : !pto.ptr<f32, ub> -> !pto.vec<64xf32>
 
         // Compute element-wise absolute value with predicate mask
-        %vec_out = pto.vabs %vec_in, %mask {mode = "MODE_ZEROING"} : !pto.vec<64xf32>, !pto.mask -> !pto.vec<64xf32>
+        %vec_out = pto.vabs %vec_in, %mask : !pto.vec<64xf32>, !pto.mask -> !pto.vec<64xf32>
 
         // Store result to UB output at current offset
         pto.vsts %vec_out, %ub_out[%arg3], %mask : !pto.vec<64xf32>, !pto.ptr<f32, ub>, !pto.mask
