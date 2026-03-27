@@ -117,7 +117,7 @@ log "ASCEND_HOME_PATH=${ASCEND_HOME_PATH}"
 # The default "Ascend910" is ambiguous (could be A1/A3/A5).
 # npu-smi provides the real chip name (e.g. Ascend910B1, Ascend910B3).
 if [[ "${SOC_VERSION}" == "Ascend910" ]] && command -v npu-smi &>/dev/null; then
-  _chip="$(npu-smi info -l 2>/dev/null | grep -i 'Chip Name' | head -1 | sed 's/.*: *//' | tr -d ' ')"
+  _chip="$(timeout 5 npu-smi info -l 2>/dev/null | grep -i 'Chip Name' | head -1 | sed 's/.*: *//' | tr -d ' ' || true)"
   if [[ -n "${_chip}" ]]; then
     log "Auto-detected SOC_VERSION=${_chip} from npu-smi (was default Ascend910)"
     SOC_VERSION="${_chip}"
