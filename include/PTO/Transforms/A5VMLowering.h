@@ -28,6 +28,27 @@ enum class A5VMLoweringStrategy {
   NoPostUpdate,
 };
 
+FailureOr<A5VMLoweringChoiceAttr> getA5VMLoweringChoiceAttr(Operation *op);
+LogicalResult validateA5VMLoweringChoiceAttr(Operation *op, Attribute attr);
+LogicalResult validateA5VMLoweringChoiceAttr(Operation *op,
+                                             A5VMLoweringChoiceAttr attr);
+A5VMLoweringStrategy
+convertA5VMUpdateModeToLoweringStrategy(A5VMUpdateMode updateMode);
+A5VMUpdateMode
+convertA5VMLoweringStrategyToUpdateMode(A5VMLoweringStrategy strategy);
+bool hasA5VMSameShapeLinearPath(ArrayRef<int64_t> rowStrides,
+                                ArrayRef<int64_t> tileCols);
+FailureOr<A5VMLoopShape>
+selectA5VMLoopShapeForFullWidthCols(ArrayRef<int64_t> tileCols,
+                                    int64_t validCols);
+FailureOr<A5VMLoopShape>
+selectA5VMLoopShapeForSameShapeLinearPath(ArrayRef<int64_t> rowStrides,
+                                          ArrayRef<int64_t> tileCols,
+                                          int64_t validCols);
+Value buildA5VMFullWidthColsCondition(ArrayRef<int64_t> tileCols,
+                                      Value validColsValue,
+                                      PatternRewriter &rewriter, Location loc);
+
 struct A5VMPartitionTrace {
   SmallVector<int64_t> offsets;
   SmallVector<int64_t> sizes;
@@ -136,13 +157,14 @@ LogicalResult programCopyUbToGmLoops(Operation *copyOp,
                                      Builder &builder);
 LogicalResult buildUnaryVecScope(StringRef family,
                                  const A5VMUnaryContract &contract,
-                                 A5VMLoweringStrategy strategy, Value src,
-                                 Value dst, PatternRewriter &rewriter,
-                                 Location loc);
+                                 A5VMLoweringStrategy strategy,
+                                 A5VMLoopShape loopShape, Value src, Value dst,
+                                 PatternRewriter &rewriter, Location loc);
 LogicalResult buildBinaryVecScope(StringRef family,
                                   const A5VMBinaryContract &contract,
-                                  A5VMLoweringStrategy strategy, Value src0,
-                                  Value src1, Value dst,
+                                  A5VMLoweringStrategy strategy,
+                                  A5VMLoopShape loopShape, Value src0, Value src1,
+                                  Value dst,
                                   PatternRewriter &rewriter, Location loc);
 
 LogicalResult lowerTLOAD(TLoadOp op, PatternRewriter &rewriter);

@@ -404,6 +404,46 @@ def PTO_PadValueAttr : PTO_Attr<"PadValue", "pad_value"> {
   let assemblyFormat = "`<` params `>`";
 }
 
+//===----------------------------------------------------------------------===//
+// A5VM per-op lowering choice
+//===----------------------------------------------------------------------===//
+
+def PTO_A5VMUpdateMode_PostUpdate
+    : I32EnumAttrCase<"PostUpdate", 0, "post_update">;
+def PTO_A5VMUpdateMode_NoPostUpdate
+    : I32EnumAttrCase<"NoPostUpdate", 1, "no_post_update">;
+
+def PTO_A5VMUpdateModeEnum : PTO_I32Enum<
+  "A5VMUpdateMode", "A5VM lowering update mode", [
+    PTO_A5VMUpdateMode_PostUpdate,
+    PTO_A5VMUpdateMode_NoPostUpdate
+  ]>;
+
+def PTO_A5VMLoopShape_OneD : I32EnumAttrCase<"OneD", 0, "one_d">;
+def PTO_A5VMLoopShape_TwoD : I32EnumAttrCase<"TwoD", 1, "two_d">;
+
+def PTO_A5VMLoopShapeEnum : PTO_I32Enum<
+  "A5VMLoopShape", "A5VM lowering loop shape", [
+    PTO_A5VMLoopShape_OneD,
+    PTO_A5VMLoopShape_TwoD
+  ]>;
+
+def PTO_A5VMLoweringChoiceAttr
+    : PTO_Attr<"A5VMLoweringChoice", "a5vm_lowering_choice"> {
+  let parameters = (ins
+    EnumParameter<PTO_A5VMUpdateModeEnum>:$updateMode,
+    EnumParameter<PTO_A5VMLoopShapeEnum>:$loopShape
+  );
+  let assemblyFormat = [{
+    `<` `update_mode` `=` $updateMode `,`
+         `loop_shape` `=` $loopShape `>`
+  }];
+  let description = [{
+    Per-op A5VM lowering choice. Encodes the selected update mode and loop
+    shape as one indivisible lowering decision.
+  }];
+}
+
 // ---------- tile_buf_config (NO b_fractal / s_fractal) ----------
 def TileBufConfigAttr : AttrDef<PTO_Dialect, "TileBufConfig"> {
   let mnemonic = "tile_buf_config";

@@ -29,6 +29,11 @@ namespace pto {
 
 namespace {
 
+static bool requiresExplicitA5VMLoweringChoice(Operation *op) {
+  auto func = op->getParentOfType<func::FuncOp>();
+  return func && func->hasAttr(kA5VMVersionSelectionAppliedAttrName);
+}
+
 FailureOr<A5VMLoweringStrategy>
 parseA5VMLoweringStrategy(StringRef strategyName) {
   if (strategyName == "post-update")
@@ -36,6 +41,27 @@ parseA5VMLoweringStrategy(StringRef strategyName) {
   if (strategyName == "no-post-update")
     return A5VMLoweringStrategy::NoPostUpdate;
   return failure();
+}
+
+FailureOr<A5VMLoweringStrategy>
+resolveA5VMLoweringStrategyForOp(Operation *op,
+                                 A5VMLoweringStrategy fallbackStrategy) {
+  if (!op->hasAttr(kA5VMLoweringChoiceAttrName)) {
+    if (requiresExplicitA5VMLoweringChoice(op)) {
+      op->emitOpError()
+          << "requires '" << kA5VMLoweringChoiceAttrName
+          << "' before PTOToA5VM in A5 fusion mainline, but the attribute is "
+             "missing";
+      return failure();
+    }
+    return fallbackStrategy;
+  }
+
+  FailureOr<A5VMLoweringChoiceAttr> choice = getA5VMLoweringChoiceAttr(op);
+  if (failed(choice))
+    return failure();
+
+  return convertA5VMUpdateModeToLoweringStrategy(choice->getUpdateMode());
 }
 
 LogicalResult lowerTLOADOp(TLoadOp op, PatternRewriter &rewriter) {
@@ -550,8 +576,29 @@ struct PTOToA5VMPass : public impl::PTOToA5VMBase<PTOToA5VMPass> {
     for (Operation *op : tensorPipelineOps) {
       if (!op->getBlock())
         continue;
-      if (failed(lowerTensorPipelineOp(op, rewriter, *loweringStrategy)))
+      FailureOr<A5VMLoweringChoiceAttr> effectiveChoice = failure();
+      if (requiresExplicitA5VMLoweringChoice(op) &&
+          op->hasAttr(kA5VMLoweringChoiceAttrName)) {
+        effectiveChoice = getA5VMLoweringChoiceAttr(op);
+        if (failed(effectiveChoice)) {
+          sawFailure = true;
+          continue;
+        }
+      }
+      FailureOr<A5VMLoweringStrategy> effectiveStrategy =
+          resolveA5VMLoweringStrategyForOp(op, *loweringStrategy);
+      if (failed(effectiveStrategy)) {
         sawFailure = true;
+        continue;
+      }
+      if (failed(lowerTensorPipelineOp(op, rewriter, *effectiveStrategy))) {
+        if (succeeded(effectiveChoice)) {
+          op->emitOpError()
+              << "failed to lower with '" << kA5VMLoweringChoiceAttrName
+              << "' = " << *effectiveChoice;
+        }
+        sawFailure = true;
+      }
     }
     for (Operation *op : residualPTOOps) {
       if (!op->getBlock())

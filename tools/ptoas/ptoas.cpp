@@ -683,12 +683,22 @@ static void addA5FusionRegionMainlinePreBackendPasses(OpPassManager &pm) {
 static void addA5VMBackendMainlinePasses(OpPassManager &pm,
                                          bool enableFusionMainline) {
   // Keep the A5 backend lowering boundary explicit:
-  //   FusionRegionGen -> PTOToA5VM -> PTOLowLevelLoopFusion -> CSE
-  //   -> PTOFusionPredicateElision -> PTOFusionLoadStoreElision
-  //   -> PTOFlattenFusionRegion -> backend emission.
-  pm.addPass(pto::createLowerPTOToA5VMPass(a5vmLoweringStrategy));
+  //   FusionRegionGen -> shared pre-backend normalization
+  //   -> PTOA5VMVersionSelection -> PTOToA5VM
+  //   -> Canonicalizer
+  //   -> PTOLowLevelLoopFusion -> CSE -> PTOFusionPredicateElision
+  //   -> PTOFusionLoadStoreElision -> PTOFlattenFusionRegion
+  //   -> backend emission.
+  if (enableFusionMainline) {
+    pm.addNestedPass<mlir::func::FuncOp>(
+        pto::createPTOA5VMVersionSelectionPass());
+    pm.addPass(pto::createLowerPTOToA5VMPass());
+  } else {
+    pm.addPass(pto::createLowerPTOToA5VMPass(a5vmLoweringStrategy));
+  }
 
   if (enableFusionMainline) {
+    pm.addPass(createCanonicalizerPass());
     pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
     loopFusionOptions.debug = opFusionDebug;
     pm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));
@@ -1344,6 +1354,11 @@ int main(int argc, char **argv) {
     if (opFusionDebug && !enableA5FusionMainline) {
       llvm::errs() << "Warning: --op-fusion-debug is ignored because "
                       "A5 fusion mainline is not enabled.\n";
+    }
+    if (enableA5FusionMainline && a5vmLoweringStrategy.getNumOccurrences() > 0) {
+      llvm::errs() << "Warning: --a5vm-lowering-strategy is ignored because "
+                      "A5 fusion mainline uses per-op "
+                      "pto.a5vm_lowering_choice.\n";
     }
   }
 

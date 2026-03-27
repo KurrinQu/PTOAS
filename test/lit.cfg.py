@@ -30,6 +30,25 @@ config.test_exec_root = os.path.join(build_root, "test")
 os.makedirs(config.test_exec_root, exist_ok=True)
 
 
+def _resolve_llvm_bin_dir():
+    env_build_dir = os.environ.get("LLVM_BUILD_DIR")
+    candidates = []
+    if env_build_dir:
+        candidates.append(os.path.join(os.path.abspath(env_build_dir), "bin"))
+
+    repo_root = os.path.abspath(os.path.join(config.test_source_root, ".."))
+    candidates.append(
+        os.path.abspath(
+            os.path.join(repo_root, "..", "llvm-project", "build-shared", "bin")
+        )
+    )
+
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return candidate
+    return ""
+
+
 def _resolve_ptoas_bin():
     env_bin = os.environ.get("PTOAS_BIN")
     if env_bin:
@@ -52,8 +71,11 @@ def _prepend_path(path_var, entry):
 
 ptoas_bin = _resolve_ptoas_bin()
 ptoas_dir = os.path.dirname(ptoas_bin) if os.path.isabs(ptoas_bin) else ""
+llvm_bin_dir = _resolve_llvm_bin_dir()
 
 path_env = config.environment.get("PATH", os.environ.get("PATH", ""))
+if llvm_bin_dir:
+    path_env = _prepend_path(path_env, llvm_bin_dir)
 if ptoas_dir:
     path_env = _prepend_path(path_env, ptoas_dir)
 config.environment["PATH"] = path_env

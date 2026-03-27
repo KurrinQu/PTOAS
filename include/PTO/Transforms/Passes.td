@@ -147,6 +147,17 @@ def PTOFusionRegionGen : Pass<"pto-fusion-region-gen", "func::FuncOp"> {
   let dependentDialects = ["mlir::pto::PTODialect"];
 }
 
+def PTOA5VMVersionSelection
+    : Pass<"pto-a5vm-version-selection", "func::FuncOp"> {
+  let summary = "Select and materialize per-op A5VM lowering variants";
+  let description = [{
+    Traverses all A5VM candidate PTO ops in a function and annotates each op
+    with a per-op `pto.a5vm_lowering_choice` contract for downstream lowering.
+  }];
+  let constructor = "mlir::pto::createPTOA5VMVersionSelectionPass()";
+  let dependentDialects = ["mlir::func::FuncDialect", "mlir::pto::PTODialect"];
+}
+
 def PreFusionAnalysis : Pass<"pto-pre-fusion-analysis", "func::FuncOp"> {
   let summary = "Analyze block-local tile-fusion candidates before planning";
   let description = [{

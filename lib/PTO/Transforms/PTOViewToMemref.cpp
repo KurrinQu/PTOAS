@@ -51,6 +51,11 @@ static void markForceDynamicValidShape(Operation *op, bool force,
 
 static Type convertPTOTypeToMemRef(Type t);
 
+static void copyAttrIfPresent(Operation *from, Operation *to, StringRef name) {
+  if (Attribute attr = from->getAttr(name))
+    to->setAttr(name, attr);
+}
+
 llvm::cl::opt<bool> viewToMemrefDebug(
     "pto-view-to-memref-debug",
     llvm::cl::desc(
@@ -1486,10 +1491,13 @@ struct PTOViewToMemrefPass
 
         Value src0 = op->getOperand(0);
         auto config = lookupConfig(src0);
-
-        rewriter.replaceOpWithNewOp<pto::TAddOp>(
-            op, TypeRange{}, op->getOperand(0), op->getOperand(1),
-            op->getOperand(2));
+        auto newOp = rewriter.create<pto::TAddOp>(op.getLoc(), TypeRange{},
+                                                  op->getOperand(0),
+                                                  op->getOperand(1),
+                                                  op->getOperand(2));
+        (void)config;
+        copyAttrIfPresent(op, newOp, kA5VMLoweringChoiceAttrName);
+        rewriter.replaceOp(op, newOp->getResults());
       }
 
       // --- TMatmulOp [Lhs, Rhs, Dst] (no optional bias in ODS) ---
