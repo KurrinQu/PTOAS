@@ -330,6 +330,22 @@ def PTOLowLevelLoopFusion : Pass<"pto-low-level-loop-fusion", "ModuleOp"> {
       "Enable verbose debug logging for low-level loop fusion">];
 }
 
+def PTOA5VMTrivialLoopCanonicalize
+    : Pass<"pto-a5vm-trivial-loop-canonicalize", "func::FuncOp"> {
+  let summary =
+      "Simplify trivial scf.for loops while preserving aivector-scope carriers";
+  let description = [{
+    Re-applies the upstream scf.for trivial-loop simplifications after the
+    A5VM fusion-mainline canonicalizer, but explicitly skips loops marked with
+    `llvm.loop.aivector_scope` so the carrier loop shape remains available to
+    downstream A5VM passes and backend emission.
+  }];
+  let constructor = "mlir::pto::createPTOA5VMTrivialLoopCanonicalizePass()";
+  let dependentDialects = ["mlir::func::FuncDialect",
+                           "mlir::arith::ArithDialect",
+                           "mlir::scf::SCFDialect"];
+}
+
 def PTOFusionPredicateElision
     : Pass<"pto-fusion-predicate-elision", "func::FuncOp"> {
   let summary =

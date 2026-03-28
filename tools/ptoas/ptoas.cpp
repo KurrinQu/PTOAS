@@ -709,7 +709,14 @@ static void addA5VMBackendMainlinePasses(OpPassManager &pm,
     pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
     loopFusionOptions.debug = opFusionDebug;
     pm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));
-    pm.addPass(createCanonicalizerPass());
+    GreedyRewriteConfig canonicalizeConfig;
+    pm.addPass(createCanonicalizerPass(
+        canonicalizeConfig,
+        {"SimplifyTrivialLoops",
+         "{anonymous}::SimplifyTrivialLoops",
+         "mlir::(anonymous namespace)::SimplifyTrivialLoops"}));
+    pm.addNestedPass<mlir::func::FuncOp>(
+        pto::createPTOA5VMTrivialLoopCanonicalizePass());
     pm.addPass(createCSEPass());
     pm.addNestedPass<mlir::func::FuncOp>(
         pto::createPTOFusionPredicateElisionPass());
