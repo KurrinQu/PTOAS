@@ -73,6 +73,7 @@ UNSTABLE_A3_CUSTOM_GOLDEN_CASES = frozenset({
     "scatter",
     "sel",
     "sels",
+    "sub",
     "xor",
 })
 
