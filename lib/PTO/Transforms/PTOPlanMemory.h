@@ -310,6 +310,13 @@ private:
   /// Update buffer alias information for ifop.
   void UpdateIfOpBufferAlias(scf::IfOp ifOp, scf::YieldOp yieldOp);
 
+  /// Recursive operation fusion_region.
+  void RecursiveFusionRegionOp(pto::FusionRegionOp fusionRegion, Liveness live);
+
+  /// Update buffer alias information for fusion_region results.
+  void UpdateFusionRegionBufferAlias(pto::FusionRegionOp fusionRegion,
+                                     pto::YieldOp yieldOp);
+
   /// Update and obtain op info information.
   OpInfo *UpdateLinearOperation(Operation *op);
 

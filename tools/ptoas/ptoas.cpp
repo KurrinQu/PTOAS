@@ -9,41 +9,49 @@
 #include "PTO/IR/A5VM.h"
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/A5VMLowering.h"
-#include "PTO/Transforms/A5VMTextEmitter.h"
 #include "PTO/Transforms/A5VMLLVMEmitter.h"
-#include "PTO/Transforms/Passes.h"
+#include "PTO/Transforms/A5VMTextEmitter.h"
 #include "PTO/Transforms/BufferizableOpInterfaceImpl.h"
-#include "mlir/IR/MLIRContext.h"
-#include "mlir/IR/Diagnostics.h"
+#include "PTO/Transforms/CppEmitter.h"
+#include "PTO/Transforms/Passes.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/EmitC/IR/EmitC.h"
+#include "mlir/Dialect/EmitC/Transforms/Passes.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/MLIRContext.h"
 #include "mlir/InitAllDialects.h"
 #include "mlir/InitAllPasses.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include <cctype>
-#include <cstring>
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "mlir/Target/Cpp/CppEmitter.h"
-#include "llvm/Support/SourceMgr.h"
-#include "llvm/Support/ToolOutputFile.h"
-#include "llvm/Support/FileSystem.h" // [Fix] Required for OF_None
 #include "ptobc/ptobc_decode.h"
-#include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
-#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/EmitC/IR/EmitC.h"
-#include "mlir/Dialect/EmitC/Transforms/Passes.h"
-#include "llvm/Support/CommandLine.h"
-#include "llvm/Support/raw_ostream.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/FileSystem.h" // [Fix] Required for OF_None
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/ToolOutputFile.h"
+#include "llvm/Support/raw_ostream.h"
+#include <cctype>
+#include <cstring>
+#include <memory>
+#include <optional>
 #include <string>
+#include <system_error>
 
 using namespace mlir;
 using namespace pto;
@@ -54,6 +62,121 @@ using namespace pto;
 
 static void printPTOASVersion(llvm::raw_ostream &os) {
   os << "ptoas " << PTOAS_RELEASE_VERSION << "\n";
+}
+
+namespace {
+} // namespace
+
+static LogicalResult reorderEmitCFunctions(ModuleOp module) {
+  SmallVector<emitc::FuncOp> declarations;
+  SmallVector<emitc::FuncOp> definitions;
+  llvm::DenseMap<StringAttr, emitc::FuncOp> definitionsByName;
+
+  for (auto func : module.getOps<emitc::FuncOp>()) {
+    if (func.isDeclaration()) {
+      declarations.push_back(func);
+      continue;
+    }
+    definitions.push_back(func);
+    definitionsByName[func.getSymNameAttr()] = func;
+  }
+
+  llvm::DenseMap<Operation *, unsigned> indegree;
+  llvm::DenseMap<Operation *, SmallVector<Operation *>> outgoing;
+  for (auto func : definitions)
+    indegree[func.getOperation()] = 0;
+
+  for (auto caller : definitions) {
+    Operation *callerOp = caller.getOperation();
+    llvm::SmallPtrSet<Operation *, 8> seenCallees;
+    bool hasCycle = false;
+    caller.walk([&](emitc::CallOp call) {
+      auto calleeAttr = call.getCalleeAttr();
+      if (!calleeAttr)
+        return;
+      auto it = definitionsByName.find(calleeAttr.getLeafReference());
+      if (it == definitionsByName.end())
+        return;
+      Operation *calleeOp = it->second.getOperation();
+      if (calleeOp == callerOp) {
+        hasCycle = true;
+        return;
+      }
+      if (!seenCallees.insert(calleeOp).second)
+        return;
+      outgoing[calleeOp].push_back(callerOp);
+      ++indegree[callerOp];
+    });
+    if (hasCycle) {
+      return caller.emitOpError()
+             << "recursive function calls are not supported for EmitC C++ "
+                "emission";
+    }
+  }
+
+  SmallVector<Operation *> ready;
+  for (auto func : definitions) {
+    if (indegree[func.getOperation()] == 0)
+      ready.push_back(func.getOperation());
+  }
+
+  SmallVector<emitc::FuncOp> sortedDefinitions;
+  while (!ready.empty()) {
+    Operation *next = ready.front();
+    ready.erase(ready.begin());
+    auto nextFunc = cast<emitc::FuncOp>(next);
+    sortedDefinitions.push_back(nextFunc);
+
+    for (Operation *user : outgoing[next]) {
+      unsigned &userIndegree = indegree[user];
+      if (--userIndegree == 0)
+        ready.push_back(user);
+    }
+  }
+
+  if (sortedDefinitions.size() != definitions.size()) {
+    return module.emitError() << "cyclic function call graph is not supported "
+                                 "for EmitC C++ emission";
+  }
+
+  if (declarations.empty() && definitions.size() <= 1)
+    return success();
+
+  SmallVector<emitc::FuncOp> desiredOrder;
+  desiredOrder.append(declarations.begin(), declarations.end());
+  desiredOrder.append(sortedDefinitions.begin(), sortedDefinitions.end());
+
+  Block &body = module.getBodyRegion().front();
+  Operation *anchor = nullptr;
+  for (Operation &op : body.getOperations()) {
+    if (isa<emitc::FuncOp>(op)) {
+      anchor = &op;
+      break;
+    }
+  }
+  if (!anchor)
+    return success();
+
+  auto advanceAnchor = [&]() {
+    while (anchor) {
+      anchor = anchor->getNextNode();
+      if (!anchor || isa<emitc::FuncOp>(anchor))
+        return;
+    }
+  };
+
+  for (auto func : desiredOrder) {
+    if (func.getOperation() == anchor) {
+      advanceAnchor();
+      continue;
+    }
+    if (anchor)
+      func->moveBefore(anchor);
+    else
+      func->moveBefore(&body, body.end());
+  }
+
+  return success();
 }
 
 // #define ADD_CANONICALIZER_PASS \
@@ -104,14 +227,63 @@ static llvm::cl::opt<std::string> inputFilename(llvm::cl::Positional,
                                                 llvm::cl::desc("<input file>"),
                                                 llvm::cl::init("-"));
 
-static llvm::cl::opt<std::string> outputFilename("o",
-                                                 llvm::cl::desc("Output filename"),
-                                                 llvm::cl::value_desc("filename"),
-                                                 llvm::cl::init("-"));
+static llvm::cl::opt<std::string>
+    outputFilename("o", llvm::cl::desc("Output filename"),
+                   llvm::cl::value_desc("filename"), llvm::cl::init("-"));
 
-static llvm::cl::opt<bool> enableInsertSync("enable-insert-sync",
-                                            llvm::cl::desc("Enable automatic synchronization insertion pass"),
-                                            llvm::cl::init(false));
+static llvm::cl::opt<bool> enableInsertSync(
+    "enable-insert-sync",
+    llvm::cl::desc("Enable automatic synchronization insertion pass"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> enableOpFusion(
+    "enable-op-fusion",
+    llvm::cl::desc("Enable the A5VM fusion pipeline "
+                   "(FusionPlan/OpScheduling/FusionRegionGen/"
+                   "PTOToA5VM/LowLevelLoopFusion/FlattenFusionRegion). "
+                   "Ignored by EmitC."),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> testOnlyFusionRegionGen(
+    "test-only-fusion-region-gen",
+    llvm::cl::desc("Run only PTOFusionRegionGen and exit (test-only)"),
+    llvm::cl::Hidden, llvm::cl::init(false));
+
+static llvm::cl::opt<bool> testOnlyOpScheduling(
+    "test-only-op-scheduling",
+    llvm::cl::desc("Run only FusionPlan + OpScheduling and exit (test-only)"),
+    llvm::cl::Hidden, llvm::cl::init(false));
+
+static llvm::cl::opt<std::string>
+    opLibDir("op-lib-dir",
+             llvm::cl::desc("Deprecated OP-Lib template directory flag. "
+                            "Ignored by both EmitC and A5VM backends."),
+             llvm::cl::value_desc("path"), llvm::cl::init(""));
+
+static llvm::cl::opt<bool>
+    opFusionDebug("op-fusion-debug",
+                  llvm::cl::desc("Enable verbose debug logs for the A5VM "
+                                 "fusion pipeline"),
+                  llvm::cl::init(false));
+
+static llvm::cl::opt<bool> printIRAfterAll(
+    "print-ir-after-all",
+    llvm::cl::desc("Print MLIR IR after each pass in all PTOAS pass pipelines "
+                   "for user-related functions"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> dumpPreFusionAnalysis(
+    "dump-pre-fusion-analysis",
+    llvm::cl::desc("Run pre-fusion analysis in tile_buf world, print a stable "
+                   "text dump, and exit"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<std::string> printIRAfterAllFuncFilter(
+    "print-ir-after-all-func-filter",
+    llvm::cl::desc("When --print-ir-after-all is enabled, only print dumps for "
+                   "func.func whose symbol name contains this substring "
+                   "(overrides the default user-related filtering)"),
+    llvm::cl::value_desc("substring"), llvm::cl::init(""));
 
 static llvm::cl::opt<bool> disableInferLayout(
     "disable-infer-layout",
@@ -125,25 +297,30 @@ static llvm::cl::opt<bool> emitAddPtrTrace(
 
 static llvm::cl::opt<std::string> ptoTargetArch(
     "pto-arch",
-    llvm::cl::desc("Target Ascend architecture for codegen: a3 or a5 (default: a3)"),
-    llvm::cl::value_desc("a3|a5"),
-    llvm::cl::init("a3"));
+    llvm::cl::desc(
+        "Target Ascend architecture for codegen: a3 or a5 (default: a3)"),
+    llvm::cl::value_desc("a3|a5"), llvm::cl::init("a3"));
 
-static llvm::cl::opt<std::string> ptoBuildLevel(
-    "pto-level",
-    llvm::cl::desc("Build level for pass pipeline: level1, level2, or level3 (default: level2)"),
-    llvm::cl::value_desc("level1|level2|level3"),
-    llvm::cl::init("level2"));
+static llvm::cl::opt<std::string>
+    ptoBuildLevel("pto-level",
+                  llvm::cl::desc("Build level for pass pipeline: level1, "
+                                 "level2, or level3 (default: level2)"),
+                  llvm::cl::value_desc("level1|level2|level3"),
+                  llvm::cl::init("level2"));
 
 static llvm::cl::opt<std::string> ptoBackend(
     "pto-backend",
     llvm::cl::desc("Final PTOAS backend: emitc or a5vm (default: emitc)"),
-    llvm::cl::value_desc("emitc|a5vm"),
-    llvm::cl::init("emitc"));
+    llvm::cl::value_desc("emitc|a5vm"), llvm::cl::init("emitc"));
 
 static llvm::cl::opt<bool> emitA5VM(
     "emit-a5vm",
     llvm::cl::desc("Write final post-pass A5VM IR to -o"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> a5vmPrintIR(
+    "a5vm-print-ir",
+    llvm::cl::desc("Print post-pass A5VM backend IR to stderr"),
     llvm::cl::init(false));
 
 static llvm::cl::opt<std::string> a5vmLoweringStrategy(
@@ -151,6 +328,11 @@ static llvm::cl::opt<std::string> a5vmLoweringStrategy(
     llvm::cl::desc("A5VM vector lowering strategy: post-update or no-post-update"),
     llvm::cl::value_desc("post-update|no-post-update"),
     llvm::cl::init("post-update"));
+
+static llvm::cl::opt<bool> dumpA5VMIR(
+    "dump-a5vm-ir",
+    llvm::cl::desc("Print post-pass A5VM backend IR to stderr"),
+    llvm::cl::init(false));
 
 static llvm::cl::opt<bool> ptoPrintSeamIR(
     "pto-print-seam-ir",
@@ -160,8 +342,7 @@ static llvm::cl::opt<bool> ptoPrintSeamIR(
 static llvm::cl::opt<std::string> ptoSeamIRFile(
     "pto-seam-ir-file",
     llvm::cl::desc("Write shared pre-backend seam IR to a file"),
-    llvm::cl::value_desc("path"),
-    llvm::cl::init(""));
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
 
 static llvm::cl::opt<bool> a5vmPrintIntrinsics(
     "a5vm-print-intrinsics",
@@ -170,17 +351,21 @@ static llvm::cl::opt<bool> a5vmPrintIntrinsics(
 
 static llvm::cl::opt<bool> a5vmEmitHIVMText(
     "a5vm-emit-hivm-text",
-    llvm::cl::desc("After lowering to A5VM IR, emit textual LLVM/HIVM instead of raw A5VM IR"),
+    llvm::cl::desc(
+        "After lowering to A5VM IR, emit textual LLVM/HIVM instead of raw "
+        "A5VM IR"),
     llvm::cl::init(false));
 
 static llvm::cl::opt<bool> a5vmEmitHIVMOfficialLLVM(
     "a5vm-emit-hivm-llvm",
-    llvm::cl::desc("After lowering to A5VM IR, emit textual LLVM/HIVM via the official LLVM dialect export path"),
+    llvm::cl::desc("After lowering to A5VM IR, emit textual LLVM/HIVM via "
+                   "the official LLVM dialect export path"),
     llvm::cl::init(false));
 
 static llvm::cl::opt<bool> a5vmEmitHIVMOfficialBitcode(
     "a5vm-emit-hivm-bc",
-    llvm::cl::desc("After lowering to A5VM IR, emit LLVM bitcode via the official LLVM dialect export path"),
+    llvm::cl::desc("After lowering to A5VM IR, emit LLVM bitcode via the "
+                   "official LLVM dialect export path"),
     llvm::cl::init(false));
 
 static llvm::cl::opt<bool> a5vmAllowUnresolved(
@@ -191,14 +376,12 @@ static llvm::cl::opt<bool> a5vmAllowUnresolved(
 static llvm::cl::opt<std::string> a5vmUnresolvedReport(
     "a5vm-unresolved-report",
     llvm::cl::desc("Write unresolved A5VM mappings to a sidecar report"),
-    llvm::cl::value_desc("path"),
-    llvm::cl::init(""));
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
 
 static llvm::cl::opt<std::string> hivmUnresolvedReport(
     "hivm-unresolved-report",
     llvm::cl::desc("Write unresolved HIVM mappings to a sidecar report"),
-    llvm::cl::value_desc("path"),
-    llvm::cl::init(""));
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
 
 enum class PTOBuildLevel {
   Level1,
@@ -206,19 +389,27 @@ enum class PTOBuildLevel {
   Level3,
 };
 
+enum class PTOTargetArch {
+  A3,
+  A5,
+};
+
 enum class PTOBackend {
   EmitC,
   A5VM,
 };
 
-static PTOBuildLevel defaultBuildLevel() {
-  return PTOBuildLevel::Level2;
+static std::string asciiLowercaseCopy(llvm::StringRef text) {
+  std::string lowered = text.str();
+  for (char &c : lowered)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return lowered;
 }
 
+static PTOBuildLevel defaultBuildLevel() { return PTOBuildLevel::Level2; }
+
 static bool parseBuildLevel(llvm::StringRef levelStr, PTOBuildLevel &out) {
-  std::string s = levelStr.str();
-  for (char &c : s)
-    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  std::string s = asciiLowercaseCopy(levelStr);
   if (s == "level1") {
     out = PTOBuildLevel::Level1;
     return true;
@@ -234,10 +425,43 @@ static bool parseBuildLevel(llvm::StringRef levelStr, PTOBuildLevel &out) {
   return false;
 }
 
-static bool parseBackend(llvm::StringRef backendStr, PTOBackend &out) {
-  std::string s = backendStr.str();
+static constexpr llvm::StringLiteral kAutoSyncTailPolicyBarrierAll =
+    "barrier_all";
+static constexpr llvm::StringLiteral kAutoSyncTailPolicyMte3ToSEvent0 =
+    "setwait_mte3_to_s_event0";
+
+static bool parseAutoSyncTailHint(llvm::StringRef hintStr,
+                                  std::string &normalized) {
+  std::string s = hintStr.str();
   for (char &c : s)
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (s == "barrier-all" || s == "barrier_all" || s == "default") {
+    normalized = kAutoSyncTailPolicyBarrierAll.str();
+    return true;
+  }
+  if (s == "mte3-to-s-event0" || s == "mte3_to_s_event0" ||
+      s == "setwait-mte3-to-s-event0" || s == "setwait_mte3_to_s_event0") {
+    normalized = kAutoSyncTailPolicyMte3ToSEvent0.str();
+    return true;
+  }
+  return false;
+}
+
+static bool parseTargetArch(llvm::StringRef archStr, PTOTargetArch &out) {
+  std::string s = asciiLowercaseCopy(archStr);
+  if (s == "a3") {
+    out = PTOTargetArch::A3;
+    return true;
+  }
+  if (s == "a5") {
+    out = PTOTargetArch::A5;
+    return true;
+  }
+  return false;
+}
+
+static bool parseBackend(llvm::StringRef backendStr, PTOBackend &out) {
+  std::string s = asciiLowercaseCopy(backendStr);
   if (s == "emitc") {
     out = PTOBackend::EmitC;
     return true;
@@ -247,6 +471,185 @@ static bool parseBackend(llvm::StringRef backendStr, PTOBackend &out) {
     return true;
   }
   return false;
+}
+
+namespace {
+static void
+printIRDumpHeader(PassManager::IRPrinterConfig::PrintCallbackFn printCallback,
+                  llvm::raw_ostream &out) {
+  std::string dumpText;
+  llvm::raw_string_ostream dumpStream(dumpText);
+  printCallback(dumpStream);
+  dumpStream.flush();
+
+  llvm::StringRef headerLine = dumpText;
+  if (size_t newlinePos = headerLine.find('\n');
+      newlinePos != std::string::npos)
+    headerLine = headerLine.take_front(newlinePos);
+  out << headerLine << "\n";
+}
+
+class SelectedFuncsIRPrinterConfig : public PassManager::IRPrinterConfig {
+public:
+  SelectedFuncsIRPrinterConfig(llvm::raw_ostream &out)
+      : IRPrinterConfig(/*printModuleScope=*/false,
+                        /*printAfterOnlyOnChange=*/false,
+                        /*printAfterOnlyOnFailure=*/false),
+        out(out) {}
+
+  void printBeforeIfEnabled(Pass *, Operation *, PrintCallbackFn) override {}
+
+protected:
+  void printSelectedOp(Operation *op, PrintCallbackFn printCallback) {
+    printIRDumpHeader(printCallback, out);
+    op->print(out, getOpPrintingFlags());
+    out << "\n\n";
+  }
+
+  template <typename OpT, typename SelectorT>
+  static bool
+  appendSelectedFuncs(ModuleOp moduleOp,
+                      llvm::SmallVectorImpl<Operation *> &matchedOps,
+                      SelectorT selector) {
+    bool added = false;
+    for (OpT funcOp : moduleOp.getOps<OpT>()) {
+      if (!selector(funcOp))
+        continue;
+      matchedOps.push_back(funcOp.getOperation());
+      added = true;
+    }
+    return added;
+  }
+
+  void
+  printSelectedFuncs(ModuleOp moduleOp, PrintCallbackFn printCallback,
+                     llvm::function_ref<bool(func::FuncOp)> funcSelector,
+                     llvm::function_ref<bool(emitc::FuncOp)> emitcSelector) {
+    llvm::SmallVector<Operation *, 8> matchedOps;
+    bool hasMatches =
+        appendSelectedFuncs<func::FuncOp>(moduleOp, matchedOps, funcSelector);
+    hasMatches |=
+        appendSelectedFuncs<emitc::FuncOp>(moduleOp, matchedOps, emitcSelector);
+    if (!hasMatches)
+      return;
+
+    printIRDumpHeader(printCallback, out);
+    for (Operation *op : matchedOps) {
+      op->print(out, getOpPrintingFlags());
+      out << "\n";
+    }
+    out << "\n";
+  }
+
+  llvm::raw_ostream &out;
+};
+
+class FuncFilteredIRPrinterConfig final : public SelectedFuncsIRPrinterConfig {
+public:
+  FuncFilteredIRPrinterConfig(std::string funcFilter, llvm::raw_ostream &out)
+      : SelectedFuncsIRPrinterConfig(out), funcFilter(std::move(funcFilter)),
+        out(out) {}
+
+  void printBeforeIfEnabled(Pass *, Operation *, PrintCallbackFn) override {}
+
+  void printAfterIfEnabled(Pass *, Operation *op,
+                           PrintCallbackFn printCallback) override {
+    if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
+      if (!funcOp.getSymName().contains(funcFilter))
+        return;
+      printSelectedOp(funcOp, printCallback);
+      return;
+    }
+    if (auto emitcFuncOp = dyn_cast<emitc::FuncOp>(op)) {
+      if (!emitcFuncOp.getSymName().contains(funcFilter))
+        return;
+      printSelectedOp(emitcFuncOp, printCallback);
+      return;
+    }
+
+    auto moduleOp = dyn_cast<ModuleOp>(op);
+    if (!moduleOp)
+      return;
+
+    printSelectedFuncs(
+        moduleOp, printCallback,
+        [&](func::FuncOp funcOp) {
+          return funcOp.getSymName().contains(funcFilter);
+        },
+        [&](emitc::FuncOp funcOp) {
+          return funcOp.getSymName().contains(funcFilter);
+        });
+  }
+
+private:
+  std::string funcFilter;
+  llvm::raw_ostream &out;
+};
+
+class UserRelevantIRPrinterConfig final : public SelectedFuncsIRPrinterConfig {
+public:
+  UserRelevantIRPrinterConfig(const llvm::StringSet<> &userFuncNames,
+                              llvm::raw_ostream &out)
+      : SelectedFuncsIRPrinterConfig(out), userFuncNames(userFuncNames) {}
+
+  void printAfterIfEnabled(Pass *, Operation *op,
+                           PrintCallbackFn printCallback) override {
+    if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
+      if (!shouldPrintFunction(funcOp))
+        return;
+      printSelectedOp(funcOp, printCallback);
+      return;
+    }
+    if (auto emitcFuncOp = dyn_cast<emitc::FuncOp>(op)) {
+      if (!shouldPrintFunction(emitcFuncOp))
+        return;
+      printSelectedOp(emitcFuncOp, printCallback);
+      return;
+    }
+
+    auto moduleOp = dyn_cast<ModuleOp>(op);
+    if (!moduleOp)
+      return;
+
+    printSelectedFuncs(
+        moduleOp, printCallback,
+        [&](func::FuncOp funcOp) { return shouldPrintFunction(funcOp); },
+        [&](emitc::FuncOp funcOp) { return shouldPrintFunction(funcOp); });
+  }
+
+private:
+  static bool shouldPrintFunctionName(llvm::StringRef symName,
+                                      const llvm::StringSet<> &userFuncNames) {
+    return userFuncNames.contains(symName) ||
+           symName.starts_with("__pto_oplib_inst_") ||
+           symName.starts_with("__pto_fused_group_");
+  }
+
+  bool shouldPrintFunction(func::FuncOp funcOp) const {
+    return shouldPrintFunctionName(funcOp.getSymName(), userFuncNames);
+  }
+
+  bool shouldPrintFunction(emitc::FuncOp funcOp) const {
+    return shouldPrintFunctionName(funcOp.getSymName(), userFuncNames);
+  }
+
+  llvm::StringSet<> userFuncNames;
+};
+} // namespace
+
+static void maybeEnablePrintIRAfterAll(PassManager &pm,
+                                       const llvm::StringSet<> &userFuncNames) {
+  if (!printIRAfterAll)
+    return;
+  std::string funcFilter = printIRAfterAllFuncFilter;
+  if (!funcFilter.empty()) {
+    pm.enableIRPrinting(std::make_unique<FuncFilteredIRPrinterConfig>(
+        std::move(funcFilter), llvm::errs()));
+    return;
+  }
+
+  pm.enableIRPrinting(std::make_unique<UserRelevantIRPrinterConfig>(
+      userFuncNames, llvm::errs()));
 }
 
 static void addSharedPreBackendPasses(OpPassManager &pm,
@@ -277,24 +680,60 @@ static void addSharedPreBackendPasses(OpPassManager &pm,
   pm.addPass(createCSEPass());
 }
 
-static void addBackendLoweringPasses(OpPassManager &pm,
-                                     PTOBackend effectiveBackend) {
-  if (effectiveBackend == PTOBackend::A5VM) {
+static void addA5FusionRegionMainlinePreBackendPasses(OpPassManager &pm) {
+  pm.addNestedPass<mlir::func::FuncOp>(pto::createFusionPlanPass());
+  pm.addNestedPass<mlir::func::FuncOp>(pto::createOpSchedulingPass());
+  pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOFusionRegionGenPass());
+}
+
+static void addA5VMBackendMainlinePasses(OpPassManager &pm,
+                                         bool enableFusionMainline) {
+  // Keep the A5 backend lowering boundary explicit:
+  //   FusionRegionGen -> shared pre-backend normalization
+  //   -> PTOA5VMVersionSelection -> PTOToA5VM
+  //   -> PTOA5VMIfCanonicalize
+  //   -> PTOLowLevelLoopFusion -> Canonicalize
+  //   -> CSE -> PTOFusionPredicateElision
+  //   -> PTOFusionLoadStoreElision -> PTOFlattenFusionRegion
+  //   -> backend emission.
+  if (enableFusionMainline) {
+    pm.addNestedPass<mlir::func::FuncOp>(
+        pto::createPTOA5VMVersionSelectionPass());
+    pm.addPass(pto::createLowerPTOToA5VMPass());
+  } else {
     pm.addPass(pto::createLowerPTOToA5VMPass(a5vmLoweringStrategy));
-    pm.addPass(mlir::createCSEPass());
-    return;
   }
 
-  std::string arch = ptoTargetArch;
-  for (char &c : arch)
-    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  if (arch == "a3") {
-    pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));
-  } else {
-    pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A5));
+  if (enableFusionMainline) {
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOA5VMIfCanonicalizePass());
+    pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
+    loopFusionOptions.debug = opFusionDebug;
+    pm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));
+    pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
+    pm.addNestedPass<mlir::func::FuncOp>(
+        pto::createPTOFusionPredicateElisionPass());
+    pm.addNestedPass<mlir::func::FuncOp>(
+        pto::createPTOFusionLoadStoreElisionPass());
+    pm.addNestedPass<mlir::func::FuncOp>(
+        pto::createPTOFlattenFusionRegionPass());
   }
-  pm.addPass(emitc::createFormExpressionsPass());
+
   pm.addPass(mlir::createCSEPass());
+}
+
+static void printA5VMIROpSummary(ModuleOp module, llvm::raw_ostream &os) {
+  for (func::FuncOp func : module.getOps<func::FuncOp>()) {
+    for (Operation &op : func.getBody().front().getOperations()) {
+      os << "A5VM IR op: " << op.getName().getStringRef() << "\n";
+      for (Region &region : op.getRegions()) {
+        for (Block &block : region) {
+          for (Operation &nested : block.getOperations())
+            os << "A5VM IR op: " << nested.getName().getStringRef() << "\n";
+        }
+      }
+    }
+  }
 }
 
 static LogicalResult emitSharedPreBackendSeamIR(ModuleOp module,
@@ -323,6 +762,18 @@ static LogicalResult emitSharedPreBackendSeamIR(ModuleOp module,
   return success();
 }
 
+static bool containsA5VMIR(llvm::StringRef input) {
+  llvm::StringRef rest = input;
+  while (!rest.empty()) {
+    auto split = rest.split('\n');
+    llvm::StringRef line = split.first.trim();
+    if (!line.starts_with("//") &&
+        (line.contains("!a5vm.vec<") || line.contains("a5vm.")))
+      return true;
+    rest = split.second;
+  }
+  return false;
+}
 // --------------------------------------------------------------------------
 // Post-process C++ output: rewrite marker calls into Tile member calls.
 //
@@ -331,92 +782,134 @@ static LogicalResult emitSharedPreBackendSeamIR(ModuleOp module,
 //   PTOAS__TILE_SET_VALUE(dst, offset, val) -> dst.SetValue(offset, val)
 //   PTOAS__TILE_GET_VALUE(src, offset)      -> src.GetValue(offset)
 //   PTOAS__TILE_DATA(obj)                  -> obj.data()
+//   PTOAS__TILE_SET_VALIDSHAPE(obj, r, c)  -> obj.SetValidShape(r, c)
+//   PTOAS__TILE_GET_VALID_ROW(obj)         -> obj.GetValidRow()
+//   PTOAS__TILE_GET_VALID_COL(obj)         -> obj.GetValidCol()
 //   PTOAS__PTR_LOAD(ptr, offset)           -> ptr[offset]
 //   PTOAS__PTR_STORE(ptr, offset, val)     -> ptr[offset] = val
 // --------------------------------------------------------------------------
-static bool rewriteMarkerCallToMember(std::string &cpp, llvm::StringRef marker,
-                                      llvm::StringRef memberName,
-                                      unsigned expectedNumArgs) {
+struct MarkerCallMatch {
+  size_t markerPos = std::string::npos;
+  size_t rparenPos = std::string::npos;
+  llvm::SmallVector<llvm::StringRef, 4> args;
+};
+
+static llvm::SmallVector<llvm::StringRef, 4>
+splitTopLevelCallArgs(llvm::StringRef argsRef) {
+  llvm::SmallVector<llvm::StringRef, 4> args;
+  size_t partBegin = 0;
+  int parenDepth = 0;
+  for (size_t i = 0; i < argsRef.size(); ++i) {
+    char c = argsRef[i];
+    if (c == '(') {
+      ++parenDepth;
+    } else if (c == ')') {
+      if (parenDepth > 0)
+        --parenDepth;
+    } else if (c == ',' && parenDepth == 0) {
+      args.push_back(argsRef.slice(partBegin, i).trim());
+      partBegin = i + 1;
+    }
+  }
+  if (partBegin <= argsRef.size())
+    args.push_back(argsRef.drop_front(partBegin).trim());
+  return args;
+}
+
+static bool parseMarkerCallAt(llvm::StringRef cpp, llvm::StringRef marker,
+                              size_t markerPos, MarkerCallMatch &match,
+                              bool &stopScanning) {
+  stopScanning = false;
+
+  size_t lparenPos = markerPos + marker.size();
+  if (lparenPos >= cpp.size() || cpp[lparenPos] != '(')
+    return false;
+
+  size_t argsBegin = lparenPos + 1;
+  int parenDepth = 0;
+  size_t rparenPos = std::string::npos;
+  for (size_t i = argsBegin; i < cpp.size(); ++i) {
+    char c = cpp[i];
+    if (c == '(') {
+      ++parenDepth;
+    } else if (c == ')') {
+      if (parenDepth == 0) {
+        rparenPos = i;
+        break;
+      }
+      --parenDepth;
+    }
+  }
+  if (rparenPos == std::string::npos) {
+    stopScanning = true;
+    return false;
+  }
+
+  match.markerPos = markerPos;
+  match.rparenPos = rparenPos;
+  match.args = splitTopLevelCallArgs(cpp.slice(argsBegin, rparenPos));
+  return true;
+}
+
+template <typename RewriteFn>
+static bool rewriteMarkerCalls(std::string &cpp, llvm::StringRef marker,
+                               RewriteFn &&buildReplacement) {
   size_t searchPos = 0;
   bool changed = false;
   while (true) {
-    size_t markerPos = cpp.find(marker.str(), searchPos);
-    if (markerPos == std::string::npos)
+    llvm::StringRef cppRef(cpp);
+    size_t markerPos = cppRef.find(marker, searchPos);
+    if (markerPos == llvm::StringRef::npos)
       break;
 
-    size_t lparenPos = markerPos + marker.size();
-    if (lparenPos >= cpp.size() || cpp[lparenPos] != '(') {
+    MarkerCallMatch match;
+    bool stopScanning = false;
+    if (!parseMarkerCallAt(cppRef, marker, markerPos, match, stopScanning)) {
+      if (stopScanning)
+        break;
       searchPos = markerPos + marker.size();
       continue;
     }
 
-    // Find the matching ')' for this call, tracking nested parentheses.
-    size_t argsBegin = lparenPos + 1;
-    int parenDepth = 0;
-    size_t rparenPos = std::string::npos;
-    for (size_t i = argsBegin; i < cpp.size(); ++i) {
-      char c = cpp[i];
-      if (c == '(') {
-        ++parenDepth;
-      } else if (c == ')') {
-        if (parenDepth == 0) {
-          rparenPos = i;
-          break;
-        }
-        --parenDepth;
-      }
-    }
-    if (rparenPos == std::string::npos) {
-      // Unbalanced parentheses; stop trying to rewrite.
-      break;
-    }
-
-    llvm::StringRef argsRef(cpp.data() + argsBegin, rparenPos - argsBegin);
-    llvm::SmallVector<llvm::StringRef, 4> args;
-    size_t partBegin = 0;
-    parenDepth = 0;
-    for (size_t i = 0; i < argsRef.size(); ++i) {
-      char c = argsRef[i];
-      if (c == '(') {
-        ++parenDepth;
-      } else if (c == ')') {
-        if (parenDepth > 0)
-          --parenDepth;
-      } else if (c == ',' && parenDepth == 0) {
-        args.push_back(argsRef.slice(partBegin, i).trim());
-        partBegin = i + 1;
-      }
-    }
-    if (partBegin <= argsRef.size())
-      args.push_back(argsRef.drop_front(partBegin).trim());
-
-    if (args.size() != expectedNumArgs) {
-      searchPos = rparenPos + 1;
+    size_t replaceEnd = match.rparenPos;
+    std::string replacement;
+    if (!buildReplacement(match, replacement, replaceEnd)) {
+      searchPos = match.rparenPos + 1;
       continue;
     }
 
-    std::string replacement;
-    replacement.reserve(marker.size() + argsRef.size() + 16);
-    replacement.append(args[0].str());
-    replacement.push_back('.');
-    replacement.append(memberName.str());
-    replacement.push_back('(');
-    if (expectedNumArgs == 1) {
-      // no args
-    } else if (expectedNumArgs == 2) {
-      replacement.append(args[1].str());
-    } else if (expectedNumArgs == 3) {
-      replacement.append(args[1].str());
-      replacement.append(", ");
-      replacement.append(args[2].str());
-    }
-    replacement.push_back(')');
-
-    cpp.replace(markerPos, (rparenPos - markerPos) + 1, replacement);
+    cpp.replace(match.markerPos, (replaceEnd - match.markerPos) + 1,
+                replacement);
     changed = true;
-    searchPos = markerPos + replacement.size();
+    searchPos = match.markerPos + replacement.size();
   }
   return changed;
+}
+
+static bool rewriteMarkerCallToMember(std::string &cpp, llvm::StringRef marker,
+                                      llvm::StringRef memberName,
+                                      unsigned expectedNumArgs) {
+  return rewriteMarkerCalls(cpp, marker,
+                            [&](const MarkerCallMatch &match,
+                                std::string &replacement, size_t &) -> bool {
+                              if (match.args.size() != expectedNumArgs)
+                                return false;
+
+                              replacement.clear();
+                              replacement.append(match.args[0].str());
+                              replacement.push_back('.');
+                              replacement.append(memberName.str());
+                              replacement.push_back('(');
+                              if (expectedNumArgs == 2) {
+                                replacement.append(match.args[1].str());
+                              } else if (expectedNumArgs == 3) {
+                                replacement.append(match.args[1].str());
+                                replacement.append(", ");
+                                replacement.append(match.args[2].str());
+                              }
+                              replacement.push_back(')');
+                              return true;
+                            });
 }
 
 static void rewriteTileGetSetValueMarkers(std::string &cpp) {
@@ -424,12 +917,19 @@ static void rewriteTileGetSetValueMarkers(std::string &cpp) {
   bool changed = true;
   while (changed) {
     changed = false;
-    changed |= rewriteMarkerCallToMember(
-        cpp, "PTOAS__TILE_SET_VALUE", "SetValue", /*expectedNumArgs=*/3);
-    changed |= rewriteMarkerCallToMember(
-        cpp, "PTOAS__TILE_GET_VALUE", "GetValue", /*expectedNumArgs=*/2);
-    changed |= rewriteMarkerCallToMember(
-        cpp, "PTOAS__TILE_DATA", "data", /*expectedNumArgs=*/1);
+    changed |= rewriteMarkerCallToMember(cpp, "PTOAS__TILE_SET_VALUE",
+                                         "SetValue", /*expectedNumArgs=*/3);
+    changed |= rewriteMarkerCallToMember(cpp, "PTOAS__TILE_GET_VALUE",
+                                         "GetValue", /*expectedNumArgs=*/2);
+    changed |= rewriteMarkerCallToMember(cpp, "PTOAS__TILE_DATA", "data",
+                                         /*expectedNumArgs=*/1);
+    changed |= rewriteMarkerCallToMember(cpp, "PTOAS__TILE_SET_VALIDSHAPE",
+                                         "SetValidShape",
+                                         /*expectedNumArgs=*/3);
+    changed |= rewriteMarkerCallToMember(cpp, "PTOAS__TILE_GET_VALID_ROW",
+                                         "GetValidRow", /*expectedNumArgs=*/1);
+    changed |= rewriteMarkerCallToMember(cpp, "PTOAS__TILE_GET_VALID_COL",
+                                         "GetValidCol", /*expectedNumArgs=*/1);
   }
 }
 
@@ -460,7 +960,8 @@ static void dropEmptyEmitCExpressions(Operation *rootOp) {
     expr.erase();
 }
 
-static Attribute getDefaultEmitCVariableInitAttr(OpBuilder &builder, Type type) {
+static Attribute getDefaultEmitCVariableInitAttr(OpBuilder &builder,
+                                                 Type type) {
   if (auto intTy = dyn_cast<IntegerType>(type))
     return builder.getIntegerAttr(intTy, 0);
   if (isa<IndexType>(type))
@@ -497,87 +998,36 @@ static void materializeControlFlowOperands(Operation *rootOp) {
       if (!initAttr)
         continue;
 
-      Value tmp =
-          builder.create<emitc::VariableOp>(op->getLoc(), value.getType(),
-                                            initAttr)
-              .getResult();
+      Value tmp = builder
+                      .create<emitc::VariableOp>(op->getLoc(), value.getType(),
+                                                 initAttr)
+                      .getResult();
       builder.create<emitc::AssignOp>(op->getLoc(), tmp, value);
       operand.set(tmp);
     }
   }
 }
 
-static bool rewriteMarkerCallToSubscript(std::string &cpp, llvm::StringRef marker,
+static bool rewriteMarkerCallToSubscript(std::string &cpp,
+                                         llvm::StringRef marker,
                                          unsigned expectedNumArgs,
                                          bool isStore) {
-  size_t searchPos = 0;
-  bool changed = false;
-  while (true) {
-    size_t markerPos = cpp.find(marker.str(), searchPos);
-    if (markerPos == std::string::npos)
-      break;
+  return rewriteMarkerCalls(
+      cpp, marker,
+      [&](const MarkerCallMatch &match, std::string &replacement,
+          size_t &) -> bool {
+        if (match.args.size() != expectedNumArgs)
+          return false;
 
-    size_t lparenPos = markerPos + marker.size();
-    if (lparenPos >= cpp.size() || cpp[lparenPos] != '(') {
-      searchPos = markerPos + marker.size();
-      continue;
-    }
-
-    size_t argsBegin = lparenPos + 1;
-    int parenDepth = 0;
-    size_t rparenPos = std::string::npos;
-    for (size_t i = argsBegin; i < cpp.size(); ++i) {
-      char c = cpp[i];
-      if (c == '(') {
-        ++parenDepth;
-      } else if (c == ')') {
-        if (parenDepth == 0) {
-          rparenPos = i;
-          break;
+        if (isStore) {
+          replacement =
+              (match.args[0] + "[" + match.args[1] + "] = " + match.args[2])
+                  .str();
+        } else {
+          replacement = (match.args[0] + "[" + match.args[1] + "]").str();
         }
-        --parenDepth;
-      }
-    }
-    if (rparenPos == std::string::npos) {
-      break;
-    }
-
-    llvm::StringRef argsRef(cpp.data() + argsBegin, rparenPos - argsBegin);
-    llvm::SmallVector<llvm::StringRef, 4> args;
-    size_t partBegin = 0;
-    parenDepth = 0;
-    for (size_t i = 0; i < argsRef.size(); ++i) {
-      char c = argsRef[i];
-      if (c == '(') {
-        ++parenDepth;
-      } else if (c == ')') {
-        if (parenDepth > 0)
-          --parenDepth;
-      } else if (c == ',' && parenDepth == 0) {
-        args.push_back(argsRef.slice(partBegin, i).trim());
-        partBegin = i + 1;
-      }
-    }
-    if (partBegin <= argsRef.size())
-      args.push_back(argsRef.drop_front(partBegin).trim());
-
-    if (args.size() != expectedNumArgs) {
-      searchPos = rparenPos + 1;
-      continue;
-    }
-
-    std::string replacement;
-    if (isStore) {
-      replacement = (args[0] + "[" + args[1] + "] = " + args[2]).str();
-    } else {
-      replacement = (args[0] + "[" + args[1] + "]").str();
-    }
-
-    cpp.replace(markerPos, (rparenPos - markerPos) + 1, replacement);
-    changed = true;
-    searchPos = markerPos + replacement.size();
-  }
-  return changed;
+        return true;
+      });
 }
 
 static void rewritePtrScalarMarkers(std::string &cpp) {
@@ -592,88 +1042,34 @@ static void rewritePtrScalarMarkers(std::string &cpp) {
 }
 
 static bool rewriteAddPtrTraceMarkers(std::string &cpp, bool showTrace) {
-  size_t searchPos = 0;
-  bool changed = false;
-  while (true) {
-    size_t markerPos = cpp.find("PTOAS__ADDPTR_TRACE", searchPos);
-    if (markerPos == std::string::npos)
-      break;
+  return rewriteMarkerCalls(
+      cpp, "PTOAS__ADDPTR_TRACE",
+      [&](const MarkerCallMatch &match, std::string &replacement,
+          size_t &replaceEnd) -> bool {
+        if (match.args.size() != 3)
+          return false;
 
-    size_t lparenPos = markerPos + (sizeof("PTOAS__ADDPTR_TRACE") - 1);
-    if (lparenPos >= cpp.size() || cpp[lparenPos] != '(') {
-      searchPos = markerPos + 1;
-      continue;
-    }
-
-    size_t argsBegin = lparenPos + 1;
-    int parenDepth = 0;
-    size_t rparenPos = std::string::npos;
-    for (size_t i = argsBegin; i < cpp.size(); ++i) {
-      char c = cpp[i];
-      if (c == '(') {
-        ++parenDepth;
-      } else if (c == ')') {
-        if (parenDepth == 0) {
-          rparenPos = i;
-          break;
+        replacement.clear();
+        if (showTrace) {
+          replacement.reserve(64);
+          replacement.append("/* ADDPTR_TRACE: ");
+          replacement.append(match.args[0].str());
+          replacement.append(" = ");
+          replacement.append(match.args[1].str());
+          replacement.append(" + ");
+          replacement.append(match.args[2].str());
+          replacement.append(" */");
+        } else {
+          size_t i = match.rparenPos + 1;
+          while (i < cpp.size() &&
+                 std::isspace(static_cast<unsigned char>(cpp[i]))) {
+            ++i;
+          }
+          if (i < cpp.size() && cpp[i] == ';')
+            replaceEnd = i;
         }
-        --parenDepth;
-      }
-    }
-    if (rparenPos == std::string::npos) {
-      break;
-    }
-
-    llvm::StringRef argsRef(cpp.data() + argsBegin, rparenPos - argsBegin);
-    llvm::SmallVector<llvm::StringRef, 4> args;
-    size_t partBegin = 0;
-    parenDepth = 0;
-    for (size_t i = 0; i < argsRef.size(); ++i) {
-      char c = argsRef[i];
-      if (c == '(') {
-        ++parenDepth;
-      } else if (c == ')') {
-        if (parenDepth > 0)
-          --parenDepth;
-      } else if (c == ',' && parenDepth == 0) {
-        args.push_back(argsRef.slice(partBegin, i).trim());
-        partBegin = i + 1;
-      }
-    }
-    if (partBegin <= argsRef.size())
-      args.push_back(argsRef.drop_front(partBegin).trim());
-
-    if (args.size() != 3) {
-      searchPos = rparenPos + 1;
-      continue;
-    }
-
-    std::string replacement;
-    if (showTrace) {
-      replacement.reserve(64 + argsRef.size());
-      replacement.append("/* ADDPTR_TRACE: ");
-      replacement.append(args[0].str());
-      replacement.append(" = ");
-      replacement.append(args[1].str());
-      replacement.append(" + ");
-      replacement.append(args[2].str());
-      replacement.append(" */");
-    }
-
-    size_t replaceEnd = rparenPos;
-    if (!showTrace) {
-      size_t i = rparenPos + 1;
-      while (i < cpp.size() && std::isspace(static_cast<unsigned char>(cpp[i])))
-        ++i;
-      if (i < cpp.size() && cpp[i] == ';')
-        replaceEnd = i;
-    }
-
-    cpp.replace(markerPos, (replaceEnd - markerPos) + 1, replacement);
-    changed = true;
-    searchPos = markerPos + replacement.size();
-  }
-  return changed;
+        return true;
+      });
 }
 
 static void rewriteHoistedGlobalTensorDecls(std::string &cpp) {
@@ -739,105 +1135,25 @@ static void rewriteHoistedGlobalTensorDecls(std::string &cpp) {
   cpp.swap(out);
 }
 
-static bool containsA5VMIR(llvm::StringRef input) {
-  llvm::StringRef rest = input;
-  while (!rest.empty()) {
-    auto split = rest.split('\n');
-    llvm::StringRef line = split.first.trim();
-    if (!line.starts_with("//") &&
-        (line.contains("!a5vm.vec<") || line.contains("a5vm.")))
-      return true;
-    rest = split.second;
-  }
-  return false;
-}
-
-static llvm::SmallVector<llvm::StringRef> splitTopLevelModules(llvm::StringRef input) {
-  llvm::SmallVector<llvm::StringRef> modules;
-  size_t searchFrom = 0;
-  while (true) {
-    size_t modulePos = input.find("module", searchFrom);
-    if (modulePos == llvm::StringRef::npos)
-      break;
-
-    size_t bracePos = input.find('{', modulePos);
-    if (bracePos == llvm::StringRef::npos)
-      break;
-
-    int depth = 0;
-    size_t endPos = bracePos;
-    for (; endPos < input.size(); ++endPos) {
-      if (input[endPos] == '{')
-        ++depth;
-      else if (input[endPos] == '}') {
-        --depth;
-        if (depth == 0) {
-          ++endPos;
-          break;
-        }
-      }
-    }
-    if (depth != 0)
-      break;
-
-    modules.push_back(input.slice(modulePos, endPos));
-    searchFrom = endPos;
-  }
-  return modules;
-}
-
-static bool emitA5VMParseBundle(llvm::StringRef inputFilename, llvm::StringRef input,
-                                MLIRContext &context, llvm::raw_ostream &os) {
-  llvm::SmallVector<llvm::StringRef> modules = splitTopLevelModules(input);
-  if (modules.empty())
-    modules.push_back(input);
-
-  bool emittedAny = false;
-  for (llvm::StringRef moduleText : modules) {
-    llvm::SourceMgr sourceMgr;
-    sourceMgr.AddNewSourceBuffer(
-        llvm::MemoryBuffer::getMemBufferCopy(moduleText, inputFilename),
-        llvm::SMLoc());
-
-    std::string diagStorage;
-    llvm::raw_string_ostream diagStream(diagStorage);
-    SourceMgrDiagnosticHandler diagHandler(sourceMgr, &context, diagStream);
-    OwningOpRef<ModuleOp> parsedModule = parseSourceFile<ModuleOp>(sourceMgr, &context);
-    diagStream.flush();
-
-    if (!parsedModule) {
-      os << diagStorage;
-      if (!diagStorage.empty() && diagStorage.back() != '\n')
-        os << "\n";
-      emittedAny = true;
-      continue;
-    }
-
-    parsedModule->print(os);
-    os << "\n";
-    emittedAny = true;
-  }
-
-  return emittedAny;
-}
-
 int main(int argc, char **argv) {
   DialectRegistry registry;
   registry.insert<mlir::func::FuncDialect>();
   registry.insert<mlir::tensor::TensorDialect>();
   registry.insert<mlir::arith::ArithDialect>();
+  registry.insert<mlir::math::MathDialect>();
   registry.insert<mlir::memref::MemRefDialect>();
   registry.insert<mlir::affine::AffineDialect>();
   registry.insert<mlir::cf::ControlFlowDialect>();
   registry.insert<mlir::bufferization::BufferizationDialect>();
   registry.insert<mlir::scf::SCFDialect>();
+  registry.insert<mlir::vector::VectorDialect>();
 
   registry.insert<mlir::a5vm::A5VMDialect>();
   registry.insert<mlir::pto::PTODialect>();
-  //mlir::registerAllDialects(registry);
+  // mlir::registerAllDialects(registry);
   arith::registerBufferizableOpInterfaceExternalModels(registry);
   tensor::registerBufferizableOpInterfaceExternalModels(registry);
-  //func::registerBufferizableOpInterfaceExternalModels(registry);
+  // func::registerBufferizableOpInterfaceExternalModels(registry);
   pto::registerBufferizableOpInterfaceExternalModels(registry);
 
   registry.insert<emitc::EmitCDialect>();
@@ -873,7 +1189,8 @@ int main(int argc, char **argv) {
       (a5vmEmitHIVMText || a5vmEmitHIVMOfficialLLVM ||
        a5vmEmitHIVMOfficialBitcode || emitA5VM ||
        a5vmPrintIntrinsics || a5vmAllowUnresolved ||
-       !a5vmUnresolvedReport.empty() || !hivmUnresolvedReport.empty())) {
+       !a5vmUnresolvedReport.empty() || !hivmUnresolvedReport.empty() ||
+       ptoPrintSeamIR || !ptoSeamIRFile.empty())) {
     llvm::errs() << "Error: A5VM-specific flags require "
                     "--pto-backend=a5vm.\n";
     return 1;
@@ -891,24 +1208,39 @@ int main(int argc, char **argv) {
   // Be tolerant: ptobc decode may materialize ops from dialects that aren't
   // explicitly registered/loaded in this tool yet.
   context.allowUnregisteredDialects(true);
+  if (printIRAfterAll || dumpPreFusionAnalysis)
+    context.disableMultithreading();
 
   context.getOrLoadDialect<emitc::EmitCDialect>();
   context.getOrLoadDialect<mlir::a5vm::A5VMDialect>();
   context.getOrLoadDialect<mlir::pto::PTODialect>();
   context.getOrLoadDialect<func::FuncDialect>();
   context.getOrLoadDialect<arith::ArithDialect>();
+  context.getOrLoadDialect<math::MathDialect>();
   context.getOrLoadDialect<memref::MemRefDialect>();
   context.getOrLoadDialect<affine::AffineDialect>();
+  context.getOrLoadDialect<vector::VectorDialect>();
   context.getOrLoadDialect<mlir::LLVM::LLVMDialect>();
+
+  PTOTargetArch effectiveArch = PTOTargetArch::A3;
+  if (!parseTargetArch(ptoTargetArch, effectiveArch)) {
+    llvm::errs() << "Error: invalid --pto-arch='" << ptoTargetArch
+                 << "'. Expected 'a3' or 'a5'.\n";
+    return 1;
+  }
+  std::string arch = (effectiveArch == PTOTargetArch::A5) ? std::string("a5")
+                                                          : std::string("a3");
 
   OwningOpRef<ModuleOp> module;
   llvm::StringRef buf = (*fileOrErr)->getBuffer();
-  const bool isPTOBC = (buf.size() >= 6 && std::memcmp(buf.data(), "PTOBC\0", 6) == 0);
+  const bool isPTOBC =
+      (buf.size() >= 6 && std::memcmp(buf.data(), "PTOBC\0", 6) == 0);
   const bool inputIsA5VMIR = containsA5VMIR(buf);
 
   if (isPTOBC) {
     // Decode PTO bytecode directly into an MLIR module.
-    llvm::ArrayRef<uint8_t> bytes(reinterpret_cast<const uint8_t *>(buf.data()), buf.size());
+    llvm::ArrayRef<uint8_t> bytes(reinterpret_cast<const uint8_t *>(buf.data()),
+                                  buf.size());
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
     try {
       module = ptobc::decodePTOBCToModule(bytes, context);
@@ -924,24 +1256,12 @@ int main(int argc, char **argv) {
       return 1;
     }
   } else {
-    if (effectiveBackend == PTOBackend::EmitC && inputIsA5VMIR) {
-      std::error_code ec;
-      llvm::ToolOutputFile outputFile(outputFilename, ec, llvm::sys::fs::OF_None);
-      if (ec) {
-        llvm::errs() << ec.message() << "\n";
-        return 1;
-      }
-      if (!emitA5VMParseBundle(inputFilename, buf, context, outputFile.os())) {
-        llvm::errs() << "Error: Failed to parse MLIR.\n";
-        return 1;
-      }
-      outputFile.keep();
-      return 0;
-    }
-
     // Parse textual MLIR (.pto).
     llvm::SourceMgr sourceMgr;
     sourceMgr.AddNewSourceBuffer(std::move(*fileOrErr), llvm::SMLoc());
+    pto::ScopedPTOParserTargetArch scopedParserArch(
+        arch == "a5" ? pto::PTOParserTargetArch::A5
+                     : pto::PTOParserTargetArch::A3);
     module = parseSourceFile<ModuleOp>(sourceMgr, &context);
     if (!module) {
       llvm::errs() << "Error: Failed to parse MLIR.\n";
@@ -949,12 +1269,58 @@ int main(int argc, char **argv) {
     }
   }
 
+  llvm::StringSet<> inputFuncNames;
+  for (func::FuncOp funcOp : module->getOps<func::FuncOp>())
+    inputFuncNames.insert(funcOp.getSymName());
+
   PTOBuildLevel effectiveLevel = defaultBuildLevel();
   if (!parseBuildLevel(ptoBuildLevel, effectiveLevel)) {
     llvm::errs() << "Error: invalid --pto-level='" << ptoBuildLevel
                  << "'. Expected 'level1', 'level2', or 'level3'.\n";
     return 1;
   }
+
+  bool invalidAutoSyncTailHint = false;
+  module->walk([&](mlir::func::FuncOp func) {
+    auto hintAttr =
+        func->getAttrOfType<mlir::StringAttr>("pto.auto_sync_tail_hint");
+    if (!hintAttr)
+      return;
+
+    std::string normalizedHint;
+    if (!parseAutoSyncTailHint(hintAttr.getValue(), normalizedHint)) {
+      func.emitError("invalid pto.auto_sync_tail_hint '")
+          << hintAttr.getValue()
+          << "'. Expected 'barrier-all' (or 'default') or "
+             "'mte3-to-s-event0'.";
+      invalidAutoSyncTailHint = true;
+      return;
+    }
+    func->setAttr("pto.auto_sync_tail_hint",
+                  mlir::StringAttr::get(&context, normalizedHint));
+  });
+  if (invalidAutoSyncTailHint)
+    return 1;
+
+  module->getOperation()->setAttr("pto.target_arch",
+                                  mlir::StringAttr::get(&context, arch));
+
+  if (dumpPreFusionAnalysis) {
+    PassManager analysisPm(&context);
+    analysisPm.addNestedPass<mlir::func::FuncOp>(
+        pto::createPrintPreFusionAnalysisPass());
+    if (failed(analysisPm.run(*module))) {
+      llvm::errs() << "Error: Pre-fusion analysis dump failed.\n";
+      return 1;
+    }
+    return 0;
+  }
+
+  const bool useA5VMBackendPipeline =
+      (effectiveBackend == PTOBackend::A5VM);
+  const bool enableA5FusionMainline =
+      (enableOpFusion && effectiveArch == PTOTargetArch::A5 &&
+       effectiveBackend == PTOBackend::A5VM);
 
   if (effectiveLevel == PTOBuildLevel::Level3) {
     bool missing = false;
@@ -970,8 +1336,8 @@ int main(int argc, char **argv) {
     bool hasAddr = false;
     module->walk([&](pto::AllocTileOp op) {
       if (op.getAddr()) {
-        op.emitError(
-            "unexpected 'addr' operand: only supported when --pto-level=level3");
+        op.emitError("unexpected 'addr' operand: only supported when "
+                     "--pto-level=level3");
         hasAddr = true;
       }
     });
@@ -979,71 +1345,128 @@ int main(int argc, char **argv) {
       return 1;
   }
 
-  // [Fix] ToolOutputFile Usage
-  std::error_code ec;
-  llvm::ToolOutputFile outputFile(outputFilename, ec, llvm::sys::fs::OF_None);
-  if (ec) {
-    llvm::errs() << ec.message() << "\n";
-    return 1;
+  if (effectiveArch != PTOTargetArch::A5 && enableOpFusion) {
+    llvm::errs() << "Warning: --enable-op-fusion is ignored because "
+                    "--pto-arch!=a5.\n";
   }
 
-  // Main PassManager
-  PassManager pm(&context);
+  if (effectiveBackend == PTOBackend::EmitC &&
+      effectiveArch == PTOTargetArch::A5 && enableOpFusion) {
+    llvm::errs() << "Warning: --enable-op-fusion is ignored by the EmitC "
+                    "backend.\n";
+  }
 
-  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertCVMovPass());
-  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOConvertToDPSPass());
-  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertLoadStoreForMixCVPass());
-  const bool skipPreBackendPasses =
-      effectiveBackend == PTOBackend::A5VM && inputIsA5VMIR;
-  if (!skipPreBackendPasses) {
-    // bufferizationPipeline(pm);
-    //pm.addPass(createInferPTOMemScopePass());
-    // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTORemoveRedundantBarrierPass());
-    // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOHighDimLoweringPass());
-    // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVFloopGatherPass());
-    addSharedPreBackendPasses(pm, effectiveLevel);
+  if (effectiveBackend == PTOBackend::EmitC &&
+      effectiveArch == PTOTargetArch::A5 && opFusionDebug) {
+    llvm::errs() << "Warning: --op-fusion-debug is ignored by the EmitC "
+                    "backend.\n";
   }
-  std::string arch = ptoTargetArch;
-  for (char &c : arch)
-    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  if (arch != "a3" && arch != "a5") {
-    llvm::errs() << "Error: invalid --pto-arch='" << ptoTargetArch
-                 << "'. Expected 'a3' or 'a5'.\n";
-    return 1;
+
+  if (!opLibDir.empty()) {
+    llvm::errs() << "Warning: --op-lib-dir is deprecated and ignored.\n";
   }
-  module->getOperation()->setAttr("pto.target_arch",
-                                  mlir::StringAttr::get(&context, arch));
-  if (!skipPreBackendPasses) {
-    if (failed(pm.run(*module))) {
-      llvm::errs() << "Error: shared pre-backend pass execution failed.\n";
-      return 1;
+
+  if (useA5VMBackendPipeline) {
+    if (opFusionDebug && !enableA5FusionMainline) {
+      llvm::errs() << "Warning: --op-fusion-debug is ignored because "
+                      "A5 fusion mainline is not enabled.\n";
+    }
+    if (enableA5FusionMainline && a5vmLoweringStrategy.getNumOccurrences() > 0) {
+      llvm::errs() << "Warning: --a5vm-lowering-strategy is ignored because "
+                      "A5 fusion mainline uses per-op "
+                      "pto.a5vm_lowering_choice.\n";
     }
   }
 
-  if (ptoPrintSeamIR || !ptoSeamIRFile.empty()) {
-    if (skipPreBackendPasses) {
-      llvm::errs() << "Error: shared pre-backend seam IR is unavailable when "
-                      "the input is already A5VM IR.\n";
+  if (!printIRAfterAll && !printIRAfterAllFuncFilter.empty()) {
+    llvm::errs() << "Warning: --print-ir-after-all-func-filter has no effect "
+                    "without --print-ir-after-all.\n";
+  }
+
+  if (testOnlyFusionRegionGen) {
+    PassManager testPm(&context);
+    maybeEnablePrintIRAfterAll(testPm, inputFuncNames);
+    testPm.addNestedPass<mlir::func::FuncOp>(pto::createPTOFusionRegionGenPass());
+    if (failed(testPm.run(*module))) {
+      llvm::errs() << "Error: Pass execution failed.\n";
       return 1;
     }
-    if (ptoPrintSeamIR) {
+    return 0;
+  }
+
+  if (testOnlyOpScheduling) {
+    PassManager testPm(&context);
+    maybeEnablePrintIRAfterAll(testPm, inputFuncNames);
+    testPm.addNestedPass<mlir::func::FuncOp>(pto::createFusionPlanPass());
+    testPm.addNestedPass<mlir::func::FuncOp>(pto::createOpSchedulingPass());
+    if (failed(testPm.run(*module))) {
+      llvm::errs() << "Error: Pass execution failed.\n";
+      return 1;
+    }
+    return 0;
+  }
+
+  // A5 backend mainline: lower through PTOToA5VM and never wire the legacy
+  // OP-Lib passes into this backend branch.
+  if (useA5VMBackendPipeline) {
+    const bool skipPreBackendPasses = inputIsA5VMIR;
+
+    if (!skipPreBackendPasses) {
+      PassManager preBackendPM(&context);
+      maybeEnablePrintIRAfterAll(preBackendPM, inputFuncNames);
+      if (enableA5FusionMainline)
+        addA5FusionRegionMainlinePreBackendPasses(preBackendPM);
+      addSharedPreBackendPasses(preBackendPM, effectiveLevel);
+      module->getOperation()->setAttr("pto.target_arch",
+                                      mlir::StringAttr::get(&context, arch));
+      if (failed(preBackendPM.run(*module))) {
+        llvm::errs() << "Error: shared pre-backend pass execution failed.\n";
+        return 1;
+      }
+    }
+
+    if (ptoPrintSeamIR || !ptoSeamIRFile.empty()) {
+      if (skipPreBackendPasses) {
+        llvm::errs() << "Error: shared pre-backend seam IR is unavailable when "
+                        "the input is already A5VM IR.\n";
+        return 1;
+      }
+      if (ptoPrintSeamIR) {
+        module->print(llvm::errs());
+        llvm::errs() << "\n";
+      }
+      if (failed(emitSharedPreBackendSeamIR(*module, ptoSeamIRFile)))
+        return 1;
+    }
+
+    if (!skipPreBackendPasses) {
+      PassManager backendPM(&context);
+      maybeEnablePrintIRAfterAll(backendPM, inputFuncNames);
+      addA5VMBackendMainlinePasses(backendPM, enableA5FusionMainline);
+      if (enableA5FusionMainline) {
+        backendPM.addNestedPass<mlir::func::FuncOp>(
+            pto::createPTOA5VMExpandBridgeOpsPass());
+        backendPM.addPass(createCSEPass());
+      }
+      if (failed(backendPM.run(*module))) {
+        llvm::errs() << "Error: A5VM backend lowering pass execution failed.\n";
+        return 1;
+      }
+    }
+
+    std::error_code ec;
+    llvm::ToolOutputFile outputFile(outputFilename, ec, llvm::sys::fs::OF_None);
+    if (ec) {
+      llvm::errs() << ec.message() << "\n";
+      return 1;
+    }
+
+    if (a5vmPrintIR || dumpA5VMIR) {
+      printA5VMIROpSummary(*module, llvm::errs());
       module->print(llvm::errs());
       llvm::errs() << "\n";
     }
-    if (failed(emitSharedPreBackendSeamIR(*module, ptoSeamIRFile)))
-      return 1;
-  }
 
-  if (!skipPreBackendPasses) {
-    PassManager backendPM(&context);
-    addBackendLoweringPasses(backendPM, effectiveBackend);
-    if (failed(backendPM.run(*module))) {
-      llvm::errs() << "Error: backend lowering pass execution failed.\n";
-      return 1;
-    }
-  }
-
-  if (effectiveBackend == PTOBackend::A5VM) {
     if (emitA5VM || (!a5vmEmitHIVMText && !a5vmEmitHIVMOfficialLLVM &&
                      !a5vmEmitHIVMOfficialBitcode)) {
       module->print(outputFile.os());
@@ -1052,12 +1475,23 @@ int main(int argc, char **argv) {
       return 0;
     }
 
+    OwningOpRef<ModuleOp> emissionModule(cast<ModuleOp>(module->clone()));
+    PassManager emissionPM(&context);
+    maybeEnablePrintIRAfterAll(emissionPM, inputFuncNames);
+    emissionPM.addPass(pto::createPTOA5VMPtrBoundaryPass());
+    if (failed(emissionPM.run(*emissionModule))) {
+      llvm::errs()
+          << "Error: A5VM pre-emission ptr-boundary pass execution failed.\n";
+      return 1;
+    }
+
     pto::A5VMEmissionOptions options;
-    options.dumpA5VMIR = false;
+    options.dumpA5VMIR = a5vmPrintIR || dumpA5VMIR;
     options.printIntrinsicSelections = a5vmPrintIntrinsics;
     options.allowUnresolved = a5vmAllowUnresolved;
-    options.unresolvedReportPath =
-        !hivmUnresolvedReport.empty() ? hivmUnresolvedReport : a5vmUnresolvedReport;
+    options.unresolvedReportPath = !hivmUnresolvedReport.empty()
+                                       ? hivmUnresolvedReport
+                                       : a5vmUnresolvedReport;
     if (arch == "a5") {
       options.targetTriple = "hiipu64-hisilicon-cce";
       options.march = "dav-c310-vec";
@@ -1071,13 +1505,16 @@ int main(int argc, char **argv) {
 
     LogicalResult emissionStatus =
         a5vmEmitHIVMOfficialBitcode
-            ? pto::translateA5VMModuleToLLVMBitcode(*module, outputFile.os(),
+            ? pto::translateA5VMModuleToLLVMBitcode(*emissionModule,
+                                                    outputFile.os(),
                                                     options, llvm::errs())
             : a5vmEmitHIVMOfficialLLVM
-            ? pto::translateA5VMModuleToLLVMText(*module, outputFile.os(),
-                                                 options, llvm::errs())
-            : pto::translateA5VMModuleToText(*module, outputFile.os(), options,
-                                             llvm::errs());
+                  ? pto::translateA5VMModuleToLLVMText(*emissionModule,
+                                                       outputFile.os(),
+                                                       options, llvm::errs())
+                  : pto::translateA5VMModuleToText(*emissionModule,
+                                                   outputFile.os(),
+                                                   options, llvm::errs());
     if (failed(emissionStatus)) {
       llvm::errs() << "Error: Failed to emit A5VM text.\n";
       return 1;
@@ -1086,8 +1523,84 @@ int main(int argc, char **argv) {
     return 0;
   }
 
+  // [Fix] ToolOutputFile Usage
+  std::error_code ec;
+  llvm::ToolOutputFile outputFile(outputFilename, ec, llvm::sys::fs::OF_None);
+  if (ec) {
+    llvm::errs() << ec.message() << "\n";
+    return 1;
+  }
+
+  PassManager preCodegenPm(&context);
+  maybeEnablePrintIRAfterAll(preCodegenPm, inputFuncNames);
+
+  preCodegenPm.addNestedPass<mlir::func::FuncOp>(
+      pto::createLoweringSyncToPipePass());
+  preCodegenPm.addPass(pto::createPTOViewToMemrefPass());
+
+  if (failed(preCodegenPm.run(*module))) {
+    llvm::errs() << "Error: Pass execution failed.\n";
+    return 1;
+  }
+
+  // EmitC path: lower PTO ops directly to PTO-ISA/EmitC without any OP-Lib
+  // compatibility stages.
+  PassManager pm(&context);
+  maybeEnablePrintIRAfterAll(pm, inputFuncNames);
+  if (!disableInferLayout)
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
+  // Stage 1 has already lowered tile/view values into memref world.
+  // Running PTOViewToMemref again here is not idempotent and can fail on IR
+  // that already contains lowered bind_tile/partition_view structure.
+  // bufferizationPipeline(pm);
+  // pm.addPass(createInferPTOMemScopePass());
+
+  if (effectiveLevel != PTOBuildLevel::Level3) {
+    PlanMemoryOptions planMemoryOption;
+    planMemoryOption.memMode = MemPlanMode::LOCAL_MEM_PLAN;
+    planMemoryOption.enableGlobalReuse = false;
+    planMemoryOption.enablePrintMemoryAllocatedSize = false;
+    pm.addPass(pto::createPlanMemoryPass(planMemoryOption));
+  }
+
+  // Conditionally add Sync pass based on flag.
+  if (enableInsertSync)
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(createCSEPass());
+
+  if (failed(pm.run(*module))) {
+    llvm::errs() << "Error: Pass execution failed.\n";
+    return 1;
+  }
+
+  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTORemoveRedundantBarrierPass());
+  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOHighDimLoweringPass());
+  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVFloopGatherPass());
+
+  PassManager codegenPm(&context);
+  maybeEnablePrintIRAfterAll(codegenPm, inputFuncNames);
+  codegenPm.addPass(createCSEPass());
+  if (effectiveArch == PTOTargetArch::A3) {
+    codegenPm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));
+  } else {
+    codegenPm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A5));
+  }
+  codegenPm.addPass(emitc::createFormExpressionsPass());
+  codegenPm.addPass(mlir::createCSEPass());
+
+  if (failed(codegenPm.run(*module))) {
+    llvm::errs() << "Error: Pass execution failed.\n";
+    return 1;
+  }
+
   dropEmptyEmitCExpressions(module.get());
   materializeControlFlowOperands(module.get());
+  if (failed(reorderEmitCFunctions(module.get()))) {
+    llvm::errs()
+        << "Error: Failed to order emitted functions for C++ emission.\n";
+    return 1;
+  }
 
   // Emit C++ to string, then post-process, then write to output file.
   std::string cppOutput;
@@ -1110,8 +1623,9 @@ int main(int argc, char **argv) {
       }
     }
   }
-  if (failed(emitc::translateToCpp(*module, cppOS,
-                                  /*declareVariablesAtTop=*/declareVariablesAtTop))) {
+  if (failed(pto::translateToCpp(
+          *module, cppOS,
+          /*declareVariablesAtTop=*/declareVariablesAtTop))) {
     llvm::errs() << "Error: Failed to emit C++.\n";
     return 1;
   }

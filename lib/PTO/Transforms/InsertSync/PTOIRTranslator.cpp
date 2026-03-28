@@ -167,8 +167,15 @@ void PTOIRTranslator::RecursionIR(Region *region) {
     else if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
       UpdateIfOpInfo(ifOp);
       return WalkResult::skip();
+    }
+    else if (auto fusionRegion = dyn_cast<pto::FusionRegionOp>(op)) {
+      UpdateFusionRegionOpInfo(fusionRegion);
+      return WalkResult::skip();
     } 
     else if (auto yieldOp = dyn_cast<scf::YieldOp>(op)) {
+      UpdateYieldOpInfo(yieldOp);
+    }
+    else if (auto yieldOp = dyn_cast<pto::YieldOp>(op)) {
       UpdateYieldOpInfo(yieldOp);
     }
     // --- Case D: 带有 OpPipeInterface 的计算/搬运指令 ---
@@ -477,6 +484,13 @@ void PTOIRTranslator::UpdateIfOpInfo(scf::IfOp ifOp) {
   syncIR_.emplace_back(std::move(ifEndElement));
   index++;
 }
+
+void PTOIRTranslator::UpdateFusionRegionOpInfo(
+    pto::FusionRegionOp fusionRegion) {
+  // fusion_region is a transparent container for InsertSync: recurse into the
+  // body and model dependencies using the real operations inside it.
+  RecursionIR(&fusionRegion.getBody());
+}
  
 void PTOIRTranslator::UpdateYieldOpInfo(scf::YieldOp yieldOp) {
   auto *parentOp = yieldOp->getParentOp();
@@ -485,6 +499,17 @@ void PTOIRTranslator::UpdateYieldOpInfo(scf::YieldOp yieldOp) {
   assert(parentOp->getResults().size() == yieldOp->getOpOperands().size());
   for (auto [yieldVal, resultVal] : llvm::zip(yieldOp->getOpOperands(), parentOp->getResults())) {
     UpdateAliasBufferInfo(resultVal, yieldVal.get());
+  }
+}
+
+void PTOIRTranslator::UpdateYieldOpInfo(pto::YieldOp yieldOp) {
+  auto *parentOp = yieldOp->getParentOp();
+  if (!parentOp) return;
+
+  assert(parentOp->getResults().size() == yieldOp->getNumOperands());
+  for (auto [yieldedValue, resultValue] :
+       llvm::zip(yieldOp->getOperands(), parentOp->getResults())) {
+    UpdateAliasBufferInfo(resultValue, yieldedValue);
   }
 }
  

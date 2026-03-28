@@ -1,0 +1,6 @@
+// SNIPPET_SETUP_BEGIN
+%allOnes = arith.constant @@NEG_ONE_LITERAL@@ : @@VECTOR_TYPE@@
+// SNIPPET_SETUP_END
+// SNIPPET_COMPUTE_BEGIN
+%result = arith.xori %lhs, %allOnes : @@VECTOR_TYPE@@
+// SNIPPET_COMPUTE_END

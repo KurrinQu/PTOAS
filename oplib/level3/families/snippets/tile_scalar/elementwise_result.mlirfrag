@@ -1,0 +1,1 @@
+%result = @@CORE_OP@@ @@SNIPPET_LHS@@, @@SNIPPET_RHS@@@@EXEC_MODE_ATTR@@ : @@VECTOR_TYPE@@

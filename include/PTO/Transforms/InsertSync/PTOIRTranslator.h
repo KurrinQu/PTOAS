@@ -65,6 +65,8 @@ private:
   void UpdateWhileOpInfo(scf::WhileOp whileOp);
   void UpdateIfOpInfo(scf::IfOp ifOp);
   void UpdateYieldOpInfo(scf::YieldOp yieldOp);
+  void UpdateFusionRegionOpInfo(pto::FusionRegionOp fusionRegion);
+  void UpdateYieldOpInfo(pto::YieldOp yieldOp);
  
   // --- 核心：处理计算/搬运指令 (生成 Compound 节点) ---
   void UpdatePTOOpInfo(Operation *op);

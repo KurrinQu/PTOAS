@@ -4,9 +4,9 @@
 import argparse
 import ast
 import re
-from pathlib import Path
-from typing import Optional
 import shutil
+from pathlib import Path
+from typing import Optional, Tuple
 
 INCLUDE_REPLACEMENT = (
     "// ---------------------------------------------------------------------------\n"
@@ -58,7 +58,7 @@ INCLUDE_REPLACEMENT = (
     "} // namespace pto\n"
     "#endif\n"
     "#ifndef __CPU_SIM\n"
-    "#include \"acl/acl.h\"\n"
+    '#include "acl/acl.h"\n'
     "#endif\n"
 )
 
@@ -187,6 +187,96 @@ def _detect_output_pointer_param(text: str, pointer_param_names):
     return None
 
 
+def _detect_set_ffts_pointer_params(text: str, pointer_param_names):
+    if not pointer_param_names:
+        return set()
+
+    def _is_fully_wrapped_by_parentheses(expr: str) -> bool:
+        if not (expr.startswith("(") and expr.endswith(")")):
+            return False
+        depth = 0
+        for i, ch in enumerate(expr):
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0 and i != len(expr) - 1:
+                    return False
+        return depth == 0
+
+    def _extract_identifier(expr: str) -> Optional[str]:
+        cur = expr.strip()
+        for _ in range(8):
+            prev = cur
+            while _is_fully_wrapped_by_parentheses(cur):
+                cur = cur[1:-1].strip()
+
+            m = re.match(
+                r"^(?:reinterpret_cast|static_cast|const_cast|dynamic_cast)\s*<[^>]+>\s*\((.*)\)$",
+                cur,
+                re.S,
+            )
+            if m:
+                cur = m.group(1).strip()
+                continue
+
+            # C-style cast: (uint64_t) v1 / (__gm__ int64_t*) v1
+            m = re.match(r"^\(\s*[^()]+\s*\)\s*(.+)$", cur, re.S)
+            if m:
+                cur = m.group(1).strip()
+                continue
+
+            if cur == prev:
+                break
+
+        return cur if re.fullmatch(r"[A-Za-z_]\w*", cur) else None
+
+    pointer_set = set(pointer_param_names)
+    alias = {}
+    # Track simple alias chains introduced by casted assignments, e.g.:
+    #   uint64_t v6 = (uint64_t)v1;
+    #   auto v7 = reinterpret_cast<uint64_t>(v6);
+    for m in re.finditer(r"\b([A-Za-z_]\w*)\s*=\s*([^;]+);", text):
+        lhs = m.group(1)
+        rhs = m.group(2).strip()
+        src = _extract_identifier(rhs)
+        if src:
+            alias[lhs] = src
+
+    def _resolve_pointer_param(name: str) -> Optional[str]:
+        cur = name
+        seen = set()
+        for _ in range(12):
+            if cur in seen:
+                break
+            seen.add(cur)
+            if cur in pointer_set:
+                return cur
+            nxt = alias.get(cur)
+            if not nxt:
+                return None
+            cur = nxt
+        return None
+
+    hits = set()
+    for m in re.finditer(r"\bset_ffts_base_addr\s*\(([^)]*)\)", text, re.S):
+        raw_arg = m.group(1).strip()
+        arg_name = _extract_identifier(raw_arg)
+        if not arg_name:
+            continue
+        resolved = _resolve_pointer_param(arg_name)
+        if resolved:
+            hits.add(resolved)
+
+    # Compatibility fallback for unusual formatting.
+    if not hits:
+        for name in pointer_param_names:
+            pat = rf"\bset_ffts_base_addr\b[^\n;]*\b{re.escape(name)}\b"
+            if re.search(pat, text):
+                hits.add(name)
+    return hits
+
+
 def _parse_kernel_params(text: str):
     match = re.search(r"__global__\s+(?:\w+\s+)*void\s+\w+\s*\(([^)]*)\)", text, re.S)
     if not match:
@@ -295,9 +385,112 @@ def _derive_testcase_name(input_cpp: Path) -> str:
     return name
 
 
+def _find_repo_root(start: Path) -> Optional[Path]:
+    for candidate in [start, *start.parents]:
+        if (candidate / "test" / "samples").is_dir() and (
+            candidate / "docs" / "PTO_IR_manual.md"
+        ).is_file():
+            return candidate
+    return None
+
+
+def _find_source_sample_root(repo_root: Path, sample_dir_name: str) -> Optional[Path]:
+    search_roots = [
+        repo_root / "test" / "samples",
+        repo_root / "test" / "pto_isa_st",
+    ]
+    for root in search_roots:
+        candidate = root / sample_dir_name
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def _resolve_sample_root(input_cpp: Path) -> Path:
+    parent = input_cpp.parent
+    if parent.name == "npu_validation":
+        candidate = parent.parent
+    elif parent.parent.name == "npu_validation":
+        candidate = parent.parent.parent
+    else:
+        candidate = parent
+
+    # Generated kernels usually live under build/output/<SampleDir>/..., while
+    # custom golden/compare assets may live under:
+    #   - test/samples/<SampleDir>/
+    #   - test/pto_isa_st/<SampleDir>/
+    # Prefer the source sample directory when it exists so testcase generation
+    # can reuse those checked-in assets.
+    repo_root = _find_repo_root(input_cpp.resolve())
+    if repo_root is not None:
+        sample_dir_name = candidate.name
+        source_sample_root = _find_source_sample_root(repo_root, sample_dir_name)
+        if source_sample_root is not None:
+            return source_sample_root
+
+    return candidate
+
+
+def _parse_case_shape_suffix(testcase: str) -> Optional[Tuple[str, int, int, str]]:
+    match = re.match(
+        r"^(?P<base>.+)_(?P<rows>\d+)x(?P<cols>\d+)_(?P<variant>static|dynamic)$",
+        testcase,
+    )
+    if not match:
+        return None
+    return (
+        match.group("base"),
+        int(match.group("rows")),
+        int(match.group("cols")),
+        match.group("variant"),
+    )
+
+
+def _find_custom_case_asset(
+    sample_root: Path, testcase: str, filename: str
+) -> Optional[Path]:
+    candidates = [
+        sample_root / f"{testcase}_{filename}",
+        sample_root / "npu_validation" / testcase / filename,
+        sample_root / "npu_validation" / filename,
+    ]
+    parsed = _parse_case_shape_suffix(testcase)
+    if parsed is not None:
+        base_name, _, _, _ = parsed
+        candidates.extend(
+            [
+                sample_root / f"{base_name}_{filename}",
+                sample_root / "npu_validation" / base_name / filename,
+            ]
+        )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _copy_asset_if_needed(src: Path, dst: Path):
+    if src.resolve() == dst.resolve():
+        return
+    shutil.copy2(src, dst)
+
+
+def _maybe_copy_validation_runtime(sample_root: Path, output_dir: Path):
+    candidates = [
+        sample_root / "validation_runtime.py",
+        sample_root.parent / "validation_runtime.py",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            _copy_asset_if_needed(candidate, output_dir / "validation_runtime.py")
+            return
+
+
 def _replace_includes(text: str) -> str:
-    if "#include \"common/pto_instr.hpp\"" in text:
-        return text.replace("#include \"common/pto_instr.hpp\"", INCLUDE_REPLACEMENT.rstrip())
+    if '#include "common/pto_instr.hpp"' in text:
+        return text.replace(
+            '#include "common/pto_instr.hpp"', INCLUDE_REPLACEMENT.rstrip()
+        )
     if "#include <pto/pto-inst.hpp>" in text:
         return text
     return INCLUDE_REPLACEMENT + "\n" + text
@@ -329,7 +522,9 @@ def _inject_packed_pred_mask_preload(
         return kernel_text
 
     # Find a reasonable insertion point: before the first MTE2->V set_flag.
-    m = re.search(r"^(\s*)set_flag\s*\(\s*PIPE_MTE2\s*,\s*PIPE_V\s*,", kernel_text, re.M)
+    m = re.search(
+        r"^(\s*)set_flag\s*\(\s*PIPE_MTE2\s*,\s*PIPE_V\s*,", kernel_text, re.M
+    )
     if m:
         indent = m.group(1)
         insert_at = m.start()
@@ -418,7 +613,9 @@ def _infer_mrgsort_block_len(kernel_text: str) -> Optional[int]:
         int32_t v3 = 64;
         TMRGSORT(v22, v21, v3);
     """
-    call = re.search(r"\bTMRGSORT\s*\(\s*\w+\s*,\s*\w+\s*,\s*([^)]+?)\s*\)", kernel_text)
+    call = re.search(
+        r"\bTMRGSORT\s*\(\s*\w+\s*,\s*\w+\s*,\s*([^)]+?)\s*\)", kernel_text
+    )
     if not call:
         return None
     arg = call.group(1).strip()
@@ -432,7 +629,10 @@ def _infer_mrgsort_block_len(kernel_text: str) -> Optional[int]:
     # Identifier that is defined as a constant earlier in the kernel.
     if not re.fullmatch(r"[A-Za-z_]\w*", arg):
         return None
-    match = re.search(rf"\b(?:int32_t|uint32_t|int|unsigned)\s+{re.escape(arg)}\s*=\s*(0x[0-9A-Fa-f]+|\d+)\s*;", kernel_text)
+    match = re.search(
+        rf"\b(?:int32_t|uint32_t|int|unsigned)\s+{re.escape(arg)}\s*=\s*(0x[0-9A-Fa-f]+|\d+)\s*;",
+        kernel_text,
+    )
     if not match:
         return None
     try:
@@ -455,6 +655,25 @@ def _required_elements_for_shape_stride(shape_dims, stride_dims) -> Optional[int
             continue
         req += (dim - 1) * stride
     return max(req, 1)
+
+
+def _extract_function_scope(text: str, function_name: str) -> str:
+    pattern = re.compile(rf"\b{re.escape(function_name)}\s*\([^;{{}}]*\)\s*\{{")
+    match = pattern.search(text)
+    if not match:
+        return text
+
+    body_start = match.end() - 1
+    depth = 0
+    for idx in range(body_start, len(text)):
+        ch = text[idx]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[match.start() : idx + 1]
+    return text
 
 
 def _sanitize_int_expr(expr: str) -> str:
@@ -639,25 +858,30 @@ def _infer_gm_pointer_elem_counts(kernel_text: str, pointer_param_names):
     if not pointer_param_names:
         return {}
 
+    kernel_name = _parse_kernel_name(kernel_text)
+    kernel_scope = _extract_function_scope(kernel_text, kernel_name)
+
     pointer_params = set(pointer_param_names)
 
-    int_max = _infer_int_var_maxima(kernel_text)
+    int_max = _infer_int_var_maxima(kernel_scope)
 
     pointer_like = set(pointer_param_names)
-    for m in re.finditer(r"__gm__\s+[\w:<>]+\s*\*\s*(\w+)\s*(?:=[^;]+)?;", kernel_text):
+    for m in re.finditer(
+        r"__gm__\s+[\w:<>]+\s*\*\s*(\w+)\s*(?:=[^;]+)?;", kernel_scope
+    ):
         pointer_like.add(m.group(1))
 
     ptr_to_base_offset = {}
     for m in re.finditer(
         r"__gm__\s+[\w:<>]+\s*\*\s*(\w+)\s*=\s*(\w+)\s*\+\s*([^;]+);",
-        kernel_text,
+        kernel_scope,
     ):
         ptr_to_base_offset[m.group(1)] = (m.group(2), m.group(3).strip())
 
     # declareVariablesAtTop form:
     #   __gm__ float* v35;
     #   v35 = v1 + v34;
-    for m in re.finditer(r"\b(\w+)\s*=\s*(\w+)\s*\+\s*([^;]+);", kernel_text):
+    for m in re.finditer(r"\b(\w+)\s*=\s*(\w+)\s*\+\s*([^;]+);", kernel_scope):
         lhs = m.group(1)
         base = m.group(2)
         if lhs not in pointer_like:
@@ -669,11 +893,13 @@ def _infer_gm_pointer_elem_counts(kernel_text: str, pointer_param_names):
     ptr_to_param = {}
     for m in re.finditer(
         r"__gm__\s+[\w:<>]+\s*\*\s*(\w+)\s*=\s*\(__gm__\s+[\w:<>]+\s*\*\)\s*(\w+)\b",
-        kernel_text,
+        kernel_scope,
     ):
         ptr_to_param[m.group(1)] = m.group(2)
 
-    for m in re.finditer(r"\b(\w+)\s*=\s*\(__gm__\s+[\w:<>]+\s*\*\)\s*(\w+)\b", kernel_text):
+    for m in re.finditer(
+        r"\b(\w+)\s*=\s*\(__gm__\s+[\w:<>]+\s*\*\)\s*(\w+)\b", kernel_scope
+    ):
         lhs = m.group(1)
         rhs = m.group(2)
         if lhs not in pointer_like:
@@ -770,13 +996,13 @@ def _infer_gm_pointer_elem_counts(kernel_text: str, pointer_param_names):
 
     # Parse aliases: GTShape_*=pto::Shape<...>; GTStride_*=pto::Stride<...>;
     shape_aliases = {}
-    for m in re.finditer(r"using\s+(\w+)\s*=\s*pto::Shape<([^>]*)>;", kernel_text):
+    for m in re.finditer(r"using\s+(\w+)\s*=\s*pto::Shape<([^>]*)>;", kernel_scope):
         dims = _parse_int_list(m.group(2))
         if dims:
             shape_aliases[m.group(1)] = dims
 
     stride_aliases = {}
-    for m in re.finditer(r"using\s+(\w+)\s*=\s*pto::Stride<([^>]*)>;", kernel_text):
+    for m in re.finditer(r"using\s+(\w+)\s*=\s*pto::Stride<([^>]*)>;", kernel_scope):
         dims = _parse_int_list(m.group(2))
         if dims:
             stride_aliases[m.group(1)] = dims
@@ -789,7 +1015,7 @@ def _infer_gm_pointer_elem_counts(kernel_text: str, pointer_param_names):
         # and the 4-param layout form:
         #   using GT = GlobalTensor<T, ShapeAlias, StrideAlias, LayoutAlias>;
         r"using\s+(\w+)\s*=\s*GlobalTensor<\s*[^,>]+\s*,\s*(\w+)\s*,\s*(\w+)\s*(?:,\s*[^>]+)?\s*>;",
-        kernel_text,
+        kernel_scope,
     ):
         gt_alias = m.group(1)
         shape_alias = m.group(2)
@@ -798,7 +1024,7 @@ def _infer_gm_pointer_elem_counts(kernel_text: str, pointer_param_names):
 
     # Find instantiations: GT_xxx v = GT_xxx(ptr, ...)
     param_elem_counts = {}
-    for m in re.finditer(r"\b(\w+)\s+\w+\s*=\s*\1\s*\(\s*(\w+)\s*,", kernel_text):
+    for m in re.finditer(r"\b(\w+)\s+\w+\s*=\s*\1\s*\(\s*(\w+)\s*,", kernel_scope):
         gt_alias = m.group(1)
         base_ptr = m.group(2)
         shape_stride = gt_alias_to_shape_stride.get(gt_alias)
@@ -812,14 +1038,16 @@ def _infer_gm_pointer_elem_counts(kernel_text: str, pointer_param_names):
         param, off = resolve_param_and_offset(base_ptr)
         if not param or off is None:
             continue
-        param_elem_counts[param] = max(param_elem_counts.get(param, 0), req + max(off, 0))
+        param_elem_counts[param] = max(
+            param_elem_counts.get(param, 0), req + max(off, 0)
+        )
 
     # Newer PTOAS EmitC output (especially with declareVariablesAtTop) may avoid
     # `using GTShape = ...; using GTStride = ...;` aliases and instead embeds
     # pto::Shape/pto::Stride directly in the GlobalTensor template.
     for m in re.finditer(
         r"\b(?:pto::)?GlobalTensor<[^;\n]*(?:pto::)?Shape<([^>]*)>[^;\n]*(?:pto::)?Stride<([^>]*)>[^;\n]*>\s*\(\s*([^,]+?)\s*,",
-        kernel_text,
+        kernel_scope,
     ):
         shape_dims = _parse_int_list(m.group(1))
         stride_dims = _parse_int_list(m.group(2))
@@ -830,7 +1058,27 @@ def _infer_gm_pointer_elem_counts(kernel_text: str, pointer_param_names):
         param, off = resolve_param_and_offset_expr(base_ptr_expr)
         if not param or off is None:
             continue
-        param_elem_counts[param] = max(param_elem_counts.get(param, 0), req + max(off, 0))
+        param_elem_counts[param] = max(
+            param_elem_counts.get(param, 0), req + max(off, 0)
+        )
+
+    # Scalar-pointer kernels often access the GM scalar directly with raw
+    # indexing (e.g. `v2[v17]`) instead of materializing a GlobalTensor view.
+    # Infer a conservative element count from those direct reads/writes so
+    # testcase input generation does not over-allocate them to logical_elem_count.
+    for m in re.finditer(r"\b(\w+)\s*\[\s*([^\]]+)\s*\]", kernel_scope):
+        base = m.group(1)
+        index_expr = m.group(2).strip()
+        if base not in pointer_like and base not in pointer_params:
+            continue
+        param, off0 = resolve_param_and_offset(base)
+        if not param or off0 is None:
+            continue
+        index_val = _safe_eval_int_expr(index_expr, int_max)
+        if index_val is None:
+            continue
+        req = off0 + max(index_val, 0) + 1
+        param_elem_counts[param] = max(param_elem_counts.get(param, 0), req)
 
     return param_elem_counts
 
@@ -844,6 +1092,8 @@ def generate_testcase(
     aicore_arch: Optional[str] = None,
 ):
     sample_dir = input_cpp.parent
+    sample_root = _resolve_sample_root(input_cpp)
+    testcase_shape = _parse_case_shape_suffix(testcase)
     if output_root:
         output_dir = output_root / sample_dir.name / testcase
     else:
@@ -854,7 +1104,9 @@ def generate_testcase(
     raw_kernel_for_analysis = raw_kernel
     # pto.tcmp / pto.tcmps produce packed predicate masks and leave parts of the
     # logical u8 tile undefined. This can make byte-wise compares flaky.
-    has_packed_pred_mask = re.search(r"\bTCMPS?\s*\(", raw_kernel_for_analysis) is not None
+    has_packed_pred_mask = (
+        re.search(r"\bTCMPS?\s*\(", raw_kernel_for_analysis) is not None
+    )
     has_dav_cube = "__DAV_CUBE__" in raw_kernel
     has_dav_vec = "__DAV_VEC__" in raw_kernel
 
@@ -889,9 +1141,15 @@ def generate_testcase(
     logical_elem_count = rows * cols
     kernel_name = _parse_kernel_name(raw_kernel_for_analysis)
     raw_params = _parse_kernel_params(raw_kernel_for_analysis)
-    mrgsort_block_len = _infer_mrgsort_block_len(raw_kernel_for_analysis) if "TMRGSORT" in raw_kernel_for_analysis else None
+    mrgsort_block_len = (
+        _infer_mrgsort_block_len(raw_kernel_for_analysis)
+        if "TMRGSORT" in raw_kernel_for_analysis
+        else None
+    )
 
-    pointer_param_names = [_extract_cpp_name(p) for p in raw_params if _is_gm_pointer_param(p)]
+    pointer_param_names = [
+        _extract_cpp_name(p) for p in raw_params if _is_gm_pointer_param(p)
+    ]
     inferred_void_ptr_types = {}
     for raw in raw_params:
         if not _is_gm_pointer_param(raw):
@@ -903,9 +1161,22 @@ def generate_testcase(
             if inferred:
                 inferred_void_ptr_types[name] = inferred
 
-    output_ptr = _detect_output_pointer_param(raw_kernel_for_analysis, pointer_param_names)
-    if output_ptr is None and pointer_param_names:
-        output_ptr = pointer_param_names[0] if len(pointer_param_names) == 1 else pointer_param_names[-1]
+    ffts_param_names = _detect_set_ffts_pointer_params(
+        raw_kernel_for_analysis, pointer_param_names
+    )
+    non_ffts_pointer_param_names = [
+        n for n in pointer_param_names if n not in ffts_param_names
+    ]
+
+    output_ptr = _detect_output_pointer_param(
+        raw_kernel_for_analysis, non_ffts_pointer_param_names
+    )
+    if output_ptr is None and non_ffts_pointer_param_names:
+        output_ptr = (
+            non_ffts_pointer_param_names[0]
+            if len(non_ffts_pointer_param_names) == 1
+            else non_ffts_pointer_param_names[-1]
+        )
 
     params = []
     for raw in raw_params:
@@ -921,7 +1192,11 @@ def generate_testcase(
                     "name": name,
                     "cpp_type": cpp_type,
                     "host_type": _cpp_host_type(cpp_type),
-                    "role": "output" if name == output_ptr else "input",
+                    "role": (
+                        "ffts"
+                        if name in ffts_param_names
+                        else ("output" if name == output_ptr else "input")
+                    ),
                 }
             )
         else:
@@ -941,15 +1216,26 @@ def generate_testcase(
     # - Some kernels are in-place (single pointer param) or may read from an
     #   "output" pointer as scratch. Leaving buffers uninitialized leads to
     #   non-determinism between CPU golden and real NPU.
-    init_ptrs = [p for p in params if p["kind"] == "ptr"]
-    output_ptrs = [p for p in params if p["kind"] == "ptr" and p["role"] == "output"]
+    data_ptrs = [p for p in params if p["kind"] == "ptr" and p["role"] != "ffts"]
+    ffts_ptrs = [p for p in params if p["kind"] == "ptr" and p["role"] == "ffts"]
+    init_ptrs = list(data_ptrs)
+    output_ptrs = [p for p in data_ptrs if p["role"] == "output"]
 
-    ptr_elem_counts = {p["name"]: logical_elem_count for p in params if p["kind"] == "ptr"}
-    inferred_counts = _infer_gm_pointer_elem_counts(raw_kernel_for_analysis, pointer_param_names)
-    for name, cnt in inferred_counts.items():
-        ptr_elem_counts[name] = max(ptr_elem_counts.get(name, logical_elem_count), cnt)
+    inferred_counts = _infer_gm_pointer_elem_counts(
+        raw_kernel_for_analysis, pointer_param_names
+    )
+    ptr_elem_counts = {}
+    for p in params:
+        if p["kind"] != "ptr":
+            continue
+        # Prefer per-pointer GlobalTensor/stride inference when available.
+        # Falling back to a single kernel-level logical_elem_count can
+        # over-allocate mismatched binary operands such as 16x64 + 16x32.
+        ptr_elem_counts[p["name"]] = inferred_counts.get(p["name"], logical_elem_count)
 
     templates_root = Path(__file__).resolve().parents[1] / "templates"
+    custom_golden = _find_custom_case_asset(sample_root, testcase, "golden.py")
+    custom_compare = _find_custom_case_asset(sample_root, testcase, "compare.py")
     template = (templates_root / "main_template.cpp").read_text(encoding="utf-8")
     case_name = f"case_{rows}x{cols}"
 
@@ -966,14 +1252,32 @@ def generate_testcase(
             launch_call_args.append(p["name"])
 
     param_decls_lines = []
-    if any(p["kind"] == "ptr" for p in params):
-        for p in params:
-            if p["kind"] != "ptr":
-                continue
+    if data_ptrs:
+        for p in data_ptrs:
             elem_cnt = ptr_elem_counts.get(p["name"], logical_elem_count)
             param_decls_lines.append(f"    size_t elemCount_{p['name']} = {elem_cnt};")
             param_decls_lines.append(
                 f"    size_t fileSize_{p['name']} = elemCount_{p['name']} * sizeof({p['host_type']});"
+            )
+
+    dynamic_shape_scalar_defaults = {}
+    if testcase_shape is not None and testcase_shape[3] == "dynamic":
+        _, shape_rows, shape_cols, _ = testcase_shape
+        int_scalar_params = [
+            p
+            for p in params
+            if p["kind"] == "scalar"
+            and (
+                re.match(r"^(u?int)(8|16|32|64)_t$", p["host_type"])
+                or p["host_type"] in {"int", "unsigned", "size_t"}
+            )
+        ]
+        if len(int_scalar_params) >= 2:
+            dynamic_shape_scalar_defaults[int_scalar_params[0]["name"]] = str(
+                shape_rows
+            )
+            dynamic_shape_scalar_defaults[int_scalar_params[1]["name"]] = str(
+                shape_cols
             )
 
     for p in params:
@@ -989,9 +1293,15 @@ def generate_testcase(
             # structures in the standard 1x256 f32 representation).
             param_decls_lines.append(f"    {t} {p['name']}{{128, 128, 128, 128}};")
             continue
-        if t == "bool":
+        if p["name"] in dynamic_shape_scalar_defaults:
+            value = dynamic_shape_scalar_defaults[p["name"]]
+        elif t == "bool":
             value = "true"
-        elif re.match(r"^(u?int)(8|16|32|64)_t$", t) or t in {"int", "unsigned", "size_t"}:
+        elif re.match(r"^(u?int)(8|16|32|64)_t$", t) or t in {
+            "int",
+            "unsigned",
+            "size_t",
+        }:
             value = "1"
         elif t in {"float"}:
             value = "1.0f"
@@ -1004,16 +1314,26 @@ def generate_testcase(
     for p in params:
         if p["kind"] != "ptr":
             continue
-        param_decls_lines.append(f"    {p['host_type']} *{p['name']}Host = nullptr;")
-        param_decls_lines.append(f"    {p['host_type']} *{p['name']}Device = nullptr;")
+        if p["role"] == "ffts":
+            param_decls_lines.append(
+                f"    {p['host_type']} *{p['name']}Device = nullptr;"
+            )
+            param_decls_lines.append(f"    uint64_t {p['name']}FftsAddr = 0;")
+            param_decls_lines.append(f"    uint32_t {p['name']}FftsLen = 0;")
+        else:
+            param_decls_lines.append(
+                f"    {p['host_type']} *{p['name']}Host = nullptr;"
+            )
+            param_decls_lines.append(
+                f"    {p['host_type']} *{p['name']}Device = nullptr;"
+            )
 
     alloc_host = []
     alloc_device = []
+    init_runtime_ptrs = []
     free_host = []
     free_device = []
-    for p in params:
-        if p["kind"] != "ptr":
-            continue
+    for p in data_ptrs:
         size_var = f"fileSize_{p['name']}"
         alloc_host.append(
             f"    ACL_CHECK(aclrtMallocHost((void **)(&{p['name']}Host), {size_var}));"
@@ -1023,6 +1343,19 @@ def generate_testcase(
         )
         free_device.append(f"    aclrtFree({p['name']}Device);")
         free_host.append(f"    aclrtFreeHost({p['name']}Host);")
+    for p in ffts_ptrs:
+        init_runtime_ptrs.append(
+            f"    if (const rtError_t _rt = rtGetC2cCtrlAddr(&{p['name']}FftsAddr, &{p['name']}FftsLen); _rt != RT_ERROR_NONE) {{"
+        )
+        init_runtime_ptrs.append(
+            f"        std::fprintf(stderr, \"[ERROR] rtGetC2cCtrlAddr failed for {p['name']}: %d (%s:%d)\\n\", (int)_rt, __FILE__, __LINE__);"
+        )
+        init_runtime_ptrs.append("        rc = 1;")
+        init_runtime_ptrs.append("        goto cleanup;")
+        init_runtime_ptrs.append("    }")
+        init_runtime_ptrs.append(
+            f"    {p['name']}Device = reinterpret_cast<{p['host_type']} *>({p['name']}FftsAddr);"
+        )
 
     read_inputs = []
     copy_inputs = []
@@ -1046,11 +1379,23 @@ def generate_testcase(
             f"    WriteFile(\"./{p['name']}.bin\", {p['name']}Host, {size_var});"
         )
 
+    runtime_rt_include = '#include "runtime/rt.h"' if ffts_ptrs else ""
+    runtime_host_include_dirs = ""
+    if ffts_ptrs:
+        runtime_host_include_dirs = "    ${ASCEND_HOME_PATH}/pkg_inc/runtime\n"
+
     param_decls = "\n".join(param_decls_lines)
+    runtime_rt_include = ""
+    if ffts_ptrs:
+        # `rtGetC2cCtrlAddr` is provided by CANN runtime. Use ccelib runtime
+        # header here instead of `runtime/rt.h` to avoid environment-specific
+        # include path issues on some board images.
+        runtime_rt_include = "#include <stdint.h>\n#include <ccelib/common/runtime.h>"
     main_cpp = (
-        template
+        template.replace("@RUNTIME_RT_INCLUDE@", runtime_rt_include)
         .replace("@TEST_SUITE@", testcase.upper())
         .replace("@CASE_NAME@", case_name)
+        .replace("@RUNTIME_RT_INCLUDE@", runtime_rt_include)
         .replace(
             "@LAUNCH_DECL@",
             f"void {launch_name}({', '.join(launch_decl_params + ['void *stream'])});",
@@ -1058,6 +1403,7 @@ def generate_testcase(
         .replace("@PARAM_DECLS@", param_decls)
         .replace("@ALLOC_HOST@", "\n".join(alloc_host))
         .replace("@ALLOC_DEVICE@", "\n".join(alloc_device))
+        .replace("@INIT_RUNTIME_PTRS@", "\n".join(init_runtime_ptrs))
         .replace("@READ_INPUTS@", "\n".join(read_inputs))
         .replace("@COPY_TO_DEVICE@", "\n".join(copy_inputs))
         .replace(
@@ -1071,103 +1417,144 @@ def generate_testcase(
     )
     (output_dir / "main.cpp").write_text(main_cpp, encoding="utf-8")
 
-    golden_template = (templates_root / "golden_template.py").read_text(encoding="utf-8")
-    input_generate = []
-    elem_count = logical_elem_count
-    # Some kernels use an integer tensor as "indices". The safe in-range domain
-    # depends on the op semantics (see pto-isa docs):
-    # - TSCATTER: indices are linear indices in [0, rows*cols)
-    # - TGATHER/TGATHERB: indices are linear indices in [0, rows*cols)
-    index_mod = None
-    if "TSCATTER" in raw_kernel:
-        index_mod = max(elem_count, 1)
-    elif any(m in raw_kernel for m in ("TGATHER", "TGATHERB")):
-        index_mod = max(elem_count, 1)
-    mrgsort_packed = "TMRGSORT" in raw_kernel
-    for p in init_ptrs:
-        np_dtype = _np_dtype_for_cpp(p["cpp_type"])
-        name = p["name"]
-        size = ptr_elem_counts.get(name, elem_count)
-        is_output = p.get("role") == "output"
-        # If the kernel has both inputs and outputs, default to zero-init for
-        # output buffers to match pto-isa ST conventions (and improve determinism).
-        zero_init = is_output and len(init_ptrs) > 1
+    if custom_golden is not None:
+        _copy_asset_if_needed(custom_golden, output_dir / "golden.py")
+        _maybe_copy_validation_runtime(sample_root, output_dir)
+    else:
+        golden_template = (templates_root / "golden_template.py").read_text(
+            encoding="utf-8"
+        )
+        input_generate = []
+        elem_count = logical_elem_count
+        # Some kernels use an integer tensor as "indices". The safe in-range domain
+        # depends on the op semantics (see pto-isa docs):
+        # - TSCATTER: indices are linear indices in [0, rows*cols)
+        # - TGATHER/TGATHERB: indices are linear indices in [0, rows*cols)
+        index_mod = None
+        if "TSCATTER" in raw_kernel:
+            index_mod = max(elem_count, 1)
+        elif any(m in raw_kernel for m in ("TGATHER", "TGATHERB")):
+            index_mod = max(elem_count, 1)
+        mrgsort_packed = "TMRGSORT" in raw_kernel
+        for p in init_ptrs:
+            np_dtype = _np_dtype_for_cpp(p["cpp_type"])
+            name = p["name"]
+            size = ptr_elem_counts.get(name, elem_count)
+            is_output = p.get("role") == "output"
+            # If the kernel has both inputs and outputs, default to zero-init for
+            # output buffers to match pto-isa ST conventions (and improve determinism).
+            zero_init = is_output and len(init_ptrs) > 1
 
-        if zero_init:
-            input_generate.append(f"    {name} = np.zeros(({size},), dtype={np_dtype})")
-            input_generate.append(f"    {name}.tofile(\"{name}.bin\")")
-        elif mrgsort_packed and (not is_output) and np_dtype in ("np.float32", "np.float16"):
-            input_generate.append(f"    # TMRGSORT expects packed (value, index) structures (8 bytes each).")
-            input_generate.append(f"    # Generate per-block sorted inputs to match pto-isa ST data layout.")
-            if np_dtype == "np.float32":
-                input_generate.append(f"    {name}__words_per_struct = 2  # float32(4B) + uint32(4B)")
-                input_generate.append(f"    {name}__struct_dtype = np.dtype([('v', np.float32), ('i', np.uint32)])")
-                input_generate.append(f"    {name}__value_dtype = np.float32")
-            else:
-                input_generate.append(f"    {name}__words_per_struct = 4  # float16(2B) + pad(2B) + uint32(4B)")
-                input_generate.append(
-                    f"    {name}__struct_dtype = np.dtype([('v', np.float16), ('pad', np.uint16), ('i', np.uint32)])"
-                )
-                input_generate.append(f"    {name}__value_dtype = np.float16")
-
-            input_generate.append(f"    {name}__struct_count = {size} // {name}__words_per_struct")
-            # Two modes:
-            #   - Single-list format (TMRGSORT(dst, src, blockLen)): input is arranged in
-            #     4 blocks and each block is sorted independently.
-            #   - Multi-list format (TMRGSORT(dst, executed, tmp, src0..)): each input list
-            #     is fully sorted.
-            mrgsort_single = mrgsort_block_len is not None
-            if mrgsort_single:
-                input_generate.append(f"    {name}__block_len = {mrgsort_block_len}")
-                input_generate.append(f"    {name}__structs_per_block = {name}__block_len // {name}__words_per_struct")
-            input_generate.append(
-                f"    {name}__values = np.random.uniform(low=0, high=1, size=({name}__struct_count,)).astype({name}__value_dtype)"
-            )
-            input_generate.append(f"    {name}__idx = np.arange({name}__struct_count, dtype=np.uint32)")
-            if mrgsort_single:
-                input_generate.append(f"    if {name}__structs_per_block > 0 and {name}__struct_count > 0:")
-                input_generate.append(f"        pad = (-{name}__struct_count) % {name}__structs_per_block")
-                input_generate.append(f"        if pad:")
-                input_generate.append(
-                    f"            {name}__values = np.concatenate(({name}__values, np.zeros(pad, dtype={name}__values.dtype)))"
-                )
-                input_generate.append(
-                    f"            {name}__idx = np.concatenate(({name}__idx, np.zeros(pad, dtype={name}__idx.dtype)))"
-                )
-                input_generate.append(f"        v = {name}__values.reshape(-1, {name}__structs_per_block)")
-                input_generate.append(f"        i = {name}__idx.reshape(-1, {name}__structs_per_block)")
-                input_generate.append(f"        order = np.argsort(-v, kind='stable', axis=1)")
-                input_generate.append(
-                    f"        {name}__values = np.take_along_axis(v, order, axis=1).reshape(-1)[:{name}__struct_count]"
-                )
-                input_generate.append(
-                    f"        {name}__idx = np.take_along_axis(i, order, axis=1).reshape(-1)[:{name}__struct_count]"
-                )
-            else:
-                input_generate.append(f"    if {name}__struct_count > 0:")
-                input_generate.append(f"        order = np.argsort(-{name}__values, kind='stable')")
-                input_generate.append(f"        {name}__values = {name}__values[order]")
-                input_generate.append(f"        {name}__idx = {name}__idx[order]")
-            input_generate.append(f"    {name}__packed = np.empty(({name}__struct_count,), dtype={name}__struct_dtype)")
-            input_generate.append(f"    {name}__packed['v'] = {name}__values")
-            if np_dtype == "np.float16":
-                input_generate.append(f"    {name}__packed['pad'] = np.uint16(0)")
-            input_generate.append(f"    {name}__packed['i'] = {name}__idx")
-            input_generate.append(f"    {name}__packed.tofile(\"{name}.bin\")")
-        elif np_dtype.startswith("np.int") or np_dtype.startswith("np.uint"):
-            if index_mod is not None:
-                input_generate.append(
-                    f"    {name} = (np.arange({size}, dtype=np.int64) % {index_mod}).astype({np_dtype})"
-                )
-            else:
+            if zero_init:
                 input_generate.append(f"    {name} = np.zeros(({size},), dtype={np_dtype})")
-            input_generate.append(f"    {name}.tofile(\"{name}.bin\")")
-        else:
-            input_generate.append(f"    {name} = np.random.random(size=({size},)).astype({np_dtype})")
-            input_generate.append(f"    {name}.tofile(\"{name}.bin\")")
+                input_generate.append(f'    {name}.tofile("{name}.bin")')
+            elif (
+                mrgsort_packed
+                and (not is_output)
+                and np_dtype in ("np.float32", "np.float16")
+            ):
+                input_generate.append(
+                    f"    # TMRGSORT expects packed (value, index) structures (8 bytes each)."
+                )
+                input_generate.append(
+                    f"    # Generate per-block sorted inputs to match pto-isa ST data layout."
+                )
+                if np_dtype == "np.float32":
+                    input_generate.append(
+                        f"    {name}__words_per_struct = 2  # float32(4B) + uint32(4B)"
+                    )
+                    input_generate.append(
+                        f"    {name}__struct_dtype = np.dtype([('v', np.float32), ('i', np.uint32)])"
+                    )
+                    input_generate.append(f"    {name}__value_dtype = np.float32")
+                else:
+                    input_generate.append(
+                        f"    {name}__words_per_struct = 4  # float16(2B) + pad(2B) + uint32(4B)"
+                    )
+                    input_generate.append(
+                        f"    {name}__struct_dtype = np.dtype([('v', np.float16), ('pad', np.uint16), ('i', np.uint32)])"
+                    )
+                    input_generate.append(f"    {name}__value_dtype = np.float16")
 
-    golden_py = golden_template.replace("@INPUT_GENERATE@", "\n".join(input_generate))
-    (output_dir / "golden.py").write_text(golden_py, encoding="utf-8")
+                input_generate.append(
+                    f"    {name}__struct_count = {size} // {name}__words_per_struct"
+                )
+                mrgsort_single = mrgsort_block_len is not None
+                if mrgsort_single:
+                    input_generate.append(f"    {name}__block_len = {mrgsort_block_len}")
+                    input_generate.append(
+                        f"    {name}__structs_per_block = {name}__block_len // {name}__words_per_struct"
+                    )
+                input_generate.append(
+                    f"    {name}__values = np.random.uniform(low=0, high=1, size=({name}__struct_count,)).astype({name}__value_dtype)"
+                )
+                input_generate.append(
+                    f"    {name}__idx = np.arange({name}__struct_count, dtype=np.uint32)"
+                )
+                if mrgsort_single:
+                    input_generate.append(
+                        f"    if {name}__structs_per_block > 0 and {name}__struct_count > 0:"
+                    )
+                    input_generate.append(
+                        f"        pad = (-{name}__struct_count) % {name}__structs_per_block"
+                    )
+                    input_generate.append(f"        if pad:")
+                    input_generate.append(
+                        f"            {name}__values = np.concatenate(({name}__values, np.zeros(pad, dtype={name}__values.dtype)))"
+                    )
+                    input_generate.append(
+                        f"            {name}__idx = np.concatenate(({name}__idx, np.zeros(pad, dtype={name}__idx.dtype)))"
+                    )
+                    input_generate.append(
+                        f"        v = {name}__values.reshape(-1, {name}__structs_per_block)"
+                    )
+                    input_generate.append(
+                        f"        i = {name}__idx.reshape(-1, {name}__structs_per_block)"
+                    )
+                    input_generate.append(
+                        f"        order = np.argsort(-v, kind='stable', axis=1)"
+                    )
+                    input_generate.append(
+                        f"        {name}__values = np.take_along_axis(v, order, axis=1).reshape(-1)[:{name}__struct_count]"
+                    )
+                    input_generate.append(
+                        f"        {name}__idx = np.take_along_axis(i, order, axis=1).reshape(-1)[:{name}__struct_count]"
+                    )
+                else:
+                    input_generate.append(f"    if {name}__struct_count > 0:")
+                    input_generate.append(
+                        f"        order = np.argsort(-{name}__values, kind='stable')"
+                    )
+                    input_generate.append(f"        {name}__values = {name}__values[order]")
+                    input_generate.append(f"        {name}__idx = {name}__idx[order]")
+                input_generate.append(
+                    f"    {name}__packed = np.empty(({name}__struct_count,), dtype={name}__struct_dtype)"
+                )
+                input_generate.append(f"    {name}__packed['v'] = {name}__values")
+                if np_dtype == "np.float16":
+                    input_generate.append(f"    {name}__packed['pad'] = np.uint16(0)")
+                input_generate.append(f"    {name}__packed['i'] = {name}__idx")
+                input_generate.append(f'    {name}__packed.tofile("{name}.bin")')
+            elif np_dtype.startswith("np.int") or np_dtype.startswith("np.uint"):
+                if index_mod is not None:
+                    input_generate.append(
+                        f"    {name} = (np.arange({size}, dtype=np.int64) % {index_mod}).astype({np_dtype})"
+                    )
+                else:
+                    input_generate.append(
+                        f"    {name} = np.zeros(({size},), dtype={np_dtype})"
+                    )
+                input_generate.append(f'    {name}.tofile("{name}.bin")')
+            else:
+                input_generate.append(
+                    f"    {name} = np.random.random(size=({size},)).astype({np_dtype})"
+                )
+                input_generate.append(f'    {name}.tofile("{name}.bin")')
+
+        golden_py = golden_template.replace(
+            "    # __INPUT_GENERATE_PLACEHOLDER__", "\n".join(input_generate)
+        ).replace("@INPUT_GENERATE@", "\n".join(input_generate))
+        (output_dir / "golden.py").write_text(golden_py, encoding="utf-8")
     shutil.copyfile(templates_root.parent / "common" / "test_common.h", output_dir / "test_common.h")
 
     # Emit the kernel source, optionally injecting a packed-predicate preload to
@@ -1201,7 +1588,9 @@ def generate_testcase(
         if p["kind"] == "ptr":
             cast_ty = _strip_param_name(p["raw"], p["name"])
             kernel_call_args_device.append(f"({cast_ty}){p['name']}")
-            kernel_call_args_host.append(f"({_rewrite_host_unsupported_types(cast_ty)}){p['name']}")
+            kernel_call_args_host.append(
+                f"({_rewrite_host_unsupported_types(cast_ty)}){p['name']}"
+            )
         else:
             kernel_call_args_device.append(p["name"])
             kernel_call_args_host.append(p["name"])
@@ -1209,8 +1598,7 @@ def generate_testcase(
     kernel_call_args_host = ", ".join(kernel_call_args_host)
     raw_params_host = [_rewrite_host_unsupported_types(p) for p in raw_params]
     launch_cpp = (
-        INCLUDE_REPLACEMENT
-        + "\n"
+        INCLUDE_REPLACEMENT + "\n"
         "#if defined(__CCE_AICORE__)\n"
         f"extern \"C\" __global__ AICORE void {kernel_name}({', '.join(raw_params)});\n"
         "#else\n"
@@ -1235,7 +1623,9 @@ def generate_testcase(
 
     # CCE printing support is gated behind `--cce-enable-print` on some bisheng
     # toolchains. Only enable it for kernels that actually emit printf.
-    needs_cce_print = bool(re.search(r"\b(?:bisheng::)?cce::printf\s*\(", raw_kernel_for_analysis))
+    needs_cce_print = bool(
+        re.search(r"\b(?:bisheng::)?cce::printf\s*\(", raw_kernel_for_analysis)
+    )
     cce_enable_print_opt = "    --cce-enable-print" if needs_cce_print else ""
     cce_print_define_opt = "    -DPTOAS_ENABLE_CCE_PRINT=1" if needs_cce_print else ""
 
@@ -1341,7 +1731,9 @@ add_executable({testcase} main.cpp)
 target_compile_options({testcase} PRIVATE ${{CMAKE_CPP_COMPILE_OPTIONS}})
 target_include_directories({testcase} PRIVATE
     ${{CMAKE_CURRENT_SOURCE_DIR}}
-)
+    ${{PTO_ISA_ROOT}}/include
+    ${{PTO_ISA_ROOT}}/tests/common
+{runtime_host_include_dirs})
 
 target_link_directories({testcase} PUBLIC
     ${{ASCEND_HOME_PATH}}/lib64
@@ -1359,7 +1751,9 @@ if(ENABLE_SIM_GOLDEN)
     target_compile_options({testcase}_sim PRIVATE ${{CMAKE_CPP_COMPILE_OPTIONS}})
     target_include_directories({testcase}_sim PRIVATE
         ${{CMAKE_CURRENT_SOURCE_DIR}}
-    )
+        ${{PTO_ISA_ROOT}}/include
+        ${{PTO_ISA_ROOT}}/tests/common
+{runtime_host_include_dirs})
     target_link_directories({testcase}_sim PUBLIC
         ${{ASCEND_HOME_PATH}}/lib64
         ${{ASCEND_HOME_PATH}}/aarch64-linux/simulator/${{SOC_VERSION}}/lib
@@ -1373,57 +1767,70 @@ if(ENABLE_SIM_GOLDEN)
     )
 endif()
 """
-    (output_dir / "CMakeLists.txt").write_text(cmake_content.strip() + "\n", encoding="utf-8")
+    (output_dir / "CMakeLists.txt").write_text(
+        cmake_content.strip() + "\n", encoding="utf-8"
+    )
 
-    compare_template = (templates_root / "compare_template.py").read_text(encoding="utf-8")
-    compare_lines = ["    ok = True"]
-    compare_prefix_counts = {}
-    packed_pred_src_elem_bytes = None
-    if has_packed_pred_mask:
-        for p in init_ptrs:
-            if p.get("role") == "output":
+    if custom_compare is not None:
+        _copy_asset_if_needed(custom_compare, output_dir / "compare.py")
+        _maybe_copy_validation_runtime(sample_root, output_dir)
+    else:
+        compare_template = (templates_root / "compare_template.py").read_text(
+            encoding="utf-8"
+        )
+        compare_lines = ["    ok = True"]
+        compare_prefix_counts = {}
+        packed_pred_src_elem_bytes = None
+        if has_packed_pred_mask:
+            for p in init_ptrs:
+                if p.get("role") == "output":
+                    continue
+                src_bytes = _cpp_type_num_bytes(p["cpp_type"])
+                if src_bytes in (1, 2, 4):
+                    packed_pred_src_elem_bytes = src_bytes
+                    break
+        for p in output_ptrs:
+            name = p["name"]
+            req = inferred_counts.get(name)
+            if req is None:
                 continue
-            src_bytes = _cpp_type_num_bytes(p["cpp_type"])
-            if src_bytes in (1, 2, 4):
-                packed_pred_src_elem_bytes = src_bytes
-                break
-    for p in output_ptrs:
-        name = p["name"]
-        req = inferred_counts.get(name)
-        if req is None:
-            continue
-        try:
-            req = int(req)
-        except Exception:
-            continue
-        if req <= 0:
-            continue
-        file_cnt = ptr_elem_counts.get(name, logical_elem_count)
-        if file_cnt and req < int(file_cnt):
-            compare_prefix_counts[name] = req
-    for p in output_ptrs:
-        np_dtype = _np_dtype_for_cpp(p["cpp_type"])
-        name = p["name"]
-        eps = _default_eps_for_cpp_type(p["cpp_type"])
-        if has_packed_pred_mask and p["cpp_type"] in {"uint8_t", "int8_t"}:
-            if packed_pred_src_elem_bytes is None:
-                raise RuntimeError("failed to infer TCMP/TCMPS source element width for packed mask compare")
-            compare_lines.append(
-                f"    ok = compare_packed_pred_mask("
-                f"\"golden_{name}.bin\", \"{name}.bin\", {logical_elem_count}, {packed_pred_src_elem_bytes}) and ok"
-            )
-        else:
-            prefix_cnt = compare_prefix_counts.get(name)
-            if prefix_cnt is not None:
+            try:
+                req = int(req)
+            except Exception:
+                continue
+            if req <= 0:
+                continue
+            file_cnt = ptr_elem_counts.get(name, logical_elem_count)
+            if file_cnt and req < int(file_cnt):
+                compare_prefix_counts[name] = req
+        for p in output_ptrs:
+            np_dtype = _np_dtype_for_cpp(p["cpp_type"])
+            name = p["name"]
+            eps = _default_eps_for_cpp_type(p["cpp_type"])
+            if has_packed_pred_mask and p["cpp_type"] in {"uint8_t", "int8_t"}:
+                if packed_pred_src_elem_bytes is None:
+                    raise RuntimeError(
+                        "failed to infer TCMP/TCMPS source element width for packed mask compare"
+                    )
                 compare_lines.append(
-                    f"    ok = compare_bin_prefix(\"golden_{name}.bin\", \"{name}.bin\", {np_dtype}, {eps}, {prefix_cnt}) and ok"
+                    f"    ok = compare_packed_pred_mask("
+                    f"\"golden_{name}.bin\", \"{name}.bin\", {logical_elem_count}, "
+                    f"{packed_pred_src_elem_bytes}) and ok"
                 )
             else:
-                compare_lines.append(
-                    f"    ok = compare_bin(\"golden_{name}.bin\", \"{name}.bin\", {np_dtype}, {eps}) and ok"
-                )
-    compare_py = compare_template.replace("@COMPARES@", "\n".join(compare_lines))
-    (output_dir / "compare.py").write_text(compare_py, encoding="utf-8")
+                prefix_cnt = compare_prefix_counts.get(name)
+                if prefix_cnt is not None:
+                    compare_lines.append(
+                        f'    ok = compare_bin_prefix("golden_{name}.bin", "{name}.bin", {np_dtype}, {eps}, {prefix_cnt}) and ok'
+                    )
+                else:
+                    compare_lines.append(
+                        f'    ok = compare_bin("golden_{name}.bin", "{name}.bin", {np_dtype}, {eps}) and ok'
+                    )
+        compare_py = compare_template.replace(
+            "    # __COMPARES_PLACEHOLDER__", "\n".join(compare_lines)
+        ).replace("@COMPARES@", "\n".join(compare_lines))
+        (output_dir / "compare.py").write_text(compare_py, encoding="utf-8")
 
     # Let the runner know which bins are outputs (for sim->golden copying).
     (output_dir / "outputs.txt").write_text(
@@ -1438,15 +1845,28 @@ endif()
     run_path = output_dir / "run.sh"
     run_path.write_text(run_sh, encoding="utf-8")
     run_path.chmod(0o755)
+    return output_dir
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate NPU validation testcase from PTOAS kernel.")
+    parser = argparse.ArgumentParser(
+        description="Generate NPU validation testcase from PTOAS kernel."
+    )
     parser.add_argument("--input", required=True, help="Input PTOAS .cpp file")
-    parser.add_argument("--testcase", default=None, help="Testcase name (default: derived from input filename)")
-    parser.add_argument("--output-root", default=None, help="Output testcases root directory")
-    parser.add_argument("--run-mode", default="npu", choices=["sim", "npu"], help="Run mode for run.sh")
-    parser.add_argument("--soc-version", default="Ascend910", help="SOC version for run.sh")
+    parser.add_argument(
+        "--testcase",
+        default=None,
+        help="Testcase name (default: derived from input filename)",
+    )
+    parser.add_argument(
+        "--output-root", default=None, help="Output testcases root directory"
+    )
+    parser.add_argument(
+        "--run-mode", default="npu", choices=["sim", "npu"], help="Run mode for run.sh"
+    )
+    parser.add_argument(
+        "--soc-version", default="Ascend910", help="SOC version for run.sh"
+    )
     parser.add_argument(
         "--aicore-arch",
         default=None,
@@ -1456,7 +1876,7 @@ def main():
 
     output_root = Path(args.output_root) if args.output_root else None
     testcase = args.testcase or _derive_testcase_name(Path(args.input))
-    generate_testcase(
+    output_dir = generate_testcase(
         Path(args.input),
         output_root,
         testcase,
@@ -1464,6 +1884,7 @@ def main():
         args.soc_version,
         aicore_arch=args.aicore_arch,
     )
+    print(f"Generated npu_validation testcase at: {output_dir.resolve()}")
 
 
 if __name__ == "__main__":

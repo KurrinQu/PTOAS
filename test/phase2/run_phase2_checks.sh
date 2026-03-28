@@ -83,5 +83,24 @@ echo "phase2 check: pto_backend_a5vm_wiring.mlir"
 "${ptoas_bin}" --pto-backend=a5vm --emit-a5vm test/phase2/pto_backend_a5vm_wiring.mlir -o - 2>/dev/null | \
   "${filecheck_bin}" test/phase2/pto_backend_a5vm_wiring.mlir
 
+echo "phase2 check: pto_backend_a5vm_wiring.mlir EmitC smoke"
+"${ptoas_bin}" --pto-arch=a5 --pto-backend=emitc test/phase2/pto_backend_a5vm_wiring.mlir -o - 2>/dev/null | \
+  "${filecheck_bin}" --check-prefix=EMITC test/phase2/pto_backend_a5vm_wiring.mlir
+
+echo "phase2 check: a5vm_fusion_pipeline_order.mlir"
+"${ptoas_bin}" test/samples/PyPTOIRParser/paged_attention_example_kernel_online_update.pto --enable-op-fusion --pto-arch=a5 --pto-backend=a5vm --print-ir-after-all --print-ir-after-all-func-filter=kernel_online_update -o /dev/null > /tmp/a5vm_fusion_pipeline_order.out 2>&1
+"${filecheck_bin}" test/phase2/a5vm_fusion_pipeline_order.mlir < /tmp/a5vm_fusion_pipeline_order.out
+! rg 'IR Dump After (PTOValidateSimdIR|PTOInstantiateAndLowerToLibCall|PTOInlineLibCall)' /tmp/a5vm_fusion_pipeline_order.out
+
+echo "phase2 check: a5vm_fusion_region_lifecycle.mlir (low-level)"
+"${ptoas_bin}" test/samples/PyPTOIRParser/paged_attention_example_kernel_online_update.pto --enable-op-fusion --pto-arch=a5 --pto-backend=a5vm --print-ir-after-all --print-ir-after-all-func-filter=kernel_online_update -o /dev/null 2>&1 | \
+  awk '/IR Dump After PTOLowLevelLoopFusion/{found=1} found{if ($0 ~ /^\/\/ -----\/\/ IR Dump After / && $0 !~ /PTOLowLevelLoopFusion/) exit; print}' | \
+  "${filecheck_bin}" --check-prefix=LOW test/phase2/a5vm_fusion_region_lifecycle.mlir
+
+echo "phase2 check: a5vm_fusion_region_lifecycle.mlir (flatten)"
+"${ptoas_bin}" test/samples/PyPTOIRParser/paged_attention_example_kernel_online_update.pto --enable-op-fusion --pto-arch=a5 --pto-backend=a5vm --print-ir-after-all --print-ir-after-all-func-filter=kernel_online_update -o /dev/null 2>&1 | \
+  awk '/IR Dump After PTOFlattenFusionRegion/{found=1} found{if ($0 ~ /^\/\/ -----\/\/ IR Dump After / && $0 !~ /PTOFlattenFusionRegion/) exit; print}' | \
+  "${filecheck_bin}" --check-prefix=FLAT test/phase2/a5vm_fusion_region_lifecycle.mlir
+
 echo "phase2 check: ctest"
 ctest --test-dir build --output-on-failure

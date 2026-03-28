@@ -30,6 +30,27 @@ enum class A5VMLoweringStrategy {
   NoPostUpdate,
 };
 
+FailureOr<A5VMLoweringChoiceAttr> getA5VMLoweringChoiceAttr(Operation *op);
+LogicalResult validateA5VMLoweringChoiceAttr(Operation *op, Attribute attr);
+LogicalResult validateA5VMLoweringChoiceAttr(Operation *op,
+                                             A5VMLoweringChoiceAttr attr);
+A5VMLoweringStrategy
+convertA5VMUpdateModeToLoweringStrategy(A5VMUpdateMode updateMode);
+A5VMUpdateMode
+convertA5VMLoweringStrategyToUpdateMode(A5VMLoweringStrategy strategy);
+bool hasA5VMSameShapeLinearPath(ArrayRef<int64_t> rowStrides,
+                                ArrayRef<int64_t> tileCols);
+FailureOr<A5VMLoopShape>
+selectA5VMLoopShapeForFullWidthCols(ArrayRef<int64_t> tileCols,
+                                    int64_t validCols);
+FailureOr<A5VMLoopShape>
+selectA5VMLoopShapeForSameShapeLinearPath(ArrayRef<int64_t> rowStrides,
+                                          ArrayRef<int64_t> tileCols,
+                                          int64_t validCols);
+Value buildA5VMFullWidthColsCondition(ArrayRef<int64_t> tileCols,
+                                      Value validColsValue,
+                                      PatternRewriter &rewriter, Location loc);
+
 struct A5VMPartitionTrace {
   SmallVector<int64_t> offsets;
   SmallVector<int64_t> sizes;
@@ -129,6 +150,9 @@ void set_loop_size_ubtoout(Operation *copyOp, int64_t loop2, int64_t loop1,
 LogicalResult attachLoopScopeMetadata(LoopLikeOpInterface loop,
                                       const A5VMLoopScopeContract &contract,
                                       PatternRewriter &rewriter);
+Value materializeBufferPointer(Value value, Type elementType,
+                               Attribute memorySpace,
+                               PatternRewriter &rewriter, Location loc);
 
 LogicalResult programCopyGmToUbLoops(Operation *copyOp,
                                      const A5VMLoadContract &contract,
@@ -138,13 +162,14 @@ LogicalResult programCopyUbToGmLoops(Operation *copyOp,
                                      Builder &builder);
 LogicalResult buildUnaryVecScope(StringRef family,
                                  const A5VMUnaryContract &contract,
-                                 A5VMLoweringStrategy strategy, Value src,
-                                 Value dst, PatternRewriter &rewriter,
-                                 Location loc);
+                                 A5VMLoweringStrategy strategy,
+                                 A5VMLoopShape loopShape, Value src, Value dst,
+                                 PatternRewriter &rewriter, Location loc);
 LogicalResult buildBinaryVecScope(StringRef family,
                                   const A5VMBinaryContract &contract,
-                                  A5VMLoweringStrategy strategy, Value src0,
-                                  Value src1, Value dst,
+                                  A5VMLoweringStrategy strategy,
+                                  A5VMLoopShape loopShape, Value src0, Value src1,
+                                  Value dst,
                                   PatternRewriter &rewriter, Location loc);
 
 LogicalResult lowerTLOAD(TLoadOp op, PatternRewriter &rewriter);
@@ -225,9 +250,12 @@ LogicalResult lowerTColSum(TColSumOp op, PatternRewriter &rewriter);
 LogicalResult lowerTRowExpand(TRowExpandOp op, PatternRewriter &rewriter,
                               A5VMLoweringStrategy strategy);
 LogicalResult lowerTColExpand(TColExpandOp op, PatternRewriter &rewriter);
-LogicalResult lowerTRowExpandMul(TRowExpandMulOp op, PatternRewriter &rewriter);
-LogicalResult lowerTRowExpandDiv(TRowExpandDivOp op, PatternRewriter &rewriter);
-LogicalResult lowerTRowExpandSub(TRowExpandSubOp op, PatternRewriter &rewriter);
+LogicalResult lowerTRowExpandMul(TRowExpandMulOp op, PatternRewriter &rewriter,
+                                 A5VMLoweringStrategy strategy);
+LogicalResult lowerTRowExpandDiv(TRowExpandDivOp op, PatternRewriter &rewriter,
+                                 A5VMLoweringStrategy strategy);
+LogicalResult lowerTRowExpandSub(TRowExpandSubOp op, PatternRewriter &rewriter,
+                                 A5VMLoweringStrategy strategy);
 LogicalResult lowerTPartAdd(TPartAddOp op, PatternRewriter &rewriter);
 LogicalResult lowerTPartMax(TPartMaxOp op, PatternRewriter &rewriter);
 LogicalResult lowerTPartMin(TPartMinOp op, PatternRewriter &rewriter);
@@ -243,7 +271,7 @@ LogicalResult lowerWaitFlag(WaitFlagOp op, PatternRewriter &rewriter);
 LogicalResult lowerBarrier(BarrierOp op, PatternRewriter &rewriter);
 LogicalResult lowerGetBuf(GetBufOp op, PatternRewriter &rewriter);
 LogicalResult lowerRlsBuf(RlsBufOp op, PatternRewriter &rewriter);
-LogicalResult convertA5VMFunctionBoundariesToPtr(
+LogicalResult convertA5VMEmissionBoundaryToPtr(
     ModuleOp module, llvm::raw_ostream *diagOS = nullptr);
 
 } // namespace pto

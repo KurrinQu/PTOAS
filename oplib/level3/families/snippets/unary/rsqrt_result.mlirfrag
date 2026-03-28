@@ -1,0 +1,7 @@
+// SNIPPET_SETUP_BEGIN
+%ones = arith.constant @@ONE_LITERAL@@ : @@VECTOR_TYPE@@
+// SNIPPET_SETUP_END
+// SNIPPET_COMPUTE_BEGIN
+%sqrt = math.sqrt %lhs@@EXEC_MODE_ATTR@@ : @@VECTOR_TYPE@@
+%result = arith.divf %ones, %sqrt@@EXEC_MODE_ATTR@@ : @@VECTOR_TYPE@@
+// SNIPPET_COMPUTE_END

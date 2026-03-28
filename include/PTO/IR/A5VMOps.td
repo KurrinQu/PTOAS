@@ -24,6 +24,8 @@ def A5VM_AlignTypeConstraint : Type<CPred<"::llvm::isa<::mlir::a5vm::AlignType>(
 def A5VM_BufferType : Type<
   CPred<"::llvm::isa<::mlir::pto::PtrType>($_self)">,
   "pointer-like buffer type">;
+def A5VM_BufferLikeType : AnyTypeOf<[AnyMemRef, A5VM_BufferType],
+                                    "memref or pointer-like buffer type">;
 
 class A5VM_Op<string mnemonic, list<Trait> traits = []>
     : Op<A5VM_Dialect, mnemonic, traits>;
@@ -165,7 +167,7 @@ def A5VM_VldsOp : A5VM_Op<"vlds", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
-    A5VM_BufferType:$source,
+    A5VM_BufferLikeType:$source,
     Index:$offset,
     OptionalAttr<StrAttr>:$dist
   );
@@ -183,12 +185,13 @@ def A5VM_VldsPostOp : A5VM_Op<"vlds_post", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
-    A5VM_BufferType:$source,
+    A5VM_BufferLikeType:$source,
     Index:$offset,
     OptionalAttr<StrAttr>:$dist
   );
 
-  let results = (outs A5VM_VectorType:$result, A5VM_BufferType:$updated_source);
+  let results = (outs A5VM_VectorType:$result,
+                      A5VM_BufferLikeType:$updated_source);
 
   let hasVerifier = 1;
 
@@ -231,6 +234,23 @@ def A5VM_VldusOp : A5VM_Op<"vldus", [
 
   let assemblyFormat = [{
     $source `,` $align attr-dict `:` type($source) `,` type($align) `->` type($result) `,` type($updated_align) `,` type($updated_source)
+  }];
+}
+
+def A5VM_UvldOp : A5VM_Op<"uvld", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    A5VM_BufferLikeType:$source,
+    Index:$offset
+  );
+
+  let results = (outs A5VM_VectorType:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $source `[` $offset `]` attr-dict `:` type($source) `->` type($result)
   }];
 }
 
@@ -384,7 +404,7 @@ def A5VM_PldsOp : A5VM_Op<"plds", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
-    A5VM_BufferType:$source,
+    A5VM_BufferLikeType:$source,
     Index:$offset,
     OptionalAttr<StrAttr>:$dist
   );
@@ -403,7 +423,7 @@ def A5VM_PldOp : A5VM_Op<"pld", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
-    A5VM_BufferType:$source,
+    A5VM_BufferLikeType:$source,
     Index:$offset,
     StrAttr:$dist
   );
@@ -420,7 +440,7 @@ def A5VM_PldiOp : A5VM_Op<"pldi", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
-    A5VM_BufferType:$source,
+    A5VM_BufferLikeType:$source,
     I32:$offset,
     StrAttr:$dist
   );
@@ -438,7 +458,7 @@ def A5VM_PstOp : A5VM_Op<"pst", [
   ]> {
   let arguments = (ins
     A5VM_MaskTypeConstraint:$value,
-    A5VM_BufferType:$destination,
+    A5VM_BufferLikeType:$destination,
     Index:$offset,
     StrAttr:$dist
   );
@@ -456,7 +476,7 @@ def A5VM_PstiOp : A5VM_Op<"psti", [
   ]> {
   let arguments = (ins
     A5VM_MaskTypeConstraint:$value,
-    A5VM_BufferType:$destination,
+    A5VM_BufferLikeType:$destination,
     I32:$offset,
     StrAttr:$dist
   );
@@ -854,7 +874,7 @@ def A5VM_VsldOp : A5VM_Op<"vsld", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
-    A5VM_BufferType:$source,
+    A5VM_BufferLikeType:$source,
     Index:$offset,
     StrAttr:$stride
   );
@@ -873,7 +893,7 @@ def A5VM_VstsOp : A5VM_Op<"vsts", [
   ]> {
   let arguments = (ins
     A5VM_VectorType:$value,
-    A5VM_BufferType:$destination,
+    A5VM_BufferLikeType:$destination,
     Index:$offset,
     OptionalAttr<StrAttr>:$dist,
     A5VM_MaskTypeConstraint:$mask
@@ -893,13 +913,13 @@ def A5VM_VstsPostOp : A5VM_Op<"vsts_post", [
   ]> {
   let arguments = (ins
     A5VM_VectorType:$value,
-    A5VM_BufferType:$destination,
+    A5VM_BufferLikeType:$destination,
     Index:$offset,
     OptionalAttr<StrAttr>:$dist,
     A5VM_MaskTypeConstraint:$mask
   );
 
-  let results = (outs A5VM_BufferType:$updated_destination);
+  let results = (outs A5VM_BufferLikeType:$updated_destination);
 
   let hasVerifier = 1;
 
@@ -932,7 +952,7 @@ def A5VM_PstsOp : A5VM_Op<"psts", [
   ]> {
   let arguments = (ins
     A5VM_MaskTypeConstraint:$value,
-    A5VM_BufferType:$destination,
+    A5VM_BufferLikeType:$destination,
     Index:$offset
   );
 
@@ -952,7 +972,7 @@ def A5VM_VsstOp : A5VM_Op<"vsst", [
   ]> {
   let arguments = (ins
     A5VM_VectorType:$value,
-    A5VM_BufferType:$destination,
+    A5VM_BufferLikeType:$destination,
     Index:$offset,
     StrAttr:$stride
   );
@@ -1116,7 +1136,7 @@ def A5VM_Vldx2Op : A5VM_Op<"vldx2", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
-    A5VM_BufferType:$source,
+    A5VM_BufferLikeType:$source,
     Index:$offset,
     StrAttr:$dist
   );
@@ -1135,7 +1155,7 @@ def A5VM_Vstx2Op : A5VM_Op<"vstx2", [
   let arguments = (ins
     A5VM_VectorType:$low,
     A5VM_VectorType:$high,
-    A5VM_BufferType:$destination,
+    A5VM_BufferLikeType:$destination,
     Index:$offset,
     StrAttr:$dist,
     A5VM_MaskTypeConstraint:$mask
@@ -1153,7 +1173,7 @@ def A5VM_VsldbOp : A5VM_Op<"vsldb", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
-    A5VM_BufferType:$source,
+    A5VM_BufferLikeType:$source,
     I32:$offset,
     A5VM_MaskTypeConstraint:$mask
   );
@@ -1171,7 +1191,7 @@ def A5VM_VsstbOp : A5VM_Op<"vsstb", [
   ]> {
   let arguments = (ins
     A5VM_VectorType:$value,
-    A5VM_BufferType:$destination,
+    A5VM_BufferLikeType:$destination,
     I32:$offset,
     A5VM_MaskTypeConstraint:$mask
   );
@@ -1189,7 +1209,7 @@ def A5VM_VstaOp : A5VM_Op<"vsta", [
   ]> {
   let arguments = (ins
     A5VM_AlignTypeConstraint:$value,
-    A5VM_BufferType:$destination,
+    A5VM_BufferLikeType:$destination,
     Index:$offset
   );
   let results = (outs);
@@ -1206,7 +1226,7 @@ def A5VM_VstasOp : A5VM_Op<"vstas", [
   ]> {
   let arguments = (ins
     A5VM_AlignTypeConstraint:$value,
-    A5VM_BufferType:$destination,
+    A5VM_BufferLikeType:$destination,
     I32:$offset
   );
   let results = (outs);
@@ -1223,7 +1243,7 @@ def A5VM_VstarOp : A5VM_Op<"vstar", [
   ]> {
   let arguments = (ins
     A5VM_AlignTypeConstraint:$value,
-    A5VM_BufferType:$destination
+    A5VM_BufferLikeType:$destination
   );
   let results = (outs);
 
@@ -1237,6 +1257,8 @@ def A5VM_VstarOp : A5VM_Op<"vstar", [
 // NOTE: Unvalidated stateful store-family abstractions. These preserve
 // align/base/offset update results explicitly in SSA form instead of relying on
 // implicit CCE reference updates.
+// Keep `base/base_out` pointer-only (`A5VM_BufferType`): memref semantics for
+// stateful post-update addresses are intentionally out of scope in this change.
 def A5VM_PstuOp : A5VM_Op<"pstu", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {

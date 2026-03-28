@@ -2,7 +2,7 @@
 
 ## 1. 项目简介 (Introduction)
 
-**ptoas** (`ptoas`) 是一个基于 **LLVM/MLIR (llvmorg-19.1.7)***(Commit cd708029e0b2869e80abe31ddb175f7c35361f90)* 框架构建的专用编译器工具链，专为 **PTO Bytecode** (Programming Tiling Operator Bytecode) 设计。
+**ptoas** (`ptoas`) 是一个基于 **LLVM/MLIR (llvmorg-19.1.7)\***(Commit cd708029e0b2869e80abe31ddb175f7c35361f90)\* 框架构建的专用编译器工具链，专为 **PTO Bytecode** (Programming Tiling Operator Bytecode) 设计。
 
 作为连接上层 AI 框架与底层各类NPU/GPGPU/CPU硬件，`ptoas` 采用 **Out-of-Tree** 架构构建，提供了完整的 C++ 与 Python 接口，主要职责包括：
 
@@ -39,7 +39,6 @@ pto-as/
 
 ⚠️ **重要提示**：本项目严格依赖 **LLVM llvmorg-19.1.7** 版本。
 
-
 ### 3.0 环境变量配置 (Configuration)
 
 为了简化构建流程，**请首先根据您的实际环境修改并运行以下命令**。后续步骤将直接引用这些变量。
@@ -65,17 +64,16 @@ mkdir -p $WORKSPACE_DIR
 
 ### 3.1 环境准备 (Prerequisites)
 
-* **OS**: Linux (Ubuntu 20.04+ 推荐)
-* **Compiler**: GCC >= 9 或 Clang (支持 C++17)
-* **Build System**: CMake >= 3.20, Ninja
-* **Python**: 3.8+
-* **Python Packages**: `pybind11`, `numpy`
+- **OS**: Linux (Ubuntu 20.04+ 推荐)
+- **Compiler**: GCC >= 9 或 Clang (支持 C++17)
+- **Build System**: CMake >= 3.20, Ninja
+- **Python**: 3.8+
+- **Python Packages**: `pybind11`, `numpy`
+
 ```bash
 pip3 install pybind11 numpy
 
 ```
-
-
 
 ### 3.2 第一步：构建 LLVM/MLIR (Dependency)
 
@@ -155,6 +153,13 @@ ptoas在build目录下
     └── ptoas
         └── ptoas
 
+OpLib 模板在 install 目录下会一并安装：
+./install/
+└── share
+    └── ptoas
+        └── oplib
+            └── level3
+
 ```
 
 ---
@@ -162,6 +167,23 @@ ptoas在build目录下
 ## 4. 运行环境配置 (Runtime Environment)
 
 构建完成后，需要配置环境变量以便系统能找到 Python 包和动态库。您可以将以下命令添加到 `.bashrc` 或启动脚本中。
+
+推荐直接使用项目内置脚本一键导入：
+
+```bash
+cd $PTO_SOURCE_DIR
+source scripts/ptoas_env.sh
+```
+
+如果你的目录结构与默认约定不同，可先覆盖路径变量再 `source`：
+
+```bash
+export LLVM_BUILD_DIR=/path/to/llvm-project/build-shared
+export PTO_INSTALL_DIR=/path/to/PTOAS/install
+source scripts/ptoas_env.sh
+```
+
+脚本位置：`scripts/ptoas_env.sh`
 
 ```bash
 # --- 运行时变量配置 (基于之前定义的路径) ---
@@ -198,6 +220,12 @@ ptoas tests/input.pto --pto-arch=a3 -o outputfile.cpp
 
 # 指定构建 Level（level3 会禁用 PlanMemory/InsertSync）
 ptoas tests/input.pto --pto-level=level3 -o outputfile.cpp
+
+# A5 路径默认会自动查找 OpLib 模板目录
+ptoas tests/input.pto --pto-arch=a5 --enable-op-fusion -o outputfile.cpp
+
+# 只有自定义模板目录时才需要显式覆盖
+ptoas tests/input.pto --pto-arch=a5 --op-lib-dir=/path/to/oplib/level3 -o outputfile.cpp
 
 # 查看当前 ptoas release 版本号
 ptoas --version
@@ -247,6 +275,7 @@ test/samples/Abs/npu_validation/run.sh
 ```
 
 说明：
+
 - `npu_validation/` 下会生成 `abs_kernel.cpp / main.cpp / golden.py / compare.py / run.sh / CMakeLists.txt`
 - `golden.py` 默认生成随机输入，输出默认全零（只保证输入/输出数量、shape、datatype 与 kernel 参数一致）
 - `compare.py` 负责对比 `golden*.bin` 与 `output*.bin`，不一致时会报错

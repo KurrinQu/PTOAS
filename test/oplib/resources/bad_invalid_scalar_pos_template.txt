@@ -1,0 +1,29 @@
+module {
+  func.func private @__pto_bad_scalar_pos(
+      %src: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+      %scalar: f32,
+      %dst: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+      attributes {
+        pto.oplib.kind = "l3_float_tile_scalar_template",
+        pto.oplib.entry_role = "variant",
+        pto.oplib.op = "tadds",
+        pto.oplib.variant_id = "bad_scalar_pos",
+        pto.oplib.match.dtype = "f32",
+        pto.oplib.match.arg0.rows = -1 : i64,
+        pto.oplib.match.arg0.cols = -1 : i64,
+        pto.oplib.match.arg0.blayout = "row_major",
+        pto.oplib.match.arg0.slayout = "any",
+        pto.oplib.match.arg0.fractal = -1 : i64,
+        pto.oplib.match.arg2.rows = -1 : i64,
+        pto.oplib.match.arg2.cols = -1 : i64,
+        pto.oplib.match.arg2.blayout = "row_major",
+        pto.oplib.match.arg2.slayout = "any",
+        pto.oplib.match.arg2.fractal = -1 : i64,
+        pto.oplib.match.scalar_pos = 0 : i64,
+        pto.oplib.cost = 1 : i64,
+        pto.oplib.priority = 1 : i64
+      } {
+    %c0 = arith.constant 0 : i32
+    return
+  }
+}

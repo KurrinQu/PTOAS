@@ -891,6 +891,24 @@ static std::pair<Value, Value> getIfResultYieldedValues(Value value) {
   return {thenYield.getOperand(resultNumber), elseYield.getOperand(resultNumber)};
 }
 
+static Value getFusionRegionResultYieldedValue(Value value) {
+  auto result = dyn_cast<OpResult>(value);
+  if (!result)
+    return {};
+  auto fusionRegion = dyn_cast<pto::FusionRegionOp>(result.getOwner());
+  if (!fusionRegion)
+    return {};
+  if (fusionRegion.getBody().empty())
+    return {};
+  auto yield = dyn_cast<pto::YieldOp>(fusionRegion.getBody().front().getTerminator());
+  if (!yield)
+    return {};
+  unsigned resultNumber = result.getResultNumber();
+  if (resultNumber >= yield.getNumOperands())
+    return {};
+  return yield.getOperand(resultNumber);
+}
+
 static bool equalOrBothNull(Value lhs, Value rhs) {
   if (!lhs && !rhs)
     return true;
@@ -916,6 +934,8 @@ TileBufConfigAttr lookupTileConfig(Value value) {
     return lookupTileConfig(reinterpret.getSource());
   if (auto cast = value.getDefiningOp<memref::CastOp>())
     return lookupTileConfig(cast.getSource());
+  if (Value yielded = getFusionRegionResultYieldedValue(value))
+    return lookupTileConfig(yielded);
   if (auto [thenValue, elseValue] = getIfResultYieldedValues(value);
       thenValue && elseValue) {
     TileBufConfigAttr thenConfig = lookupTileConfig(thenValue);
@@ -939,6 +959,8 @@ bool hasStructuredTileDriver(Value value) {
     return hasStructuredTileDriver(reinterpret.getSource());
   if (auto cast = value.getDefiningOp<memref::CastOp>())
     return hasStructuredTileDriver(cast.getSource());
+  if (Value yielded = getFusionRegionResultYieldedValue(value))
+    return hasStructuredTileDriver(yielded);
   if (auto [thenValue, elseValue] = getIfResultYieldedValues(value);
       thenValue && elseValue) {
     return hasStructuredTileDriver(thenValue) && hasStructuredTileDriver(elseValue);
@@ -972,6 +994,10 @@ void lookupValidDims(Value value, Value &validRow, Value &validCol) {
   }
   if (auto cast = value.getDefiningOp<memref::CastOp>()) {
     lookupValidDims(cast.getSource(), validRow, validCol);
+    return;
+  }
+  if (Value yielded = getFusionRegionResultYieldedValue(value)) {
+    lookupValidDims(yielded, validRow, validCol);
     return;
   }
   if (auto [thenValue, elseValue] = getIfResultYieldedValues(value);
@@ -1468,6 +1494,8 @@ Value materializeTileBufferView(Value value, PatternRewriter &rewriter,
                                tileType.getMemorySpace(), rewriter, loc);
 }
 
+} // namespace
+
 Value materializeBufferPointer(Value value, Type elementType,
                                Attribute memorySpace,
                                PatternRewriter &rewriter, Location loc) {
@@ -1497,6 +1525,35 @@ Value materializeBufferPointer(Value value, Type elementType,
   if (!memrefValue || !memrefType)
     return {};
   return rewriter.create<CastPtrOp>(loc, ptrType, memrefValue).getResult();
+}
+
+namespace {
+
+Value materializeBufferLikeAddress(Value value, Type elementType,
+                                   Attribute memorySpace,
+                                   PatternRewriter &rewriter, Location loc) {
+  if (!value)
+    return {};
+
+  if (auto bind = value.getDefiningOp<BindTileOp>())
+    return materializeBufferLikeAddress(bind.getSource(), elementType, memorySpace,
+                                        rewriter, loc);
+
+  // Keep memref semantics through the A5VM mainline whenever possible.
+  Value memrefValue = materializeTileBufferView(value, rewriter, loc);
+  if (memrefValue && isa<BaseMemRefType>(memrefValue.getType()))
+    return memrefValue;
+
+  return materializeBufferPointer(value, elementType, memorySpace, rewriter, loc);
+}
+
+Value materializeBufferBaseForStrategy(Value value, Type elementType,
+                                       Attribute memorySpace,
+                                       A5VMLoweringStrategy strategy,
+                                       PatternRewriter &rewriter, Location loc) {
+  if (strategy == A5VMLoweringStrategy::PostUpdate)
+    return materializeBufferPointer(value, elementType, memorySpace, rewriter, loc);
+  return materializeBufferLikeAddress(value, elementType, memorySpace, rewriter, loc);
 }
 
 Value offsetBufferPointer(Value basePtr, Type elementType, Value elementOffset,
@@ -2075,22 +2132,6 @@ int64_t deriveStaticTileCols(Value value) {
   return ShapedType::kDynamic;
 }
 
-Value buildFullWidthColsCondition(ArrayRef<int64_t> tileCols,
-                                  Value validColsValue,
-                                  PatternRewriter &rewriter, Location loc) {
-  Value condition;
-  for (int64_t tileCol : tileCols) {
-    if (tileCol == ShapedType::kDynamic)
-      return {};
-    Value tileColValue = rewriter.create<arith::ConstantIndexOp>(loc, tileCol);
-    Value isFullWidth = rewriter.create<arith::CmpIOp>(
-        loc, arith::CmpIPredicate::eq, validColsValue, tileColValue);
-    condition = condition ? rewriter.create<arith::AndIOp>(loc, condition, isFullWidth)
-                          : isFullWidth;
-  }
-  return condition;
-}
-
 Value buildMinIndexValue(PatternRewriter &rewriter, Location loc, Value lhs,
                          Value rhs) {
   auto lhsLtRhs = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt,
@@ -2289,12 +2330,12 @@ LogicalResult buildRowReduceVecScope(StringRef family,
   if (!vecType)
     return emitError(loc) << "unsupported A5VM row-reduce element type";
 
-  Value srcBuffer = materializeBufferPointer(src, contract.elementType,
-                                             getMemorySpace(src), rewriter, loc);
-  Value dstBuffer = materializeBufferPointer(dst, contract.elementType,
-                                             getMemorySpace(dst), rewriter, loc);
+  Value srcBuffer = materializeBufferBaseForStrategy(
+      src, contract.elementType, getMemorySpace(src), strategy, rewriter, loc);
+  Value dstBuffer = materializeBufferBaseForStrategy(
+      dst, contract.elementType, getMemorySpace(dst), strategy, rewriter, loc);
   if (!srcBuffer || !dstBuffer)
-    return emitError(loc) << "requires pointer-backed tile buffers for row-reduce lowering";
+    return emitError(loc) << "requires buffer-like tile buffers for row-reduce lowering";
 
   if (contract.validRows == ShapedType::kDynamic ||
       contract.validCols == ShapedType::kDynamic)
@@ -2449,19 +2490,19 @@ LogicalResult buildColReduceVecScope(StringRef family,
   if (!vecType)
     return emitError(loc) << "unsupported A5VM col-reduce element type";
 
-  Value srcBuffer = materializeBufferPointer(src, contract.elementType,
-                                             getMemorySpace(src), rewriter, loc);
-  Value dstBuffer = materializeBufferPointer(dst, contract.elementType,
-                                             getMemorySpace(dst), rewriter, loc);
+  Value srcBuffer = materializeBufferLikeAddress(src, contract.elementType,
+                                                 getMemorySpace(src), rewriter, loc);
+  Value dstBuffer = materializeBufferLikeAddress(dst, contract.elementType,
+                                                 getMemorySpace(dst), rewriter, loc);
   if (!srcBuffer || !dstBuffer)
-    return emitError(loc) << "requires pointer-backed tile buffers for col-reduce lowering";
+    return emitError(loc) << "requires buffer-like tile buffers for col-reduce lowering";
 
   Value tmpBuffer;
   if (contract.isBinary) {
-    tmpBuffer = materializeBufferPointer(tmp, contract.elementType, getMemorySpace(tmp),
-                                         rewriter, loc);
+    tmpBuffer = materializeBufferLikeAddress(tmp, contract.elementType, getMemorySpace(tmp),
+                                             rewriter, loc);
     if (!tmpBuffer)
-      return emitError(loc) << "binary colsum lowering requires pointer-backed tmp tile";
+      return emitError(loc) << "binary colsum lowering requires a buffer-like tmp tile";
   }
 
   int64_t srcRowStride = deriveStaticRowStride(src);
@@ -2761,14 +2802,14 @@ LogicalResult buildPartVecScope(StringRef family, const A5VMPartContract &contra
   auto vecType = getA5VMVecType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return emitError(loc) << "unsupported A5VM part element type";
-  Value src0Buffer = materializeBufferPointer(src0, contract.elementType, getMemorySpace(src0),
-                                              rewriter, loc);
-  Value src1Buffer = materializeBufferPointer(src1, contract.elementType, getMemorySpace(src1),
-                                              rewriter, loc);
-  Value dstBuffer = materializeBufferPointer(dst, contract.elementType, getMemorySpace(dst),
-                                             rewriter, loc);
+  Value src0Buffer = materializeBufferLikeAddress(src0, contract.elementType,
+                                                  getMemorySpace(src0), rewriter, loc);
+  Value src1Buffer = materializeBufferLikeAddress(src1, contract.elementType,
+                                                  getMemorySpace(src1), rewriter, loc);
+  Value dstBuffer = materializeBufferLikeAddress(dst, contract.elementType,
+                                                 getMemorySpace(dst), rewriter, loc);
   if (!src0Buffer || !src1Buffer || !dstBuffer)
-    return emitError(loc) << "requires pointer-backed tile buffers for part lowering";
+    return emitError(loc) << "requires buffer-like tile buffers for part lowering";
   int64_t src0Stride = deriveStaticRowStride(src0);
   int64_t src1Stride = deriveStaticRowStride(src1);
   int64_t dstStride = deriveStaticRowStride(dst);
@@ -2870,21 +2911,74 @@ LogicalResult buildPartVecScope(StringRef family, const A5VMPartContract &contra
                                rewriter, loc);
 }
 
+FailureOr<A5VMLoopShape> resolveUnaryVecLoopShape(Operation *op, Value src,
+                                                  Value dst, int64_t validCols) {
+  if (op->hasAttr(kA5VMLoweringChoiceAttrName)) {
+    FailureOr<A5VMLoweringChoiceAttr> choice = getA5VMLoweringChoiceAttr(op);
+    if (failed(choice))
+      return failure();
+    return choice->getLoopShape();
+  }
+
+  FailureOr<A5VMLoopShape> loopShape = selectA5VMLoopShapeForFullWidthCols(
+      {deriveStaticTileCols(src), deriveStaticTileCols(dst)}, validCols);
+  if (failed(loopShape))
+    op->emitOpError("requires a resolvable A5VM loop shape");
+  return loopShape;
+}
+
+FailureOr<A5VMLoopShape> resolveBinaryVecLoopShape(Operation *op, Value src0,
+                                                   Value src1, Value dst,
+                                                   int64_t validCols) {
+  if (op->hasAttr(kA5VMLoweringChoiceAttrName)) {
+    FailureOr<A5VMLoweringChoiceAttr> choice = getA5VMLoweringChoiceAttr(op);
+    if (failed(choice))
+      return failure();
+    return choice->getLoopShape();
+  }
+
+  FailureOr<A5VMLoopShape> loopShape = selectA5VMLoopShapeForSameShapeLinearPath(
+      {deriveStaticRowStride(src0), deriveStaticRowStride(src1),
+       deriveStaticRowStride(dst)},
+      {deriveStaticTileCols(src0), deriveStaticTileCols(src1),
+       deriveStaticTileCols(dst)},
+      validCols);
+  if (failed(loopShape))
+    op->emitOpError("requires a resolvable A5VM loop shape");
+  return loopShape;
+}
+
+FailureOr<A5VMLoopShape> resolveExpandScalarVecLoopShape(Operation *op, Value dst,
+                                                         int64_t validCols) {
+  if (op->hasAttr(kA5VMLoweringChoiceAttrName)) {
+    FailureOr<A5VMLoweringChoiceAttr> choice = getA5VMLoweringChoiceAttr(op);
+    if (failed(choice))
+      return failure();
+    return choice->getLoopShape();
+  }
+
+  FailureOr<A5VMLoopShape> loopShape =
+      selectA5VMLoopShapeForFullWidthCols({deriveStaticTileCols(dst)}, validCols);
+  if (failed(loopShape))
+    op->emitOpError("requires a resolvable A5VM loop shape");
+  return loopShape;
+}
+
 LogicalResult buildUnaryVecScope(StringRef family,
                                  const A5VMUnaryContract &contract,
-                                 A5VMLoweringStrategy strategy, Value src,
-                                 Value dst, PatternRewriter &rewriter,
-                                 Location loc) {
+                                 A5VMLoweringStrategy strategy,
+                                 A5VMLoopShape loopShape, Value src, Value dst,
+                                 PatternRewriter &rewriter, Location loc) {
   auto vecType = getA5VMVecType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return emitError(loc) << "unsupported A5VM unary element type";
 
-  Value srcBuffer = materializeBufferPointer(src, contract.elementType,
-                                             getMemorySpace(src), rewriter, loc);
-  Value dstBuffer = materializeBufferPointer(dst, contract.elementType,
-                                             getMemorySpace(dst), rewriter, loc);
+  Value srcBuffer = materializeBufferBaseForStrategy(
+      src, contract.elementType, getMemorySpace(src), strategy, rewriter, loc);
+  Value dstBuffer = materializeBufferBaseForStrategy(
+      dst, contract.elementType, getMemorySpace(dst), strategy, rewriter, loc);
   if (!srcBuffer || !dstBuffer)
-    return emitError(loc) << "requires pointer-backed tile buffers for unary lowering";
+    return emitError(loc) << "requires buffer-like tile buffers for unary lowering";
 
   int64_t vectorWidth = vecType.getElementCount();
   Value validRowsValue;
@@ -2935,10 +3029,6 @@ LogicalResult buildUnaryVecScope(StringRef family,
                                                            totalElementsValue);
   Value rowScalarInit = rewriter.create<arith::IndexCastUIOp>(loc, rewriter.getI32Type(),
                                                               validColsValue);
-  Value fullWidthCond =
-      buildFullWidthColsCondition({srcCols, dstCols}, validColsValue, rewriter, loc);
-  if (!fullWidthCond)
-    return emitError(loc) << "unary lowering could not materialize full-width selector";
 
   auto aivScopeLoop = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
   if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
@@ -2946,10 +3036,7 @@ LogicalResult buildUnaryVecScope(StringRef family,
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
   rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
-  auto ifOp = rewriter.create<scf::IfOp>(loc, TypeRange{}, fullWidthCond,
-                                         /*withElseRegion=*/true);
-  rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
-  {
+  auto emit1DBody = [&]() -> LogicalResult {
     scf::ForOp chunkLoop;
     if (strategy == A5VMLoweringStrategy::PostUpdate) {
       chunkLoop = rewriter.create<scf::ForOp>(
@@ -3001,10 +3088,10 @@ LogicalResult buildUnaryVecScope(StringRef family,
                                     StringAttr(), predicateState.mask);
       rewriter.create<scf::YieldOp>(loc, ValueRange{predicateState.nextScalar});
     }
-  }
+    return success();
+  };
 
-  rewriter.setInsertionPointToStart(&ifOp.getElseRegion().front());
-  {
+  auto emit2DBody = [&]() -> LogicalResult {
     Value repeatUpper = rewriter.create<arith::CeilDivUIOp>(loc, validColsValue,
                                                             vectorStepValue);
     auto rowLoop = rewriter.create<scf::ForOp>(loc, c0, validRowsValue, c1);
@@ -3031,29 +3118,37 @@ LogicalResult buildUnaryVecScope(StringRef family,
     rewriter.create<a5vm::VstsOp>(loc, *computed, dstBuffer, dstOffset,
                                   StringAttr(), predicateState.mask);
     rewriter.create<scf::YieldOp>(loc, ValueRange{predicateState.nextScalar});
-  }
-  rewriter.setInsertionPointAfter(ifOp);
+    return success();
+  };
 
-  return success();
+  switch (loopShape) {
+  case A5VMLoopShape::OneD:
+    return emit1DBody();
+  case A5VMLoopShape::TwoD:
+    return emit2DBody();
+  }
+
+  llvm_unreachable("unsupported A5VM loop shape");
 }
 
 LogicalResult buildBinaryVecScope(StringRef family,
                                   const A5VMBinaryContract &contract,
-                                  A5VMLoweringStrategy strategy, Value src0,
-                                  Value src1, Value dst,
+                                  A5VMLoweringStrategy strategy,
+                                  A5VMLoopShape loopShape, Value src0, Value src1,
+                                  Value dst,
                                   PatternRewriter &rewriter, Location loc) {
   auto vecType = getA5VMVecType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return emitError(loc) << "unsupported A5VM binary element type";
 
-  Value src0Buffer = materializeBufferPointer(src0, contract.elementType,
-                                              getMemorySpace(src0), rewriter, loc);
-  Value src1Buffer = materializeBufferPointer(src1, contract.elementType,
-                                              getMemorySpace(src1), rewriter, loc);
-  Value dstBuffer = materializeBufferPointer(dst, contract.elementType,
-                                             getMemorySpace(dst), rewriter, loc);
+  Value src0Buffer = materializeBufferBaseForStrategy(
+      src0, contract.elementType, getMemorySpace(src0), strategy, rewriter, loc);
+  Value src1Buffer = materializeBufferBaseForStrategy(
+      src1, contract.elementType, getMemorySpace(src1), strategy, rewriter, loc);
+  Value dstBuffer = materializeBufferBaseForStrategy(
+      dst, contract.elementType, getMemorySpace(dst), strategy, rewriter, loc);
   if (!src0Buffer || !src1Buffer || !dstBuffer)
-    return emitError(loc) << "requires pointer-backed tile buffers for binary lowering";
+    return emitError(loc) << "requires buffer-like tile buffers for binary lowering";
 
   int64_t vectorWidth = vecType.getElementCount();
   Value validRowsValue = contract.validRowsValue;
@@ -3075,25 +3170,35 @@ LogicalResult buildBinaryVecScope(StringRef family,
       src1Cols == ShapedType::kDynamic || dstCols == ShapedType::kDynamic)
     return emitError(loc) << "binary lowering requires static row strides and cols";
 
-  auto buildBinaryValue = [&](Value lhs, Value rhs, Value mask) -> FailureOr<Value> {
+  auto buildBinaryValue = [&](Value lhs, Value rhs,
+                              Value predicate) -> FailureOr<Value> {
     if (family == "add")
-      return rewriter.create<a5vm::VaddOp>(loc, vecType, lhs, rhs, mask).getResult();
+      return rewriter.create<a5vm::VaddOp>(loc, vecType, lhs, rhs, predicate)
+          .getResult();
     if (family == "sub")
-      return rewriter.create<a5vm::VsubOp>(loc, vecType, lhs, rhs, mask).getResult();
+      return rewriter.create<a5vm::VsubOp>(loc, vecType, lhs, rhs, predicate)
+          .getResult();
     if (family == "mul")
-      return rewriter.create<a5vm::VmulOp>(loc, vecType, lhs, rhs, mask).getResult();
+      return rewriter.create<a5vm::VmulOp>(loc, vecType, lhs, rhs, predicate)
+          .getResult();
     if (family == "div")
-      return rewriter.create<a5vm::VdivOp>(loc, vecType, lhs, rhs, mask).getResult();
+      return rewriter.create<a5vm::VdivOp>(loc, vecType, lhs, rhs, predicate)
+          .getResult();
     if (family == "max")
-      return rewriter.create<a5vm::VmaxOp>(loc, vecType, lhs, rhs, mask).getResult();
+      return rewriter.create<a5vm::VmaxOp>(loc, vecType, lhs, rhs, predicate)
+          .getResult();
     if (family == "min")
-      return rewriter.create<a5vm::VminOp>(loc, vecType, lhs, rhs, mask).getResult();
+      return rewriter.create<a5vm::VminOp>(loc, vecType, lhs, rhs, predicate)
+          .getResult();
     if (family == "and")
-      return rewriter.create<a5vm::VandOp>(loc, vecType, lhs, rhs, mask).getResult();
+      return rewriter.create<a5vm::VandOp>(loc, vecType, lhs, rhs, predicate)
+          .getResult();
     if (family == "or")
-      return rewriter.create<a5vm::VorOp>(loc, vecType, lhs, rhs, mask).getResult();
+      return rewriter.create<a5vm::VorOp>(loc, vecType, lhs, rhs, predicate)
+          .getResult();
     if (family == "xor")
-      return rewriter.create<a5vm::VxorOp>(loc, vecType, lhs, rhs, mask).getResult();
+      return rewriter.create<a5vm::VxorOp>(loc, vecType, lhs, rhs, predicate)
+          .getResult();
     return failure();
   };
 
@@ -3110,13 +3215,6 @@ LogicalResult buildBinaryVecScope(StringRef family,
                                                            totalElementsValue);
   Value rowScalarInit = rewriter.create<arith::IndexCastUIOp>(loc, rewriter.getI32Type(),
                                                               validColsValue);
-  bool sameShapeLinearPath = src0Stride == dstStride && src1Stride == dstStride &&
-                             src0Cols == dstCols && src1Cols == dstCols;
-  Value fullWidthCond = buildFullWidthColsCondition(
-      {src0Cols, src1Cols, dstCols}, validColsValue, rewriter, loc);
-  if (!fullWidthCond)
-    return emitError(loc) << "binary lowering could not materialize full-width selector";
-  Value use1DCond = sameShapeLinearPath ? fullWidthCond : Value();
 
   auto aivScopeLoop = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
   if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
@@ -3254,35 +3352,32 @@ LogicalResult buildBinaryVecScope(StringRef family,
     return success();
   };
 
-  if (use1DCond) {
-    auto ifOp = rewriter.create<scf::IfOp>(loc, TypeRange{}, use1DCond,
-                                           /*withElseRegion=*/true);
-    rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
-    if (failed(emit1DBody()))
-      return failure();
-    rewriter.setInsertionPointToStart(&ifOp.getElseRegion().front());
-    if (failed(emit2DBody()))
-      return failure();
-    rewriter.setInsertionPointAfter(ifOp);
-  } else {
-    if (failed(emit2DBody()))
-      return failure();
+  switch (loopShape) {
+  case A5VMLoopShape::OneD:
+    return emit1DBody();
+  case A5VMLoopShape::TwoD:
+    return emit2DBody();
   }
-  return success();
+
+  llvm_unreachable("unsupported A5VM loop shape");
 }
 
 LogicalResult buildExpandScalarVecScope(const A5VMUnaryContract &contract,
-                                        Value scalar, Value dst,
+                                        A5VMLoopShape loopShape, Value scalar,
+                                        Value dst,
                                         PatternRewriter &rewriter,
                                         Location loc) {
   auto vecType = getA5VMVecType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return emitError(loc) << "unsupported A5VM expands element type";
 
-  Value dstBuffer = materializeBufferPointer(dst, contract.elementType,
-                                             getMemorySpace(dst), rewriter, loc);
-  if (!dstBuffer)
-    return emitError(loc) << "requires pointer-backed tile buffer for expands lowering";
+  Value dstBuffer = materializeBufferLikeAddress(dst, contract.elementType,
+                                                 getMemorySpace(dst), rewriter, loc);
+  Value dstPointerBuffer = materializeBufferPointer(dst, contract.elementType,
+                                                    getMemorySpace(dst), rewriter,
+                                                    loc);
+  if (!dstBuffer || !dstPointerBuffer)
+    return emitError(loc) << "requires a buffer-like tile buffer for expands lowering";
 
   Value validRowsValue = materializeIndexValue(contract.validRowsValue,
                                                contract.validRows, rewriter, loc);
@@ -3304,10 +3399,6 @@ LogicalResult buildExpandScalarVecScope(const A5VMUnaryContract &contract,
   Value vectorStepValue =
       rewriter.create<arith::ConstantIndexOp>(loc, vectorWidth);
   Value dstStrideValue = rewriter.create<arith::ConstantIndexOp>(loc, dstStride);
-  Value fullWidthCond =
-      buildFullWidthColsCondition({dstCols}, validColsValue, rewriter, loc);
-  if (!fullWidthCond)
-    return emitError(loc) << "expands lowering could not materialize full-width selector";
 
   auto aivScopeLoop = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
   if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
@@ -3315,16 +3406,12 @@ LogicalResult buildExpandScalarVecScope(const A5VMUnaryContract &contract,
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
   rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
-  auto ifOp = rewriter.create<scf::IfOp>(loc, TypeRange{}, fullWidthCond,
-                                         /*withElseRegion=*/true);
-
-  rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
-  {
+  auto emit1DBody = [&]() -> LogicalResult {
     Value scalarInit = rewriter.create<arith::IndexCastUIOp>(
         loc, rewriter.getI32Type(), totalElementsValue);
     auto chunkLoop = rewriter.create<scf::ForOp>(
         loc, c0, totalElementsValue, vectorStepValue,
-        ValueRange{dstBuffer, scalarInit});
+        ValueRange{dstPointerBuffer, scalarInit});
     rewriter.setInsertionPointToStart(chunkLoop.getBody());
     Value dstPtr = chunkLoop.getRegionIterArgs()[0];
     Value remaining = chunkLoop.getRegionIterArgs()[1];
@@ -3338,10 +3425,10 @@ LogicalResult buildExpandScalarVecScope(const A5VMUnaryContract &contract,
     Value nextDst = vsts.getUpdatedDestination();
     rewriter.create<scf::YieldOp>(
         loc, ValueRange{nextDst, predicateState.nextScalar});
-  }
+    return success();
+  };
 
-  rewriter.setInsertionPointToStart(&ifOp.getElseRegion().front());
-  {
+  auto emit2DBody = [&]() -> LogicalResult {
     Value repeatUpper = rewriter.create<arith::CeilDivUIOp>(loc, validColsValue,
                                                             vectorStepValue);
     auto rowLoop = rewriter.create<scf::ForOp>(loc, c0, validRowsValue, c1);
@@ -3363,29 +3450,37 @@ LogicalResult buildExpandScalarVecScope(const A5VMUnaryContract &contract,
         loc, vecType, scalar, rewriter.getStringAttr("POS_LOWEST"));
     rewriter.create<a5vm::VstsOp>(loc, computed, dstBuffer, dstOffset,
                                   StringAttr(), predicate);
+    return success();
+  };
+
+  switch (loopShape) {
+  case A5VMLoopShape::OneD:
+    return emit1DBody();
+  case A5VMLoopShape::TwoD:
+    return emit2DBody();
   }
 
-  rewriter.setInsertionPointAfter(ifOp);
-  return success();
+  llvm_unreachable("unsupported A5VM loop shape");
 }
 
 LogicalResult buildScalarUnaryVecScope(StringRef family,
                                        const A5VMUnaryContract &contract,
                                        A5VMLoweringStrategy strategy,
-                                       Value src, Value scalar, Value dst,
+                                       A5VMLoopShape loopShape, Value src,
+                                       Value scalar, Value dst,
                                        PatternRewriter &rewriter,
                                        Location loc) {
   auto vecType = getA5VMVecType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return emitError(loc) << "unsupported A5VM scalar-unary element type";
 
-  Value srcBuffer = materializeBufferPointer(src, contract.elementType,
-                                             getMemorySpace(src), rewriter, loc);
-  Value dstBuffer = materializeBufferPointer(dst, contract.elementType,
-                                             getMemorySpace(dst), rewriter, loc);
+  Value srcBuffer = materializeBufferBaseForStrategy(
+      src, contract.elementType, getMemorySpace(src), strategy, rewriter, loc);
+  Value dstBuffer = materializeBufferBaseForStrategy(
+      dst, contract.elementType, getMemorySpace(dst), strategy, rewriter, loc);
   if (!srcBuffer || !dstBuffer)
     return emitError(loc)
-           << "requires pointer-backed tile buffers for scalar-unary lowering";
+           << "requires buffer-like tile buffers for scalar-unary lowering";
 
   Value validRowsValue = materializeIndexValue(contract.validRowsValue,
                                                contract.validRows, rewriter, loc);
@@ -3412,10 +3507,6 @@ LogicalResult buildScalarUnaryVecScope(StringRef family,
       rewriter.create<arith::ConstantIndexOp>(loc, vectorWidth);
   Value srcStrideValue = rewriter.create<arith::ConstantIndexOp>(loc, srcStride);
   Value dstStrideValue = rewriter.create<arith::ConstantIndexOp>(loc, dstStride);
-  Value fullWidthCond = buildFullWidthColsCondition(
-      {srcCols, dstCols}, validColsValue, rewriter, loc);
-  if (!fullWidthCond)
-    return emitError(loc) << family << " lowering could not materialize full-width selector";
 
   auto aivScopeLoop = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
   if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
@@ -3423,11 +3514,7 @@ LogicalResult buildScalarUnaryVecScope(StringRef family,
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
   rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
-  auto ifOp = rewriter.create<scf::IfOp>(loc, TypeRange{}, fullWidthCond,
-                                         /*withElseRegion=*/true);
-
-  rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
-  {
+  auto emit1DBody = [&]() -> LogicalResult {
     auto emitComputed = [&](Value loadedVec) -> FailureOr<Value> {
       if (family == "adds")
         return rewriter.create<a5vm::VaddsOp>(loc, vecType, loadedVec, scalar).getResult();
@@ -3484,10 +3571,10 @@ LogicalResult buildScalarUnaryVecScope(StringRef family,
       rewriter.create<scf::YieldOp>(
           loc, ValueRange{nextSrc, nextDst, predicateState.nextScalar});
     }
-  }
+    return success();
+  };
 
-  rewriter.setInsertionPointToStart(&ifOp.getElseRegion().front());
-  {
+  auto emit2DBody = [&]() -> LogicalResult {
     Value repeatUpper = rewriter.create<arith::CeilDivUIOp>(loc, validColsValue,
                                                             vectorStepValue);
     auto rowLoop = rewriter.create<scf::ForOp>(loc, c0, validRowsValue, c1);
@@ -3530,10 +3617,17 @@ LogicalResult buildScalarUnaryVecScope(StringRef family,
       return emitError(loc) << "unsupported A5VM scalar-unary family: " << family;
     rewriter.create<a5vm::VstsOp>(loc, computed, dstBuffer, dstOffset,
                                   StringAttr(), predicate);
+    return success();
+  };
+
+  switch (loopShape) {
+  case A5VMLoopShape::OneD:
+    return emit1DBody();
+  case A5VMLoopShape::TwoD:
+    return emit2DBody();
   }
 
-  rewriter.setInsertionPointAfter(ifOp);
-  return success();
+  llvm_unreachable("unsupported A5VM loop shape");
 }
 
 LogicalResult buildScalarBitwiseVecScope(StringRef family,
@@ -3545,13 +3639,13 @@ LogicalResult buildScalarBitwiseVecScope(StringRef family,
   if (!vecType)
     return emitError(loc) << "unsupported A5VM scalar-bitwise element type";
 
-  Value srcBuffer = materializeBufferPointer(src, contract.elementType,
-                                             getMemorySpace(src), rewriter, loc);
-  Value dstBuffer = materializeBufferPointer(dst, contract.elementType,
-                                             getMemorySpace(dst), rewriter, loc);
+  Value srcBuffer = materializeBufferLikeAddress(src, contract.elementType,
+                                                 getMemorySpace(src), rewriter, loc);
+  Value dstBuffer = materializeBufferLikeAddress(dst, contract.elementType,
+                                                 getMemorySpace(dst), rewriter, loc);
   if (!srcBuffer || !dstBuffer)
     return emitError(loc)
-           << "requires pointer-backed tile buffers for scalar-bitwise lowering";
+           << "requires buffer-like tile buffers for scalar-bitwise lowering";
 
   Value validRowsValue;
   Value validColsValue;
@@ -3620,20 +3714,21 @@ static bool isA5VMShapedLikeValue(Value value) {
 
 LogicalResult buildScalarDivVecScope(const A5VMUnaryContract &contract,
                                      A5VMLoweringStrategy strategy,
-                                     Value src, Value scalar, Value dst,
+                                     A5VMLoopShape loopShape, Value src,
+                                     Value scalar, Value dst,
                                      bool scalarFirst,
                                      PatternRewriter &rewriter, Location loc) {
   auto vecType = getA5VMVecType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return emitError(loc) << "unsupported A5VM divs element type";
 
-  Value srcBuffer = materializeBufferPointer(src, contract.elementType,
-                                             getMemorySpace(src), rewriter, loc);
-  Value dstBuffer = materializeBufferPointer(dst, contract.elementType,
-                                             getMemorySpace(dst), rewriter, loc);
+  Value srcBuffer = materializeBufferBaseForStrategy(
+      src, contract.elementType, getMemorySpace(src), strategy, rewriter, loc);
+  Value dstBuffer = materializeBufferBaseForStrategy(
+      dst, contract.elementType, getMemorySpace(dst), strategy, rewriter, loc);
   if (!srcBuffer || !dstBuffer)
     return emitError(loc)
-           << "requires pointer-backed tile buffers for divs lowering";
+           << "requires buffer-like tile buffers for divs lowering";
 
   Value validRowsValue = materializeIndexValue(contract.validRowsValue,
                                                contract.validRows, rewriter, loc);
@@ -3660,10 +3755,6 @@ LogicalResult buildScalarDivVecScope(const A5VMUnaryContract &contract,
       rewriter.create<arith::ConstantIndexOp>(loc, vectorWidth);
   Value srcStrideValue = rewriter.create<arith::ConstantIndexOp>(loc, srcStride);
   Value dstStrideValue = rewriter.create<arith::ConstantIndexOp>(loc, dstStride);
-  Value fullWidthCond = buildFullWidthColsCondition(
-      {srcCols, dstCols}, validColsValue, rewriter, loc);
-  if (!fullWidthCond)
-    return emitError(loc) << "divs lowering could not materialize full-width selector";
 
   auto buildDivValue = [&](Value loaded, Value predicate) -> FailureOr<Value> {
     if (contract.elementType.isF32()) {
@@ -3697,11 +3788,7 @@ LogicalResult buildScalarDivVecScope(const A5VMUnaryContract &contract,
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
   rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
-  auto ifOp = rewriter.create<scf::IfOp>(loc, TypeRange{}, fullWidthCond,
-                                         /*withElseRegion=*/true);
-
-  rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
-  {
+  auto emit1DBody = [&]() -> LogicalResult {
     if (strategy == A5VMLoweringStrategy::NoPostUpdate) {
       auto chunkLoop =
           rewriter.create<scf::ForOp>(loc, c0, totalElementsValue, vectorStepValue);
@@ -3746,10 +3833,10 @@ LogicalResult buildScalarDivVecScope(const A5VMUnaryContract &contract,
       rewriter.create<scf::YieldOp>(
           loc, ValueRange{nextSrc, nextDst, predicateState.nextScalar});
     }
-  }
+    return success();
+  };
 
-  rewriter.setInsertionPointToStart(&ifOp.getElseRegion().front());
-  {
+  auto emit2DBody = [&]() -> LogicalResult {
     Value repeatUpper = rewriter.create<arith::CeilDivUIOp>(loc, validColsValue,
                                                             vectorStepValue);
     auto rowLoop = rewriter.create<scf::ForOp>(loc, c0, validRowsValue, c1);
@@ -3783,10 +3870,17 @@ LogicalResult buildScalarDivVecScope(const A5VMUnaryContract &contract,
              << "divs lowering currently supports only f16 and f32 element types";
     rewriter.create<a5vm::VstsOp>(loc, *computed, dstBuffer, dstOffset,
                                   StringAttr(), predicate);
+    return success();
+  };
+
+  switch (loopShape) {
+  case A5VMLoopShape::OneD:
+    return emit1DBody();
+  case A5VMLoopShape::TwoD:
+    return emit2DBody();
   }
 
-  rewriter.setInsertionPointAfter(ifOp);
-  return success();
+  llvm_unreachable("unsupported A5VM loop shape");
 }
 
 LogicalResult checkExpandContract(Operation *op,
@@ -3826,13 +3920,13 @@ LogicalResult buildRowExpandVecScope(const A5VMExpandContract &contract,
   if (!vecType)
     return emitError(loc) << "unsupported A5VM rowexpand element type";
 
-  Value srcBuffer = materializeBufferPointer(src, contract.elementType,
-                                             getMemorySpace(src), rewriter, loc);
-  Value dstBuffer = materializeBufferPointer(dst, contract.elementType,
-                                             getMemorySpace(dst), rewriter, loc);
+  Value srcBuffer = materializeBufferBaseForStrategy(
+      src, contract.elementType, getMemorySpace(src), strategy, rewriter, loc);
+  Value dstBuffer = materializeBufferBaseForStrategy(
+      dst, contract.elementType, getMemorySpace(dst), strategy, rewriter, loc);
   if (!srcBuffer || !dstBuffer)
     return emitError(loc)
-           << "requires pointer-backed tile buffers for rowexpand lowering";
+           << "requires buffer-like tile buffers for rowexpand lowering";
 
   auto [srcRows, srcCols] = getStaticTileRowsCols(src);
   auto [dstRows, dstCols] = getStaticTileRowsCols(dst);
@@ -3928,13 +4022,13 @@ LogicalResult buildColExpandVecScope(const A5VMExpandContract &contract,
   if (!vecType)
     return emitError(loc) << "unsupported A5VM colexpand element type";
 
-  Value srcBuffer = materializeBufferPointer(src, contract.elementType,
-                                             getMemorySpace(src), rewriter, loc);
-  Value dstBuffer = materializeBufferPointer(dst, contract.elementType,
-                                             getMemorySpace(dst), rewriter, loc);
+  Value srcBuffer = materializeBufferLikeAddress(src, contract.elementType,
+                                                 getMemorySpace(src), rewriter, loc);
+  Value dstBuffer = materializeBufferLikeAddress(dst, contract.elementType,
+                                                 getMemorySpace(dst), rewriter, loc);
   if (!srcBuffer || !dstBuffer)
     return emitError(loc)
-           << "requires pointer-backed tile buffers for colexpand lowering";
+           << "requires buffer-like tile buffers for colexpand lowering";
 
   auto [dstRows, dstCols] = getStaticTileRowsCols(dst);
   if (dstRows == ShapedType::kDynamic || dstCols == ShapedType::kDynamic)
@@ -4320,8 +4414,12 @@ LogicalResult lowerTABS(TAbsOp op, PatternRewriter &rewriter,
           [](Type type) { return type.isF16() || type.isF32(); }, "f16 and f32 element types")))
     return failure();
 
-  return buildUnaryVecScope("abs", contract, strategy, op.getSrc(), op.getDst(),
-                            rewriter, op.getLoc());
+  FailureOr<A5VMLoopShape> loopShape =
+      resolveUnaryVecLoopShape(op, op.getSrc(), op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
+  return buildUnaryVecScope("abs", contract, strategy, *loopShape, op.getSrc(),
+                            op.getDst(), rewriter, op.getLoc());
 }
 
 LogicalResult lowerTADD(TAddOp op, PatternRewriter &rewriter,
@@ -4341,7 +4439,11 @@ LogicalResult lowerTADD(TAddOp op, PatternRewriter &rewriter,
           },
           "f16, f32, bf16, and 8/16/32-bit integer element types")))
     return failure();
-  return buildBinaryVecScope("add", contract, strategy, op.getSrc0(),
+  FailureOr<A5VMLoopShape> loopShape = resolveBinaryVecLoopShape(
+      op, op.getSrc0(), op.getSrc1(), op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
+  return buildBinaryVecScope("add", contract, strategy, *loopShape, op.getSrc0(),
                              op.getSrc1(), op.getDst(), rewriter, op.getLoc());
 }
 
@@ -4362,7 +4464,11 @@ LogicalResult lowerTSUB(TSubOp op, PatternRewriter &rewriter,
           },
           "f16, f32, bf16, and 8/16/32-bit integer element types")))
     return failure();
-  return buildBinaryVecScope("sub", contract, strategy, op.getSrc0(),
+  FailureOr<A5VMLoopShape> loopShape = resolveBinaryVecLoopShape(
+      op, op.getSrc0(), op.getSrc1(), op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
+  return buildBinaryVecScope("sub", contract, strategy, *loopShape, op.getSrc0(),
                              op.getSrc1(), op.getDst(), rewriter, op.getLoc());
 }
 
@@ -4383,7 +4489,11 @@ LogicalResult lowerTMUL(TMulOp op, PatternRewriter &rewriter,
           },
           "f16, f32, bf16, and 8/16/32-bit integer element types")))
     return failure();
-  return buildBinaryVecScope("mul", contract, strategy, op.getSrc0(),
+  FailureOr<A5VMLoopShape> loopShape = resolveBinaryVecLoopShape(
+      op, op.getSrc0(), op.getSrc1(), op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
+  return buildBinaryVecScope("mul", contract, strategy, *loopShape, op.getSrc0(),
                              op.getSrc1(), op.getDst(), rewriter, op.getLoc());
 }
 
@@ -4403,7 +4513,11 @@ LogicalResult lowerTDIV(TDivOp op, PatternRewriter &rewriter,
           },
           "f16, f32, and 16/32-bit integer element types")))
     return failure();
-  return buildBinaryVecScope("div", contract, strategy, op.getSrc0(),
+  FailureOr<A5VMLoopShape> loopShape = resolveBinaryVecLoopShape(
+      op, op.getSrc0(), op.getSrc1(), op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
+  return buildBinaryVecScope("div", contract, strategy, *loopShape, op.getSrc0(),
                              op.getSrc1(), op.getDst(), rewriter, op.getLoc());
 }
 
@@ -4424,7 +4538,11 @@ LogicalResult lowerTMAX(TMaxOp op, PatternRewriter &rewriter,
           },
           "f16, f32, bf16, and 8/16/32-bit integer element types")))
     return failure();
-  return buildBinaryVecScope("max", contract, strategy, op.getSrc0(),
+  FailureOr<A5VMLoopShape> loopShape = resolveBinaryVecLoopShape(
+      op, op.getSrc0(), op.getSrc1(), op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
+  return buildBinaryVecScope("max", contract, strategy, *loopShape, op.getSrc0(),
                              op.getSrc1(), op.getDst(), rewriter, op.getLoc());
 }
 
@@ -4445,7 +4563,11 @@ LogicalResult lowerTMIN(TMinOp op, PatternRewriter &rewriter,
           },
           "f16, f32, bf16, and 8/16/32-bit integer element types")))
     return failure();
-  return buildBinaryVecScope("min", contract, strategy, op.getSrc0(),
+  FailureOr<A5VMLoopShape> loopShape = resolveBinaryVecLoopShape(
+      op, op.getSrc0(), op.getSrc1(), op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
+  return buildBinaryVecScope("min", contract, strategy, *loopShape, op.getSrc0(),
                              op.getSrc1(), op.getDst(), rewriter, op.getLoc());
 }
 
@@ -4464,7 +4586,11 @@ LogicalResult lowerTAND(TAndOp op, PatternRewriter &rewriter,
           },
           "8/16/32-bit integer element types")))
     return failure();
-  return buildBinaryVecScope("and", contract, strategy, op.getSrc0(),
+  FailureOr<A5VMLoopShape> loopShape = resolveBinaryVecLoopShape(
+      op, op.getSrc0(), op.getSrc1(), op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
+  return buildBinaryVecScope("and", contract, strategy, *loopShape, op.getSrc0(),
                              op.getSrc1(), op.getDst(), rewriter, op.getLoc());
 }
 
@@ -4487,7 +4613,11 @@ LogicalResult lowerTOR(TOrOp op, PatternRewriter &rewriter,
           },
           "8/16/32-bit integer element types")))
     return failure();
-  return buildBinaryVecScope("or", contract, strategy, op.getSrc0(),
+  FailureOr<A5VMLoopShape> loopShape = resolveBinaryVecLoopShape(
+      op, op.getSrc0(), op.getSrc1(), op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
+  return buildBinaryVecScope("or", contract, strategy, *loopShape, op.getSrc0(),
                              op.getSrc1(), op.getDst(), rewriter, op.getLoc());
 }
 
@@ -4510,7 +4640,11 @@ LogicalResult lowerTXOR(TXorOp op, PatternRewriter &rewriter,
           },
           "8/16/32-bit integer element types")))
     return failure();
-  return buildBinaryVecScope("xor", contract, strategy, op.getSrc0(),
+  FailureOr<A5VMLoopShape> loopShape = resolveBinaryVecLoopShape(
+      op, op.getSrc0(), op.getSrc1(), op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
+  return buildBinaryVecScope("xor", contract, strategy, *loopShape, op.getSrc0(),
                              op.getSrc1(), op.getDst(), rewriter, op.getLoc());
 }
 
@@ -4525,8 +4659,12 @@ LogicalResult lowerTEXP(TExpOp op, PatternRewriter &rewriter,
           op, contract, op.getDst(),
           [](Type type) { return type.isF16() || type.isF32(); }, "f16 and f32 element types")))
     return failure();
-  return buildUnaryVecScope("exp", contract, strategy, op.getSrc(), op.getDst(),
-                            rewriter, op.getLoc());
+  FailureOr<A5VMLoopShape> loopShape =
+      resolveUnaryVecLoopShape(op, op.getSrc(), op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
+  return buildUnaryVecScope("exp", contract, strategy, *loopShape, op.getSrc(),
+                            op.getDst(), rewriter, op.getLoc());
 }
 
 LogicalResult lowerTLOG(TLogOp op, PatternRewriter &rewriter,
@@ -4536,8 +4674,12 @@ LogicalResult lowerTLOG(TLogOp op, PatternRewriter &rewriter,
           op, contract, op.getDst(),
           [](Type type) { return type.isF16() || type.isF32(); }, "f16 and f32 element types")))
     return failure();
-  return buildUnaryVecScope("log", contract, strategy, op.getSrc(), op.getDst(),
-                            rewriter, op.getLoc());
+  FailureOr<A5VMLoopShape> loopShape =
+      resolveUnaryVecLoopShape(op, op.getSrc(), op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
+  return buildUnaryVecScope("log", contract, strategy, *loopShape, op.getSrc(),
+                            op.getDst(), rewriter, op.getLoc());
 }
 
 LogicalResult lowerTSQRT(TSqrtOp op, PatternRewriter &rewriter,
@@ -4547,8 +4689,12 @@ LogicalResult lowerTSQRT(TSqrtOp op, PatternRewriter &rewriter,
           op, contract, op.getDst(),
           [](Type type) { return type.isF16() || type.isF32(); }, "f16 and f32 element types")))
     return failure();
-  return buildUnaryVecScope("sqrt", contract, strategy, op.getSrc(), op.getDst(),
-                            rewriter, op.getLoc());
+  FailureOr<A5VMLoopShape> loopShape =
+      resolveUnaryVecLoopShape(op, op.getSrc(), op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
+  return buildUnaryVecScope("sqrt", contract, strategy, *loopShape, op.getSrc(),
+                            op.getDst(), rewriter, op.getLoc());
 }
 
 LogicalResult lowerTRSQRT(TRsqrtOp op, PatternRewriter &rewriter) {
@@ -4562,14 +4708,14 @@ LogicalResult lowerTRSQRT(TRsqrtOp op, PatternRewriter &rewriter) {
   if (!vecType)
     return op.emitOpError("trsqrt lowering requires a supported A5VM vector element type");
 
-  Value srcBuffer = materializeBufferPointer(op.getSrc(), contract.elementType,
-                                             getMemorySpace(op.getSrc()), rewriter,
-                                             op.getLoc());
-  Value dstBuffer = materializeBufferPointer(op.getDst(), contract.elementType,
-                                             getMemorySpace(op.getDst()), rewriter,
-                                             op.getLoc());
+  Value srcBuffer = materializeBufferLikeAddress(op.getSrc(), contract.elementType,
+                                                 getMemorySpace(op.getSrc()), rewriter,
+                                                 op.getLoc());
+  Value dstBuffer = materializeBufferLikeAddress(op.getDst(), contract.elementType,
+                                                 getMemorySpace(op.getDst()), rewriter,
+                                                 op.getLoc());
   if (!srcBuffer || !dstBuffer)
-    return op.emitOpError("trsqrt lowering requires pointer-backed tile buffers");
+    return op.emitOpError("trsqrt lowering requires buffer-like tile buffers");
 
   Value validRowsValue = materializeIndexValue(contract.validRowsValue,
                                                contract.validRows, rewriter, op.getLoc());
@@ -4637,7 +4783,11 @@ LogicalResult lowerTRECIP(TRecipOp op, PatternRewriter &rewriter,
           op, contract, op.getDst(),
           [](Type type) { return type.isF16() || type.isF32(); }, "f16 and f32 element types")))
     return failure();
-  return buildUnaryVecScope("recip", contract, strategy, op.getSrc(),
+  FailureOr<A5VMLoopShape> loopShape =
+      resolveUnaryVecLoopShape(op, op.getSrc(), op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
+  return buildUnaryVecScope("recip", contract, strategy, *loopShape, op.getSrc(),
                             op.getDst(), rewriter, op.getLoc());
 }
 
@@ -4666,9 +4816,14 @@ LogicalResult lowerTNEG(TNegOp op, PatternRewriter &rewriter,
   else
     return op.emitOpError("tneg lowering requires scalar element type");
 
+  FailureOr<A5VMLoopShape> loopShape =
+      resolveUnaryVecLoopShape(op, op.getSrc(), op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
   Value negOne = rewriter.create<arith::ConstantOp>(op.getLoc(), negOneAttr);
-  return buildScalarUnaryVecScope("muls", contract, strategy, op.getSrc(), negOne,
-                                  op.getDst(), rewriter, op.getLoc());
+  return buildScalarUnaryVecScope("muls", contract, strategy, *loopShape,
+                                  op.getSrc(), negOne, op.getDst(), rewriter,
+                                  op.getLoc());
 }
 
 LogicalResult lowerTLRELU(TLReluOp op, PatternRewriter &rewriter,
@@ -4681,8 +4836,13 @@ LogicalResult lowerTLRELU(TLReluOp op, PatternRewriter &rewriter,
     return failure();
   if (op.getSlope().getType() != contract.elementType)
     return op.emitOpError("tlrelu lowering requires slope type to match source element type");
-  return buildScalarUnaryVecScope("lrelu", contract, strategy, op.getSrc(), op.getSlope(),
-                                  op.getDst(), rewriter, op.getLoc());
+  FailureOr<A5VMLoopShape> loopShape =
+      resolveUnaryVecLoopShape(op, op.getSrc(), op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
+  return buildScalarUnaryVecScope("lrelu", contract, strategy, *loopShape,
+                                  op.getSrc(), op.getSlope(), op.getDst(),
+                                  rewriter, op.getLoc());
 }
 
 LogicalResult lowerTCVT(TCvtOp op, PatternRewriter &rewriter) {
@@ -4709,14 +4869,14 @@ LogicalResult lowerTCVT(TCvtOp op, PatternRewriter &rewriter) {
   if (!srcVecType || !dstVecType)
     return op.emitOpError("tcvt lowering requires legal A5VM vector types");
 
-  Value srcBuffer = materializeBufferPointer(op.getSrc(), contract.elementType,
-                                             getMemorySpace(op.getSrc()), rewriter,
-                                             op.getLoc());
-  Value dstBuffer = materializeBufferPointer(op.getDst(), dstElementType,
-                                             getMemorySpace(op.getDst()), rewriter,
-                                             op.getLoc());
+  Value srcBuffer = materializeBufferLikeAddress(op.getSrc(), contract.elementType,
+                                                 getMemorySpace(op.getSrc()), rewriter,
+                                                 op.getLoc());
+  Value dstBuffer = materializeBufferLikeAddress(op.getDst(), dstElementType,
+                                                 getMemorySpace(op.getDst()), rewriter,
+                                                 op.getLoc());
   if (!srcBuffer || !dstBuffer)
-    return op.emitOpError("tcvt lowering requires pointer-backed tile buffers");
+    return op.emitOpError("tcvt lowering requires buffer-like tile buffers");
 
   Value validRowsValue = materializeIndexValue(contract.validRowsValue,
                                                contract.validRows, rewriter,
@@ -4927,14 +5087,14 @@ LogicalResult lowerTCmpS(TCmpSOp op, PatternRewriter &rewriter) {
   if (op.getScalar().getType() != contract.elementType)
     return op.emitOpError("tcmps lowering requires scalar type to match source element type");
 
-  Value srcBuffer = materializeBufferPointer(op.getSrc(), contract.elementType,
-                                             getMemorySpace(op.getSrc()), rewriter,
-                                             op.getLoc());
-  Value dstBuffer = materializeBufferPointer(op.getDst(), getElementType(op.getDst()),
-                                             getMemorySpace(op.getDst()), rewriter,
-                                             op.getLoc());
+  Value srcBuffer = materializeBufferLikeAddress(op.getSrc(), contract.elementType,
+                                                 getMemorySpace(op.getSrc()), rewriter,
+                                                 op.getLoc());
+  Value dstBuffer = materializeBufferLikeAddress(op.getDst(), getElementType(op.getDst()),
+                                                 getMemorySpace(op.getDst()), rewriter,
+                                                 op.getLoc());
   if (!srcBuffer || !dstBuffer)
-    return op.emitOpError("tcmps lowering requires pointer-backed tile buffers");
+    return op.emitOpError("tcmps lowering requires buffer-like tile buffers");
 
   StringAttr cmpMode = rewriter.getStringAttr(stringifyCmpModeAttr(op.getCmpModeAttr()));
   return buildPackedCmp32VecScope(
@@ -4985,17 +5145,17 @@ LogicalResult lowerTCmp(TCmpOp op, PatternRewriter &rewriter) {
   if (!dstElemType || !dstElemType.isUnsignedInteger(8))
     return op.emitOpError("tcmp lowering currently requires ui8 destination tiles");
 
-  Value src0Buffer = materializeBufferPointer(op.getSrc0(), contract.elementType,
-                                              getMemorySpace(op.getSrc0()), rewriter,
-                                              op.getLoc());
-  Value src1Buffer = materializeBufferPointer(op.getSrc1(), contract.elementType,
-                                              getMemorySpace(op.getSrc1()), rewriter,
-                                              op.getLoc());
-  Value dstBuffer = materializeBufferPointer(op.getDst(), getElementType(op.getDst()),
-                                             getMemorySpace(op.getDst()), rewriter,
-                                             op.getLoc());
+  Value src0Buffer = materializeBufferLikeAddress(op.getSrc0(), contract.elementType,
+                                                  getMemorySpace(op.getSrc0()), rewriter,
+                                                  op.getLoc());
+  Value src1Buffer = materializeBufferLikeAddress(op.getSrc1(), contract.elementType,
+                                                  getMemorySpace(op.getSrc1()), rewriter,
+                                                  op.getLoc());
+  Value dstBuffer = materializeBufferLikeAddress(op.getDst(), getElementType(op.getDst()),
+                                                 getMemorySpace(op.getDst()), rewriter,
+                                                 op.getLoc());
   if (!src0Buffer || !src1Buffer || !dstBuffer)
-    return op.emitOpError("tcmp lowering requires pointer-backed tile buffers");
+    return op.emitOpError("tcmp lowering requires buffer-like tile buffers");
 
   StringAttr cmpMode = rewriter.getStringAttr(stringifyCmpModeAttr(op.getCmpModeAttr()));
   return buildPackedCmp32VecScope(
@@ -5072,7 +5232,11 @@ LogicalResult lowerTRELU(TReluOp op, PatternRewriter &rewriter,
           },
           "f16, f32, and i32 element types")))
     return failure();
-  return buildUnaryVecScope("relu", contract, strategy, op.getSrc(),
+  FailureOr<A5VMLoopShape> loopShape =
+      resolveUnaryVecLoopShape(op, op.getSrc(), op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
+  return buildUnaryVecScope("relu", contract, strategy, *loopShape, op.getSrc(),
                             op.getDst(), rewriter, op.getLoc());
 }
 
@@ -5091,8 +5255,12 @@ LogicalResult lowerTNOT(TNotOp op, PatternRewriter &rewriter,
           },
           "f16, f32, bf16, and 8/16/32-bit integer element types")))
     return failure();
-  return buildUnaryVecScope("not", contract, strategy, op.getSrc(), op.getDst(),
-                            rewriter, op.getLoc());
+  FailureOr<A5VMLoopShape> loopShape =
+      resolveUnaryVecLoopShape(op, op.getSrc(), op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
+  return buildUnaryVecScope("not", contract, strategy, *loopShape, op.getSrc(),
+                            op.getDst(), rewriter, op.getLoc());
 }
 
 LogicalResult lowerTTRANS(TTransOp op, PatternRewriter &rewriter) {
@@ -5225,14 +5393,14 @@ LogicalResult lowerTFillPadCommon(FillPadOpTy op, PatternRewriter &rewriter,
   if (!vecType)
     return op.emitOpError("fillpad lowering requires supported A5VM vector element type");
 
-  Value srcBuffer = materializeBufferPointer(op.getSrc(), contract.elementType,
-                                             getMemorySpace(op.getSrc()), rewriter,
-                                             op.getLoc());
-  Value dstBuffer = materializeBufferPointer(op.getDst(), contract.elementType,
-                                             getMemorySpace(op.getDst()), rewriter,
-                                             op.getLoc());
+  Value srcBuffer = materializeBufferLikeAddress(op.getSrc(), contract.elementType,
+                                                 getMemorySpace(op.getSrc()), rewriter,
+                                                 op.getLoc());
+  Value dstBuffer = materializeBufferLikeAddress(op.getDst(), contract.elementType,
+                                                 getMemorySpace(op.getDst()), rewriter,
+                                                 op.getLoc());
   if (!srcBuffer || !dstBuffer)
-    return op.emitOpError("fillpad lowering requires pointer-backed tile buffers");
+    return op.emitOpError("fillpad lowering requires buffer-like tile buffers");
 
   auto config = lookupTileConfig(op.getDst());
   PadValueAttr padAttr = config ? dyn_cast<PadValueAttr>(config.getPad()) : PadValueAttr{};
@@ -5371,8 +5539,12 @@ LogicalResult lowerTExpandS(TExpandsOp op, PatternRewriter &rewriter) {
     }
   }
 
-  return buildExpandScalarVecScope(contract, op.getScalar(), op.getDst(),
-                                   rewriter, op.getLoc());
+  FailureOr<A5VMLoopShape> loopShape =
+      resolveExpandScalarVecLoopShape(op, op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
+  return buildExpandScalarVecScope(contract, *loopShape, op.getScalar(),
+                                   op.getDst(), rewriter, op.getLoc());
 }
 
 LogicalResult lowerTGather(TGatherOp op, PatternRewriter &rewriter) {
@@ -6077,46 +6249,80 @@ LogicalResult lowerTMulS(TMulSOp op, PatternRewriter &rewriter,
     return failure();
   if (op.getScalar().getType() != contract.elementType)
     return op.emitOpError("tmuls lowering requires scalar type to match source element type");
-  return buildScalarUnaryVecScope("muls", contract, strategy, op.getSrc0(), op.getScalar(),
-                                  op.getDst(), rewriter, op.getLoc());
+  FailureOr<A5VMLoopShape> loopShape =
+      resolveUnaryVecLoopShape(op, op.getSrc0(), op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
+  return buildScalarUnaryVecScope("muls", contract, strategy, *loopShape,
+                                  op.getSrc0(), op.getScalar(), op.getDst(),
+                                  rewriter, op.getLoc());
 }
 
 LogicalResult lowerTSelS(TSelSOp op, PatternRewriter &rewriter) {
-  A5VMBinaryContract contract = buildBinaryContract("sels", op.getSrc0());
+  A5VMUnaryContract contract = buildUnaryContract("sels", op.getSrc());
   deriveValidShapeValues(op.getDst(), contract.validRowsValue, contract.validColsValue);
   deriveValidShape(op.getDst(), contract.validRows, contract.validCols);
-  if (failed(checkGenericBinaryContract(
-          op, contract, op.getSrc1(), op.getDst(),
-          [](Type type) {
-            if (type.isF16() || type.isF32() || type.isBF16())
-              return true;
-            if (auto intType = dyn_cast<IntegerType>(type))
-              return intType.getWidth() == 8 || intType.getWidth() == 16 ||
-                     intType.getWidth() == 32;
-            return false;
-          },
-          "f16, f32, bf16, and 8/16/32-bit integer element types")))
-    return failure();
 
-  auto selectModeType = dyn_cast<IntegerType>(op.getSelectMode().getType());
-  if (!selectModeType)
-    return op.emitOpError("tsels lowering requires integer selectMode");
+  int64_t maskRows = ShapedType::kDynamic;
+  int64_t maskCols = ShapedType::kDynamic;
+  int64_t tmpRows = ShapedType::kDynamic;
+  int64_t tmpCols = ShapedType::kDynamic;
+  int64_t dstRows = ShapedType::kDynamic;
+  int64_t dstCols = ShapedType::kDynamic;
+  deriveValidShape(op.getMask(), maskRows, maskCols);
+  deriveValidShape(op.getTmp(), tmpRows, tmpCols);
+  deriveValidShape(op.getDst(), dstRows, dstCols);
+
+  if (contract.tileDomain != A5VMTileDomain::Vec ||
+      deriveTileDomain(getMemorySpace(op.getMask())) != A5VMTileDomain::Vec ||
+      deriveTileDomain(getMemorySpace(op.getTmp())) != A5VMTileDomain::Vec ||
+      deriveTileDomain(getMemorySpace(op.getDst())) != A5VMTileDomain::Vec)
+    return op.emitOpError("tsels lowering requires tile domain vec");
+  if (contract.tileLayout != "row_major" ||
+      deriveTileLayout(op.getMask()) != "row_major" ||
+      deriveTileLayout(op.getTmp()) != "row_major" ||
+      deriveTileLayout(op.getDst()) != "row_major")
+    return op.emitOpError("tsels lowering requires row-major tile layout");
+  if (contract.validRows == ShapedType::kDynamic ||
+      contract.validCols == ShapedType::kDynamic)
+    return op.emitOpError("tsels lowering requires static valid shape");
+  if (contract.validRows != maskRows || contract.validCols != maskCols ||
+      contract.validRows != tmpRows || contract.validCols != tmpCols ||
+      contract.validRows != dstRows || contract.validCols != dstCols)
+    return op.emitOpError(
+        "tsels lowering requires matching mask, src, tmp, and destination valid region");
+  if (!contract.elementType)
+    return op.emitOpError("tsels lowering requires a valid source element type");
+  if (!(contract.elementType.isF16() || contract.elementType.isF32() ||
+        contract.elementType.isBF16() ||
+        (isa<IntegerType>(contract.elementType) &&
+         cast<IntegerType>(contract.elementType).getWidth() <= 32)))
+    return op.emitOpError(
+        "tsels lowering requires f16, f32, bf16, or 8/16/32-bit integer element types");
+  if (getElementType(op.getMask()) != contract.elementType ||
+      getElementType(op.getTmp()) != contract.elementType ||
+      getElementType(op.getDst()) != contract.elementType)
+    return op.emitOpError(
+        "tsels lowering requires mask, src, tmp, and dst element types to match");
+  if (op.getScalar().getType() != contract.elementType)
+    return op.emitOpError(
+        "tsels lowering requires scalar type to match source element type");
 
   auto vecType = getA5VMVecType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return op.emitOpError("tsels lowering requires a supported A5VM vector element type");
 
-  Value src0Buffer = materializeBufferPointer(op.getSrc0(), contract.elementType,
-                                              getMemorySpace(op.getSrc0()), rewriter,
-                                              op.getLoc());
-  Value src1Buffer = materializeBufferPointer(op.getSrc1(), contract.elementType,
-                                              getMemorySpace(op.getSrc1()), rewriter,
-                                              op.getLoc());
-  Value dstBuffer = materializeBufferPointer(op.getDst(), contract.elementType,
-                                             getMemorySpace(op.getDst()), rewriter,
-                                             op.getLoc());
-  if (!src0Buffer || !src1Buffer || !dstBuffer)
-    return op.emitOpError("tsels lowering requires pointer-backed tile buffers");
+  Value maskBuffer = materializeBufferLikeAddress(op.getMask(), contract.elementType,
+                                                  getMemorySpace(op.getMask()), rewriter,
+                                                  op.getLoc());
+  Value srcBuffer = materializeBufferLikeAddress(op.getSrc(), contract.elementType,
+                                                 getMemorySpace(op.getSrc()), rewriter,
+                                                 op.getLoc());
+  Value dstBuffer = materializeBufferLikeAddress(op.getDst(), contract.elementType,
+                                                 getMemorySpace(op.getDst()), rewriter,
+                                                 op.getLoc());
+  if (!maskBuffer || !srcBuffer || !dstBuffer)
+    return op.emitOpError("tsels lowering requires buffer-like tile buffers");
 
   Value validRowsValue = materializeIndexValue(contract.validRowsValue,
                                                contract.validRows, rewriter, op.getLoc());
@@ -6147,42 +6353,29 @@ LogicalResult lowerTSelS(TSelSOp op, PatternRewriter &rewriter) {
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
   rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
-
-  Value selectOne = rewriter.create<arith::ConstantOp>(
-      op.getLoc(), IntegerAttr::get(selectModeType, 1));
-  Value isAll = rewriter.create<arith::CmpIOp>(op.getLoc(), arith::CmpIPredicate::eq,
-                                               op.getSelectMode(), selectOne);
-  auto ifOp = rewriter.create<scf::IfOp>(
-      op.getLoc(), TypeRange{a5vm::MaskType::get(rewriter.getContext())}, isAll,
-      /*withElseRegion=*/true);
-  rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
-  Value allMask = rewriter
-                      .create<a5vm::PsetB8Op>(op.getLoc(),
-                                              a5vm::MaskType::get(rewriter.getContext()),
-                                              rewriter.getStringAttr("PAT_ALL"))
-                      .getResult();
-  rewriter.create<scf::YieldOp>(op.getLoc(), allMask);
-  rewriter.setInsertionPointToStart(&ifOp.getElseRegion().front());
-  Value allfMask = rewriter
-                       .create<a5vm::PsetB8Op>(op.getLoc(),
-                                               a5vm::MaskType::get(rewriter.getContext()),
-                                               rewriter.getStringAttr("PAT_ALLF"))
-                       .getResult();
-  rewriter.create<scf::YieldOp>(op.getLoc(), allfMask);
-
-  rewriter.setInsertionPointAfter(ifOp);
   auto chunkLoop =
       rewriter.create<scf::ForOp>(op.getLoc(), c0, totalElementsValue, vectorStepValue);
   rewriter.setInsertionPointToStart(chunkLoop.getBody());
   Value offset = chunkLoop.getInductionVar();
-  Value mask = ifOp.getResult(0);
-  auto src0Vec = rewriter.create<a5vm::VldsOp>(op.getLoc(), vecType, src0Buffer,
+
+  auto fullMask = rewriter.create<a5vm::PsetB8Op>(
+      op.getLoc(), a5vm::MaskType::get(rewriter.getContext()),
+      rewriter.getStringAttr("PAT_ALL"));
+  auto maskVec = rewriter.create<a5vm::VldsOp>(op.getLoc(), vecType, maskBuffer,
                                                offset, StringAttr());
-  auto src1Vec = rewriter.create<a5vm::VldsOp>(op.getLoc(), vecType, src1Buffer,
-                                               offset, StringAttr());
+  auto srcVec = rewriter.create<a5vm::VldsOp>(op.getLoc(), vecType, srcBuffer,
+                                              offset, StringAttr());
+  Value scalarZero =
+      rewriter.create<arith::ConstantOp>(op.getLoc(),
+                                         rewriter.getZeroAttr(contract.elementType));
+  auto maskPred = rewriter.create<a5vm::VcmpsOp>(
+      op.getLoc(), a5vm::MaskType::get(rewriter.getContext()), maskVec.getResult(),
+      scalarZero, fullMask.getResult(), rewriter.getStringAttr("ne"));
+  Value scalarVec = rewriter.create<a5vm::VdupOp>(
+      op.getLoc(), vecType, op.getScalar(), rewriter.getStringAttr("POS_LOWEST"));
   Value selected = rewriter
-                       .create<a5vm::VselOp>(op.getLoc(), vecType, src0Vec.getResult(),
-                                             src1Vec.getResult(), mask)
+                       .create<a5vm::VselOp>(op.getLoc(), vecType, srcVec.getResult(),
+                                             scalarVec, maskPred.getResult())
                        .getResult();
   rewriter.create<a5vm::VstsOp>(
       op.getLoc(), selected, dstBuffer, offset, StringAttr(),
@@ -6231,20 +6424,20 @@ LogicalResult lowerTSel(TSelOp op, PatternRewriter &rewriter) {
   if (tileRows == ShapedType::kDynamic || tileCols == ShapedType::kDynamic ||
       maskTileRows == ShapedType::kDynamic || maskTileCols == ShapedType::kDynamic)
     return op.emitOpError("tsel lowering requires static tile rows and cols");
-  Value maskBuffer = materializeBufferPointer(op.getMask(), getElementType(op.getMask()),
-                                              getMemorySpace(op.getMask()), rewriter,
-                                              op.getLoc());
-  Value src0Buffer = materializeBufferPointer(op.getSrc0(), contract.elementType,
-                                              getMemorySpace(op.getSrc0()), rewriter,
-                                              op.getLoc());
-  Value src1Buffer = materializeBufferPointer(op.getSrc1(), contract.elementType,
-                                              getMemorySpace(op.getSrc1()), rewriter,
-                                              op.getLoc());
-  Value dstBuffer = materializeBufferPointer(op.getDst(), contract.elementType,
-                                             getMemorySpace(op.getDst()), rewriter,
-                                             op.getLoc());
+  Value maskBuffer = materializeBufferLikeAddress(op.getMask(), getElementType(op.getMask()),
+                                                  getMemorySpace(op.getMask()), rewriter,
+                                                  op.getLoc());
+  Value src0Buffer = materializeBufferLikeAddress(op.getSrc0(), contract.elementType,
+                                                  getMemorySpace(op.getSrc0()), rewriter,
+                                                  op.getLoc());
+  Value src1Buffer = materializeBufferLikeAddress(op.getSrc1(), contract.elementType,
+                                                  getMemorySpace(op.getSrc1()), rewriter,
+                                                  op.getLoc());
+  Value dstBuffer = materializeBufferLikeAddress(op.getDst(), contract.elementType,
+                                                 getMemorySpace(op.getDst()), rewriter,
+                                                 op.getLoc());
   if (!maskBuffer || !src0Buffer || !src1Buffer || !dstBuffer)
-    return op.emitOpError("tsel lowering requires pointer-backed tile buffers");
+    return op.emitOpError("tsel lowering requires buffer-like tile buffers");
 
   auto vecType = getA5VMVecType(rewriter.getContext(), contract.elementType);
   if (!vecType)
@@ -6404,8 +6597,13 @@ LogicalResult lowerTDivS(TDivSOp op, PatternRewriter &rewriter,
   if (scalarOperand.getType() != contract.elementType)
     return op.emitOpError(
         "divs lowering requires scalar type to match source element type");
-  return buildScalarDivVecScope(contract, strategy, tileOperand, scalarOperand, op.getDst(),
-                                scalarFirst, rewriter, op.getLoc());
+  FailureOr<A5VMLoopShape> loopShape =
+      resolveUnaryVecLoopShape(op, tileOperand, op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
+  return buildScalarDivVecScope(contract, strategy, *loopShape, tileOperand,
+                                scalarOperand, op.getDst(), scalarFirst, rewriter,
+                                op.getLoc());
 }
 
 LogicalResult lowerTAddS(TAddSOp op, PatternRewriter &rewriter,
@@ -6424,8 +6622,13 @@ LogicalResult lowerTAddS(TAddSOp op, PatternRewriter &rewriter,
     return failure();
   if (op.getScalar().getType() != contract.elementType)
     return op.emitOpError("tadds lowering requires scalar type to match source element type");
-  return buildScalarUnaryVecScope("adds", contract, strategy, op.getSrc(), op.getScalar(),
-                                  op.getDst(), rewriter, op.getLoc());
+  FailureOr<A5VMLoopShape> loopShape =
+      resolveUnaryVecLoopShape(op, op.getSrc(), op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
+  return buildScalarUnaryVecScope("adds", contract, strategy, *loopShape,
+                                  op.getSrc(), op.getScalar(), op.getDst(),
+                                  rewriter, op.getLoc());
 }
 
 LogicalResult lowerTAddC(TAddCOp op, PatternRewriter &rewriter) {
@@ -6444,9 +6647,13 @@ LogicalResult lowerTAddC(TAddCOp op, PatternRewriter &rewriter) {
           },
           "f16, f32, bf16, and 8/16/32-bit integer element types")))
     return failure();
+  FailureOr<A5VMLoopShape> firstLoopShape = resolveBinaryVecLoopShape(
+      op, op.getSrc0(), op.getSrc1(), op.getDst(), first.validCols);
+  if (failed(firstLoopShape))
+    return failure();
   if (failed(buildBinaryVecScope("add", first, A5VMLoweringStrategy::PostUpdate,
-                                 op.getSrc0(), op.getSrc1(), op.getDst(),
-                                 rewriter, op.getLoc())))
+                                 *firstLoopShape, op.getSrc0(), op.getSrc1(),
+                                 op.getDst(), rewriter, op.getLoc())))
     return failure();
 
   A5VMBinaryContract second = buildBinaryContract("add", op.getDst());
@@ -6464,9 +6671,13 @@ LogicalResult lowerTAddC(TAddCOp op, PatternRewriter &rewriter) {
           },
           "f16, f32, bf16, and 8/16/32-bit integer element types")))
     return failure();
+  FailureOr<A5VMLoopShape> secondLoopShape = resolveBinaryVecLoopShape(
+      op, op.getDst(), op.getSrc2(), op.getDst(), second.validCols);
+  if (failed(secondLoopShape))
+    return failure();
   return buildBinaryVecScope("add", second, A5VMLoweringStrategy::PostUpdate,
-                             op.getDst(), op.getSrc2(), op.getDst(), rewriter,
-                             op.getLoc());
+                             *secondLoopShape, op.getDst(), op.getSrc2(),
+                             op.getDst(), rewriter, op.getLoc());
 }
 
 LogicalResult lowerTAddSC(TAddSCOp op, PatternRewriter &rewriter) {
@@ -6489,9 +6700,13 @@ LogicalResult lowerTSubC(TSubCOp op, PatternRewriter &rewriter) {
           },
           "f16, f32, bf16, and 8/16/32-bit integer element types")))
     return failure();
+  FailureOr<A5VMLoopShape> firstLoopShape = resolveBinaryVecLoopShape(
+      op, op.getSrc0(), op.getSrc1(), op.getDst(), first.validCols);
+  if (failed(firstLoopShape))
+    return failure();
   if (failed(buildBinaryVecScope("sub", first, A5VMLoweringStrategy::PostUpdate,
-                                 op.getSrc0(), op.getSrc1(), op.getDst(),
-                                 rewriter, op.getLoc())))
+                                 *firstLoopShape, op.getSrc0(), op.getSrc1(),
+                                 op.getDst(), rewriter, op.getLoc())))
     return failure();
 
   A5VMBinaryContract second = buildBinaryContract("add", op.getDst());
@@ -6509,9 +6724,13 @@ LogicalResult lowerTSubC(TSubCOp op, PatternRewriter &rewriter) {
           },
           "f16, f32, bf16, and 8/16/32-bit integer element types")))
     return failure();
+  FailureOr<A5VMLoopShape> secondLoopShape = resolveBinaryVecLoopShape(
+      op, op.getDst(), op.getSrc2(), op.getDst(), second.validCols);
+  if (failed(secondLoopShape))
+    return failure();
   return buildBinaryVecScope("add", second, A5VMLoweringStrategy::PostUpdate,
-                             op.getDst(), op.getSrc2(), op.getDst(), rewriter,
-                             op.getLoc());
+                             *secondLoopShape, op.getDst(), op.getSrc2(),
+                             op.getDst(), rewriter, op.getLoc());
 }
 
 LogicalResult lowerTSubS(TSubSOp op, PatternRewriter &rewriter,
@@ -6534,8 +6753,13 @@ LogicalResult lowerTMaxS(TMaxSOp op, PatternRewriter &rewriter,
     return failure();
   if (op.getScalar().getType() != contract.elementType)
     return op.emitOpError("tmaxs lowering requires scalar type to match source element type");
-  return buildScalarUnaryVecScope("maxs", contract, strategy, op.getSrc(), op.getScalar(),
-                                  op.getDst(), rewriter, op.getLoc());
+  FailureOr<A5VMLoopShape> loopShape =
+      resolveUnaryVecLoopShape(op, op.getSrc(), op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
+  return buildScalarUnaryVecScope("maxs", contract, strategy, *loopShape,
+                                  op.getSrc(), op.getScalar(), op.getDst(),
+                                  rewriter, op.getLoc());
 }
 
 LogicalResult lowerTMinS(TMinSOp op, PatternRewriter &rewriter,
@@ -6547,8 +6771,13 @@ LogicalResult lowerTMinS(TMinSOp op, PatternRewriter &rewriter,
     return failure();
   if (op.getScalar().getType() != contract.elementType)
     return op.emitOpError("tmins lowering requires scalar type to match source element type");
-  return buildScalarUnaryVecScope("mins", contract, strategy, op.getSrc(), op.getScalar(),
-                                  op.getDst(), rewriter, op.getLoc());
+  FailureOr<A5VMLoopShape> loopShape =
+      resolveUnaryVecLoopShape(op, op.getSrc(), op.getDst(), contract.validCols);
+  if (failed(loopShape))
+    return failure();
+  return buildScalarUnaryVecScope("mins", contract, strategy, *loopShape,
+                                  op.getSrc(), op.getScalar(), op.getDst(),
+                                  rewriter, op.getLoc());
 }
 
 LogicalResult lowerTRowMax(TRowMaxOp op, PatternRewriter &rewriter,
@@ -6627,7 +6856,8 @@ LogicalResult lowerTColExpand(TColExpandOp op, PatternRewriter &rewriter) {
 
 template <typename OpTy>
 LogicalResult lowerTRowExpandBinaryLike(OpTy op, PatternRewriter &rewriter,
-                                        StringRef family) {
+                                        StringRef family,
+                                        A5VMLoweringStrategy strategy) {
   Type elementType = getElementType(op.getDst());
   if (!elementType || (!elementType.isF16() && !elementType.isF32()))
     return op.emitOpError() << family
@@ -6682,18 +6912,18 @@ LogicalResult lowerTRowExpandBinaryLike(OpTy op, PatternRewriter &rewriter,
     return op.emitOpError() << family
                             << " lowering requires a legal A5VM vector type";
 
-  Value baseBuffer = materializeBufferPointer(baseSrc, elementType,
-                                              getMemorySpace(baseSrc), rewriter,
-                                              op.getLoc());
-  Value expandBuffer = materializeBufferPointer(expandSrc, elementType,
-                                                getMemorySpace(expandSrc), rewriter,
-                                                op.getLoc());
-  Value dstBuffer = materializeBufferPointer(op.getDst(), elementType,
-                                             getMemorySpace(op.getDst()), rewriter,
-                                             op.getLoc());
+  Value baseBuffer = materializeBufferBaseForStrategy(
+      baseSrc, elementType, getMemorySpace(baseSrc), strategy, rewriter,
+      op.getLoc());
+  Value expandBuffer = materializeBufferLikeAddress(expandSrc, elementType,
+                                                    getMemorySpace(expandSrc), rewriter,
+                                                    op.getLoc());
+  Value dstBuffer = materializeBufferBaseForStrategy(
+      op.getDst(), elementType, getMemorySpace(op.getDst()), strategy, rewriter,
+      op.getLoc());
   if (!baseBuffer || !expandBuffer || !dstBuffer)
     return op.emitOpError() << family
-                            << " lowering requires pointer-backed tile buffers";
+                            << " lowering requires buffer-like tile buffers";
 
   int64_t dstRowStride = deriveStaticRowStride(op.getDst());
   int64_t baseRowStride = deriveStaticRowStride(baseSrc);
@@ -6708,6 +6938,10 @@ LogicalResult lowerTRowExpandBinaryLike(OpTy op, PatternRewriter &rewriter,
   Value colsUpper = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), dstValidCols);
   Value vectorStep =
       rewriter.create<arith::ConstantIndexOp>(op.getLoc(), vecType.getElementCount());
+  Value repeatUpper =
+      rewriter.create<arith::CeilDivUIOp>(op.getLoc(), colsUpper, vectorStep);
+  Value rowScalarInit = rewriter.create<arith::IndexCastUIOp>(
+      op.getLoc(), rewriter.getI32Type(), colsUpper);
   Value baseStrideValue =
       rewriter.create<arith::ConstantIndexOp>(op.getLoc(), baseRowStride);
   Value expandStrideValue =
@@ -6721,6 +6955,33 @@ LogicalResult lowerTRowExpandBinaryLike(OpTy op, PatternRewriter &rewriter,
   loopScope.kind = A5VMLoopScopeKind::AIVVectorScope;
   loopScope.loweredAttr = kLoweredLoopScopeAttrName;
   loopScope.loopDepth = 0;
+
+  auto buildRowExpandValue = [&](Value baseVec, Value expandedVec,
+                                 Value predicate) -> FailureOr<Value> {
+    if (family == "trowexpandmul")
+      return rewriter.create<a5vm::VmulOp>(op.getLoc(), vecType, baseVec,
+                                           expandedVec, predicate)
+          .getResult();
+    if (family == "trowexpanddiv") {
+      if (src0EqDst)
+        return rewriter.create<a5vm::VdivOp>(op.getLoc(), vecType, baseVec,
+                                             expandedVec, predicate)
+            .getResult();
+      return rewriter.create<a5vm::VdivOp>(op.getLoc(), vecType, expandedVec,
+                                           baseVec, predicate)
+          .getResult();
+    }
+    if (family == "trowexpandsub") {
+      if (src0EqDst)
+        return rewriter.create<a5vm::VsubOp>(op.getLoc(), vecType, baseVec,
+                                             expandedVec, predicate)
+            .getResult();
+      return rewriter.create<a5vm::VsubOp>(op.getLoc(), vecType, expandedVec,
+                                           baseVec, predicate)
+          .getResult();
+    }
+    return failure();
+  };
 
   auto aivScopeLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, c1, c1);
   if (failed(attachLoopScopeMetadata(aivScopeLoop, loopScope, rewriter)))
@@ -6739,16 +7000,9 @@ LogicalResult lowerTRowExpandBinaryLike(OpTy op, PatternRewriter &rewriter,
 
   Value expandVec;
   if (expandIsColMajor) {
-    Value expandBase = offsetBufferPointer(expandBuffer, elementType, expandRowOffset,
-                                          rewriter, op.getLoc());
-    auto alignType = a5vm::AlignType::get(rewriter.getContext());
-    Value expandAlign =
-        rewriter.create<a5vm::VldasOp>(op.getLoc(), alignType, expandBase);
-    auto expandLoad = rewriter.create<a5vm::VldusOp>(
-        op.getLoc(),
-        TypeRange{vecType, alignType, expandBase.getType()},
-        ValueRange{expandBase, expandAlign});
-    Value expandScalar = expandLoad.getResult();
+    Value expandScalar =
+        rewriter.create<a5vm::UvldOp>(op.getLoc(), vecType, expandBuffer,
+                                      expandRowOffset);
     expandVec = rewriter
                     .create<a5vm::VdupOp>(op.getLoc(), vecType, expandScalar,
                                           rewriter.getStringAttr("POS_LOWEST"))
@@ -6760,194 +7014,44 @@ LogicalResult lowerTRowExpandBinaryLike(OpTy op, PatternRewriter &rewriter,
                     .getResult();
   }
 
-  auto colLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, colsUpper, vectorStep);
-  rewriter.setInsertionPointToStart(colLoop.getBody());
-  Value col = colLoop.getInductionVar();
-  Value remainingCols = rewriter.create<arith::SubIOp>(op.getLoc(), colsUpper, col);
-  Value needsTailMask = rewriter.create<arith::CmpIOp>(
-      op.getLoc(), arith::CmpIPredicate::slt, remainingCols, vectorStep);
-  Value activeLanes = rewriter.create<arith::SelectOp>(op.getLoc(), needsTailMask,
-                                                       remainingCols, vectorStep);
-  Value baseOffset = rewriter.create<arith::AddIOp>(op.getLoc(), baseRowOffset, col);
-  Value dstOffset = rewriter.create<arith::AddIOp>(op.getLoc(), dstRowOffset, col);
-  Value storeMask =
-      buildPredicateMaskForLaneCount(rewriter, op.getLoc(), elementType, activeLanes);
+  auto repeatLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, repeatUpper, c1,
+                                                ValueRange{rowScalarInit});
+  rewriter.setInsertionPointToStart(repeatLoop.getBody());
+  Value remainingCols = repeatLoop.getRegionIterArgs()[0];
+  PredicateMaterialization predicateState = buildPredicateForLaneCount(
+      rewriter, op.getLoc(), elementType, remainingCols);
+  Value chunkBase =
+      rewriter.create<arith::MulIOp>(op.getLoc(), repeatLoop.getInductionVar(), vectorStep);
+  Value baseOffset =
+      rewriter.create<arith::AddIOp>(op.getLoc(), baseRowOffset, chunkBase);
+  Value dstOffset =
+      rewriter.create<arith::AddIOp>(op.getLoc(), dstRowOffset, chunkBase);
   Value baseVec =
       rewriter.create<a5vm::VldsOp>(op.getLoc(), vecType, baseBuffer, baseOffset, StringAttr());
-
-  Value computed;
-  if (family == "trowexpandmul") {
-    computed = rewriter.create<a5vm::VmulOp>(op.getLoc(), vecType, baseVec, expandVec, storeMask);
-  } else if (family == "trowexpanddiv") {
-    if (src0EqDst)
-      computed =
-          rewriter.create<a5vm::VdivOp>(op.getLoc(), vecType, baseVec, expandVec, storeMask);
-    else
-      computed =
-          rewriter.create<a5vm::VdivOp>(op.getLoc(), vecType, expandVec, baseVec, storeMask);
-  } else {
+  FailureOr<Value> computed =
+      buildRowExpandValue(baseVec, expandVec, predicateState.mask);
+  if (failed(computed))
     return op.emitOpError() << "unsupported rowexpand binary family";
-  }
-  rewriter.create<a5vm::VstsOp>(
-      op.getLoc(), computed, dstBuffer, dstOffset, StringAttr(), storeMask);
+  rewriter.create<a5vm::VstsOp>(op.getLoc(), *computed, dstBuffer, dstOffset,
+                                StringAttr(), predicateState.mask);
+  rewriter.create<scf::YieldOp>(op.getLoc(),
+                                ValueRange{predicateState.nextScalar});
   return success();
 }
 
-LogicalResult lowerTRowExpandMul(TRowExpandMulOp op, PatternRewriter &rewriter) {
-  return lowerTRowExpandBinaryLike(op, rewriter, "trowexpandmul");
+LogicalResult lowerTRowExpandMul(TRowExpandMulOp op, PatternRewriter &rewriter,
+                                 A5VMLoweringStrategy strategy) {
+  return lowerTRowExpandBinaryLike(op, rewriter, "trowexpandmul", strategy);
 }
 
-LogicalResult lowerTRowExpandDiv(TRowExpandDivOp op, PatternRewriter &rewriter) {
-  return lowerTRowExpandBinaryLike(op, rewriter, "trowexpanddiv");
+LogicalResult lowerTRowExpandDiv(TRowExpandDivOp op, PatternRewriter &rewriter,
+                                 A5VMLoweringStrategy strategy) {
+  return lowerTRowExpandBinaryLike(op, rewriter, "trowexpanddiv", strategy);
 }
 
-LogicalResult lowerTRowExpandSub(TRowExpandSubOp op, PatternRewriter &rewriter) {
-  Type elementType = getElementType(op.getDst());
-  if (!elementType || (!elementType.isF16() && !elementType.isF32()))
-    return op.emitOpError("trowexpandsub lowering currently supports only f16 and f32 element types");
-
-  if (deriveTileDomain(getMemorySpace(op.getDst())) != A5VMTileDomain::Vec ||
-      deriveTileDomain(getMemorySpace(op.getSrc0())) != A5VMTileDomain::Vec ||
-      deriveTileDomain(getMemorySpace(op.getSrc1())) != A5VMTileDomain::Vec)
-    return op.emitOpError("trowexpandsub lowering requires vec tile domain");
-  if (deriveTileLayout(op.getDst()) != "row_major")
-    return op.emitOpError("trowexpandsub lowering requires row-major dst layout");
-
-  int64_t dstValidRows = ShapedType::kDynamic;
-  int64_t dstValidCols = ShapedType::kDynamic;
-  int64_t src0ValidRows = ShapedType::kDynamic;
-  int64_t src0ValidCols = ShapedType::kDynamic;
-  int64_t src1ValidRows = ShapedType::kDynamic;
-  int64_t src1ValidCols = ShapedType::kDynamic;
-  deriveValidShape(op.getDst(), dstValidRows, dstValidCols);
-  deriveValidShape(op.getSrc0(), src0ValidRows, src0ValidCols);
-  deriveValidShape(op.getSrc1(), src1ValidRows, src1ValidCols);
-  if (dstValidRows == ShapedType::kDynamic || dstValidCols == ShapedType::kDynamic ||
-      src0ValidRows == ShapedType::kDynamic || src0ValidCols == ShapedType::kDynamic ||
-      src1ValidRows == ShapedType::kDynamic || src1ValidCols == ShapedType::kDynamic)
-    return op.emitOpError("trowexpandsub lowering currently requires static valid shapes");
-
-  bool src0EqDst = op.getSrc0().getType() == op.getDst().getType();
-  bool src1EqDst = op.getSrc1().getType() == op.getDst().getType();
-  if (!src0EqDst && !src1EqDst)
-    return op.emitOpError("trowexpandsub lowering requires src0 or src1 to match dst tile type");
-
-  Value baseSrc = src0EqDst ? op.getSrc0() : op.getSrc1();
-  Value expandSrc = src0EqDst ? op.getSrc1() : op.getSrc0();
-  StringRef expandLayout = deriveTileLayout(expandSrc);
-  int64_t expandValidRows = src0EqDst ? src1ValidRows : src0ValidRows;
-  int64_t expandValidCols = src0EqDst ? src1ValidCols : src0ValidCols;
-  if (expandValidRows != dstValidRows)
-    return op.emitOpError("trowexpandsub lowering requires expand operand valid rows to match dst");
-
-  int64_t elemBytes = getElementByteSize(elementType);
-  bool expandIsRowMajor = expandLayout == "row_major" && expandValidCols == 32 / elemBytes;
-  bool expandIsColMajor = expandLayout == "col_major" && expandValidCols == 1;
-  if (!expandIsRowMajor && !expandIsColMajor)
-    return op.emitOpError("trowexpandsub lowering requires PTO A5-compatible expand operand shape");
-
-  auto vecType = getA5VMVecType(rewriter.getContext(), elementType);
-  if (!vecType)
-    return op.emitOpError("trowexpandsub lowering requires a legal A5VM vector type");
-
-  Value baseBuffer = materializeBufferPointer(baseSrc, elementType,
-                                              getMemorySpace(baseSrc), rewriter,
-                                              op.getLoc());
-  Value expandBuffer = materializeBufferPointer(expandSrc, elementType,
-                                                getMemorySpace(expandSrc), rewriter,
-                                                op.getLoc());
-  Value dstBuffer = materializeBufferPointer(op.getDst(), elementType,
-                                             getMemorySpace(op.getDst()), rewriter,
-                                             op.getLoc());
-  if (!baseBuffer || !expandBuffer || !dstBuffer)
-    return op.emitOpError("trowexpandsub lowering requires pointer-backed tile buffers");
-
-  int64_t dstRowStride = deriveStaticRowStride(op.getDst());
-  int64_t baseRowStride = deriveStaticRowStride(baseSrc);
-  int64_t expandRowStride = deriveStaticRowStride(expandSrc);
-  if (dstRowStride == ShapedType::kDynamic || baseRowStride == ShapedType::kDynamic ||
-      expandRowStride == ShapedType::kDynamic)
-    return op.emitOpError("trowexpandsub lowering requires static row strides");
-
-  Value c0 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
-  Value c1 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 1);
-  Value rowsUpper = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), dstValidRows);
-  Value colsUpper = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), dstValidCols);
-  Value vectorStep = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), vecType.getElementCount());
-  Value baseStrideValue = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), baseRowStride);
-  Value expandStrideValue = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), expandRowStride);
-  Value dstStrideValue = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), dstRowStride);
-  Value blockSizeValue = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 32 / elemBytes);
-
-  A5VMLoopScopeContract loopScope;
-  loopScope.kind = A5VMLoopScopeKind::AIVVectorScope;
-  loopScope.loweredAttr = kLoweredLoopScopeAttrName;
-  loopScope.loopDepth = 0;
-
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, loopScope, rewriter)))
-    return op.emitOpError("failed to attach AIV loop scope metadata");
-
-  OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
-  auto rowLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, rowsUpper, c1);
-  rewriter.setInsertionPointToStart(rowLoop.getBody());
-  Value row = rowLoop.getInductionVar();
-  Value baseRowOffset = rewriter.create<arith::MulIOp>(op.getLoc(), row, baseStrideValue);
-  Value dstRowOffset = rewriter.create<arith::MulIOp>(op.getLoc(), row, dstStrideValue);
-  Value expandRowOffset = rewriter.create<arith::MulIOp>(op.getLoc(), row, expandStrideValue);
-
-  Value expandedVec;
-  if (expandIsRowMajor) {
-    Value expandOffset =
-        rewriter.create<arith::MulIOp>(op.getLoc(), row, blockSizeValue);
-    expandedVec = rewriter
-                      .create<a5vm::VldsOp>(op.getLoc(), vecType, expandBuffer, expandOffset,
-                                            rewriter.getStringAttr("BLK"))
-                      .getResult();
-  } else {
-    Value expandBase = offsetBufferPointer(expandBuffer, elementType, expandRowOffset,
-                                          rewriter, op.getLoc());
-    auto alignType = a5vm::AlignType::get(rewriter.getContext());
-    Value expandAlign =
-        rewriter.create<a5vm::VldasOp>(op.getLoc(), alignType, expandBase);
-    auto expandLoad = rewriter.create<a5vm::VldusOp>(
-        op.getLoc(),
-        TypeRange{vecType, alignType, expandBase.getType()},
-        ValueRange{expandBase, expandAlign});
-    Value loaded = expandLoad.getResult();
-    expandedVec = rewriter
-                      .create<a5vm::VdupOp>(op.getLoc(), vecType, loaded,
-                                            rewriter.getStringAttr("POS_LOWEST"))
-                      .getResult();
-  }
-
-  auto chunkLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, colsUpper, vectorStep);
-  rewriter.setInsertionPointToStart(chunkLoop.getBody());
-  Value chunk = chunkLoop.getInductionVar();
-  Value remainingCols = rewriter.create<arith::SubIOp>(op.getLoc(), colsUpper, chunk);
-  Value needsTailMask = rewriter.create<arith::CmpIOp>(
-      op.getLoc(), arith::CmpIPredicate::slt, remainingCols, vectorStep);
-  Value activeLanes = rewriter.create<arith::SelectOp>(op.getLoc(), needsTailMask,
-                                                       remainingCols, vectorStep);
-  Value srcOffset = rewriter.create<arith::AddIOp>(op.getLoc(), baseRowOffset, chunk);
-  Value outOffset = rewriter.create<arith::AddIOp>(op.getLoc(), dstRowOffset, chunk);
-  Value storeMask =
-      buildPredicateMaskForLaneCount(rewriter, op.getLoc(), elementType, activeLanes);
-  Value lhs = rewriter
-                  .create<a5vm::VldsOp>(op.getLoc(), vecType, baseBuffer, srcOffset,
-                                        StringAttr())
-                  .getResult();
-  Value sub = src0EqDst
-                  ? rewriter.create<a5vm::VsubOp>(op.getLoc(), vecType, lhs, expandedVec,
-                                                  storeMask)
-                        .getResult()
-                  : rewriter.create<a5vm::VsubOp>(op.getLoc(), vecType, expandedVec, lhs,
-                                                  storeMask)
-                        .getResult();
-  rewriter.create<a5vm::VstsOp>(
-      op.getLoc(), sub, dstBuffer, outOffset, StringAttr(), storeMask);
-  return success();
+LogicalResult lowerTRowExpandSub(TRowExpandSubOp op, PatternRewriter &rewriter,
+                                 A5VMLoweringStrategy strategy) {
+  return lowerTRowExpandBinaryLike(op, rewriter, "trowexpandsub", strategy);
 }
 
 LogicalResult lowerTPartAdd(TPartAddOp op, PatternRewriter &rewriter) {
@@ -7152,185 +7256,5 @@ LogicalResult lowerRlsBuf(RlsBufOp op, PatternRewriter &rewriter) {
   return success();
 }
 
-namespace {
-
-static Type convertA5VMBoundaryMemRefType(Type type) {
-  auto memrefType = dyn_cast<BaseMemRefType>(type);
-  if (!memrefType)
-    return type;
-  auto memorySpace = dyn_cast_or_null<AddressSpaceAttr>(memrefType.getMemorySpace());
-  if (!memorySpace)
-    return {};
-  return PtrType::get(type.getContext(), memrefType.getElementType(), memorySpace);
-}
-
-static LogicalResult eraseDeadA5VMMemRefScaffold(ModuleOp module) {
-  bool erasedAny = true;
-  while (erasedAny) {
-    erasedAny = false;
-    SmallVector<Operation *> deadOps;
-    module.walk([&](Operation *op) {
-      if (!op->use_empty())
-        return;
-      if (isa<memref::ReinterpretCastOp, memref::SubViewOp,
-              memref::MemorySpaceCastOp>(op))
-        deadOps.push_back(op);
-    });
-    for (Operation *op : deadOps) {
-      op->erase();
-      erasedAny = true;
-    }
-  }
-  return success();
-}
-
-static LogicalResult verifyNoResidualA5VMMemRefs(ModuleOp module,
-                                                 llvm::raw_ostream *diagOS) {
-  for (func::FuncOp func : module.getOps<func::FuncOp>()) {
-    for (Type input : func.getFunctionType().getInputs()) {
-      if (!isa<BaseMemRefType>(input))
-        continue;
-      if (diagOS)
-        *diagOS << "A5VM ptr-only boundary failed: residual memref argument in "
-                << func.getName() << ": " << input << "\n";
-      return failure();
-    }
-    for (Type result : func.getFunctionType().getResults()) {
-      if (!isa<BaseMemRefType>(result))
-        continue;
-      if (diagOS)
-        *diagOS << "A5VM ptr-only boundary failed: residual memref result in "
-                << func.getName() << ": " << result << "\n";
-      return failure();
-    }
-  }
-
-  WalkResult walk = module.walk([&](Operation *op) {
-    auto hasResidualMemRef = [](TypeRange types) {
-      return llvm::any_of(types, [](Type type) {
-        return isa<BaseMemRefType>(type);
-      });
-    };
-    if (hasResidualMemRef(op->getOperandTypes()) ||
-        hasResidualMemRef(op->getResultTypes())) {
-      if (diagOS) {
-        *diagOS << "A5VM ptr-only boundary failed: residual memref-typed op "
-                << op->getName() << "\n";
-        op->print(*diagOS);
-        *diagOS << "\n";
-      }
-      return WalkResult::interrupt();
-    }
-    for (Region &region : op->getRegions()) {
-      for (Block &block : region) {
-        for (BlockArgument arg : block.getArguments()) {
-          if (!isa<BaseMemRefType>(arg.getType()))
-            continue;
-          if (diagOS)
-            *diagOS << "A5VM ptr-only boundary failed: residual memref block "
-                    << "argument in op " << op->getName() << ": "
-                    << arg.getType() << "\n";
-          return WalkResult::interrupt();
-        }
-      }
-    }
-    return WalkResult::advance();
-  });
-  return walk.wasInterrupted() ? failure() : success();
-}
-
 } // namespace
-
-LogicalResult convertA5VMFunctionBoundariesToPtr(ModuleOp module,
-                                                 llvm::raw_ostream *diagOS) {
-  // A5VM kernels use ptr-only entry semantics: the function ABI keeps only the
-  // same-space base pointer, while shape/stride/offset stay in live SSA and
-  // address calculations inside the body.
-  if (failed(eraseDeadA5VMMemRefScaffold(module)))
-    return failure();
-
-  bool sawFailure = false;
-  for (func::FuncOp func : module.getOps<func::FuncOp>()) {
-    if (func.isExternal())
-      continue;
-
-    FunctionType functionType = func.getFunctionType();
-    SmallVector<Type> newInputs(functionType.getInputs().begin(),
-                                functionType.getInputs().end());
-    bool changed = false;
-
-    for (auto [idx, inputType] : llvm::enumerate(functionType.getInputs())) {
-      auto memrefType = dyn_cast<BaseMemRefType>(inputType);
-      if (!memrefType)
-        continue;
-
-      Type newType = convertA5VMBoundaryMemRefType(inputType);
-      if (!newType) {
-        if (diagOS)
-          *diagOS << "A5VM ptr-only boundary failed: unsupported memref "
-                  << "argument type in " << func.getName() << ": "
-                  << inputType << "\n";
-        sawFailure = true;
-        continue;
-      }
-
-      BlockArgument arg = func.getArgument(idx);
-      SmallVector<Operation *> users(arg.getUsers().begin(), arg.getUsers().end());
-      arg.setType(newType);
-      newInputs[idx] = newType;
-      changed = true;
-
-      for (Operation *user : users) {
-        if (auto cast = dyn_cast<CastPtrOp>(user)) {
-          if (cast.getInput() != arg)
-            continue;
-          if (cast.getResult().getType() == newType) {
-            cast.getResult().replaceAllUsesWith(arg);
-            cast.erase();
-          }
-          continue;
-        }
-
-        if (isa<memref::ReinterpretCastOp, memref::SubViewOp,
-                memref::MemorySpaceCastOp>(user) &&
-            user->use_empty()) {
-          user->erase();
-          continue;
-        }
-
-        if (diagOS) {
-          *diagOS << "A5VM ptr-only boundary failed: argument " << idx
-                  << " of " << func.getName()
-                  << " still feeds a memref-dependent user after ptr rewrite:\n";
-          user->print(*diagOS);
-          *diagOS << "\n";
-        }
-        sawFailure = true;
-      }
-    }
-
-    for (Type resultType : functionType.getResults()) {
-      if (!isa<BaseMemRefType>(resultType))
-        continue;
-      if (diagOS)
-        *diagOS << "A5VM ptr-only boundary failed: memref result is unsupported "
-                << "for " << func.getName() << ": " << resultType << "\n";
-      sawFailure = true;
-    }
-
-    if (changed) {
-      func.setFunctionType(
-          FunctionType::get(module.getContext(), newInputs, functionType.getResults()));
-    }
-  }
-
-  if (sawFailure)
-    return failure();
-
-  if (failed(eraseDeadA5VMMemRefScaffold(module)))
-    return failure();
-  return verifyNoResidualA5VMMemRefs(module, diagOS);
-}
-
 } // namespace pto
-} // namespace mlir

@@ -1,0 +1,49 @@
+module {
+  func.func private @__pto_bad_vec_i32x8(
+      %src0: !pto.tile_buf<loc=vec, dtype=i32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+      %src1: !pto.tile_buf<loc=vec, dtype=i32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+      %dst:  !pto.tile_buf<loc=vec, dtype=i32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+      attributes {
+        pto.oplib.kind = "l3_int_binary_elementwise_template",
+        pto.oplib.entry_role = "variant",
+        pto.oplib.op = "tand",
+        pto.oplib.variant_id = "bad_vec_i32x8",
+        pto.oplib.match.dtype = "i32",
+        pto.oplib.match.arg0.rows = -1 : i64,
+        pto.oplib.match.arg0.cols = -1 : i64,
+        pto.oplib.match.arg0.blayout = "row_major",
+        pto.oplib.match.arg0.slayout = "any",
+        pto.oplib.match.arg0.fractal = -1 : i64,
+        pto.oplib.match.arg1.rows = -1 : i64,
+        pto.oplib.match.arg1.cols = -1 : i64,
+        pto.oplib.match.arg1.blayout = "row_major",
+        pto.oplib.match.arg1.slayout = "any",
+        pto.oplib.match.arg1.fractal = -1 : i64,
+        pto.oplib.match.arg2.rows = -1 : i64,
+        pto.oplib.match.arg2.cols = -1 : i64,
+        pto.oplib.match.arg2.blayout = "row_major",
+        pto.oplib.match.arg2.slayout = "any",
+        pto.oplib.match.arg2.fractal = -1 : i64,
+        pto.oplib.cost = 1 : i64,
+        pto.oplib.priority = 100 : i64
+      } {
+    %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %m1 = pto.simd.tile_to_memref %src1 : !pto.tile_buf<loc=vec, dtype=i32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %md = pto.simd.tile_to_memref %dst  : !pto.tile_buf<loc=vec, dtype=i32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
+    %flat0 = memref.reinterpret_cast %m0 to offset: [0], sizes: [1024], strides: [1] : memref<32x32xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>> to memref<1024xi32, strided<[1], offset: ?>, #pto.address_space<vec>>
+    %flat1 = memref.reinterpret_cast %m1 to offset: [0], sizes: [1024], strides: [1] : memref<32x32xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>> to memref<1024xi32, strided<[1], offset: ?>, #pto.address_space<vec>>
+    %flatd = memref.reinterpret_cast %md to offset: [0], sizes: [1024], strides: [1] : memref<32x32xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>> to memref<1024xi32, strided<[1], offset: ?>, #pto.address_space<vec>>
+
+    %c0 = arith.constant 0 : index
+    %c1024 = arith.constant 1024 : index
+    %c8 = arith.constant 8 : index
+    scf.for %i = %c0 to %c1024 step %c8 {
+      %a = vector.load %flat0[%i] {pto.simd.vld_dist = "NORM"} : memref<1024xi32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<8xi32>
+      %b = vector.load %flat1[%i] {pto.simd.vld_dist = "NORM"} : memref<1024xi32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<8xi32>
+      %c = arith.andi %a, %b : vector<8xi32>
+      vector.store %c, %flatd[%i] {pto.simd.vst_dist = "DIST_NORM"} : memref<1024xi32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<8xi32>
+    }
+    return
+  }
+}

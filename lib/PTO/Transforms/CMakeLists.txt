@@ -1,10 +1,18 @@
 add_mlir_dialect_library(PTOTransforms
+  TileFusion/FusionAnalysis.cpp
+  TileFusion/FusionOpSemantics.cpp
   HIVMIntrinsicNaming.cpp
+  A5VMLowering.cpp
   A5VMTextEmitter.cpp
   A5VMLLVMEmitter.cpp
+  PTOA5VMVersionSelection.cpp
+  TileFusion/PTOA5VMIfCanonicalize.cpp
+  PTOA5VMExpandBridgeOps.cpp
+  PTOA5VMPtrBoundary.cpp
   PTOToA5VM.cpp
   PTOToA5VMLowering.cpp
   InsertLoadStoreForMixCV.cpp
+  TileFusion/PTOPrintPreFusionAnalysis.cpp
   PTOInsertCVMov.cpp
   PTOConvertToDPS.cpp
   InsertSync/PTOInsertSync.cpp
@@ -31,6 +39,19 @@ add_mlir_dialect_library(PTOTransforms
   InsertSync/SyncEventIdAllocation.cpp
   InsertSync/SyncCodegen.cpp
   LoweringSyncToPipe.cpp
+  TileFusion/PTOPreFusionAnalysis.cpp
+  TileFusion/PTOFusionPlan.cpp
+  TileFusion/PTOOpScheduling.cpp
+  TileFusion/PTOFusionRegionGen.cpp
+  TileFusion/PTOFusionPredicateElision.cpp
+  TileFusion/PTOFusionLoadStoreElision.cpp
+  TileFusion/PTOFlattenFusionRegion.cpp
+  PTOLowerToOpLibCalls.cpp
+  PTOInstantiateAndInlineOpLib.cpp
+  PTOValidateSimdIR.cpp
+  PTOLowerSimdToVector.cpp
+  TileFusion/PTOLowLevelLoopFusion.cpp
+  PTOTranslateToCpp.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${PROJECT_SOURCE_DIR}/include/PTO

@@ -1,20 +1,21 @@
 schema: spec-driven
+context: |
+  默认使用简体中文编写 OpenSpec 产物。
+  保留代码标识符、命令行参数、文件路径、IR/op 名称的原始英文形式，不要翻译代码符号。
+  面向 PTOAS 项目编写 spec，术语优先使用项目内既有表达，例如 OP-Lib、lowering、tile_buf、vector op、pass、matcher、instantiation。
+  写作风格要求直接、准确、工程化，避免空泛表述。
+  openspec可执行文件路径在$HOME/node_modules/.bin/openspec
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
-
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+rules:
+  proposal:
+    - 默认使用简体中文编写。
+    - 保留以下章节：概述、背景与动机、目标、非目标、预期结果、成功标准。
+    - 目标与非目标要可执行、可验证，避免泛泛描述。
+  design:
+    - 默认使用简体中文编写。
+    - 需要优先说明范围、当前状态、设计拆分、实现约束、测试策略、风险与缓解措施。
+    - 设计应强调复用、边界条件和与现有实现的兼容性。
+  tasks:
+    - 默认使用简体中文编写。
+    - 任务应按实现阶段分组，描述应具体且可落地。
+    - 测试、文档和验证步骤不能省略。

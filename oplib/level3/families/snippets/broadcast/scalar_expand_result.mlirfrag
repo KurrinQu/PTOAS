@@ -1,0 +1,1 @@
+%result = @@CORE_OP@@ %scalarVec, %passive@@EXEC_MODE_ATTR@@ : @@RESULT_VECTOR_TYPE@@

@@ -1,0 +1,1 @@
+%cmp = @@CORE_OP@@ @@CMP_PREDICATE@@, %lhs, @@RHS_VALUE@@ : @@INPUT_VECTOR_TYPE@@

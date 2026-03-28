@@ -15,6 +15,7 @@ add_mlir_dialect_library(PTOIR
 
   LINK_LIBS PUBLIC
   MLIRIR
+  MLIRFuncDialect
   MLIRControlFlowInterfaces
   MLIRInferTypeOpInterface
   MLIRSideEffectInterfaces

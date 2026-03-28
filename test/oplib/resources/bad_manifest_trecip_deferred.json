@@ -1,0 +1,22 @@
+{
+  "schema_version": "a5_oplib_v1_manifest/v1",
+  "operators": [
+    {
+      "op": "trecip",
+      "family": "unary",
+      "a5_status": "deferred",
+      "deferred_reason": "stale deferred entry for approved public API rewrite",
+      "header_paths": [
+        "include/pto/common/pto_instr.hpp",
+        "include/pto/npu/a5/TDivS.hpp"
+      ],
+      "semantic_source_paths": [
+        "include/pto/common/pto_instr.hpp:296",
+        "include/pto/npu/a5/TDivS.hpp:104"
+      ],
+      "test_paths": [
+        "tests/npu/a5/src/st/testcase/trecip"
+      ]
+    }
+  ]
+}

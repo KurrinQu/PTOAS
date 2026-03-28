@@ -1,0 +1,19 @@
+module {
+  func.func private @__pto_bad_variant_tmul_memref(
+      %src0: memref<32x32xf32>,
+      %src1: memref<32x32xf32>,
+      %dst: memref<32x32xf32>) attributes {
+        pto.oplib.kind = "l3_binary_elementwise_template",
+        pto.oplib.entry_role = "variant",
+        pto.oplib.op = "tmul",
+        pto.oplib.variant_id = "bad_tmul_memref",
+        pto.oplib.match.dtype = "f32",
+        pto.oplib.match.rows = -1 : i64,
+        pto.oplib.match.cols = -1 : i64,
+        pto.oplib.match.blayout = "any",
+        pto.oplib.match.slayout = "any",
+        pto.oplib.match.fractal = -1 : i64,
+        pto.oplib.cost = 1 : i64,
+        pto.oplib.priority = 1 : i64
+      }
+}

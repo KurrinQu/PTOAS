@@ -1,0 +1,1 @@
+%result = arith.select %scalarVec, %lhs, %rhs : @@MASK_VECTOR_TYPE@@, @@RESULT_VECTOR_TYPE@@

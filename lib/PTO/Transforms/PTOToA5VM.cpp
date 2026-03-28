@@ -30,6 +30,11 @@ namespace pto {
 
 namespace {
 
+static bool requiresExplicitA5VMLoweringChoice(Operation *op) {
+  auto func = op->getParentOfType<func::FuncOp>();
+  return func && func->hasAttr(kA5VMVersionSelectionAppliedAttrName);
+}
+
 FailureOr<A5VMLoweringStrategy>
 parseA5VMLoweringStrategy(StringRef strategyName) {
   if (strategyName == "post-update")
@@ -37,6 +42,27 @@ parseA5VMLoweringStrategy(StringRef strategyName) {
   if (strategyName == "no-post-update")
     return A5VMLoweringStrategy::NoPostUpdate;
   return failure();
+}
+
+FailureOr<A5VMLoweringStrategy>
+resolveA5VMLoweringStrategyForOp(Operation *op,
+                                 A5VMLoweringStrategy fallbackStrategy) {
+  if (!op->hasAttr(kA5VMLoweringChoiceAttrName)) {
+    if (requiresExplicitA5VMLoweringChoice(op)) {
+      op->emitOpError()
+          << "requires '" << kA5VMLoweringChoiceAttrName
+          << "' before PTOToA5VM in A5 fusion mainline, but the attribute is "
+             "missing";
+      return failure();
+    }
+    return fallbackStrategy;
+  }
+
+  FailureOr<A5VMLoweringChoiceAttr> choice = getA5VMLoweringChoiceAttr(op);
+  if (failed(choice))
+    return failure();
+
+  return convertA5VMUpdateModeToLoweringStrategy(choice->getUpdateMode());
 }
 
 LogicalResult lowerTLOADOp(TLoadOp op, PatternRewriter &rewriter) {
@@ -267,16 +293,19 @@ LogicalResult lowerTColExpandOp(TColExpandOp op, PatternRewriter &rewriter) {
   return lowerTColExpand(op, rewriter);
 }
 
-LogicalResult lowerTRowExpandMulOp(TRowExpandMulOp op, PatternRewriter &rewriter) {
-  return lowerTRowExpandMul(op, rewriter);
+LogicalResult lowerTRowExpandMulOp(TRowExpandMulOp op, PatternRewriter &rewriter,
+                                   A5VMLoweringStrategy strategy) {
+  return lowerTRowExpandMul(op, rewriter, strategy);
 }
 
-LogicalResult lowerTRowExpandDivOp(TRowExpandDivOp op, PatternRewriter &rewriter) {
-  return lowerTRowExpandDiv(op, rewriter);
+LogicalResult lowerTRowExpandDivOp(TRowExpandDivOp op, PatternRewriter &rewriter,
+                                   A5VMLoweringStrategy strategy) {
+  return lowerTRowExpandDiv(op, rewriter, strategy);
 }
 
-LogicalResult lowerTRowExpandSubOp(TRowExpandSubOp op, PatternRewriter &rewriter) {
-  return lowerTRowExpandSub(op, rewriter);
+LogicalResult lowerTRowExpandSubOp(TRowExpandSubOp op, PatternRewriter &rewriter,
+                                   A5VMLoweringStrategy strategy) {
+  return lowerTRowExpandSub(op, rewriter, strategy);
 }
 
 LogicalResult lowerTPartAddOp(TPartAddOp op, PatternRewriter &rewriter) {
@@ -445,11 +474,11 @@ LogicalResult lowerTensorPipelineOp(Operation *op, PatternRewriter &rewriter,
   else if (auto tcolexpand = dyn_cast<TColExpandOp>(op))
     lowered = lowerTColExpandOp(tcolexpand, rewriter);
   else if (auto trowexpandmul = dyn_cast<TRowExpandMulOp>(op))
-    lowered = lowerTRowExpandMulOp(trowexpandmul, rewriter);
+    lowered = lowerTRowExpandMulOp(trowexpandmul, rewriter, strategy);
   else if (auto trowexpanddiv = dyn_cast<TRowExpandDivOp>(op))
-    lowered = lowerTRowExpandDivOp(trowexpanddiv, rewriter);
+    lowered = lowerTRowExpandDivOp(trowexpanddiv, rewriter, strategy);
   else if (auto trowexpandsub = dyn_cast<TRowExpandSubOp>(op))
-    lowered = lowerTRowExpandSubOp(trowexpandsub, rewriter);
+    lowered = lowerTRowExpandSubOp(trowexpandsub, rewriter, strategy);
   else if (auto tpartadd = dyn_cast<TPartAddOp>(op))
     lowered = lowerTPartAddOp(tpartadd, rewriter);
   else if (auto tpartmax = dyn_cast<TPartMaxOp>(op))
@@ -531,14 +560,15 @@ struct PTOToA5VMPass : public impl::PTOToA5VMBase<PTOToA5VMPass> {
     module.walk([&](Operation *op) {
       if (isa<TLoadOp, TAbsOp, TAddOp, TSubOp, TMulOp, TDivOp, TMaxOp, TMinOp,
               TAndOp, TAndSOp, TOrOp, TOrSOp, TXorOp, TXorSOp, TExpOp, TLogOp,
-              TSqrtOp, TRsqrtOp, TRecipOp, TNegOp, TLReluOp, TCIOp, TCvtOp, TCmpOp, TCmpSOp, TSelOp,
-              TAddCOp, TAddSOp, TAddSCOp, TMinSOp, TSubCOp, TSubSOp, TSubSCOp, TMaxSOp,
-              TDivSOp, TMulSOp, TSelSOp, TReluOp, TNotOp, TTransOp, TFillPadOp, TFillPadExpandOp,
+              TSqrtOp, TRsqrtOp, TRecipOp, TNegOp, TLReluOp, TCIOp, TCvtOp,
+              TCmpOp, TCmpSOp, TSelOp, TAddCOp, TAddSOp, TAddSCOp, TMinSOp,
+              TSubCOp, TSubSOp, TSubSCOp, TMaxSOp, TDivSOp, TMulSOp, TSelSOp,
+              TReluOp, TNotOp, TTransOp, TFillPadOp, TFillPadExpandOp,
               TRowMaxOp, TRowMinOp, TRowSumOp, TColMaxOp, TColMinOp, TColSumOp,
               TRowExpandOp, TColExpandOp, TRowExpandMulOp, TRowExpandDivOp,
-              TRowExpandSubOp, TPartAddOp,
-              TPartMaxOp, TPartMinOp, TExpandsOp, TGatherOp, TGatherBOp,
-              TScatterOp, TSort32Op, TMrgSortOp, TStoreOp>(op))
+              TRowExpandSubOp, TPartAddOp, TPartMaxOp, TPartMinOp, TExpandsOp,
+              TGatherOp, TGatherBOp, TScatterOp, TSort32Op, TMrgSortOp,
+              TStoreOp>(op))
         tensorPipelineOps.push_back(op);
       else if (isa<PointerCastOp, BindTileOp, SetFlagOp, WaitFlagOp, BarrierOp,
                    GetBufOp, RlsBufOp>(op))
@@ -550,8 +580,29 @@ struct PTOToA5VMPass : public impl::PTOToA5VMBase<PTOToA5VMPass> {
     for (Operation *op : tensorPipelineOps) {
       if (!op->getBlock())
         continue;
-      if (failed(lowerTensorPipelineOp(op, rewriter, *loweringStrategy)))
+      FailureOr<A5VMLoweringChoiceAttr> effectiveChoice = failure();
+      if (requiresExplicitA5VMLoweringChoice(op) &&
+          op->hasAttr(kA5VMLoweringChoiceAttrName)) {
+        effectiveChoice = getA5VMLoweringChoiceAttr(op);
+        if (failed(effectiveChoice)) {
+          sawFailure = true;
+          continue;
+        }
+      }
+      FailureOr<A5VMLoweringStrategy> effectiveStrategy =
+          resolveA5VMLoweringStrategyForOp(op, *loweringStrategy);
+      if (failed(effectiveStrategy)) {
         sawFailure = true;
+        continue;
+      }
+      if (failed(lowerTensorPipelineOp(op, rewriter, *effectiveStrategy))) {
+        if (succeeded(effectiveChoice)) {
+          op->emitOpError()
+              << "failed to lower with '" << kA5VMLoweringChoiceAttrName
+              << "' = " << *effectiveChoice;
+        }
+        sawFailure = true;
+      }
     }
     for (Operation *op : residualPTOOps) {
       if (!op->getBlock())
@@ -577,9 +628,9 @@ struct PTOToA5VMPass : public impl::PTOToA5VMBase<PTOToA5VMPass> {
       }
     }
 
-    if (!sawFailure &&
-        failed(convertA5VMFunctionBoundariesToPtr(module, &llvm::errs())))
-      sawFailure = true;
+    // Keep the backend mainline memref-first through PTOToA5VM. Pointer ABI
+    // bridging belongs to the emission boundary, where text/LLVM emitters can
+    // materialize the required ptr-only signature on a cloned module.
 
     if (sawFailure)
       signalPassFailure();

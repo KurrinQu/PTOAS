@@ -1,0 +1,1 @@
+%result = @@CORE_OP@@ %lhs, %acc@@EXEC_MODE_ATTR@@ : @@VECTOR_TYPE@@

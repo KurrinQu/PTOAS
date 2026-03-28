@@ -14,15 +14,15 @@
 #define MLIR_DIALECT_PTO_TRANSFORMS_PASSES_H
 
 #include "PTO/IR/PTO.h"
+#include "PTO/IR/PTODialect.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringRef.h"
-#include "mlir/Pass/Pass.h"
-#include "PTO/IR/PTODialect.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
 
 namespace mlir {
 namespace pto {
@@ -49,7 +49,6 @@ std::unique_ptr<Pass> createEmitPTOManualPass();
 // Explicitly select target arch for codegen.
 std::unique_ptr<Pass> createEmitPTOManualPass(PTOArch arch);
 
-
 /// Create a pass to convert ops from other dialects to PTO Ops.
 std::unique_ptr<Pass> createConvertToPTOOpPass();
 
@@ -67,6 +66,28 @@ std::unique_ptr<Pass> createPTORemoveRedundantBarrierPass();
 std::unique_ptr<Pass> createPTOViewToMemrefPass();
 std::unique_ptr<mlir::Pass> createPTOInsertLoadStoreForMixCVPass();
 std::unique_ptr<Pass> createInferPTOLayoutPass();
+std::unique_ptr<Pass> createPreFusionAnalysisPass();
+std::unique_ptr<Pass> createPrintPreFusionAnalysisPass();
+std::unique_ptr<Pass> createFusionPlanPass();
+std::unique_ptr<Pass> createOpSchedulingPass();
+std::unique_ptr<Pass> createPTOFusionRegionGenPass();
+std::unique_ptr<Pass> createPTOA5VMVersionSelectionPass();
+std::unique_ptr<Pass> createPTOA5VMIfCanonicalizePass();
+std::unique_ptr<Pass> createPTOA5VMExpandBridgeOpsPass();
+std::unique_ptr<Pass> createPTOA5VMPtrBoundaryPass();
+LogicalResult importPTOOpLibTemplates(ModuleOp module, StringRef opLibDir,
+                                      bool debug = false);
+std::unique_ptr<Pass> createPTOInstantiateAndLowerToLibCallPass(
+    const PTOInstantiateAndLowerToLibCallOptions &options = {});
+std::unique_ptr<Pass>
+createPTOInlineLibCallPass(const PTOInlineLibCallOptions &options = {});
+std::unique_ptr<Pass> createPTOValidateSimdIRPass();
+std::unique_ptr<Pass> createPTOLowerSimdToVectorPass();
+std::unique_ptr<Pass> createPTOLowLevelLoopFusionPass(
+    const PTOLowLevelLoopFusionOptions &options = {});
+std::unique_ptr<Pass> createPTOFusionPredicateElisionPass();
+std::unique_ptr<Pass> createPTOFusionLoadStoreElisionPass();
+std::unique_ptr<Pass> createPTOFlattenFusionRegionPass();
 std::unique_ptr<Pass> createLowerPTOToA5VMPass();
 std::unique_ptr<Pass> createLowerPTOToA5VMPass(StringRef loweringStrategy);
 // Declare register function

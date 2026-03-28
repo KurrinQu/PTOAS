@@ -1,12 +1,23 @@
-// RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm --emit-a5vm %s -o - 2>/dev/null | FileCheck %s
+// RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm --emit-a5vm %s -o - 2>/dev/null | FileCheck %s --check-prefix=A5VM
+// RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm --a5vm-print-ir %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=SUMMARY --check-prefix=A5VM
+// RUN: ./build/tools/ptoas/ptoas --pto-arch=a5 --pto-backend=emitc %s -o - 2>/dev/null | FileCheck %s --check-prefix=EMITC
 
-// CHECK-LABEL: func.func @pto_backend_a5vm_wiring
-// CHECK: a5vm.copy_gm_to_ubuf
-// CHECK: a5vm.vlds
-// CHECK: a5vm.vabs
-// CHECK: a5vm.vsts
-// CHECK: a5vm.copy_ubuf_to_gm
-// CHECK-NOT: emitc.call_opaque
+// SUMMARY: A5VM IR op: a5vm.copy_gm_to_ubuf
+// SUMMARY: A5VM IR op: a5vm.copy_ubuf_to_gm
+// A5VM-LABEL: func.func @pto_backend_a5vm_wiring
+// A5VM: a5vm.copy_gm_to_ubuf
+// A5VM: a5vm.vlds
+// A5VM: a5vm.vabs
+// A5VM: a5vm.vsts
+// A5VM: a5vm.copy_ubuf_to_gm
+// A5VM-NOT: emitc.call_opaque
+
+// EMITC: #include "pto/pto-inst.hpp"
+// EMITC-LABEL: __global__ AICORE void pto_backend_a5vm_wiring(
+// EMITC: TLOAD(
+// EMITC: TABS(
+// EMITC: TSTORE(
+
 module {
   func.func @pto_backend_a5vm_wiring(%src: !pto.ptr<f32>, %dst: !pto.ptr<f32>) {
     %c0 = arith.constant 0 : index

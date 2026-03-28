@@ -1,4 +1,5 @@
-//===- InferPTOLayout.cpp - Infer layout for global tensor views -----------===//
+//===- InferPTOLayout.cpp - Infer layout for global tensor views
+//-----------===//
 //
 // The pto-isa GlobalTensor ABI expects shape/stride to be represented in a 5D
 // right-aligned form (pad leading dims with 1). We infer ND/DN/NZ with the same
@@ -99,12 +100,11 @@ static std::optional<ShapeStride5D> rightAlignTo5D(ArrayRef<int64_t> shape,
   return out;
 }
 
-static std::optional<Layout> inferLayout5D(ArrayRef<int64_t> shape,
-                                           ArrayRef<int64_t> strides,
-                                           unsigned elemBytes,
-                                           std::optional<Layout> preferredMinor2D =
-                                               std::nullopt,
-                                           bool *isMinor2DAmbiguous = nullptr) {
+static std::optional<Layout>
+inferLayout5D(ArrayRef<int64_t> shape, ArrayRef<int64_t> strides,
+              unsigned elemBytes,
+              std::optional<Layout> preferredMinor2D = std::nullopt,
+              bool *isMinor2DAmbiguous = nullptr) {
   if (shape.size() != strides.size() || elemBytes == 0)
     return std::nullopt;
   if (isMinor2DAmbiguous)
@@ -191,16 +191,72 @@ static std::optional<Layout> tileBLayoutToGlobalLayout(Type tileLikeTy) {
   return std::nullopt;
 }
 
-static bool isVectorTileType(Type tileLikeTy) {
-  auto tbTy = dyn_cast<TileBufType>(tileLikeTy);
-  if (!tbTy)
-    return false;
-  auto ms = dyn_cast_or_null<AddressSpaceAttr>(tbTy.getMemorySpace());
-  return ms && ms.getAddressSpace() == AddressSpace::VEC;
+static std::optional<Layout>
+configBLayoutToGlobalLayout(std::optional<TileBufConfigAttr> config) {
+  if (!config)
+    return std::nullopt;
+  auto bl = dyn_cast_or_null<BLayoutAttr>(config->getBLayout());
+  if (!bl)
+    return std::nullopt;
+  switch (bl.getValue()) {
+  case BLayout::RowMajor:
+    return Layout::ND;
+  case BLayout::ColMajor:
+    return Layout::DN;
+  }
+  return std::nullopt;
+}
+
+static std::optional<Layout> preferredGlobalLayoutFromValue(Value v) {
+  while (v) {
+    if (auto layout = tileBLayoutToGlobalLayout(v.getType()))
+      return layout;
+
+    Operation *def = v.getDefiningOp();
+    if (!def)
+      return std::nullopt;
+
+    if (auto bind = dyn_cast<BindTileOp>(def))
+      return configBLayoutToGlobalLayout(bind.getConfig());
+    if (auto pc = dyn_cast<PointerCastOp>(def))
+      return configBLayoutToGlobalLayout(pc.getConfig());
+    if (auto subview = dyn_cast<memref::SubViewOp>(def)) {
+      v = subview.getSource();
+      continue;
+    }
+    if (auto cast = dyn_cast<memref::ReinterpretCastOp>(def)) {
+      v = cast.getSource();
+      continue;
+    }
+    if (auto cast = dyn_cast<memref::CastOp>(def)) {
+      v = cast.getSource();
+      continue;
+    }
+    return std::nullopt;
+  }
+  return std::nullopt;
 }
 
 static bool isMinorColsOne(ArrayRef<int64_t> shape) {
   return !shape.empty() && shape.back() == 1;
+}
+
+static bool ownerHasMinorColsOneShape(Operation *owner) {
+  if (!owner || owner->getNumResults() == 0)
+    return false;
+
+  Type ty = owner->getResult(0).getType();
+  if (auto mrTy = dyn_cast<MemRefType>(ty)) {
+    return mrTy.hasStaticShape() && isMinorColsOne(mrTy.getShape());
+  }
+  if (auto tvTy = dyn_cast<TensorViewType>(ty)) {
+    auto shape = tvTy.getShape();
+    return llvm::all_of(
+               shape,
+               [](int64_t dim) { return dim != ShapedType::kDynamic; }) &&
+           isMinorColsOne(shape);
+  }
+  return false;
 }
 
 struct LayoutPreference {
@@ -235,14 +291,14 @@ static LayoutPreference collectPreferredLayoutFromConsumers(Value tensorView) {
       }
 
       if (auto load = dyn_cast<pto::TLoadOp>(owner)) {
-        if (operandIndex == 0 && isVectorTileType(load.getDst().getType()))
-          mergePref(tileBLayoutToGlobalLayout(load.getDst().getType()));
+        if (operandIndex == 0)
+          mergePref(preferredGlobalLayoutFromValue(load.getDst()));
         continue;
       }
 
       if (auto store = dyn_cast<pto::TStoreOp>(owner)) {
-        if (operandIndex == 1 && isVectorTileType(store.getSrc().getType()))
-          mergePref(tileBLayoutToGlobalLayout(store.getSrc().getType()));
+        if (operandIndex == 1)
+          mergePref(preferredGlobalLayoutFromValue(store.getSrc()));
         continue;
       }
     }
@@ -300,8 +356,7 @@ static ResolvedLayoutInfo resolveLayoutFromViewValue(Value v) {
     if (auto layoutAttr = def->getAttrOfType<LayoutAttr>(kLayoutAttrName)) {
       info.owner = def;
       info.layout = layoutAttr.getLayout();
-      if (auto inferred =
-              def->getAttrOfType<BoolAttr>(kInferredLayoutAttrName))
+      if (auto inferred = def->getAttrOfType<BoolAttr>(kInferredLayoutAttrName))
         info.inferred = inferred.getValue();
       return info;
     }
@@ -361,14 +416,14 @@ struct InferPTOLayoutPass
       // "column-vector-like" outputs (cols == 1). This is the row-reduction
       // case we need to repair; applying it more broadly can violate pto-isa
       // static layout constraints (e.g. some GEMV/GEMM outputs).
-      auto preferredForAmbiguous =
-          (!pref.conflict && isMinorColsOne(shape)) ? pref.preferred
-                                                    : std::nullopt;
+      auto preferredForAmbiguous = (!pref.conflict && isMinorColsOne(shape))
+                                       ? pref.preferred
+                                       : std::nullopt;
       bool isAmbiguous = false;
       auto inferred = inferLayout5D(
           shape, strides,
-          elemByteSize(cast<TensorViewType>(op.getResult().getType())
-                           .getElementType()),
+          elemByteSize(
+              cast<TensorViewType>(op.getResult().getType()).getElementType()),
           preferredForAmbiguous, &isAmbiguous);
       verifyOrSetLayout(op.getOperation(), inferred);
 
@@ -473,7 +528,8 @@ struct InferPTOLayoutPass
     // 4) pto.tload / pto.tstore: attach layout for static GM memrefs so EmitC
     //    doesn't need to infer again in buildGlobalTensorFromMemref().
     // ------------------------------------------------------------------
-    auto inferFromStaticMemRefTy = [&](MemRefType mrTy) -> std::optional<Layout> {
+    auto inferFromStaticMemRefTy =
+        [&](MemRefType mrTy) -> std::optional<Layout> {
       if (!mrTy.hasStaticShape() || mrTy.getRank() == 0 || mrTy.getRank() > 5)
         return std::nullopt;
       SmallVector<int64_t> strideInts;
@@ -507,30 +563,17 @@ struct InferPTOLayoutPass
         }
       }
 
-      // Consistency check and repair (inferred + ambiguous only): if source view
-      // layout conflicts with the consumer tile BLayout, retarget to tile
+      // Consistency check and repair (inferred + ambiguous only): if source
+      // view layout conflicts with the consumer tile BLayout, retarget to tile
       // preference to keep emitted GlobalTensor/Tile compatible.
-      auto tilePref = isVectorTileType(op.getDst().getType())
-                          ? tileBLayoutToGlobalLayout(op.getDst().getType())
-                          : std::nullopt;
+      auto tilePref = preferredGlobalLayoutFromValue(op.getDst());
       if (tilePref && (*tilePref == Layout::ND || *tilePref == Layout::DN)) {
         auto viewInfo = resolveLayoutFromViewValue(op.getSrc());
         if (viewInfo.owner && viewInfo.layout &&
             *viewInfo.layout != *tilePref && viewInfo.inferred) {
-          if (auto tv = dyn_cast<MakeTensorViewOp>(viewInfo.owner)) {
-            SmallVector<int64_t> shape, strides;
-            bool ambiguous = false;
-            if (getStaticShapeAndStride(tv, shape, strides)) {
-              (void)inferLayout5D(
-                  shape, strides,
-                  elemByteSize(cast<TensorViewType>(tv.getResult().getType())
-                                   .getElementType()),
-                  std::nullopt, &ambiguous);
-              if (ambiguous && isMinorColsOne(shape)) {
-                setLayout(viewInfo.owner, *tilePref, /*inferred=*/true);
-                setLayout(op.getOperation(), *tilePref, /*inferred=*/true);
-              }
-            }
+          if (ownerHasMinorColsOneShape(viewInfo.owner)) {
+            setLayout(viewInfo.owner, *tilePref, /*inferred=*/true);
+            setLayout(op.getOperation(), *tilePref, /*inferred=*/true);
           }
         }
       }
@@ -555,27 +598,14 @@ struct InferPTOLayoutPass
         }
       }
 
-      auto tilePref = isVectorTileType(op.getSrc().getType())
-                          ? tileBLayoutToGlobalLayout(op.getSrc().getType())
-                          : std::nullopt;
+      auto tilePref = preferredGlobalLayoutFromValue(op.getSrc());
       if (tilePref && (*tilePref == Layout::ND || *tilePref == Layout::DN)) {
         auto viewInfo = resolveLayoutFromViewValue(op.getDst());
         if (viewInfo.owner && viewInfo.layout &&
             *viewInfo.layout != *tilePref && viewInfo.inferred) {
-          if (auto tv = dyn_cast<MakeTensorViewOp>(viewInfo.owner)) {
-            SmallVector<int64_t> shape, strides;
-            bool ambiguous = false;
-            if (getStaticShapeAndStride(tv, shape, strides)) {
-              (void)inferLayout5D(
-                  shape, strides,
-                  elemByteSize(cast<TensorViewType>(tv.getResult().getType())
-                                   .getElementType()),
-                  std::nullopt, &ambiguous);
-              if (ambiguous && isMinorColsOne(shape)) {
-                setLayout(viewInfo.owner, *tilePref, /*inferred=*/true);
-                setLayout(op.getOperation(), *tilePref, /*inferred=*/true);
-              }
-            }
+          if (ownerHasMinorColsOneShape(viewInfo.owner)) {
+            setLayout(viewInfo.owner, *tilePref, /*inferred=*/true);
+            setLayout(op.getOperation(), *tilePref, /*inferred=*/true);
           }
         }
       }

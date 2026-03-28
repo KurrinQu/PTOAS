@@ -3,9 +3,10 @@
 
 import numpy as np
 
+
 def main():
     np.random.seed(19)
-@INPUT_GENERATE@
+    # __INPUT_GENERATE_PLACEHOLDER__
 
 
 if __name__ == "__main__":
