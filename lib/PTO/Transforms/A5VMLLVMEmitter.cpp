@@ -1003,28 +1003,16 @@ static FailureOr<Value> convertElementOffsetToBytes(Operation *anchor, Value off
       .getResult();
 }
 
-static FailureOr<Value> bridgeAddressToPointerABI(Operation *anchor,
-                                                  Value address) {
-  OpBuilder builder(anchor);
-  builder.setInsertionPoint(anchor);
-  Location loc = anchor->getLoc();
-  MLIRContext *ctx = anchor->getContext();
-
-  if (auto ptrType = dyn_cast<LLVM::LLVMPointerType>(address.getType()))
+static FailureOr<Value> requirePointerABIAddress(Operation *anchor, Value address,
+                                                 llvm::raw_ostream &diagOS) {
+  if (isa<LLVM::LLVMPointerType>(address.getType()))
     return address;
 
-  if (auto memrefType = dyn_cast<MemRefType>(address.getType())) {
-    unsigned targetAddrSpace = getExternalPointerAddressSpace(memrefType);
-    Type targetPtrType = LLVM::LLVMPointerType::get(ctx, targetAddrSpace);
-    Value ptrAsIndex =
-        builder.create<memref::ExtractAlignedPointerAsIndexOp>(loc, address);
-    Value ptrAsI64 = castIntegerLikeTo(anchor, ptrAsIndex, builder.getI64Type());
-    if (!ptrAsI64)
-      return failure();
-    return builder.create<LLVM::IntToPtrOp>(loc, targetPtrType, ptrAsI64)
-        .getResult();
-  }
-
+  diagOS << "A5VM LLVM emission failed: expected pointer-ABI address after "
+            "pre-emit canonicalization, but saw "
+         << address.getType() << " on op ";
+  anchor->print(diagOS);
+  diagOS << "\n";
   return failure();
 }
 
@@ -1599,11 +1587,11 @@ static LogicalResult rewriteA5VMOp(Operation *op, ModuleOp module,
     Type elementType = getElementTypeFromVectorLike(vlds.getResult().getType());
     auto offsetBytes = convertElementOffsetToBytes(
         op, op->getOperand(1), elementType);
-    auto basePtr = bridgeAddressToPointerABI(op, op->getOperand(0));
+    auto basePtr = requirePointerABIAddress(op, op->getOperand(0), diagOS);
     auto dist = parseLoadDistImmediate(vlds.getDist().value_or("NORM"));
     if (!elementType || failed(offsetBytes) || failed(basePtr) || !dist) {
-      diagOS << "A5VM LLVM emission failed: cannot bridge vlds address to "
-                "pointer ABI\n";
+      if (elementType && succeeded(basePtr) && !dist)
+        diagOS << "A5VM LLVM emission failed: unsupported vlds dist immediate\n";
       return failure();
     }
     callArgs.push_back(*basePtr);
@@ -1704,12 +1692,12 @@ static LogicalResult rewriteA5VMOp(Operation *op, ModuleOp module,
     Type elementType = getElementTypeFromVectorLike(vsts.getValue().getType());
     auto offsetBytes = convertElementOffsetToBytes(
         op, op->getOperand(2), elementType);
-    auto basePtr = bridgeAddressToPointerABI(op, op->getOperand(1));
+    auto basePtr = requirePointerABIAddress(op, op->getOperand(1), diagOS);
     auto dist = parseStoreDistImmediate(vsts.getValue().getType(),
                                         vsts.getDist().value_or(""));
     if (!elementType || failed(offsetBytes) || failed(basePtr) || !dist) {
-      diagOS << "A5VM LLVM emission failed: cannot bridge vsts address to "
-                "pointer ABI\n";
+      if (elementType && succeeded(basePtr) && !dist)
+        diagOS << "A5VM LLVM emission failed: unsupported vsts dist immediate\n";
       return failure();
     }
     callArgs.push_back(op->getOperand(0));
@@ -2474,7 +2462,7 @@ buildLLVMModuleFromA5VM(ModuleOp module, llvm::LLVMContext &llvmContext,
   OwningOpRef<ModuleOp> cloned(cast<ModuleOp>(module->clone()));
   auto vecScopeCounts = collectVecScopeLoopCounts(*cloned);
 
-  if (failed(convertA5VMFunctionBoundariesToPtr(*cloned, &diagOS)))
+  if (failed(convertA5VMEmissionBoundaryToPtr(*cloned, &diagOS)))
     return nullptr;
 
   if (failed(normalizePtoMemRefSpaces(*cloned, diagOS)))

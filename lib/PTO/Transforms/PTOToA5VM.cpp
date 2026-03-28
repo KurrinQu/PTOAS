@@ -628,9 +628,9 @@ struct PTOToA5VMPass : public impl::PTOToA5VMBase<PTOToA5VMPass> {
       }
     }
 
-    if (!sawFailure &&
-        failed(convertA5VMFunctionBoundariesToPtr(module, &llvm::errs())))
-      sawFailure = true;
+    // Keep the backend mainline memref-first through PTOToA5VM. Pointer ABI
+    // bridging belongs to the emission boundary, where text/LLVM emitters can
+    // materialize the required ptr-only signature on a cloned module.
 
     if (sawFailure)
       signalPassFailure();

@@ -16,13 +16,14 @@
 
 // EXPAND-LABEL: IR Dump After PTOA5VMExpandBridgeOps
 // EXPAND-NOT: a5vm.uvld
-// EXPAND: scf.for %{{.*}} = %c0{{(_[0-9]+)?}} to %c1{{(_[0-9]+)?}} step %c1{{(_[0-9]+)?}} {
-// EXPAND: scf.for %{{.*}} = %c0{{(_[0-9]+)?}} to %c16{{(_[0-9]+)?}} step %c1{{(_[0-9]+)?}} {
-// EXPAND: %[[PTR0:.+]] = llvm.getelementptr %{{.+}}[%{{.+}}] : (!llvm.ptr<6>, i64) -> !llvm.ptr<6>, f32
-// EXPAND: %[[ALIGN0:.+]] = a5vm.vldas %[[PTR0]] : !llvm.ptr<6> -> !a5vm.align
-// EXPAND: %[[LOAD0:.+]], %{{.+}}, %{{.+}} = a5vm.vldus %[[PTR0]], %[[ALIGN0]] : !llvm.ptr<6>, !a5vm.align -> !a5vm.vec<64xf32>, !a5vm.align, !llvm.ptr<6>
+// EXPAND-NOT: llvm.getelementptr
+// EXPAND: %[[BASE0:.+]] = pto.castptr %{{.+}} : memref<1x16xf32{{.*}} -> !pto.ptr<f32, ub>
+// EXPAND: %[[PTR0:.+]] = pto.addptr %[[BASE0]], %{{.+}} : <f32, ub> -> <f32, ub>
+// EXPAND: %[[ALIGN0:.+]] = a5vm.vldas %[[PTR0]] : !pto.ptr<f32, ub> -> !a5vm.align
+// EXPAND: %[[LOAD0:.+]], %{{.+}}, %{{.+}} = a5vm.vldus %[[PTR0]], %[[ALIGN0]] : !pto.ptr<f32, ub>, !a5vm.align -> !a5vm.vec<64xf32>, !a5vm.align, !pto.ptr<f32, ub>
 // EXPAND: a5vm.vdup %[[LOAD0]]
-// EXPAND: %[[PTR1:.+]] = llvm.getelementptr %{{.+}}[%{{.+}}] : (!llvm.ptr<6>, i64) -> !llvm.ptr<6>, f32
-// EXPAND: %[[ALIGN1:.+]] = a5vm.vldas %[[PTR1]] : !llvm.ptr<6> -> !a5vm.align
-// EXPAND: %[[LOAD1:.+]], %{{.+}}, %{{.+}} = a5vm.vldus %[[PTR1]], %[[ALIGN1]] : !llvm.ptr<6>, !a5vm.align -> !a5vm.vec<64xf32>, !a5vm.align, !llvm.ptr<6>
+// EXPAND: %[[BASE1:.+]] = pto.castptr %{{.+}} : memref<1x16xf32{{.*}} -> !pto.ptr<f32, ub>
+// EXPAND: %[[PTR1:.+]] = pto.addptr %[[BASE1]], %{{.+}} : <f32, ub> -> <f32, ub>
+// EXPAND: %[[ALIGN1:.+]] = a5vm.vldas %[[PTR1]] : !pto.ptr<f32, ub> -> !a5vm.align
+// EXPAND: %[[LOAD1:.+]], %{{.+}}, %{{.+}} = a5vm.vldus %[[PTR1]], %[[ALIGN1]] : !pto.ptr<f32, ub>, !a5vm.align -> !a5vm.vec<64xf32>, !a5vm.align, !pto.ptr<f32, ub>
 // EXPAND: a5vm.vdup %[[LOAD1]]

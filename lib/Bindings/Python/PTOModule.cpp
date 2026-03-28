@@ -401,7 +401,7 @@ PYBIND11_MODULE(_pto, m) {
                 MlirContext ctx = context;
                 if (!ctx.ptr)
                     ctx = mlirTypeGetContext(elementType);
-                MlirType t = mlirTypeGetNull();
+                MlirType t;
                 if (memorySpace.is_none()) {
                   t = mlirPTOPtrTypeGet(ctx, elementType);
                 } else {

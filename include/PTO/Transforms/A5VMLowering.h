@@ -150,6 +150,9 @@ void set_loop_size_ubtoout(Operation *copyOp, int64_t loop2, int64_t loop1,
 LogicalResult attachLoopScopeMetadata(LoopLikeOpInterface loop,
                                       const A5VMLoopScopeContract &contract,
                                       PatternRewriter &rewriter);
+Value materializeBufferPointer(Value value, Type elementType,
+                               Attribute memorySpace,
+                               PatternRewriter &rewriter, Location loc);
 
 LogicalResult programCopyGmToUbLoops(Operation *copyOp,
                                      const A5VMLoadContract &contract,
@@ -268,7 +271,7 @@ LogicalResult lowerWaitFlag(WaitFlagOp op, PatternRewriter &rewriter);
 LogicalResult lowerBarrier(BarrierOp op, PatternRewriter &rewriter);
 LogicalResult lowerGetBuf(GetBufOp op, PatternRewriter &rewriter);
 LogicalResult lowerRlsBuf(RlsBufOp op, PatternRewriter &rewriter);
-LogicalResult convertA5VMFunctionBoundariesToPtr(
+LogicalResult convertA5VMEmissionBoundaryToPtr(
     ModuleOp module, llvm::raw_ostream *diagOS = nullptr);
 
 } // namespace pto

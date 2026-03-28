@@ -8,6 +8,7 @@ add_mlir_dialect_library(PTOTransforms
   PTOA5VMVersionSelection.cpp
   TileFusion/PTOA5VMIfCanonicalize.cpp
   PTOA5VMExpandBridgeOps.cpp
+  PTOA5VMPtrBoundary.cpp
   PTOToA5VM.cpp
   PTOToA5VMLowering.cpp
   InsertLoadStoreForMixCV.cpp

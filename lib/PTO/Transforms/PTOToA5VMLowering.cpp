@@ -1494,6 +1494,8 @@ Value materializeTileBufferView(Value value, PatternRewriter &rewriter,
                                tileType.getMemorySpace(), rewriter, loc);
 }
 
+} // namespace
+
 Value materializeBufferPointer(Value value, Type elementType,
                                Attribute memorySpace,
                                PatternRewriter &rewriter, Location loc) {
@@ -1524,6 +1526,8 @@ Value materializeBufferPointer(Value value, Type elementType,
     return {};
   return rewriter.create<CastPtrOp>(loc, ptrType, memrefValue).getResult();
 }
+
+namespace {
 
 Value materializeBufferLikeAddress(Value value, Type elementType,
                                    Attribute memorySpace,
@@ -7252,185 +7256,5 @@ LogicalResult lowerRlsBuf(RlsBufOp op, PatternRewriter &rewriter) {
   return success();
 }
 
-namespace {
-
-static Type convertA5VMBoundaryMemRefType(Type type) {
-  auto memrefType = dyn_cast<BaseMemRefType>(type);
-  if (!memrefType)
-    return type;
-  auto memorySpace = dyn_cast_or_null<AddressSpaceAttr>(memrefType.getMemorySpace());
-  if (!memorySpace)
-    return {};
-  return PtrType::get(type.getContext(), memrefType.getElementType(), memorySpace);
-}
-
-static LogicalResult eraseDeadA5VMMemRefScaffold(ModuleOp module) {
-  bool erasedAny = true;
-  while (erasedAny) {
-    erasedAny = false;
-    SmallVector<Operation *> deadOps;
-    module.walk([&](Operation *op) {
-      if (!op->use_empty())
-        return;
-      if (isa<memref::ReinterpretCastOp, memref::SubViewOp,
-              memref::MemorySpaceCastOp>(op))
-        deadOps.push_back(op);
-    });
-    for (Operation *op : deadOps) {
-      op->erase();
-      erasedAny = true;
-    }
-  }
-  return success();
-}
-
-static LogicalResult verifyNoResidualA5VMMemRefs(ModuleOp module,
-                                                 llvm::raw_ostream *diagOS) {
-  for (func::FuncOp func : module.getOps<func::FuncOp>()) {
-    for (Type input : func.getFunctionType().getInputs()) {
-      if (!isa<BaseMemRefType>(input))
-        continue;
-      if (diagOS)
-        *diagOS << "A5VM ptr-only boundary failed: residual memref argument in "
-                << func.getName() << ": " << input << "\n";
-      return failure();
-    }
-    for (Type result : func.getFunctionType().getResults()) {
-      if (!isa<BaseMemRefType>(result))
-        continue;
-      if (diagOS)
-        *diagOS << "A5VM ptr-only boundary failed: residual memref result in "
-                << func.getName() << ": " << result << "\n";
-      return failure();
-    }
-  }
-
-  WalkResult walk = module.walk([&](Operation *op) {
-    auto hasResidualMemRef = [](TypeRange types) {
-      return llvm::any_of(types, [](Type type) {
-        return isa<BaseMemRefType>(type);
-      });
-    };
-    if (hasResidualMemRef(op->getOperandTypes()) ||
-        hasResidualMemRef(op->getResultTypes())) {
-      if (diagOS) {
-        *diagOS << "A5VM ptr-only boundary failed: residual memref-typed op "
-                << op->getName() << "\n";
-        op->print(*diagOS);
-        *diagOS << "\n";
-      }
-      return WalkResult::interrupt();
-    }
-    for (Region &region : op->getRegions()) {
-      for (Block &block : region) {
-        for (BlockArgument arg : block.getArguments()) {
-          if (!isa<BaseMemRefType>(arg.getType()))
-            continue;
-          if (diagOS)
-            *diagOS << "A5VM ptr-only boundary failed: residual memref block "
-                    << "argument in op " << op->getName() << ": "
-                    << arg.getType() << "\n";
-          return WalkResult::interrupt();
-        }
-      }
-    }
-    return WalkResult::advance();
-  });
-  return walk.wasInterrupted() ? failure() : success();
-}
-
 } // namespace
-
-LogicalResult convertA5VMFunctionBoundariesToPtr(ModuleOp module,
-                                                 llvm::raw_ostream *diagOS) {
-  // A5VM kernels use ptr-only entry semantics: the function ABI keeps only the
-  // same-space base pointer, while shape/stride/offset stay in live SSA and
-  // address calculations inside the body.
-  if (failed(eraseDeadA5VMMemRefScaffold(module)))
-    return failure();
-
-  bool sawFailure = false;
-  for (func::FuncOp func : module.getOps<func::FuncOp>()) {
-    if (func.isExternal())
-      continue;
-
-    FunctionType functionType = func.getFunctionType();
-    SmallVector<Type> newInputs(functionType.getInputs().begin(),
-                                functionType.getInputs().end());
-    bool changed = false;
-
-    for (auto [idx, inputType] : llvm::enumerate(functionType.getInputs())) {
-      auto memrefType = dyn_cast<BaseMemRefType>(inputType);
-      if (!memrefType)
-        continue;
-
-      Type newType = convertA5VMBoundaryMemRefType(inputType);
-      if (!newType) {
-        if (diagOS)
-          *diagOS << "A5VM ptr-only boundary failed: unsupported memref "
-                  << "argument type in " << func.getName() << ": "
-                  << inputType << "\n";
-        sawFailure = true;
-        continue;
-      }
-
-      BlockArgument arg = func.getArgument(idx);
-      SmallVector<Operation *> users(arg.getUsers().begin(), arg.getUsers().end());
-      arg.setType(newType);
-      newInputs[idx] = newType;
-      changed = true;
-
-      for (Operation *user : users) {
-        if (auto cast = dyn_cast<CastPtrOp>(user)) {
-          if (cast.getInput() != arg)
-            continue;
-          if (cast.getResult().getType() == newType) {
-            cast.getResult().replaceAllUsesWith(arg);
-            cast.erase();
-          }
-          continue;
-        }
-
-        if (isa<memref::ReinterpretCastOp, memref::SubViewOp,
-                memref::MemorySpaceCastOp>(user) &&
-            user->use_empty()) {
-          user->erase();
-          continue;
-        }
-
-        if (diagOS) {
-          *diagOS << "A5VM ptr-only boundary failed: argument " << idx
-                  << " of " << func.getName()
-                  << " still feeds a memref-dependent user after ptr rewrite:\n";
-          user->print(*diagOS);
-          *diagOS << "\n";
-        }
-        sawFailure = true;
-      }
-    }
-
-    for (Type resultType : functionType.getResults()) {
-      if (!isa<BaseMemRefType>(resultType))
-        continue;
-      if (diagOS)
-        *diagOS << "A5VM ptr-only boundary failed: memref result is unsupported "
-                << "for " << func.getName() << ": " << resultType << "\n";
-      sawFailure = true;
-    }
-
-    if (changed) {
-      func.setFunctionType(
-          FunctionType::get(module.getContext(), newInputs, functionType.getResults()));
-    }
-  }
-
-  if (sawFailure)
-    return failure();
-
-  if (failed(eraseDeadA5VMMemRefScaffold(module)))
-    return failure();
-  return verifyNoResidualA5VMMemRefs(module, diagOS);
-}
-
 } // namespace pto
-} // namespace mlir

@@ -289,6 +289,26 @@ def PTOA5VMExpandBridgeOps
                            "mlir::a5vm::A5VMDialect"];
 }
 
+def PTOA5VMPtrBoundary
+    : Pass<"pto-a5vm-ptr-boundary", "ModuleOp"> {
+  let summary =
+      "Canonicalize the final A5VM emission boundary from memref-first IR to ptr ABI";
+  let description = [{
+    Runs the final emission-boundary ptr canonicalization after the backend
+    mainline has finished its memref-first optimization pipeline. This pass
+    rewrites eligible memref function arguments to same-space `!pto.ptr`,
+    rejects memref function results, canonicalizes supported body-level A5VM
+    buffer-like ops to ptr-form, and drops dead boundary/view scaffold such as
+    trivial `pto.castptr`, `pto.bind_tile`, `memref.subview`,
+    `memref.reinterpret_cast`, and `memref.memory_space_cast` once they become
+    unused.
+  }];
+  let constructor = "mlir::pto::createPTOA5VMPtrBoundaryPass()";
+  let dependentDialects = ["mlir::func::FuncDialect",
+                           "mlir::pto::PTODialect",
+                           "mlir::memref::MemRefDialect"];
+}
+
 def PTOLowLevelLoopFusion : Pass<"pto-low-level-loop-fusion", "ModuleOp"> {
   let summary =
       "Fuse adjacent A5VM post-lowering loop nests inside pto.fusion_region";

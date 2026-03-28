@@ -1475,6 +1475,16 @@ int main(int argc, char **argv) {
       return 0;
     }
 
+    OwningOpRef<ModuleOp> emissionModule(cast<ModuleOp>(module->clone()));
+    PassManager emissionPM(&context);
+    maybeEnablePrintIRAfterAll(emissionPM, inputFuncNames);
+    emissionPM.addPass(pto::createPTOA5VMPtrBoundaryPass());
+    if (failed(emissionPM.run(*emissionModule))) {
+      llvm::errs()
+          << "Error: A5VM pre-emission ptr-boundary pass execution failed.\n";
+      return 1;
+    }
+
     pto::A5VMEmissionOptions options;
     options.dumpA5VMIR = a5vmPrintIR || dumpA5VMIR;
     options.printIntrinsicSelections = a5vmPrintIntrinsics;
@@ -1495,12 +1505,15 @@ int main(int argc, char **argv) {
 
     LogicalResult emissionStatus =
         a5vmEmitHIVMOfficialBitcode
-            ? pto::translateA5VMModuleToLLVMBitcode(*module, outputFile.os(),
+            ? pto::translateA5VMModuleToLLVMBitcode(*emissionModule,
+                                                    outputFile.os(),
                                                     options, llvm::errs())
             : a5vmEmitHIVMOfficialLLVM
-                  ? pto::translateA5VMModuleToLLVMText(*module, outputFile.os(),
+                  ? pto::translateA5VMModuleToLLVMText(*emissionModule,
+                                                       outputFile.os(),
                                                        options, llvm::errs())
-                  : pto::translateA5VMModuleToText(*module, outputFile.os(),
+                  : pto::translateA5VMModuleToText(*emissionModule,
+                                                   outputFile.os(),
                                                    options, llvm::errs());
     if (failed(emissionStatus)) {
       llvm::errs() << "Error: Failed to emit A5VM text.\n";

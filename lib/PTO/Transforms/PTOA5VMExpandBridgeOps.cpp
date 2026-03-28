@@ -2,11 +2,8 @@
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
 
-#include "mlir/Conversion/LLVMCommon/MemRefBuilder.h"
-#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
@@ -23,12 +20,14 @@ using namespace mlir;
 
 namespace {
 
-static unsigned getLLVMAddressSpace(Attribute memorySpace) {
+static pto::AddressSpaceAttr getPointerMemorySpace(Attribute memorySpace,
+                                                   MLIRContext *ctx) {
   if (auto addrSpace = dyn_cast_or_null<pto::AddressSpaceAttr>(memorySpace))
-    return static_cast<unsigned>(addrSpace.getAddressSpace());
+    return addrSpace;
   if (auto intAttr = dyn_cast_or_null<IntegerAttr>(memorySpace))
-    return static_cast<unsigned>(intAttr.getInt());
-  return static_cast<unsigned>(pto::AddressSpace::GM);
+    return pto::AddressSpaceAttr::get(
+        ctx, static_cast<pto::AddressSpace>(intAttr.getInt()));
+  return pto::AddressSpaceAttr::get(ctx, pto::AddressSpace::GM);
 }
 
 static Value materializeBufferPointer(Value value, PatternRewriter &rewriter,
@@ -36,33 +35,18 @@ static Value materializeBufferPointer(Value value, PatternRewriter &rewriter,
   if (!value)
     return {};
 
-  if (isa<LLVM::LLVMPointerType>(value.getType()))
+  if (isa<pto::PtrType>(value.getType()))
     return value;
 
   auto memrefType = dyn_cast<MemRefType>(value.getType());
   if (!memrefType)
     return {};
 
-  unsigned llvmAddressSpace = getLLVMAddressSpace(memrefType.getMemorySpace());
-  auto canonicalMemRefType = MemRefType::get(
-      memrefType.getShape(), memrefType.getElementType(), memrefType.getLayout(),
-      rewriter.getI64IntegerAttr(llvmAddressSpace));
-  if (value.getType() != canonicalMemRefType)
-    value = rewriter.create<memref::MemorySpaceCastOp>(loc, canonicalMemRefType,
-                                                       value);
-
-  LLVMTypeConverter typeConverter(rewriter.getContext());
-  Type llvmDescriptorType = typeConverter.convertType(canonicalMemRefType);
-  if (!llvmDescriptorType)
-    return {};
-
-  Value descriptor =
-      rewriter
-          .create<UnrealizedConversionCastOp>(loc, TypeRange{llvmDescriptorType},
-                                              value)
-          .getResult(0);
-  MemRefDescriptor memrefDescriptor(descriptor);
-  return memrefDescriptor.alignedPtr(rewriter, loc);
+  auto ptrType =
+      pto::PtrType::get(rewriter.getContext(), memrefType.getElementType(),
+                        getPointerMemorySpace(memrefType.getMemorySpace(),
+                                              rewriter.getContext()));
+  return rewriter.create<pto::CastPtrOp>(loc, ptrType, value).getResult();
 }
 
 static Value offsetBufferPointer(Value basePtr, Type elementType,
@@ -71,12 +55,13 @@ static Value offsetBufferPointer(Value basePtr, Type elementType,
   if (!basePtr)
     return {};
 
-  Value offsetI64 = elementOffset.getType().isIndex()
-                        ? rewriter.create<arith::IndexCastUIOp>(
-                              loc, rewriter.getI64Type(), elementOffset)
-                        : elementOffset;
-  return rewriter.create<LLVM::GEPOp>(loc, basePtr.getType(), elementType,
-                                      basePtr, ValueRange{offsetI64});
+  Value offsetIndex = elementOffset;
+  if (!offsetIndex.getType().isIndex())
+    offsetIndex = rewriter.create<arith::IndexCastUIOp>(loc,
+                                                        rewriter.getIndexType(),
+                                                        elementOffset);
+  return rewriter.create<pto::AddPtrOp>(loc, basePtr.getType(), basePtr,
+                                        offsetIndex);
 }
 
 struct ExpandUvldPattern : public OpRewritePattern<a5vm::UvldOp> {
