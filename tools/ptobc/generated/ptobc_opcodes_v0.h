@@ -545,7 +545,4 @@ inline std::optional<int> lookupOperandsByVariant(uint16_t opcode, uint8_t varia
   }
 }
 
-// Variant maps (label -> variant_u8), mirrored from the Sail generator:
-// {"pto.section": {"cube": 0, "vector": 1}, "pto.tgemv": {"acc": 1, "base": 0, "bias": 2, "mx": 3}, "pto.tmatmul": {"acc": 1, "base": 0, "bias": 2}, "pto.tmatmul.mx": {"acc": 1, "base": 0, "bias": 2}}
-
 } // namespace ptobc::v0

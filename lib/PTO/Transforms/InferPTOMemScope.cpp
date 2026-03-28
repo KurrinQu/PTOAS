@@ -77,11 +77,6 @@ MemScopeInferAndPropagateHelper::propagateMemScopeToUsers(Value val) {
           setBaseMemRefTypeScope(result, memrefScope);
           return propagateMemScopeToUsers(result);
         })
-        // .Case<pto::BitcastOp>([&](auto op) {
-        //   auto result = op->getResult(0);
-        //   setBaseMemRefTypeScope(result, memrefScope);
-        //   return propagateMemScopeToUsers(result);
-        // })
         .Case<func::CallOp>([&](auto op) {
           // For function calls, we cannot propagate the memory scope because
           // we don't know the relationship between the inputs and results.
@@ -620,12 +615,6 @@ void InferPTOMemScopePass::runOnOperation() {
   SetVector<StringRef> deviceFuncNames;
   SmallVector<func::FuncOp> hostFuncList;
   getOperation()->walk([&](func::FuncOp func) {
-    // if (!hacc::utils::isHost(func)) {
-    //   deviceFuncList.push_back(func);
-    //   deviceFuncNames.insert(func.getSymName());
-    //   return;
-    // }
-    //hostFuncList.push_back(func);
     deviceFuncList.push_back(func);
     deviceFuncNames.insert(func.getSymName());
     return;

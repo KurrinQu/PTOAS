@@ -349,9 +349,6 @@ private:
   /// Determine whether the current operation can be skipped.
   bool isSkippableOp(Operation *op) const;
 
-  /// Update multi buffer information.
-  //void UpdateMultiBufferInfo(annotation::MarkOp markOp);
-
   /// Update store op information.
   void UpdateStoreOpInfo(OpInfo *opInfo, const Value storeValue, Liveness live);
 
@@ -437,10 +434,6 @@ public:
   inline void SetInplacePairList(SmallVector<ValuePair> inplaceList) {
     inplacePairList = inplaceList;
   }
-
-  // inline void SetVFInplaceReuseInfo(VFCallInplaceReuseInfo *inplaceReuseInfo) {
-  //   vfInplaceReuseInfo = inplaceReuseInfo;
-  // }
 
   /// Setup the device's storage specs
   LogicalResult InitMemSpecsFromModule(func::FuncOp funcOp);

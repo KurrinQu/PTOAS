@@ -103,9 +103,6 @@ std::optional<std::pair<Value, Value>> getOperationAliasInfo(Operation *op) {
   } else if (auto toMemrefOp = dyn_cast<bufferization::ToMemrefOp>(op)) {
     return std::make_pair(toMemrefOp.getResult(), toMemrefOp.getOperand());
   }
-//   } else if (auto bitCastOp = dyn_cast<pto::BitcastOp>(op)) {
-//     return std::make_pair(bitCastOp.getResult(), bitCastOp.getSrc());
-//   }
   return std::nullopt;
 }
 

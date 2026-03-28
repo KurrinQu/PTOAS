@@ -62,13 +62,10 @@ void MoveSyncState::PlanMoveOutBranchSync(
   // 处理 PipeAfter (Set) - Sink Set out of If/Else when the matched Wait is
   // outside the branch region.
   //
-  // This avoids patterns like:
-  //   if (...) { set_flag(A) } else { set_flag(B) }
-  //   wait_flag(A); wait_flag(B);   // may deadlock if wait consumes the flag
-  //
-  // By sinking the conditional sets to IF_END, we effectively materialize a
-  // "merge" signal: regardless of which branch executed, the required events
-  // are set after the join point.
+  // This avoids branch-local event production followed by waits after the join
+  // point, which can deadlock if a wait consumes a flag that was not produced
+  // on the taken branch. Sinking the conditional sets to IF_END makes the join
+  // point behave like a single merged signal.
   SyncOps newPipeAfter;
   for (auto &s : llvm::reverse(e->pipeAfter)) {
     PlanMoveOutIfSetSync(newPipeAfter, s, pair, bound);

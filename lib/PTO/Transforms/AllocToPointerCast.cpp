@@ -126,27 +126,3 @@ LogicalResult MemrefAllocaOpToPointerCastOpPattern::matchAndRewrite(
   rewriter.replaceOp(op, ptoPointerCastOp->getResults());
   return success();
 }
-
-// LogicalResult UpdateWorkSpaceAllocaOpOffsetPattern::matchAndRewrite(
-//     bishengir::memref_ext::AllocWorkspaceOp op,
-//     PatternRewriter &rewriter) const {
-//   if (!op.getOffset().empty()) {
-//     return failure();
-//   }
-//   auto iter = buffer2Offsets.find(op.getResult());
-//   assert(iter != buffer2Offsets.end() && "address should be found");
-
-//   SmallVector<Value> argOffset;
-//   for (auto &offset : iter->second) {
-//     Value newOffset =
-//         rewriter.create<arith::ConstantIndexOp>(op->getLoc(), offset)
-//             .getResult();
-//     argOffset.push_back(newOffset);
-//   }
-//   auto allocWorkspaceOp =
-//       rewriter.create<bishengir::memref_ext::AllocWorkspaceOp>(
-//           op.getLoc(), op->getResultTypes(), op.getWorkspaceArg(),
-//           op.getDynamicSize(), argOffset);
-//   rewriter.replaceOp(op, allocWorkspaceOp->getResults());
-//   return success();
-// }

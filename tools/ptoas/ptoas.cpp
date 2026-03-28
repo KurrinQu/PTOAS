@@ -612,14 +612,10 @@ static void rewriteHoistedGlobalTensorDecls(std::string &cpp) {
   // declarations to the top of the function and emits assignments later. This
   // requires the C++ type to be default-constructible.
   //
-  // `GlobalTensor<...>` from pto-isa does NOT have a default constructor, so a
-  // hoisted declaration like:
-  //   GlobalTensor<...> v42;
+  // `GlobalTensor<...>` from pto-isa does not have a default constructor, so a
+  // hoisted declaration without an initializer would fail to compile.
   // fails to compile. Initialize those hoisted temporaries with a null pointer
-  // so they are constructible:
-  //   GlobalTensor<...> v42(nullptr);
-  //
-  // We keep the assignment later; the null-initialized value is never used.
+  // so they stay constructible until the later assignment overwrites them.
   std::string out;
   out.reserve(cpp.size() + 64);
 
@@ -682,10 +678,8 @@ int main(int argc, char **argv) {
   registry.insert<mlir::scf::SCFDialect>();
 
   registry.insert<mlir::pto::PTODialect>();
-  //mlir::registerAllDialects(registry);
   arith::registerBufferizableOpInterfaceExternalModels(registry);
   tensor::registerBufferizableOpInterfaceExternalModels(registry);
-  //func::registerBufferizableOpInterfaceExternalModels(registry);
   pto::registerBufferizableOpInterfaceExternalModels(registry);
 
   registry.insert<emitc::EmitCDialect>();
@@ -837,7 +831,6 @@ int main(int argc, char **argv) {
   if (!disableInferLayout)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
   pm.addPass(pto::createPTOViewToMemrefPass());
-  //pm.addPass(createInferPTOMemScopePass());
 
   if (effectiveLevel != PTOBuildLevel::Level3) {
     PlanMemoryOptions planMemoryOption;

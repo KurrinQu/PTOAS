@@ -14,28 +14,6 @@ using namespace mlir::pto;
 
 void OptMemPlanForDma::build(func::FuncOp func) {
   auto result = func->walk<WalkOrder::PreOrder>([&](Operation *op) {
-    // if (auto implByScalarOp =
-    //         dyn_cast<mlir::pto::ImplByScalarOpInterface>(op)) {
-    //   if (implByScalarOp.shouldLowerToScalarLoops()) {
-    //     UpdateScalarBuffersForLowerToLoops(op);
-    //     return WalkResult::advance();
-    //   }
-    // }
-    // if (auto ptoStructuredOp = dyn_cast<PTOStructuredOp>(op)) {
-    //   auto ptoPipeOp = dyn_cast<pto::OpPipeInterface>(op);
-    //   assert(ptoPipeOp != nullptr);
-    //   if (!ptoPipeOp.isSinglePipeOp()) {
-    //     return WalkResult::skip();
-    //   }
-    //   if (failed(VerifyExistPtoPipe(ptoPipeOp))) {
-    //     return WalkResult::interrupt();
-    //   }
-    //   if (ptoPipeOp.getPipe() == pto::PIPE::PIPE_MTE2) {
-    //     UpdateDmaBuffers(ptoStructuredOp.getDpsInits());
-    //   } else if (ptoPipeOp.getPipe() == pto::PIPE::PIPE_MTE3) {
-    //     UpdateDmaBuffers(ptoStructuredOp.getDpsInputs());
-    //   }
-    // } else if (auto loadOp = dyn_cast<memref::LoadOp>(op)) {
     if (auto loadOp = dyn_cast<memref::LoadOp>(op)) {
       UpdateScalarBuffers(loadOp);
     } else if (auto storeOp = dyn_cast<memref::StoreOp>(op)) {
@@ -47,17 +25,6 @@ void OptMemPlanForDma::build(func::FuncOp func) {
     llvm_unreachable("OptMemPlanForLoop Traverse IR Failed! ");
   }
 }
-
-// LogicalResult
-// OptMemPlanForDma::VerifyExistPtoPipe(pto::OpPipeInterface ptoPipeOp) const {
-//   pto::PIPE curPipe = ptoPipeOp.getPipe();
-//   if (curPipe == pto::PIPE::PIPE_UNASSIGNED) {
-//     ptoPipeOp.getOperation()->emitError(
-//         "OptMemPlanForLoop failed to recognize ptoPipeOp! ");
-//     return failure();
-//   }
-//   return success();
-// }
 
 void OptMemPlanForDma::UpdateDmaBuffers(SmallVector<Value> dpsOperand) {
   for (Value operand : dpsOperand) {

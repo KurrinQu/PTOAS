@@ -11,9 +11,7 @@ from pathlib import Path
 
 def parse_td_mnemonics(td_path: Path):
     td = td_path.read_text(encoding="utf-8", errors="ignore")
-    # Heuristic: collect all `let mnemonic = "..."` occurrences.
     mns = set(re.findall(r"\bmnemonic\s*=\s*\"([^\"]+)\"", td))
-    # Prefix with dialect.
     return {f"pto.{m}" for m in mns}
 
 

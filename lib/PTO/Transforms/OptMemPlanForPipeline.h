@@ -8,7 +8,6 @@
 #ifndef OPT_MEM_PLAN_FOR_PIPELINE_H
 #define OPT_MEM_PLAN_FOR_PIPELINE_H
 #include "PTO/IR/PTO.h"
-//#include "Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -34,9 +33,6 @@ public:
   bool IsScalarBuffer(const Value buf) const;
 
 private:
-  /// Verify that PTOOpPipe has a pipe type.
-  //LogicalResult VerifyExistPtoPipe(pto::OpPipeInterface ptoPipeOp) const;
-
   /// Update the buffers for MTE2 and MTE3.
   void UpdateDmaBuffers(SmallVector<Value> dpsOperand);
 
