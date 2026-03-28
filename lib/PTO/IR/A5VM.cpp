@@ -9,7 +9,6 @@
 #include "PTO/IR/A5VM.h"
 #include "PTO/IR/PTO.h"
 
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectImplementation.h"
@@ -99,11 +98,6 @@ static bool isSupportedVstx2DistToken(StringRef dist) {
   return dist == "INTLV_B8" || dist == "INTLV_B16" || dist == "INTLV_B32";
 }
 
-static bool isSupportedPredicateMode(StringRef mode) {
-  return mode == "MODE_ZEROING" || mode == "MODE_UNKNOWN" ||
-         mode == "MODE_MERGING";
-}
-
 static bool isSupportedPostMode(StringRef mode) {
   return mode == "NO_POST_UPDATE" || mode == "POST_UPDATE";
 }
@@ -147,12 +141,12 @@ enum class MemoryRole {
 static MemoryRole classifyMemoryRole(Type type) {
   auto memrefType = dyn_cast<BaseMemRefType>(type);
   if (!memrefType) {
-    if (auto ptrType = dyn_cast<LLVM::LLVMPointerType>(type)) {
-      switch (ptrType.getAddressSpace()) {
-      case static_cast<unsigned>(pto::AddressSpace::GM):
-      case static_cast<unsigned>(pto::AddressSpace::Zero):
+    if (auto ptrType = dyn_cast<pto::PtrType>(type)) {
+      switch (ptrType.getMemorySpace().getAddressSpace()) {
+      case pto::AddressSpace::GM:
+      case pto::AddressSpace::Zero:
         return MemoryRole::GM;
-      case static_cast<unsigned>(pto::AddressSpace::VEC):
+      case pto::AddressSpace::VEC:
         return MemoryRole::UB;
       default:
         return MemoryRole::Other;
@@ -193,11 +187,24 @@ static MemoryRole classifyMemoryRole(Type type) {
 }
 
 static bool isBufferLike(Type type) {
-  return isa<BaseMemRefType, LLVM::LLVMPointerType>(type);
+  return isa<BaseMemRefType, pto::PtrType>(type);
+}
+
+static int64_t getPtrElementByteSize(Type type) {
+  auto ptrType = dyn_cast<pto::PtrType>(type);
+  if (!ptrType)
+    return 0;
+
+  Type elementType = ptrType.getElementType();
+  if (auto floatType = dyn_cast<FloatType>(elementType))
+    return (floatType.getWidth() + 7) / 8;
+  if (auto intType = dyn_cast<IntegerType>(elementType))
+    return (intType.getWidth() + 7) / 8;
+  return 0;
 }
 
 static bool isPointerBuffer(Type type) {
-  return isa<LLVM::LLVMPointerType>(type);
+  return isa<LLVM::LLVMPointerType, pto::PtrType>(type);
 }
 
 static LogicalResult verifySyncToken(Operation *op, StringAttr token,
@@ -209,12 +216,10 @@ static LogicalResult verifySyncToken(Operation *op, StringAttr token,
 
 template <typename CopyOp>
 static LogicalResult verifyCopyGmToUbufOp(CopyOp op, bool expectSourceGM) {
-  if (!isBufferLike(op.getSource().getType()) ||
-      !isBufferLike(op.getDestination().getType()))
-    return op.emitOpError("requires pointer-like source and destination");
-
-  bool hasAllMetadata =
-      op.getLayoutAttr() && op.getDataSelectBitAttr() && op.getUbPadAttr();
+  auto sourceType = dyn_cast<pto::PtrType>(op.getSource().getType());
+  auto destinationType = dyn_cast<pto::PtrType>(op.getDestination().getType());
+  if (!sourceType || !destinationType)
+    return op.emitOpError("requires typed !pto.ptr source and destination");
 
   MemoryRole sourceRole = classifyMemoryRole(op.getSource().getType());
   MemoryRole destinationRole = classifyMemoryRole(op.getDestination().getType());
@@ -227,24 +232,29 @@ static LogicalResult verifyCopyGmToUbufOp(CopyOp op, bool expectSourceGM) {
     directionMatches &= destinationRole != MemoryRole::UB;
   }
 
-  if (!hasAllMetadata || !directionMatches) {
+  if (!directionMatches) {
     return op.emitOpError()
            << "requires "
-           << (expectSourceGM ? "GM source, UB destination"
-                              : "UB source, GM destination")
-           << ", and complete transfer metadata";
+           << (expectSourceGM ? "GM source and UB destination"
+                              : "UB source and GM destination");
   }
+
+  int64_t sourceElemBytes = getPtrElementByteSize(sourceType);
+  int64_t destinationElemBytes = getPtrElementByteSize(destinationType);
+  if (sourceElemBytes <= 0 || destinationElemBytes <= 0)
+    return op.emitOpError("requires copy source and destination element types with known byte width");
+  if (sourceElemBytes != destinationElemBytes)
+    return op.emitOpError("requires source and destination element byte widths to match");
 
   return success();
 }
 
 template <typename CopyOp>
 static LogicalResult verifyCopyUbufToGmOp(CopyOp op, bool expectSourceGM) {
-  if (!isBufferLike(op.getSource().getType()) ||
-      !isBufferLike(op.getDestination().getType()))
-    return op.emitOpError("requires pointer-like source and destination");
-
-  bool hasAllMetadata = static_cast<bool>(op.getLayoutAttr());
+  auto sourceType = dyn_cast<pto::PtrType>(op.getSource().getType());
+  auto destinationType = dyn_cast<pto::PtrType>(op.getDestination().getType());
+  if (!sourceType || !destinationType)
+    return op.emitOpError("requires typed !pto.ptr source and destination");
 
   MemoryRole sourceRole = classifyMemoryRole(op.getSource().getType());
   MemoryRole destinationRole = classifyMemoryRole(op.getDestination().getType());
@@ -257,13 +267,19 @@ static LogicalResult verifyCopyUbufToGmOp(CopyOp op, bool expectSourceGM) {
     directionMatches &= destinationRole != MemoryRole::UB;
   }
 
-  if (!hasAllMetadata || !directionMatches) {
+  if (!directionMatches) {
     return op.emitOpError()
            << "requires "
-           << (expectSourceGM ? "GM source, UB destination"
-                              : "UB source, GM destination")
-           << ", and complete transfer metadata";
+           << (expectSourceGM ? "GM source and UB destination"
+                              : "UB source and GM destination");
   }
+
+  int64_t sourceElemBytes = getPtrElementByteSize(sourceType);
+  int64_t destinationElemBytes = getPtrElementByteSize(destinationType);
+  if (sourceElemBytes <= 0 || destinationElemBytes <= 0)
+    return op.emitOpError("requires copy source and destination element types with known byte width");
+  if (sourceElemBytes != destinationElemBytes)
+    return op.emitOpError("requires source and destination element byte widths to match");
 
   return success();
 }
@@ -585,7 +601,7 @@ void VldsOp::getEffects(
 template <typename LoadOp>
 static LogicalResult verifyVldsCommon(LoadOp op) {
   if (!isBufferLike(op.getSource().getType()))
-    return op.emitOpError("requires a buffer-like source (memref or !llvm.ptr)");
+    return op.emitOpError("requires a buffer-like source (memref or !pto.ptr)");
 
   if (failed(verifyVecTypeLike(op, op.getResult().getType(), "result type")))
     return failure();
@@ -944,8 +960,6 @@ LogicalResult VabsOp::verify() {
     return failure();
   if (getInput().getType() != getResult().getType())
     return emitOpError("requires matching register vector shape");
-  if (getMode() && !isSupportedPredicateMode(*getMode()))
-    return emitOpError("requires supported predicate mode");
   return success();
 }
 
@@ -959,8 +973,6 @@ static LogicalResult verifyUnaryVecOp(UnaryOp op) {
     return failure();
   if (op.getInput().getType() != op.getResult().getType())
     return op.emitOpError("requires matching register vector shape");
-  if (op.getMode() && !isSupportedPredicateMode(*op.getMode()))
-    return op.emitOpError("requires supported predicate mode");
   return success();
 }
 
@@ -1211,8 +1223,6 @@ LogicalResult VmulaOp::verify() {
       getAcc().getType() != getRhs().getType() ||
       getAcc().getType() != getResult().getType())
     return emitOpError("requires acc, lhs, rhs, and result to share one vector type");
-  if (getModeAttr() && !isSupportedPredicateMode(*getMode()))
-    return emitOpError("requires mode to be MODE_ZEROING, MODE_UNKNOWN, or MODE_MERGING");
   return success();
 }
 

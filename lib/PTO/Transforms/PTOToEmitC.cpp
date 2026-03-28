@@ -6529,6 +6529,26 @@ struct PTOStoreScalarToEmitC : public OpConversionPattern<pto::StoreScalarOp> {
   }
 };
 
+struct PTOCastPtrToEmitC : public OpConversionPattern<pto::CastPtrOp> {
+  using OpConversionPattern<pto::CastPtrOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::CastPtrOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    Type dstTy = getTypeConverter()->convertType(op.getResult().getType());
+    if (!dstTy)
+      return failure();
+
+    Value input = peelUnrealized(adaptor.getInput());
+    if (input.getType() == dstTy) {
+      rewriter.replaceOp(op, input);
+      return success();
+    }
+
+    rewriter.replaceOpWithNewOp<emitc::CastOp>(op, dstTy, input);
+    return success();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // pto.tabs lowering -> TABS(dst, src)
 //===----------------------------------------------------------------------===//
@@ -10443,7 +10463,8 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<AllocTileConversion>(typeConverter, ctx);
   patterns.add<PointerCastConversion>(typeConverter, ctx);
   patterns.add<PTOSetValToSETVAL, PTOGetValToGETVAL, PTOSetValidShapeToEmitC,
-               PTOLoadScalarToEmitC, PTOStoreScalarToEmitC>(typeConverter, ctx);
+               PTOLoadScalarToEmitC, PTOStoreScalarToEmitC,
+               PTOCastPtrToEmitC>(typeConverter, ctx);
   patterns.add<PTOTAndToEmitC>(typeConverter, ctx);
   patterns.add<PTOMulToEmitC>(typeConverter, ctx);
   patterns.add<PTOAndSToEmitC>(typeConverter, ctx);

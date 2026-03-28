@@ -275,6 +275,25 @@ static LogicalResult dispatchVerifierByArch(Operation *op, FnA2A3 &&verifyA2A3,
   }
 }
 
+static std::optional<pto::AddressSpace> parsePtrAddressSpaceKeyword(StringRef keyword) {
+  return llvm::StringSwitch<std::optional<pto::AddressSpace>>(keyword)
+      .Case("gm", pto::AddressSpace::GM)
+      .Case("ub", pto::AddressSpace::VEC)
+      .Default(std::nullopt);
+}
+
+static StringRef printPtrAddressSpaceKeyword(pto::AddressSpace space) {
+  switch (space) {
+  case pto::AddressSpace::GM:
+  case pto::AddressSpace::Zero:
+    return "gm";
+  case pto::AddressSpace::VEC:
+    return "ub";
+  default:
+    return {};
+  }
+}
+
 static mlir::Type parsePTOTypeAllowNoBang(mlir::OpAsmParser &parser) {
   mlir::Type ty;
 
@@ -328,18 +347,22 @@ static mlir::Type parsePTOTypeAllowNoBang(mlir::OpAsmParser &parser) {
     mlir::Type elem;
     if (failed(parser.parseType(elem)))
       return mlir::Type();
+    auto memorySpace = pto::AddressSpaceAttr::get(ctx, pto::AddressSpace::GM);
     if (succeeded(parser.parseOptionalComma())) {
-      // ptr no longer accepts an address space; consume the attr for recovery.
-      mlir::Attribute memorySpace;
-      (void)parser.parseAttribute(memorySpace);
-      parser.emitError(
-          parser.getCurrentLocation(),
-          "!pto.ptr no longer accepts address space; use !pto.ptr<elem>");
-      return mlir::Type();
+      StringRef memorySpaceKeyword;
+      if (failed(parser.parseKeyword(&memorySpaceKeyword)))
+        return mlir::Type();
+      auto parsed = parsePtrAddressSpaceKeyword(memorySpaceKeyword);
+      if (!parsed) {
+        parser.emitError(parser.getCurrentLocation(),
+                         "!pto.ptr address space must be `gm` or `ub`");
+        return mlir::Type();
+      }
+      memorySpace = pto::AddressSpaceAttr::get(ctx, *parsed);
     }
     if (failed(parser.parseGreater()))
       return mlir::Type();
-    return mlir::pto::PtrType::get(ctx, elem);
+    return mlir::pto::PtrType::get(ctx, elem, memorySpace);
   }
 
   if (head == "pto.tensor_view") {
@@ -364,6 +387,40 @@ mlir::Type TensorViewType::parse(::mlir::AsmParser &parser) {
 
 void TensorViewType::print(::mlir::AsmPrinter &printer) const {
   printShapeAndElem(printer, getShape(), getElementType());
+}
+
+mlir::Type PtrType::parse(::mlir::AsmParser &parser) {
+  Type elementType;
+  if (failed(parser.parseLess()) || failed(parser.parseType(elementType)))
+    return {};
+
+  auto memorySpace =
+      pto::AddressSpaceAttr::get(parser.getContext(), pto::AddressSpace::GM);
+  if (succeeded(parser.parseOptionalComma())) {
+    StringRef memorySpaceKeyword;
+    if (failed(parser.parseKeyword(&memorySpaceKeyword)))
+      return {};
+    auto parsed = parsePtrAddressSpaceKeyword(memorySpaceKeyword);
+    if (!parsed) {
+      parser.emitError(parser.getCurrentLocation(),
+                       "!pto.ptr address space must be `gm` or `ub`");
+      return {};
+    }
+    memorySpace = pto::AddressSpaceAttr::get(parser.getContext(), *parsed);
+  }
+
+  if (failed(parser.parseGreater()))
+    return {};
+  return PtrType::get(parser.getContext(), elementType, memorySpace);
+}
+
+void PtrType::print(::mlir::AsmPrinter &printer) const {
+  printer << "<" << getElementType();
+  StringRef memorySpaceKeyword =
+      printPtrAddressSpaceKeyword(getMemorySpace().getAddressSpace());
+  if (!memorySpaceKeyword.empty())
+    printer << ", " << memorySpaceKeyword;
+  printer << ">";
 }
 
 //===----------------------------------------------------------------------===//
@@ -1068,6 +1125,43 @@ LogicalResult mlir::pto::AddPtrOp::verify() {
   return success();
 }
 
+LogicalResult mlir::pto::CastPtrOp::verify() {
+  Type inputType = getInput().getType();
+  Type resultType = getResult().getType();
+
+  auto inputPtrType = dyn_cast<mlir::pto::PtrType>(inputType);
+  auto resultPtrType = dyn_cast<mlir::pto::PtrType>(resultType);
+  auto inputMemRefType = dyn_cast<BaseMemRefType>(inputType);
+  bool inputIsInteger = isa<IntegerType>(inputType);
+  bool resultIsInteger = isa<IntegerType>(resultType);
+
+  if (!inputPtrType && !inputMemRefType && !inputIsInteger)
+    return emitOpError("input must be an integer, memref, or !pto.ptr<...>");
+  if (!resultPtrType && !resultIsInteger)
+    return emitOpError("result must be an integer or !pto.ptr<...>");
+
+  if (inputIsInteger && resultIsInteger)
+    return emitOpError("integer-to-integer cast is not a ptr cast");
+
+  if (inputMemRefType && resultIsInteger)
+    return emitOpError("memref-to-integer cast is unsupported");
+
+  if (inputMemRefType && resultPtrType) {
+    auto memrefSpace = dyn_cast_or_null<mlir::pto::AddressSpaceAttr>(
+        inputMemRefType.getMemorySpace());
+    auto resultSpace = resultPtrType.getMemorySpace();
+    if (memrefSpace && memrefSpace != resultSpace)
+      return emitOpError("memref-to-ptr cast must stay within the same PTO memory space");
+  }
+
+  if (inputPtrType && resultPtrType &&
+      inputPtrType.getMemorySpace() != resultPtrType.getMemorySpace()) {
+    return emitOpError("ptr-to-ptr cast must stay within the same PTO memory space");
+  }
+
+  return success();
+}
+
 namespace {
 
 struct PTODialectFoldInterface : public DialectFoldInterface {
@@ -1100,6 +1194,8 @@ void PTODialect::initialize() {
 }
 
 AddressSpaceAttr mlir::pto::getPTOAddressSpaceAttr(Type type) {
+  if (auto ptrType = dyn_cast<PtrType>(type))
+    return ptrType.getMemorySpace();
   auto memRefType = dyn_cast<BaseMemRefType>(type);
   assert(memRefType && "input type must be a memref type");
   auto scopeAttr = dyn_cast<AddressSpaceAttr>(memRefType.getMemorySpace());
@@ -1109,7 +1205,7 @@ AddressSpaceAttr mlir::pto::getPTOAddressSpaceAttr(Type type) {
 
 bool mlir::pto::isScalarPtrOrMemRef(Type type) {
   if (auto pty = dyn_cast<mlir::pto::PtrType>(type))
-    return true;
+    return static_cast<bool>(pty);
   if (auto memTy = dyn_cast<MemRefType>(type))
     return isGmAddressSpaceAttr(memTy.getMemorySpace());
   return false;

@@ -8,6 +8,7 @@
 
 #include "PTO/IR/A5VM.h"
 #include "PTO/IR/PTO.h"
+#include "PTO/Transforms/A5VMLowering.h"
 #include "PTO/Transforms/A5VMLLVMEmitter.h"
 #include "PTO/Transforms/A5VMTextEmitter.h"
 #include "PTO/Transforms/BufferizableOpInterfaceImpl.h"
@@ -311,6 +312,11 @@ static llvm::cl::opt<std::string> ptoBackend(
     "pto-backend",
     llvm::cl::desc("Final PTOAS backend: emitc or a5vm (default: emitc)"),
     llvm::cl::value_desc("emitc|a5vm"), llvm::cl::init("emitc"));
+
+static llvm::cl::opt<bool> emitA5VM(
+    "emit-a5vm",
+    llvm::cl::desc("Write final post-pass A5VM IR to -o"),
+    llvm::cl::init(false));
 
 static llvm::cl::opt<bool> a5vmPrintIR(
     "a5vm-print-ir",
@@ -1171,9 +1177,17 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  if (emitA5VM &&
+      (a5vmEmitHIVMText || a5vmEmitHIVMOfficialLLVM ||
+       a5vmEmitHIVMOfficialBitcode)) {
+    llvm::errs() << "Error: --emit-a5vm cannot be used together with HIVM "
+                    "emission flags.\n";
+    return 1;
+  }
+
   if (effectiveBackend != PTOBackend::A5VM &&
       (a5vmEmitHIVMText || a5vmEmitHIVMOfficialLLVM ||
-       a5vmEmitHIVMOfficialBitcode || a5vmPrintIR || dumpA5VMIR ||
+       a5vmEmitHIVMOfficialBitcode || emitA5VM ||
        a5vmPrintIntrinsics || a5vmAllowUnresolved ||
        !a5vmUnresolvedReport.empty() || !hivmUnresolvedReport.empty() ||
        ptoPrintSeamIR || !ptoSeamIRFile.empty())) {
@@ -1453,8 +1467,8 @@ int main(int argc, char **argv) {
       llvm::errs() << "\n";
     }
 
-    if (!a5vmEmitHIVMText && !a5vmEmitHIVMOfficialLLVM &&
-        !a5vmEmitHIVMOfficialBitcode) {
+    if (emitA5VM || (!a5vmEmitHIVMText && !a5vmEmitHIVMOfficialLLVM &&
+                     !a5vmEmitHIVMOfficialBitcode)) {
       module->print(outputFile.os());
       outputFile.os() << "\n";
       outputFile.keep();

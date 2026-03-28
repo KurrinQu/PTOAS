@@ -43,10 +43,11 @@ def TileBufOrMemRef : AnyTypeOf<[TileBufType, AnyMemRef], "TileBuf or MemRef">;
 
 def ScalarPtrOrMemRef
     : TypeConstraint<CPred<"::mlir::pto::isScalarPtrOrMemRef($_self)">,
-                     "Ptr or MemRef in GM">;
+                     "Ptr or GM MemRef">;
 
 def ScalarType
-    : AnyTypeOf<[AnySignlessInteger, AnyFloat], "numeric (integer/float)">;
+    : AnyTypeOf<[Index, AnySignlessInteger, AnyFloat],
+                "numeric (index/integer/float)">;
 
 //===----------------------------------------------------------------------===//
 // Op Class
@@ -87,6 +88,31 @@ def AddPtrOp
 
   let assemblyFormat = [{
     $ptr `,` $offset attr-dict `:` type($ptr) `->` type($result)
+  }];
+}
+
+def CastPtrOp : PTO_Op<"castptr", [Pure]> {
+  let summary = "Cast between integer and !pto.ptr, or between !pto.ptr types";
+  let description = [{
+    Performs an explicit pointer-domain cast.
+
+    Supported cases:
+    - integer -> !pto.ptr<elem, space>
+    - !pto.ptr<elem, space> -> integer
+    - !pto.ptr<srcElem, space> -> !pto.ptr<dstElem, space>
+    - memref<..., space> -> !pto.ptr<elem, space> (extract the aligned base ptr)
+
+    Pointer-to-pointer casts must stay within the same PTO memory space. Cross
+    space casts such as gm <-> ub are rejected by the verifier.
+  }];
+
+  let arguments = (ins AnyType:$input);
+  let results = (outs AnyType:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $input attr-dict `:` type($input) `->` type($result)
   }];
 }
 

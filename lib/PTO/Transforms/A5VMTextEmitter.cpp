@@ -328,6 +328,11 @@ private:
     if (auto ptrType = dyn_cast<LLVM::LLVMPointerType>(type))
       return llvm::PointerType::get(llvmContext, ptrType.getAddressSpace());
 
+    if (auto ptrType = dyn_cast<pto::PtrType>(type))
+      return llvm::PointerType::get(
+          llvmContext,
+          static_cast<unsigned>(ptrType.getMemorySpace().getAddressSpace()));
+
     if (auto memrefType = dyn_cast<BaseMemRefType>(type)) {
       unsigned addressSpace = 0;
       Attribute memorySpace = memrefType.getMemorySpace();
@@ -468,8 +473,15 @@ private:
       return builder.CreatePtrToInt(input, dstType);
     if (input->getType()->isIntegerTy() && dstType->isPointerTy())
       return builder.CreateIntToPtr(input, dstType);
-    if (input->getType()->isPointerTy() && dstType->isPointerTy())
+    if (input->getType()->isPointerTy() && dstType->isPointerTy()) {
+      auto *srcPtrType = dyn_cast<llvm::PointerType>(input->getType());
+      auto *dstPtrType = dyn_cast<llvm::PointerType>(dstType);
+      if (!srcPtrType || !dstPtrType)
+        return nullptr;
+      if (srcPtrType->getAddressSpace() == dstPtrType->getAddressSpace())
+        return builder.CreateBitCast(input, dstType);
       return builder.CreateAddrSpaceCast(input, dstType);
+    }
     if (input->getType()->isIntegerTy() && dstType->isIntegerTy()) {
       unsigned srcWidth = input->getType()->getIntegerBitWidth();
       unsigned dstWidth = dstType->getIntegerBitWidth();
@@ -631,24 +643,18 @@ private:
 
     auto packCopyGmToUbConfig0 = [&](llvm::ArrayRef<llvm::Value *> ops)
         -> llvm::Value * {
-      if (ops.size() != 12)
+      if (ops.size() != 11)
         return nullptr;
-      llvm::Value *sid = castIntegerLikeToI64(ops[4]);
-      llvm::Value *nBurst = castIntegerLikeToI64(ops[5]);
-      llvm::Value *lenBurst = castIntegerLikeToI64(ops[6]);
-      llvm::Value *leftPadding = castIntegerLikeToI64(ops[7]);
-      llvm::Value *rightPadding = castIntegerLikeToI64(ops[8]);
-      llvm::Value *cacheCtl = castIntegerLikeToI64(ops[9]);
+      llvm::Value *sid = castIntegerLikeToI64(ops[2]);
+      llvm::Value *nBurst = castIntegerLikeToI64(ops[3]);
+      llvm::Value *lenBurst = castIntegerLikeToI64(ops[4]);
+      llvm::Value *leftPadding = castIntegerLikeToI64(ops[5]);
+      llvm::Value *rightPadding = castIntegerLikeToI64(ops[6]);
+      llvm::Value *dataSelect = castIntegerLikeToI64(ops[7]);
+      llvm::Value *cacheCtl = castIntegerLikeToI64(ops[8]);
       if (!sid || !nBurst || !lenBurst || !leftPadding || !rightPadding ||
-          !cacheCtl)
+          !dataSelect || !cacheCtl)
         return nullptr;
-
-      llvm::Value *dataSelect = llvm::ConstantInt::get(getIntegerType(64), 0);
-      if (auto attr = dyn_cast_or_null<BoolAttr>(op->getAttr("data_select_bit")))
-        dataSelect = llvm::ConstantInt::get(getIntegerType(64), attr.getValue());
-      else if (auto attr =
-                   dyn_cast_or_null<BoolAttr>(op->getAttr("a5vm.data_select_bit")))
-        dataSelect = llvm::ConstantInt::get(getIntegerType(64), attr.getValue());
 
       llvm::Value *config = sid;
       config = builder.CreateOr(
@@ -686,10 +692,10 @@ private:
 
     auto packCopyGmToUbConfig1 = [&](llvm::ArrayRef<llvm::Value *> ops)
         -> llvm::Value * {
-      if (ops.size() != 12)
+      if (ops.size() != 11)
         return nullptr;
-      llvm::Value *gmStride = castIntegerLikeToI64(ops[10]);
-      llvm::Value *ubStride = castIntegerLikeToI64(ops[11]);
+      llvm::Value *gmStride = castIntegerLikeToI64(ops[9]);
+      llvm::Value *ubStride = castIntegerLikeToI64(ops[10]);
       if (!gmStride || !ubStride)
         return nullptr;
       return packLoopPair(gmStride, ubStride);
@@ -697,12 +703,12 @@ private:
 
     auto packCopyUbToGmConfig0 = [&](llvm::ArrayRef<llvm::Value *> ops)
         -> llvm::Value * {
-      if (ops.size() != 10)
+      if (ops.size() != 8)
         return nullptr;
-      llvm::Value *sid = castIntegerLikeToI64(ops[4]);
-      llvm::Value *nBurst = castIntegerLikeToI64(ops[5]);
-      llvm::Value *lenBurst = castIntegerLikeToI64(ops[6]);
-      llvm::Value *reserved = castIntegerLikeToI64(ops[7]);
+      llvm::Value *sid = castIntegerLikeToI64(ops[2]);
+      llvm::Value *nBurst = castIntegerLikeToI64(ops[3]);
+      llvm::Value *lenBurst = castIntegerLikeToI64(ops[4]);
+      llvm::Value *reserved = castIntegerLikeToI64(ops[5]);
       if (!sid || !nBurst || !lenBurst || !reserved)
         return nullptr;
 
@@ -727,10 +733,10 @@ private:
 
     auto packCopyUbToGmConfig1 = [&](llvm::ArrayRef<llvm::Value *> ops)
         -> llvm::Value * {
-      if (ops.size() != 10)
+      if (ops.size() != 8)
         return nullptr;
-      llvm::Value *dstStride = castIntegerLikeToI64(ops[8]);
-      llvm::Value *srcStride = castIntegerLikeToI64(ops[9]);
+      llvm::Value *dstStride = castIntegerLikeToI64(ops[6]);
+      llvm::Value *srcStride = castIntegerLikeToI64(ops[7]);
       if (!dstStride || !srcStride)
         return nullptr;
       return packLoopPair(dstStride, srcStride);
@@ -783,8 +789,8 @@ private:
       }
       appendArg(packed);
     } else if (isa<a5vm::CopyGmToUbufOp>(op)) {
-      if (rawOperands.size() != 12) {
-        diagOS << "A5VM emission failed: expected twelve operands for copy_gm_to_ubuf\n";
+      if (rawOperands.size() != 11) {
+        diagOS << "A5VM emission failed: expected eleven operands for copy_gm_to_ubuf\n";
         return failure();
       }
       llvm::Value *config0 = packCopyGmToUbConfig0(rawOperands);
@@ -798,8 +804,8 @@ private:
       appendArg(config0);
       appendArg(config1);
     } else if (isa<a5vm::CopyUbufToGmOp>(op)) {
-      if (rawOperands.size() != 10) {
-        diagOS << "A5VM emission failed: expected ten operands for copy_ubuf_to_gm\n";
+      if (rawOperands.size() != 8) {
+        diagOS << "A5VM emission failed: expected eight operands for copy_ubuf_to_gm\n";
         return failure();
       }
       llvm::Value *config0 = packCopyUbToGmConfig0(rawOperands);
@@ -1149,6 +1155,76 @@ private:
       if (!result)
         return failure();
       bind(intToPtr.getRes(), result);
+      return success();
+    }
+
+    if (auto bitcast = dyn_cast<LLVM::BitcastOp>(op)) {
+      llvm::Value *input = lookup(bitcast.getArg());
+      llvm::Value *result = emitCastLike(input, bitcast.getType());
+      if (!result)
+        return failure();
+      bind(bitcast.getRes(), result);
+      return success();
+    }
+
+    if (auto cast = dyn_cast<UnrealizedConversionCastOp>(op)) {
+      if (cast->getNumOperands() != 1 || cast->getNumResults() != 1) {
+        diagOS << "A5VM emission failed: unsupported unrealized cast arity\n";
+        return failure();
+      }
+      llvm::Value *input = lookup(cast.getInputs().front());
+      llvm::Type *resultType = convertType(cast.getResults().front().getType());
+      if (!input || !resultType) {
+        diagOS << "A5VM emission failed: unsupported unrealized cast types\n";
+        return failure();
+      }
+      if (input->getType() == resultType) {
+        bind(cast.getResults().front(), input);
+        return success();
+      }
+      llvm::Value *result =
+          emitCastLike(input, cast.getResults().front().getType());
+      if (!result)
+        return failure();
+      bind(cast.getResults().front(), result);
+      return success();
+    }
+
+    if (auto addPtr = dyn_cast<pto::AddPtrOp>(op)) {
+      llvm::Value *base = lookup(addPtr.getPtr());
+      llvm::Value *offset = lookup(addPtr.getOffset());
+      if (!base || !offset) {
+        diagOS << "A5VM emission failed: unresolved addptr operands\n";
+        return failure();
+      }
+      llvm::Value *offsetI64 = castIntegerLikeToI64(offset);
+      if (!offsetI64) {
+        diagOS << "A5VM emission failed: unsupported addptr offset type\n";
+        return failure();
+      }
+      auto ptrType = dyn_cast<pto::PtrType>(addPtr.getResult().getType());
+      if (!ptrType) {
+        diagOS << "A5VM emission failed: addptr result must be !pto.ptr\n";
+        return failure();
+      }
+      bind(addPtr.getResult(),
+           builder.CreateGEP(convertScalarType(ptrType.getElementType()), base,
+                             offsetI64, "addptr"));
+      return success();
+    }
+
+    if (auto castPtr = dyn_cast<pto::CastPtrOp>(op)) {
+      llvm::Value *input = lookup(castPtr.getInput());
+      if (!input) {
+        diagOS << "A5VM emission failed: unresolved castptr operand\n";
+        return failure();
+      }
+      llvm::Value *result = emitCastLike(input, castPtr.getResult().getType());
+      if (!result) {
+        diagOS << "A5VM emission failed: unsupported castptr types\n";
+        return failure();
+      }
+      bind(castPtr.getResult(), result);
       return success();
     }
 

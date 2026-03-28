@@ -1,77 +1,109 @@
+// =============================================================================
+// abs_kernel_2d: Element-wise absolute value on a 32x32 f32 tile
+// =============================================================================
+// This kernel computes abs(input) for a 32x32 float32 matrix (1024 elements).
+//
+// Memory Layout:
+//   - Input:  arg0 -> GM (Global Memory)
+//   - Output: arg1 -> GM (Global Memory)
+//   - UB (Unified Buffer) at offset 0:    input tile  (4096 bytes = 32*32*4)
+//   - UB at offset 4096:                  output tile (4096 bytes = 32*32*4)
+//
+// Pipeline:
+//   1. DMA: GM -> UB (MTE2 pipe) - copy input tile to UB
+//   2. Sync: wait for MTE2 -> V pipe handoff
+//   3. Compute: vabs on 64-element vectors (V pipe) - 16 iterations for 1024 elements
+//   4. Sync: wait for V -> MTE3 pipe handoff
+//   5. DMA: UB -> GM (MTE3 pipe) - copy result tile back to GM
+// =============================================================================
+
 module attributes {pto.target_arch = "a5"} {
-  func.func @abs_kernel_2d(%arg0: memref<?xf32>, %arg1: memref<?xf32>) {
-    %c4096_i64 = arith.constant 4096 : i64
-    %c0_i64 = arith.constant 0 : i64
+  func.func @abs_kernel_2d(%arg0: !pto.ptr<f32, gm>, %arg1: !pto.ptr<f32, gm>) {
+    // =========================================================================
+    // Constants
+    // =========================================================================
+    %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
-    %c32 = arith.constant 32 : index
-    %reinterpret_cast = memref.reinterpret_cast %arg0 to offset: [0], sizes: [%c32, %c32], strides: [%c32, %c1] {layout = #pto.layout<nd>} : memref<?xf32> to memref<?x?xf32, strided<[?, ?], offset: ?>>
-    %reinterpret_cast_0 = memref.reinterpret_cast %arg1 to offset: [0], sizes: [%c32, %c32], strides: [%c32, %c1] {layout = #pto.layout<nd>} : memref<?xf32> to memref<?x?xf32, strided<[?, ?], offset: ?>>
-    %memspacecast = memref.memory_space_cast %arg0 : memref<?xf32> to memref<?xf32, 1>
-    %0 = builtin.unrealized_conversion_cast %memspacecast : memref<?xf32, 1> to !llvm.struct<(ptr<1>, ptr<1>, i64, array<1 x i64>, array<1 x i64>)>
-    %1 = llvm.extractvalue %0[1] : !llvm.struct<(ptr<1>, ptr<1>, i64, array<1 x i64>, array<1 x i64>)> 
-    %2 = llvm.inttoptr %c0_i64 : i64 to !llvm.ptr<6>
-    %3 = arith.index_castui %c32 : index to i64
+    %c0_i64 = arith.constant 0 : i64
     %c1_i64 = arith.constant 1 : i64
-    %c32_i64 = arith.constant 32 : i64
-    %c4_i64 = arith.constant 4 : i64
-    %4 = arith.muli %3, %c32_i64 : i64
-    %5 = arith.muli %c1_i64, %4 : i64
-    %6 = arith.muli %5, %c4_i64 : i64
-    %7 = arith.muli %4, %c4_i64 : i64
-    %8 = arith.muli %3, %c4_i64 : i64
-    %c128_i64 = arith.constant 128 : i64
-    %9 = llvm.getelementptr %1[%c0_i64] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i8
-    a5vm.set_loop2_stride_outtoub %6, %c4096_i64 : i64, i64
-    a5vm.set_loop1_stride_outtoub %7, %c4096_i64 : i64, i64
+    %c32 = arith.constant 32 : index               // Tile dimension
+    %c32_i64 = arith.constant 32 : i64             // Tile dimension as i64
+    %c64 = arith.constant 64 : index               // Vector width (64 f32 per SIMD op)
+    %c128_i64 = arith.constant 128 : i64           // Row stride in bytes (32 * 4)
+    %c4096_i64 = arith.constant 4096 : i64         // Tile size in bytes (1024 * 4)
+    %c1024 = arith.constant 1024 : index           // Total elements (32 * 32)
+    %c1024_i32 = arith.constant 1024 : i32         // For predicate loop counter
+
+    // =========================================================================
+    // UB buffer pointers (address space = ub)
+    // =========================================================================
+    %ub_in = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, ub>       // Input at offset 0
+    %ub_out = pto.castptr %c4096_i64 : i64 -> !pto.ptr<f32, ub>   // Output at offset 4096
+
+    // =========================================================================
+    // Stage 1: DMA GM -> UB (MTE2 pipe)
+    // Copy 32x32 f32 tile from Global Memory to Unified Buffer
+    // =========================================================================
+    // Configure DMA loop size (single tile: 1x1 loop, no stride needed)
     a5vm.set_loop_size_outtoub %c1_i64, %c1_i64 : i64, i64
-    a5vm.copy_gm_to_ubuf %9, %2, %3, %3, %c0_i64, %3, %8, %c0_i64, %c0_i64, %c0_i64, %c128_i64, %c128_i64 {a5vm.element_type = "u32", data_select_bit = false, layout = "nd", ub_pad = false} : !llvm.ptr<1>, !llvm.ptr<6>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64
+
+    // DMA copy: GM[arg0] -> UB[0]
+    // Args: src, dst, sid=0, n_burst=32, len_burst=128,
+    //       left_pad=0, right_pad=0, data_select=false, l2_cache=0, gm_stride=128, ub_stride=128
+    %false = arith.constant false
+    a5vm.copy_gm_to_ubuf %arg0, %ub_in, %c0_i64, %c32_i64, %c128_i64, %c0_i64, %c0_i64, %false, %c0_i64, %c128_i64, %c128_i64 : !pto.ptr<f32, gm>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i1, i64, i64, i64
+
+    // =========================================================================
+    // Sync: MTE2 -> V pipe handoff (wait for DMA to complete before compute)
+    // =========================================================================
     a5vm.set_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
     a5vm.wait_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
-    %10 = llvm.inttoptr %c4096_i64 : i64 to !llvm.ptr<6>
-    %c0 = arith.constant 0 : index
-    %11 = arith.muli %c32, %c32 : index
-    %c64 = arith.constant 64 : index
-    %12 = arith.index_castui %11 : index to i32
-    %13 = arith.index_castui %c32 : index to i32
-    %14 = arith.cmpi eq, %c32, %c32 : index
-    %15 = arith.andi %14, %14 : i1
+
+    // =========================================================================
+    // Stage 2: Compute vabs (V pipe)
+    // Process 1024 elements as flat 1D array, 64 elements per iteration (16 iterations)
+    // Use no-post-update vlds/vsts while keeping predicate generation inside vector scope
+    // =========================================================================
     scf.for %arg2 = %c0 to %c1 step %c1 {
-      scf.if %15 {
-        %19 = scf.for %arg3 = %c0 to %11 step %c64 iter_args(%arg4 = %12) -> (i32) {
-          %mask, %scalar_out = a5vm.plt_b32 %arg4 : i32 -> !a5vm.mask, i32
-          %20 = a5vm.vlds %2[%arg3] {mode = "NO_POST_UPDATE"} : !llvm.ptr<6> -> !a5vm.vec<64xf32>
-          %21 = a5vm.vabs %20, %mask {mode = "MODE_ZEROING"} : !a5vm.vec<64xf32>, !a5vm.mask -> !a5vm.vec<64xf32>
-          a5vm.vsts %21, %10[%arg3], %mask {mode = "NO_POST_UPDATE"} : !a5vm.vec<64xf32>, !llvm.ptr<6>, !a5vm.mask
-          scf.yield %scalar_out : i32
-        }
-      } else {
-        %19 = arith.ceildivui %c32, %c64 : index
-        scf.for %arg3 = %c0 to %c32 step %c1 {
-          %20 = arith.muli %arg3, %c32 : index
-          %21 = scf.for %arg4 = %c0 to %19 step %c1 iter_args(%arg5 = %13) -> (i32) {
-            %mask, %scalar_out = a5vm.plt_b32 %arg5 : i32 -> !a5vm.mask, i32
-            %22 = arith.muli %arg4, %c64 : index
-            %23 = arith.addi %20, %22 : index
-            %24 = a5vm.vlds %2[%23] : !llvm.ptr<6> -> !a5vm.vec<64xf32>
-            %25 = a5vm.vabs %24, %mask {mode = "MODE_ZEROING"} : !a5vm.vec<64xf32>, !a5vm.mask -> !a5vm.vec<64xf32>
-            a5vm.vsts %25, %10[%23], %mask : !a5vm.vec<64xf32>, !llvm.ptr<6>, !a5vm.mask
-            scf.yield %scalar_out : i32
-          }
-        }
+      // Predicated vector loop with explicit offsets (no post-update)
+      %_:1 = scf.for %arg3 = %c0 to %c1024 step %c64 iter_args(%remaining = %c1024_i32) -> (i32) {
+        // Generate predicate mask: if remaining >= 64, full mask; else partial mask for tail
+        %mask, %next_remaining = a5vm.plt_b32 %remaining : i32 -> !a5vm.mask, i32
+
+        // Load 64 f32 elements from UB input at current offset
+        %vec_in = a5vm.vlds %ub_in[%arg3] : !pto.ptr<f32, ub> -> !a5vm.vec<64xf32>
+
+        // Compute element-wise absolute value with predicate mask
+        %vec_out = a5vm.vabs %vec_in, %mask : !a5vm.vec<64xf32>, !a5vm.mask -> !a5vm.vec<64xf32>
+
+        // Store result to UB output at current offset
+        a5vm.vsts %vec_out, %ub_out[%arg3], %mask : !a5vm.vec<64xf32>, !pto.ptr<f32, ub>, !a5vm.mask
+
+        scf.yield %next_remaining : i32
       }
     } {llvm.loop.aivector_scope}
+
+    // =========================================================================
+    // Sync: V -> MTE3 pipe handoff (wait for compute to complete before DMA out)
+    // =========================================================================
     a5vm.set_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
     a5vm.wait_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
-    %memspacecast_1 = memref.memory_space_cast %arg1 : memref<?xf32> to memref<?xf32, 1>
-    %16 = builtin.unrealized_conversion_cast %memspacecast_1 : memref<?xf32, 1> to !llvm.struct<(ptr<1>, ptr<1>, i64, array<1 x i64>, array<1 x i64>)>
-    %17 = llvm.extractvalue %16[1] : !llvm.struct<(ptr<1>, ptr<1>, i64, array<1 x i64>, array<1 x i64>)> 
-    %18 = llvm.getelementptr %17[%c0_i64] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i8
+
+    // =========================================================================
+    // Stage 3: DMA UB -> GM (MTE3 pipe)
+    // Copy result tile from Unified Buffer back to Global Memory
+    // =========================================================================
+    // Configure DMA loop size (single tile: 1x1 loop, no stride needed)
     a5vm.set_loop_size_ubtoout %c1_i64, %c1_i64 : i64, i64
-    a5vm.set_loop1_stride_ubtoout %c4096_i64, %c4096_i64 : i64, i64
-    a5vm.set_loop2_stride_ubtoout %c4096_i64, %c4096_i64 : i64, i64
-    a5vm.copy_ubuf_to_gm %10, %18, %3, %3, %c0_i64, %c32_i64, %8, %c0_i64, %c128_i64, %c128_i64 {a5vm.element_type = "u32", layout = "nd"} : !llvm.ptr<6>, !llvm.ptr<1>, i64, i64, i64, i64, i64, i64, i64, i64
+
+    // DMA copy: UB[4096] -> GM[arg1]
+    a5vm.copy_ubuf_to_gm %ub_out, %arg1, %c0_i64, %c32_i64, %c128_i64, %c0_i64, %c128_i64, %c128_i64 : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64
+
+    // =========================================================================
+    // Final barrier: ensure all pipes complete before kernel exit
+    // =========================================================================
     a5vm.pipe_barrier "PIPE_ALL"
+
     return
   }
 }
-

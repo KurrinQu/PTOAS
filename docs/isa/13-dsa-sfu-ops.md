@@ -5,14 +5,23 @@
 
 Fused operations, special functions, and UB-to-UB operations that leverage hardware acceleration.
 
+## Common Operand Model
+
+- `%input`, `%lhs`, `%rhs`, `%acc`, and `%alpha` are source SSA values whose
+  roles are called out per instruction.
+- `%mask` is the predicate operand `Pg` when present.
+- `%result` is the destination SSA value.
+- This page mixes three different backend shapes: pure `vreg -> vreg` ops,
+  conversion/fusion ops, and UB-to-UB helpers. Each instruction section calls
+  out which storage model it uses.
+
 ---
 
 ## Fused Activation Ops (vreg→vreg)
 
 ### `pto.vlrelu`
 
-- **syntax:** `%result = pto.vlrelu %input, %alpha : !pto.vreg<NxT>, T -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vlrelu_*`
+- **syntax:** `%result = pto.vlrelu %input, %alpha, %mask : !pto.vreg<NxT>, T, !pto.mask -> !pto.vreg<NxT>`
 - **A5 types:** f16, f32
 - **semantics:** Leaky ReLU with scalar alpha.
 
@@ -20,6 +29,12 @@ Fused operations, special functions, and UB-to-UB operations that leverage hardw
 for (int i = 0; i < N; i++)
     dst[i] = (src[i] >= 0) ? src[i] : alpha * src[i];
 ```
+
+- **inputs:** `%input` is the activation vector, `%alpha` is the scalar slope,
+  and `%mask` selects active lanes.
+- **outputs:** `%result` is the leaky-ReLU vector.
+- **constraints and limitations:** Only `f16` and `f32` forms are currently
+  documented for `pto.vlrelu`.
 
 ---
 
@@ -33,6 +48,12 @@ for (int i = 0; i < N; i++)
 for (int i = 0; i < N; i++)
     dst[i] = (src[i] >= 0) ? src[i] : alpha[i] * src[i];
 ```
+
+- **inputs:** `%input` is the activation vector and `%alpha` is the per-element
+  slope vector.
+- **outputs:** `%result` is the parametric-ReLU vector.
+- **constraints and limitations:** Floating-point element types only on the
+  current A5 surface.
 
 ---
 
@@ -49,6 +70,11 @@ for (int i = 0; i < N; i++)
 
 **Use case:** Softmax numerator computation with numerical stability.
 
+- **inputs:** `%input` is the source vector and `%max` is the broadcasted
+  subtraction term.
+- **outputs:** `%result` is the fused `exp(input - max)` vector.
+- **constraints and limitations:** Floating-point element types only.
+
 ---
 
 ## Fused Compute+Convert Ops
@@ -64,6 +90,11 @@ for (int i = 0; i < N; i++)
     dst[i] = max(src0[i] + src1[i], 0);
 ```
 
+- **inputs:** `%lhs` and `%rhs` are the two addends.
+- **outputs:** `%result` is the fused add-then-ReLU result.
+- **constraints and limitations:** Floating-point element types only on the
+  current documented surface.
+
 ---
 
 ### `pto.vsubrelu`
@@ -77,6 +108,11 @@ for (int i = 0; i < N; i++)
     dst[i] = max(src0[i] - src1[i], 0);
 ```
 
+- **inputs:** `%lhs` is the minuend and `%rhs` is the subtrahend.
+- **outputs:** `%result` is the fused sub-then-ReLU result.
+- **constraints and limitations:** Floating-point element types only on the
+  current documented surface.
+
 ---
 
 ### `pto.vaxpy`
@@ -89,6 +125,12 @@ for (int i = 0; i < N; i++)
 for (int i = 0; i < N; i++)
     dst[i] = alpha * src0[i] + src1[i];
 ```
+
+- **inputs:** `%src0` is the scaled vector, `%src1` is the addend vector, and
+  `%alpha` is the scalar multiplier.
+- **outputs:** `%result` is the fused AXPY result.
+- **constraints and limitations:** Floating-point element types only on the
+  current documented surface.
 
 ---
 
@@ -107,6 +149,13 @@ for (int i = 0; i < 128; i++)
     dst_i8[i] = f16_to_i8(max(src0_f16[i] + src1_f16[i], 0));
 ```
 
+- **inputs:** `%lhs` and `%rhs` are the source vectors.
+- **outputs:** `%result` is the fused add/ReLU/convert result.
+- **constraints and limitations:** Only backend-supported source/destination
+  type pairs are legal. Rounding, saturation, and packing rules follow the
+  semantics of this fused operation, not an arbitrary sequence of standalone
+  ops.
+
 ---
 
 ### `pto.vmulconv`
@@ -120,6 +169,11 @@ for (int i = 0; i < 128; i++)
     dst_i8[i] = f16_to_i8(src0_f16[i] * src1_f16[i]);
 ```
 
+- **inputs:** `%lhs` and `%rhs` are the source vectors.
+- **outputs:** `%result` is the fused mul/convert result.
+- **constraints and limitations:** Only backend-supported source/destination
+  type pairs are legal.
+
 ---
 
 ## Extended Arithmetic
@@ -127,7 +181,6 @@ for (int i = 0; i < 128; i++)
 ### `pto.vmull`
 
 - **syntax:** `%low, %high = pto.vmull %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>, !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vmull_*`
 - **A5 types:** i32/u32 (native 32×32→64 widening multiply)
 - **semantics:** Widening multiply with high/low results.
 
@@ -139,23 +192,30 @@ for (int i = 0; i < 64; i++) {
 }
 ```
 
+- **inputs:** `%lhs` and `%rhs` are the source vectors and `%mask` selects
+  active lanes.
+- **outputs:** `%low` and `%high` expose the widened-product low/high parts.
+- **constraints and limitations:** The current documented A5 form is the native
+  widening 32x32->64 integer multiply family.
+
 ---
 
 ### `pto.vmula`
 
-- **syntax:** `%result = pto.vmula %acc, %lhs, %rhs, %mask {mode = "MODE"} : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vmula_*_m`
-- **semantics:** Multiply-accumulate with mode control.
+- **syntax:** `%result = pto.vmula %acc, %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
+- **semantics:** Multiply-accumulate.
 
 ```c
 for (int i = 0; i < N; i++)
     if (mask[i])
         dst[i] = acc[i] + lhs[i] * rhs[i];
-    else if (mode == MODE_ZEROING)
-        dst[i] = 0;
 ```
 
-**Mode tokens:** `MODE_ZEROING`, `MODE_MERGING`, `MODE_UNKNOWN`
+- **inputs:** `%acc` is the accumulator input, `%lhs` and `%rhs` are the
+  multiplicands, and `%mask` selects active lanes.
+- **outputs:** `%result` is the multiply-accumulate result.
+- **constraints and limitations:** `pto.vmula` is a fused multiply-accumulate
+  operation and is not always interchangeable with separate `vmul` plus `vadd`.
 
 ---
 
@@ -164,7 +224,6 @@ for (int i = 0; i < N; i++)
 ### `pto.vci`
 
 - **syntax:** `%result = pto.vci %index {order = "ORDER"} : integer -> !pto.vreg<NxT>`
-- **CCE:** `__builtin_cce_vci_*`
 - **semantics:** Generate lane index vector.
 
 ```c
@@ -174,16 +233,29 @@ for (int i = 0; i < N; i++)
 
 **Use case:** Generate indices for gather/scatter, argsort, etc.
 
+- **inputs:** `%index` is the scalar seed/base index.
+- **outputs:** `%result` is the generated index vector.
+- **constraints and limitations:** This page documents the arithmetic/indexing
+  use of the family; the conversion page also records the same opcode for
+  completeness.
+
 ---
 
 ## UB-to-UB Operations
 
 ### `pto.vtranspose`
 
-- **syntax:** `pto.vtranspose %dest, %src, %config : !llvm.ptr<6>, !llvm.ptr<6>, i64`
+- **syntax:** `pto.vtranspose %dest, %src, %config : !pto.ptr<T, ub>, !pto.ptr<T, ub>, i64`
 - **semantics:** UB-to-UB transpose operation (not vreg-to-vreg).
 
 **Note:** This operates on UB memory directly, not on vector registers.
+
+- **inputs:** `%dest` and `%src` are UB pointers and `%config` is the ISA
+  control/config word.
+- **outputs:** This op writes UB memory and returns no SSA value.
+- **constraints and limitations:** This is not a `vreg -> vreg` op even though
+  it lives in the `pto.v*` namespace. Its correctness depends on the control
+  word and UB layout contract.
 
 ---
 
@@ -191,16 +263,38 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vsort32`
 
-- **syntax:** `pto.vsort32 %dest, %src, %config : !llvm.ptr<6>, !llvm.ptr<6>, i64`
+- **syntax:** `pto.vsort32 %dest, %src, %config : !pto.ptr<T, ub>, !pto.ptr<T, ub>, i64`
 - **semantics:** Sort 32 elements in UB.
+- **inputs:** `%dest` and `%src` are UB pointers and `%config` is the ISA
+  control/config word.
+- **outputs:** This op writes UB memory and returns no SSA value.
+- **constraints and limitations:** This is a UB-to-UB accelerator helper, not a
+  pure vector-register op.
 
 ---
 
 ### `pto.vmrgsort`
 
-- **syntax:** `pto.vmrgsort4 %dest, %src0, %src1, %src2, %src3, %count, %config : !llvm.ptr<6>, !llvm.ptr<6> x4, i64, i64`
-- **CCE:** `__builtin_cce_vmrgsort4_*`
+- **syntax:** `pto.vmrgsort4 %dest, %src0, %src1, %src2, %src3, %count, %config : !pto.ptr<T, ub>, !pto.ptr<T, ub> x4, i64, i64`
 - **semantics:** Merge-sort 4 pre-sorted input vectors.
+- **inputs:** `%dest` is the UB destination, `%src0..%src3` are the four
+  pre-sorted UB inputs, `%count` is the number of valid elements, and `%config`
+  is the operation control word.
+- **outputs:** This op writes UB memory and returns no SSA value.
+- **constraints and limitations:** Inputs MUST already be sorted according to
+  the sort order encoded by `%config`. This page uses the shorter mnemonic
+  `pto.vmrgsort`, while the current implementation summary still refers to
+  `pto.vmrgsort4`.
+
+---
+
+## Current Implementation Surface Summary
+
+- `pto.vmull %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>, !pto.vreg<NxT>`
+- `pto.vmula %acc, %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
+- `pto.vci %index {order = "ORDER"} : integer -> !pto.vreg<NxT>`
+- `pto.vbitsort %dest, %src, %indices, %repeat_times : !pto.ptr<...>, !pto.ptr<...>, !pto.ptr<...>, index`
+- `pto.vmrgsort4 %dest, %src0, %src1, %src2, %src3, %count, %config : !pto.ptr<...>, !pto.ptr<...>, !pto.ptr<...>, !pto.ptr<...>, !pto.ptr<...>, i64, i64`
 
 ---
 
@@ -208,11 +302,11 @@ for (int i = 0; i < N; i++)
 
 ```mlir
 // Softmax with fused expdiff
-%max_broadcast = pto.vlds %ub_max[%c0] {dist = "BRC_B32"} : !llvm.ptr<6> -> !pto.vreg<64xf32>
+%max_broadcast = pto.vlds %ub_max[%c0] {dist = "BRC_B32"} : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
 %exp_stable = pto.vexpdiff %logits, %max_broadcast : !pto.vreg<64xf32>, !pto.vreg<64xf32> -> !pto.vreg<64xf32>
 
 // Leaky ReLU activation
-%activated = pto.vlrelu %linear_out, %alpha_scalar : !pto.vreg<64xf32>, f32 -> !pto.vreg<64xf32>
+%activated = pto.vlrelu %linear_out, %alpha_scalar, %mask : !pto.vreg<64xf32>, f32, !pto.mask -> !pto.vreg<64xf32>
 
 // Fused residual add + ReLU
 %residual = pto.vaddrelu %conv_out, %skip_connection : !pto.vreg<64xf32>, !pto.vreg<64xf32> -> !pto.vreg<64xf32>

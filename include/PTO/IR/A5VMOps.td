@@ -22,10 +22,10 @@ def A5VM_AlignTypeConstraint : Type<CPred<"::llvm::isa<::mlir::a5vm::AlignType>(
                                     "A5VM align type">;
 
 def A5VM_BufferType : Type<
-  CPred<"::llvm::isa<::mlir::LLVM::LLVMPointerType>($_self)">,
-  "LLVM pointer type">;
+  CPred<"::llvm::isa<::mlir::pto::PtrType>($_self)">,
+  "pointer-like buffer type">;
 def A5VM_BufferLikeType : AnyTypeOf<[AnyMemRef, A5VM_BufferType],
-                                    "memref or LLVM pointer type">;
+                                    "memref or pointer-like buffer type">;
 
 class A5VM_Op<string mnemonic, list<Trait> traits = []>
     : Op<A5VM_Dialect, mnemonic, traits>;
@@ -117,19 +117,15 @@ def A5VM_CopyGmToUbufOp : A5VM_Op<"copy_gm_to_ubuf", [
   let arguments = (ins
     A5VM_BufferType:$source,
     A5VM_BufferType:$destination,
-    I64:$valid_rows,
-    I64:$valid_cols,
     I64:$sid,
     I64:$n_burst,
     I64:$len_burst,
     I64:$left_padding_count,
     I64:$right_padding_count,
+    I1:$data_select_bit,
     I64:$l2_cache_ctl,
     I64:$gm_stride,
-    I64:$ub_stride,
-    OptionalAttr<StrAttr>:$layout,
-    OptionalAttr<BoolAttr>:$data_select_bit,
-    OptionalAttr<BoolAttr>:$ub_pad
+    I64:$ub_stride
   );
 
   let results = (outs);
@@ -137,11 +133,11 @@ def A5VM_CopyGmToUbufOp : A5VM_Op<"copy_gm_to_ubuf", [
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    $source `,` $destination `,` $valid_rows `,` $valid_cols `,` $sid `,` $n_burst `,` $len_burst `,`
-    $left_padding_count `,` $right_padding_count `,` $l2_cache_ctl `,` $gm_stride `,` $ub_stride
-    attr-dict `:` type($source) `,` type($destination) `,` type($valid_rows) `,` type($valid_cols) `,`
-    type($sid) `,` type($n_burst) `,` type($len_burst) `,` type($left_padding_count) `,`
-    type($right_padding_count) `,` type($l2_cache_ctl) `,` type($gm_stride) `,` type($ub_stride)
+    $source `,` $destination `,` $sid `,` $n_burst `,` $len_burst `,`
+    $left_padding_count `,` $right_padding_count `,` $data_select_bit `,` $l2_cache_ctl `,` $gm_stride `,` $ub_stride
+    attr-dict `:` type($source) `,` type($destination) `,` type($sid) `,` type($n_burst) `,`
+    type($len_burst) `,` type($left_padding_count) `,`
+    type($right_padding_count) `,` type($data_select_bit) `,` type($l2_cache_ctl) `,` type($gm_stride) `,` type($ub_stride)
   }];
 }
 
@@ -189,12 +185,13 @@ def A5VM_VldsPostOp : A5VM_Op<"vlds_post", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
-    A5VM_BufferType:$source,
+    A5VM_BufferLikeType:$source,
     Index:$offset,
     OptionalAttr<StrAttr>:$dist
   );
 
-  let results = (outs A5VM_VectorType:$result, A5VM_BufferType:$updated_source);
+  let results = (outs A5VM_VectorType:$result,
+                      A5VM_BufferLikeType:$updated_source);
 
   let hasVerifier = 1;
 
@@ -271,8 +268,7 @@ def A5VM_VbrOp : A5VM_Op<"vbr", [Pure]> {
 def A5VM_VdupOp : A5VM_Op<"vdup", [Pure]> {
   let arguments = (ins
     AnyType:$input,
-    OptionalAttr<StrAttr>:$position,
-    OptionalAttr<StrAttr>:$mode
+    OptionalAttr<StrAttr>:$position
   );
   let results = (outs A5VM_VectorType:$result);
 
@@ -496,8 +492,7 @@ def A5VM_PstiOp : A5VM_Op<"psti", [
 def A5VM_VabsOp : A5VM_Op<"vabs", [Pure]> {
   let arguments = (ins
     A5VM_VectorType:$input,
-    A5VM_MaskTypeConstraint:$mask,
-    OptionalAttr<StrAttr>:$mode
+    A5VM_MaskTypeConstraint:$mask
   );
   let results = (outs A5VM_VectorType:$result);
 
@@ -511,8 +506,7 @@ def A5VM_VabsOp : A5VM_Op<"vabs", [Pure]> {
 class A5VM_UnaryVecOp<string mnemonic> : A5VM_Op<mnemonic, [Pure]> {
   let arguments = (ins
     A5VM_VectorType:$input,
-    A5VM_MaskTypeConstraint:$mask,
-    OptionalAttr<StrAttr>:$mode
+    A5VM_MaskTypeConstraint:$mask
   );
   let results = (outs A5VM_VectorType:$result);
 
@@ -919,13 +913,13 @@ def A5VM_VstsPostOp : A5VM_Op<"vsts_post", [
   ]> {
   let arguments = (ins
     A5VM_VectorType:$value,
-    A5VM_BufferType:$destination,
+    A5VM_BufferLikeType:$destination,
     Index:$offset,
     OptionalAttr<StrAttr>:$dist,
     A5VM_MaskTypeConstraint:$mask
   );
 
-  let results = (outs A5VM_BufferType:$updated_destination);
+  let results = (outs A5VM_BufferLikeType:$updated_destination);
 
   let hasVerifier = 1;
 
@@ -998,15 +992,12 @@ def A5VM_CopyUbufToGmOp : A5VM_Op<"copy_ubuf_to_gm", [
   let arguments = (ins
     A5VM_BufferType:$source,
     A5VM_BufferType:$destination,
-    I64:$valid_rows,
-    I64:$valid_cols,
     I64:$sid,
     I64:$n_burst,
     I64:$len_burst,
     I64:$reserved,
     I64:$burst_dst_stride,
-    I64:$burst_src_stride,
-    OptionalAttr<StrAttr>:$layout
+    I64:$burst_src_stride
   );
 
   let results = (outs);
@@ -1014,10 +1005,10 @@ def A5VM_CopyUbufToGmOp : A5VM_Op<"copy_ubuf_to_gm", [
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    $source `,` $destination `,` $valid_rows `,` $valid_cols `,` $sid `,` $n_burst `,` $len_burst `,`
+    $source `,` $destination `,` $sid `,` $n_burst `,` $len_burst `,`
     $reserved `,` $burst_dst_stride `,` $burst_src_stride
-    attr-dict `:` type($source) `,` type($destination) `,` type($valid_rows) `,` type($valid_cols) `,`
-    type($sid) `,` type($n_burst) `,` type($len_burst) `,` type($reserved) `,`
+    attr-dict `:` type($source) `,` type($destination) `,` type($sid) `,` type($n_burst) `,`
+    type($len_burst) `,` type($reserved) `,`
     type($burst_dst_stride) `,` type($burst_src_stride)
   }];
 }
@@ -1130,8 +1121,7 @@ def A5VM_VmulaOp : A5VM_Op<"vmula", [Pure]> {
     A5VM_VectorType:$acc,
     A5VM_VectorType:$lhs,
     A5VM_VectorType:$rhs,
-    A5VM_MaskTypeConstraint:$mask,
-    OptionalAttr<StrAttr>:$mode
+    A5VM_MaskTypeConstraint:$mask
   );
   let results = (outs A5VM_VectorType:$result);
 

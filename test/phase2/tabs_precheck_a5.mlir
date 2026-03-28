@@ -1,9 +1,9 @@
 // RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm %s -o /dev/null 2>&1 | FileCheck %s
 
-// CHECK: TABS lowering requires tile domain vec
-// CHECK: TABS lowering requires row-major tile layout
-// CHECK: TABS lowering requires matching source and destination valid region
-// CHECK: TABS lowering supports only f16 and f32 element types
+// CHECK: abs lowering requires tile domain vec
+// CHECK: abs lowering requires row-major tile layout
+// CHECK: abs lowering requires destination valid rows not to exceed source
+// CHECK: abs lowering supports only f16 and f32 element types
 // CHECK-NOT: failed to legalize operation
 // CHECK-NOT: a5vm.copy_gm_to_ubuf
 // CHECK-NOT: a5vm.vlds

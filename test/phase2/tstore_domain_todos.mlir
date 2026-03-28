@@ -1,4 +1,4 @@
-// RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm --a5vm-print-ir %s -o /dev/null 2>&1 | FileCheck %s
+// RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm --emit-a5vm %s -o - 2>/dev/null | FileCheck %s
 
 // CHECK-LABEL: func.func @tstore_domain_todos
 // CHECK: TSTORE ACC lowering TODO for a5vm backend

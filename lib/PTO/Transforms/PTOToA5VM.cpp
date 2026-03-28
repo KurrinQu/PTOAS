@@ -20,6 +20,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace mlir {
 namespace pto {
@@ -626,6 +627,10 @@ struct PTOToA5VMPass : public impl::PTOToA5VMBase<PTOToA5VMPass> {
         erasedDeadScaffold = true;
       }
     }
+
+    if (!sawFailure &&
+        failed(convertA5VMFunctionBoundariesToPtr(module, &llvm::errs())))
+      sawFailure = true;
 
     if (sawFailure)
       signalPassFailure();

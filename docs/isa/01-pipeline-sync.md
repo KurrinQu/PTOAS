@@ -3,7 +3,7 @@
 > **Category:** Synchronization primitives for coordinating pipeline execution
 > **Pipelines:** MTE2 (GM→UB), PIPE_V (Vector), MTE3 (UB→GM)
 
-VPTO operates on the Ascend 950's **Decoupled Access-Execute** architecture. The MTE and Vector pipelines run asynchronously, requiring explicit synchronization to prevent data hazards.
+The PTO micro Instruction model operates on the Ascend 950's **Decoupled Access-Execute** architecture. The MTE and Vector pipelines run asynchronously, requiring explicit synchronization to prevent data hazards.
 
 ---
 
@@ -14,7 +14,6 @@ These ops coordinate data flow between pipelines within a single vector core.
 ### `pto.set_flag`
 
 - **syntax:** `pto.set_flag["SRC_PIPE", "DST_PIPE", "EVENT_ID"]`
-- **CCE:** `__builtin_cce_set_flag`
 - **semantics:** Signal event from source pipe to destination pipe.
 
 ```c
@@ -31,7 +30,6 @@ pto.set_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
 ### `pto.wait_flag`
 
 - **syntax:** `pto.wait_flag["SRC_PIPE", "DST_PIPE", "EVENT_ID"]`
-- **CCE:** `__builtin_cce_wait_flag`
 - **semantics:** Block destination pipe until source pipe signals event.
 
 ```c
@@ -48,7 +46,6 @@ pto.wait_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
 ### `pto.pipe_barrier`
 
 - **syntax:** `pto.pipe_barrier "PIPE_*"`
-- **CCE:** `__builtin_cce_pipe_barrier`
 - **semantics:** Drain all pending ops in the specified pipe. All previously issued operations on that pipe complete before any subsequent operation begins.
 
 ```c
@@ -74,7 +71,6 @@ pto.copy_ubuf_to_gm %ub_partial_1, %gm_result, ...
 ### `pto.get_buf`
 
 - **syntax:** `pto.get_buf "PIPE_*", %buf_id, %mode : i64, i64`
-- **CCE:** `__builtin_cce_get_buf`
 - **semantics:** Acquire buffer slot for inter-pipeline double-buffering coordination.
 
 ```c
@@ -86,7 +82,6 @@ get_buf(pipe, buf_id, mode);
 ### `pto.rls_buf`
 
 - **syntax:** `pto.rls_buf "PIPE_*", %buf_id, %mode : i64, i64`
-- **CCE:** `__builtin_cce_rls_buf`
 - **semantics:** Release buffer slot to allow other pipeline to proceed.
 
 ```c
@@ -98,7 +93,6 @@ rls_buf(pipe, buf_id, mode);
 ### `pto.mem_bar`
 
 - **syntax:** `pto.mem_bar "BARRIER_TYPE"`
-- **CCE:** `__builtin_cce_pipe_barrier` (PIPE_V context)
 - **semantics:** Intra-vector-pipe memory fence within `__VEC_SCOPE__`. Required when UB addresses alias between vector load/store operations.
 
 ```c
@@ -115,9 +109,9 @@ mem_bar(barrier_type);
 
 **Example:** Ensure stores are visible before loads to same UB region:
 ```mlir
-pto.vsts %v0, %ub[%c0] : !pto.vreg<64xf32>, !llvm.ptr<6>
+pto.vsts %v0, %ub[%c0] : !pto.vreg<64xf32>, !pto.ptr<f32, ub>
 pto.mem_bar "VST_VLD"
-%v1 = pto.vlds %ub[%c0] : !llvm.ptr<6> -> !pto.vreg<64xf32>
+%v1 = pto.vlds %ub[%c0] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
 ```
 
 ---
@@ -140,9 +134,10 @@ pto.set_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
 pto.wait_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
 
 scf.for %dummy = %c0 to %c1 step %c1 {
-  %v   = pto.vlds %ub_ptr[%lane] : !llvm.ptr<6> -> !pto.vreg<64xf32>
-  %abs = pto.vabs %v : !pto.vreg<64xf32> -> !pto.vreg<64xf32>
-  pto.vsts %abs, %ub_out[%lane] : !pto.vreg<64xf32>, !llvm.ptr<6>
+  %v   = pto.vlds %ub_ptr[%lane] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
+  %mask = pto.pset_b32 "PAT_ALL" : !pto.mask
+  %abs = pto.vabs %v, %mask : !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
+  pto.vsts %abs, %ub_out[%lane], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask
 } {llvm.loop.aivector_scope}
 
 // Vector signals: "UB output is ready for MTE3"
@@ -166,34 +161,35 @@ Instead of naming events, each pipeline declares when it **acquires** (`get_buf`
 ```mlir
 // ─── Stage 1: MTE2 loads data into UB ───
 // MTE2 acquires ub_ptr — blocks if Vector hasn't released it from a prior iteration
-pto.get_buf %bufid_ub_ptr, "PIPE_MTE2"
+pto.get_buf "PIPE_MTE2", %bufid_ub_ptr, %mode : i64, i64
 pto.copy_gm_to_ubuf %gm_ptr, %ub_ptr, ...
 // MTE2 done writing ub_ptr — release it so Vector can consume
-pto.rls_buf %bufid_ub_ptr, "PIPE_MTE2"
+pto.rls_buf "PIPE_MTE2", %bufid_ub_ptr, %mode : i64, i64
 
 // ─── Stage 2: Vector computation ───
 // Vector acquires ub_ptr (input) — blocks until MTE2 releases it (RAW: MTE2 write → V read)
-pto.get_buf %bufid_ub_ptr, "PIPE_V"
+pto.get_buf "PIPE_V", %bufid_ub_ptr, %mode : i64, i64
 // Vector acquires ub_out (output) — blocks until MTE3 releases it from a prior iteration (WAR: MTE3 read → V write)
-pto.get_buf %bufid_ub_out, "PIPE_V"
+pto.get_buf "PIPE_V", %bufid_ub_out, %mode : i64, i64
 
 scf.for %dummy = %c0 to %c1 step %c1 {
-  %v   = pto.vlds %ub_ptr[%lane] : !llvm.ptr<6> -> !pto.vreg<64xf32>
-  %abs = pto.vabs %v : !pto.vreg<64xf32> -> !pto.vreg<64xf32>
-  pto.vsts %abs, %ub_out[%lane] : !pto.vreg<64xf32>, !llvm.ptr<6>
+  %mask = pto.pset_b32 "PAT_ALL" : !pto.mask
+  %v   = pto.vlds %ub_ptr[%lane] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
+  %abs = pto.vabs %v, %mask : !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
+  pto.vsts %abs, %ub_out[%lane], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask
 } {llvm.loop.aivector_scope}
 
 // Vector done reading ub_ptr — release so MTE2 can reuse it in next iteration
-pto.rls_buf %bufid_ub_ptr, "PIPE_V"
+pto.rls_buf "PIPE_V", %bufid_ub_ptr, %mode : i64, i64
 // Vector done writing ub_out — release so MTE3 can consume
-pto.rls_buf %bufid_ub_out, "PIPE_V"
+pto.rls_buf "PIPE_V", %bufid_ub_out, %mode : i64, i64
 
 // ─── Stage 3: MTE3 stores result to GM ───
 // MTE3 acquires ub_out — blocks until Vector releases it (RAW: V write → MTE3 read)
-pto.get_buf %bufid_ub_out, "PIPE_MTE3"
+pto.get_buf "PIPE_MTE3", %bufid_ub_out, %mode : i64, i64
 pto.copy_ubuf_to_gm %ub_out, %gm_out, ...
 // MTE3 done reading ub_out — release so Vector can reuse it in next iteration
-pto.rls_buf %bufid_ub_out, "PIPE_MTE3"
+pto.rls_buf "PIPE_MTE3", %bufid_ub_out, %mode : i64, i64
 ```
 
 **Key property:** No event IDs needed. Dependencies are implicit from program order of `get_buf`/`rls_buf` on the same buffer ID. This becomes much more convenient in multi-iteration loops (see Example 3).
@@ -254,9 +250,10 @@ scf.for %i = %c0 to %N step %c1 {
   // WAR: wait for MTE3 to finish reading buf_out[i%2] from iteration i-2
   pto.wait_flag["PIPE_MTE3", "PIPE_V", "EVT_OUT_REV_{pp}"]
   scf.for %dummy = %c0 to %c1 step %c1 {
-    %v   = pto.vlds %ub_in[%pp][%lane] : !llvm.ptr<6> -> !pto.vreg<64xf32>
-    %abs = pto.vabs %v : !pto.vreg<64xf32> -> !pto.vreg<64xf32>
-    pto.vsts %abs, %ub_out[%pp][%lane] : !pto.vreg<64xf32>, !llvm.ptr<6>
+    %v   = pto.vlds %ub_in[%pp][%lane] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
+    %mask = pto.pset_b32 "PAT_ALL" : !pto.mask
+    %abs = pto.vabs %v, %mask : !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
+    pto.vsts %abs, %ub_out[%pp][%lane], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask
   } {llvm.loop.aivector_scope}
   // WAR: tell MTE2 "done reading buf_in[i%2]"
   pto.set_flag["PIPE_V", "PIPE_MTE2", "EVT_IN_REV_{pp}"]
@@ -305,9 +302,10 @@ scf.for %i = %c0 to %N step %c1 {
   pto.get_buf %bufid_buf[%pp], "PIPE_V"
   pto.get_buf %bufid_out[%pp], "PIPE_V"
   scf.for %dummy = %c0 to %c1 step %c1 {
-    %v   = pto.vlds %ub_buf[%pp][%lane] : !llvm.ptr<6> -> !pto.vreg<64xf32>
-    %abs = pto.vabs %v : !pto.vreg<64xf32> -> !pto.vreg<64xf32>
-    pto.vsts %abs, %ub_out[%pp][%lane] : !pto.vreg<64xf32>, !llvm.ptr<6>
+    %v   = pto.vlds %ub_buf[%pp][%lane] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
+    %mask = pto.pset_b32 "PAT_ALL" : !pto.mask
+    %abs = pto.vabs %v, %mask : !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
+    pto.vsts %abs, %ub_out[%pp][%lane], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask
   } {llvm.loop.aivector_scope}
   // Release buf[i%2] — MTE2 can reuse in iteration i+2 (WAR resolved)
   pto.rls_buf %bufid_buf[%pp], "PIPE_V"
@@ -406,13 +404,11 @@ V→C Reduce (one wait for both):
 ### `pto.set_cross_core`
 
 - **syntax:** `pto.set_cross_core %core_id, %event_id : i64, i64`
-- **CCE:** `__builtin_cce_set_cross_core`
 - **semantics:** Signal event to another core. Uses **mode2** for 1:2 cluster on A2A3.
 
 ### `pto.wait_flag_dev`
 
 - **syntax:** `pto.wait_flag_dev %core_id, %event_id : i64, i64`
-- **CCE:** `__builtin_cce_wait_flag_dev`
 - **semantics:** Wait for event from another core. **SU-level blocking** — entire core stalls.
 
 ### A5: `set_intra_block` / `wait_intra_core`
@@ -444,13 +440,11 @@ V→C on A5 (1:1, no reduce — need two waits):
 ### `pto.set_intra_block`
 
 - **syntax:** `pto.set_intra_block %block_id, %event_id : i64, i64`
-- **CCE:** `__builtin_cce_set_intra_block`
 - **semantics:** Signal event within a block (A5). Specifies **trigger pipe**. 1:1 per subblock.
 
 ### `pto.wait_intra_core`
 
 - **syntax:** `pto.wait_intra_core %block_id, %event_id : i64, i64`
-- **CCE:** `__builtin_cce_wait_intra_block`
 - **semantics:** Wait for event within block (A5). Specifies **which pipeline should wait** — only that pipe stalls, SU and other pipes continue.
 
 ### Wait Granularity Comparison

@@ -40,5 +40,5 @@ fi
 rm -f "${backend_switch_output}"
 
 echo "phase1 check: a5vm_shared_dialects.mlir"
-"${ptoas_bin}" --pto-backend=a5vm --a5vm-print-ir test/phase1/a5vm_shared_dialects.mlir -o /dev/null 2>&1 | \
+"${ptoas_bin}" --pto-backend=a5vm --emit-a5vm test/phase1/a5vm_shared_dialects.mlir -o - 2>/dev/null | \
   FileCheck test/phase1/a5vm_shared_dialects.mlir

@@ -1,4 +1,4 @@
-// RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm --a5vm-print-ir %s -o /dev/null 2>&1 | FileCheck %s
+// RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm --emit-a5vm %s -o - 2>/dev/null | FileCheck %s
 
 // CHECK-LABEL: func.func @tstore_copy_family_shape
 // CHECK: %[[ZERO_I64:.*]] = arith.constant 0 : i64
@@ -10,11 +10,15 @@
 // CHECK: %[[LOOP_STRIDE:.*]] = arith.constant 4096 : i64
 // CHECK: %[[LEN_BURST:.*]] = arith.muli %[[VALID]], %[[ELEM_BYTES]] : i64
 // CHECK: %[[STRIDE_BYTES:.*]] = arith.constant 128 : i64
+// CHECK: %[[GM_BASE_BYTES:.*]] = pto.castptr %arg0 : !pto.ptr<f32, gm> -> !pto.ptr<i8, gm>
+// CHECK: %[[ZERO_INDEX:.*]] = arith.index_castui %[[ZERO_I64]] : i64 to index
+// CHECK: %[[GM_OFFSET_PTR:.*]] = pto.addptr %[[GM_BASE_BYTES]], %[[ZERO_INDEX]] : <i8, gm> -> <i8, gm>
 // CHECK: a5vm.set_loop_size_ubtoout %[[C1_I64]], %[[C1_I64]]
 // CHECK: a5vm.set_loop1_stride_ubtoout %[[LOOP_STRIDE]], %[[LOOP_STRIDE]]
 // CHECK: a5vm.set_loop2_stride_ubtoout %[[LOOP_STRIDE]], %[[LOOP_STRIDE]]
-// CHECK: a5vm.copy_ubuf_to_gm %{{.*}}, %{{.*}}, %[[VALID]], %[[VALID]], %[[ZERO_I64]], %[[NBURST]], %[[LEN_BURST]], %[[ZERO_I64]], %[[STRIDE_BYTES]], %[[STRIDE_BYTES]]
-// CHECK-SAME: layout = "nd"
+// CHECK: %[[GM_TYPED_PTR:.*]] = pto.castptr %[[GM_OFFSET_PTR]] : !pto.ptr<i8, gm> -> !pto.ptr<f32, gm>
+// CHECK: a5vm.copy_ubuf_to_gm %{{.*}}, %[[GM_TYPED_PTR]], %[[ZERO_I64]], %[[NBURST]], %[[LEN_BURST]], %[[ZERO_I64]], %[[STRIDE_BYTES]], %[[STRIDE_BYTES]]
+// CHECK-SAME: : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64
 // CHECK-NOT: g_shape =
 // CHECK-NOT: g_strides =
 // CHECK-NOT: dst_strides =

@@ -52,23 +52,23 @@ if rg -n '^// CHECK(?:(?:-[A-Z]+)?)?: scf\.for$' test/phase2/tabs_abs_loop_shape
 fi
 
 echo "phase2 check: tload_copy_family_shape.mlir"
-"${ptoas_bin}" --pto-backend=a5vm --a5vm-print-ir test/phase2/tload_copy_family_shape.mlir -o /dev/null 2>&1 | \
+"${ptoas_bin}" --pto-backend=a5vm --emit-a5vm test/phase2/tload_copy_family_shape.mlir -o - 2>/dev/null | \
   "${filecheck_bin}" test/phase2/tload_copy_family_shape.mlir
 
 echo "phase2 check: tabs_abs_loop_shape.mlir"
-"${ptoas_bin}" --pto-backend=a5vm --a5vm-print-ir test/phase2/tabs_abs_loop_shape.mlir -o /dev/null 2>&1 | \
+"${ptoas_bin}" --pto-backend=a5vm --emit-a5vm test/phase2/tabs_abs_loop_shape.mlir -o - 2>/dev/null | \
   "${filecheck_bin}" test/phase2/tabs_abs_loop_shape.mlir
 
 echo "phase2 check: tabs_precheck_a5.mlir"
-"${ptoas_bin}" --pto-backend=a5vm test/phase2/tabs_precheck_a5.mlir -o /dev/null 2>&1 | \
+{ "${ptoas_bin}" --pto-backend=a5vm test/phase2/tabs_precheck_a5.mlir -o /dev/null 2>&1 || true; } | \
   "${filecheck_bin}" test/phase2/tabs_precheck_a5.mlir
 
 echo "phase2 check: tstore_copy_family_shape.mlir"
-"${ptoas_bin}" --pto-backend=a5vm --a5vm-print-ir test/phase2/tstore_copy_family_shape.mlir -o /dev/null 2>&1 | \
+"${ptoas_bin}" --pto-backend=a5vm --emit-a5vm test/phase2/tstore_copy_family_shape.mlir -o - 2>/dev/null | \
   "${filecheck_bin}" test/phase2/tstore_copy_family_shape.mlir
 
 echo "phase2 check: copy_dynamic_transfer_operands.mlir"
-"${ptoas_bin}" --pto-backend=a5vm --a5vm-print-ir test/phase2/copy_dynamic_transfer_operands.mlir -o /dev/null 2>&1 | \
+"${ptoas_bin}" --pto-backend=a5vm --emit-a5vm test/phase2/copy_dynamic_transfer_operands.mlir -o - 2>/dev/null | \
   "${filecheck_bin}" test/phase2/copy_dynamic_transfer_operands.mlir
 
 echo "phase2 check: copy_dynamic_transfer_operands.mlir HIVM names"
@@ -76,11 +76,11 @@ echo "phase2 check: copy_dynamic_transfer_operands.mlir HIVM names"
   "${filecheck_bin}" --check-prefix=CHECK-HIVM test/phase2/copy_dynamic_transfer_operands.mlir
 
 echo "phase2 check: tstore_domain_todos.mlir"
-"${ptoas_bin}" --pto-backend=a5vm --a5vm-print-ir test/phase2/tstore_domain_todos.mlir -o /dev/null 2>&1 | \
+{ "${ptoas_bin}" --pto-backend=a5vm --emit-a5vm test/phase2/tstore_domain_todos.mlir -o - 2>&1 || true; } | \
   "${filecheck_bin}" test/phase2/tstore_domain_todos.mlir
 
 echo "phase2 check: pto_backend_a5vm_wiring.mlir"
-"${ptoas_bin}" --pto-backend=a5vm --a5vm-print-ir test/phase2/pto_backend_a5vm_wiring.mlir -o /dev/null 2>&1 | \
+"${ptoas_bin}" --pto-backend=a5vm --emit-a5vm test/phase2/pto_backend_a5vm_wiring.mlir -o - 2>/dev/null | \
   "${filecheck_bin}" test/phase2/pto_backend_a5vm_wiring.mlir
 
 echo "phase2 check: pto_backend_a5vm_wiring.mlir EmitC smoke"

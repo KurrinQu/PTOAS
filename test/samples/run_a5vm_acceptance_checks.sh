@@ -5,6 +5,7 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 PTOAS_BIN="${PTOAS_BIN:-${ROOT_DIR}/build/tools/ptoas/ptoas}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 OUT_DIR="${PTOAS_SAMPLE_ACCEPTANCE_OUT:-${ROOT_DIR}/build/test-sample-acceptance}"
+A5_SAMPLE_FLAGS=(--pto-arch a5 --pto-backend=a5vm --enable-insert-sync)
 
 require_pattern() {
   local pattern="$1"
@@ -57,7 +58,7 @@ mkdir -p "${ABS_OUT}"
   cd "${ROOT_DIR}"
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${ABS_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Abs
 ) > "${ABS_OUT}/run.log" 2>&1
 require_pattern 'Abs\(abs\.py\)[[:space:]]+OK' "${ABS_OUT}/run.log" \
@@ -79,19 +80,19 @@ rm -rf "${STRATEGY_OUT}"
 mkdir -p "${STRATEGY_OUT}"
 
 "${PYTHON_BIN}" "${ROOT_DIR}/test/samples/Abs/abs.py" > "${STRATEGY_OUT}/abs.pto"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
-  --a5vm-print-ir \
-  "${STRATEGY_OUT}/abs.pto" -o "${STRATEGY_OUT}/abs-post.cpp" \
-  > "${STRATEGY_OUT}/abs-post.a5vm" 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
+  --emit-a5vm \
+  "${STRATEGY_OUT}/abs.pto" -o "${STRATEGY_OUT}/abs-post.a5vm" \
+  >/dev/null 2>&1
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
-  --a5vm-print-ir \
-  "${STRATEGY_OUT}/abs.pto" -o "${STRATEGY_OUT}/abs-nopost.cpp" \
-  > "${STRATEGY_OUT}/abs-nopost.a5vm" 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+  --emit-a5vm \
+  "${STRATEGY_OUT}/abs.pto" -o "${STRATEGY_OUT}/abs-nopost.a5vm" \
+  >/dev/null 2>&1
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/abs.pto" -o "${STRATEGY_OUT}/abs-post.ll"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/abs.pto" -o "${STRATEGY_OUT}/abs-nopost.ll"
@@ -109,19 +110,19 @@ require_no_pattern 'llvm\.hivm\.vldsx1\.post\.v64f32|llvm\.hivm\.vstsx1\.post\.v
   "Abs no-post-update LLVM still contains .post intrinsics"
 
 "${PYTHON_BIN}" "${ROOT_DIR}/test/samples/Div/div.py" > "${STRATEGY_OUT}/div.pto"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
-  --a5vm-print-ir \
-  "${STRATEGY_OUT}/div.pto" -o "${STRATEGY_OUT}/div-post.cpp" \
-  > "${STRATEGY_OUT}/div-post.a5vm" 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
+  --emit-a5vm \
+  "${STRATEGY_OUT}/div.pto" -o "${STRATEGY_OUT}/div-post.a5vm" \
+  >/dev/null 2>&1
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
-  --a5vm-print-ir \
-  "${STRATEGY_OUT}/div.pto" -o "${STRATEGY_OUT}/div-nopost.cpp" \
-  > "${STRATEGY_OUT}/div-nopost.a5vm" 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+  --emit-a5vm \
+  "${STRATEGY_OUT}/div.pto" -o "${STRATEGY_OUT}/div-nopost.a5vm" \
+  >/dev/null 2>&1
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/div.pto" -o "${STRATEGY_OUT}/div-post.ll"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/div.pto" -o "${STRATEGY_OUT}/div-nopost.ll"
@@ -139,19 +140,19 @@ require_no_pattern 'llvm\.hivm\.vldsx1\.post\.v64f32|llvm\.hivm\.vstsx1\.post\.v
   "Div no-post-update LLVM still contains .post intrinsics"
 
 "${PYTHON_BIN}" "${ROOT_DIR}/test/samples/Rowexpand/rowexpand.py" > "${STRATEGY_OUT}/rowexpand.pto"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
-  --a5vm-print-ir \
-  "${STRATEGY_OUT}/rowexpand.pto" -o "${STRATEGY_OUT}/rowexpand-post.cpp" \
-  > "${STRATEGY_OUT}/rowexpand-post.a5vm" 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
+  --emit-a5vm \
+  "${STRATEGY_OUT}/rowexpand.pto" -o "${STRATEGY_OUT}/rowexpand-post.a5vm" \
+  >/dev/null 2>&1
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
-  --a5vm-print-ir \
-  "${STRATEGY_OUT}/rowexpand.pto" -o "${STRATEGY_OUT}/rowexpand-nopost.cpp" \
-  > "${STRATEGY_OUT}/rowexpand-nopost.a5vm" 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+  --emit-a5vm \
+  "${STRATEGY_OUT}/rowexpand.pto" -o "${STRATEGY_OUT}/rowexpand-nopost.a5vm" \
+  >/dev/null 2>&1
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/rowexpand.pto" -o "${STRATEGY_OUT}/rowexpand-post.ll"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/rowexpand.pto" -o "${STRATEGY_OUT}/rowexpand-nopost.ll"
@@ -169,19 +170,19 @@ require_no_pattern 'llvm\.hivm\.vldsx1\.post\.v64f32|llvm\.hivm\.vstsx1\.post\.v
   "Rowexpand no-post-update LLVM still contains .post intrinsics"
 
 "${PYTHON_BIN}" "${ROOT_DIR}/test/samples/Adds/adds.py" > "${STRATEGY_OUT}/adds.pto"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
-  --a5vm-print-ir \
-  "${STRATEGY_OUT}/adds.pto" -o "${STRATEGY_OUT}/adds-post.cpp" \
-  > "${STRATEGY_OUT}/adds-post.a5vm" 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
+  --emit-a5vm \
+  "${STRATEGY_OUT}/adds.pto" -o "${STRATEGY_OUT}/adds-post.a5vm" \
+  >/dev/null 2>&1
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
-  --a5vm-print-ir \
-  "${STRATEGY_OUT}/adds.pto" -o "${STRATEGY_OUT}/adds-nopost.cpp" \
-  > "${STRATEGY_OUT}/adds-nopost.a5vm" 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+  --emit-a5vm \
+  "${STRATEGY_OUT}/adds.pto" -o "${STRATEGY_OUT}/adds-nopost.a5vm" \
+  >/dev/null 2>&1
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/adds.pto" -o "${STRATEGY_OUT}/adds-post.ll"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/adds.pto" -o "${STRATEGY_OUT}/adds-nopost.ll"
@@ -201,19 +202,19 @@ require_no_pattern 'llvm\.hivm\.vldsx1\.post\.v64f32|llvm\.hivm\.vstsx1\.post\.v
   "Adds no-post-update LLVM still contains .post intrinsics"
 
 "${PYTHON_BIN}" "${ROOT_DIR}/test/samples/Maxs/maxs.py" > "${STRATEGY_OUT}/maxs.pto"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
-  --a5vm-print-ir \
-  "${STRATEGY_OUT}/maxs.pto" -o "${STRATEGY_OUT}/maxs-post.cpp" \
-  > "${STRATEGY_OUT}/maxs-post.a5vm" 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
+  --emit-a5vm \
+  "${STRATEGY_OUT}/maxs.pto" -o "${STRATEGY_OUT}/maxs-post.a5vm" \
+  >/dev/null 2>&1
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
-  --a5vm-print-ir \
-  "${STRATEGY_OUT}/maxs.pto" -o "${STRATEGY_OUT}/maxs-nopost.cpp" \
-  > "${STRATEGY_OUT}/maxs-nopost.a5vm" 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+  --emit-a5vm \
+  "${STRATEGY_OUT}/maxs.pto" -o "${STRATEGY_OUT}/maxs-nopost.a5vm" \
+  >/dev/null 2>&1
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/maxs.pto" -o "${STRATEGY_OUT}/maxs-post.ll"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/maxs.pto" -o "${STRATEGY_OUT}/maxs-nopost.ll"
@@ -233,19 +234,19 @@ require_no_pattern 'llvm\.hivm\.vldsx1\.post\.v64f32|llvm\.hivm\.vstsx1\.post\.v
   "Maxs no-post-update LLVM still contains .post intrinsics"
 
 "${PYTHON_BIN}" "${ROOT_DIR}/test/samples/Mins/mins.py" > "${STRATEGY_OUT}/mins.pto"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
-  --a5vm-print-ir \
-  "${STRATEGY_OUT}/mins.pto" -o "${STRATEGY_OUT}/mins-post.cpp" \
-  > "${STRATEGY_OUT}/mins-post.a5vm" 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
+  --emit-a5vm \
+  "${STRATEGY_OUT}/mins.pto" -o "${STRATEGY_OUT}/mins-post.a5vm" \
+  >/dev/null 2>&1
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
-  --a5vm-print-ir \
-  "${STRATEGY_OUT}/mins.pto" -o "${STRATEGY_OUT}/mins-nopost.cpp" \
-  > "${STRATEGY_OUT}/mins-nopost.a5vm" 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+  --emit-a5vm \
+  "${STRATEGY_OUT}/mins.pto" -o "${STRATEGY_OUT}/mins-nopost.a5vm" \
+  >/dev/null 2>&1
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/mins.pto" -o "${STRATEGY_OUT}/mins-post.ll"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/mins.pto" -o "${STRATEGY_OUT}/mins-nopost.ll"
@@ -265,19 +266,19 @@ require_no_pattern 'llvm\.hivm\.vldsx1\.post\.v64f32|llvm\.hivm\.vstsx1\.post\.v
   "Mins no-post-update LLVM still contains .post intrinsics"
 
 "${PYTHON_BIN}" "${ROOT_DIR}/test/samples/Lrelu/lrelu.py" > "${STRATEGY_OUT}/lrelu.pto"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
-  --a5vm-print-ir \
-  "${STRATEGY_OUT}/lrelu.pto" -o "${STRATEGY_OUT}/lrelu-post.cpp" \
-  > "${STRATEGY_OUT}/lrelu-post.a5vm" 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
+  --emit-a5vm \
+  "${STRATEGY_OUT}/lrelu.pto" -o "${STRATEGY_OUT}/lrelu-post.a5vm" \
+  >/dev/null 2>&1
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
-  --a5vm-print-ir \
-  "${STRATEGY_OUT}/lrelu.pto" -o "${STRATEGY_OUT}/lrelu-nopost.cpp" \
-  > "${STRATEGY_OUT}/lrelu-nopost.a5vm" 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+  --emit-a5vm \
+  "${STRATEGY_OUT}/lrelu.pto" -o "${STRATEGY_OUT}/lrelu-nopost.a5vm" \
+  >/dev/null 2>&1
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/lrelu.pto" -o "${STRATEGY_OUT}/lrelu-post.ll"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/lrelu.pto" -o "${STRATEGY_OUT}/lrelu-nopost.ll"
@@ -297,19 +298,19 @@ require_no_pattern 'llvm\.hivm\.vldsx1\.post\.v64f32|llvm\.hivm\.vstsx1\.post\.v
   "Lrelu no-post-update LLVM still contains .post intrinsics"
 
 "${PYTHON_BIN}" "${ROOT_DIR}/test/samples/Muls/muls.py" > "${STRATEGY_OUT}/muls.pto"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
-  --a5vm-print-ir \
-  "${STRATEGY_OUT}/muls.pto" -o "${STRATEGY_OUT}/muls-post.cpp" \
-  > "${STRATEGY_OUT}/muls-post.a5vm" 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
+  --emit-a5vm \
+  "${STRATEGY_OUT}/muls.pto" -o "${STRATEGY_OUT}/muls-post.a5vm" \
+  >/dev/null 2>&1
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
-  --a5vm-print-ir \
-  "${STRATEGY_OUT}/muls.pto" -o "${STRATEGY_OUT}/muls-nopost.cpp" \
-  > "${STRATEGY_OUT}/muls-nopost.a5vm" 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+  --emit-a5vm \
+  "${STRATEGY_OUT}/muls.pto" -o "${STRATEGY_OUT}/muls-nopost.a5vm" \
+  >/dev/null 2>&1
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/muls.pto" -o "${STRATEGY_OUT}/muls-post.ll"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/muls.pto" -o "${STRATEGY_OUT}/muls-nopost.ll"
@@ -327,19 +328,19 @@ require_no_pattern 'llvm\.hivm\.vldsx1\.post\.v64f32|llvm\.hivm\.vstsx1\.post\.v
   "Muls no-post-update LLVM still contains .post intrinsics"
 
 "${PYTHON_BIN}" "${ROOT_DIR}/test/samples/Divs/divs.py" > "${STRATEGY_OUT}/divs.pto"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
-  --a5vm-print-ir \
-  "${STRATEGY_OUT}/divs.pto" -o "${STRATEGY_OUT}/divs-post.cpp" \
-  > "${STRATEGY_OUT}/divs-post.a5vm" 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
+  --emit-a5vm \
+  "${STRATEGY_OUT}/divs.pto" -o "${STRATEGY_OUT}/divs-post.a5vm" \
+  >/dev/null 2>&1
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
-  --a5vm-print-ir \
-  "${STRATEGY_OUT}/divs.pto" -o "${STRATEGY_OUT}/divs-nopost.cpp" \
-  > "${STRATEGY_OUT}/divs-nopost.a5vm" 2>&1
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+  --emit-a5vm \
+  "${STRATEGY_OUT}/divs.pto" -o "${STRATEGY_OUT}/divs-nopost.a5vm" \
+  >/dev/null 2>&1
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/divs.pto" -o "${STRATEGY_OUT}/divs-post.ll"
-"${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
+"${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" \
   --a5vm-lowering-strategy no-post-update \
   --a5vm-emit-hivm-llvm \
   "${STRATEGY_OUT}/divs.pto" -o "${STRATEGY_OUT}/divs-nopost.ll"
@@ -362,9 +363,9 @@ rm -rf "${EXPANDS_OUT}"
 mkdir -p "${EXPANDS_OUT}"
 "${PYTHON_BIN}" "${ROOT_DIR}/test/samples/Expands/expands.py" > "${EXPANDS_OUT}/expands.pto"
 "${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
-  --a5vm-print-ir \
-  "${EXPANDS_OUT}/expands.pto" -o "${EXPANDS_OUT}/expands.cpp" \
-  > "${EXPANDS_OUT}/expands.a5vm" 2>&1
+  --emit-a5vm \
+  "${EXPANDS_OUT}/expands.pto" -o "${EXPANDS_OUT}/expands.a5vm" \
+  >/dev/null 2>&1
 "${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm \
   --a5vm-emit-hivm-llvm \
   "${EXPANDS_OUT}/expands.pto" -o "${EXPANDS_OUT}/expands.ll"
@@ -372,7 +373,7 @@ require_pattern 'a5vm\.vdup' "${EXPANDS_OUT}/expands.a5vm" \
   "Expands A5VM IR lost vdup scalar broadcast"
 require_pattern 'a5vm\.vsts_post ' "${EXPANDS_OUT}/expands.a5vm" \
   "Expands A5VM IR lost post-update store branch"
-require_pattern 'a5vm\.vsts .*: !a5vm\.vec<64xf32>, !llvm\.ptr<6>, !a5vm\.mask$' "${EXPANDS_OUT}/expands.a5vm" \
+require_pattern 'a5vm\.vsts .*: !a5vm\.vec<64xf32>, !pto\.ptr<f32, ub>, !a5vm\.mask$' "${EXPANDS_OUT}/expands.a5vm" \
   "Expands A5VM IR lost indexed store branch"
 require_pattern 'llvm\.hivm\.vdups\.v64f32\.z' "${EXPANDS_OUT}/expands.ll" \
   "Expands LLVM IR lost scalar broadcast intrinsic"
@@ -390,7 +391,7 @@ mkdir -p "${NEG_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${NEG_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Neg
 ) > "${NEG_OUT}/run.log" 2>&1
 require_pattern 'Neg\(neg\.py\)[[:space:]]+OK' "${NEG_OUT}/run.log" \
@@ -413,7 +414,7 @@ mkdir -p "${LRELU_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${LRELU_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Lrelu
 ) > "${LRELU_OUT}/run.log" 2>&1
 require_pattern 'Lrelu\(lrelu\.py\)[[:space:]]+OK' "${LRELU_OUT}/run.log" \
@@ -436,7 +437,7 @@ mkdir -p "${TRANS_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${TRANS_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Trans
 ) > "${TRANS_OUT}/run.log" 2>&1
 require_pattern 'Trans\(trans\.py\)[[:space:]]+OK' "${TRANS_OUT}/run.log" \
@@ -461,7 +462,7 @@ mkdir -p "${SORT32_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${SORT32_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Sort32
 ) > "${SORT32_OUT}/run.log" 2>&1
 require_pattern 'Sort32\(sort32\.py\)[[:space:]]+OK' "${SORT32_OUT}/run.log" \
@@ -484,7 +485,7 @@ mkdir -p "${MRGSORT_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${MRGSORT_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Mrgsort
 ) > "${MRGSORT_OUT}/run.log" 2>&1
 require_pattern 'Mrgsort\(mrgsort\.py\)[[:space:]]+OK' "${MRGSORT_OUT}/run.log" \
@@ -522,7 +523,7 @@ mkdir -p "${FILLPAD_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${FILLPAD_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Fillpad
 ) > "${FILLPAD_OUT}/run.log" 2>&1
 require_pattern 'Fillpad\(fillpad\.py\)[[:space:]]+OK' "${FILLPAD_OUT}/run.log" \
@@ -557,7 +558,7 @@ mkdir -p "${RSQRT_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${RSQRT_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Rsqrt
 ) > "${RSQRT_OUT}/run.log" 2>&1
 require_pattern 'Rsqrt\(rsqrt\.py\)[[:space:]]+OK' "${RSQRT_OUT}/run.log" \
@@ -584,7 +585,7 @@ mkdir -p "${CVT_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${CVT_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Cvt
 ) > "${CVT_OUT}/run.log" 2>&1
 require_pattern 'Cvt\(cvt\.py\)[[:space:]]+OK' "${CVT_OUT}/run.log" \
@@ -603,7 +604,7 @@ SUBS_OUT="${OUT_DIR}/subs"
 rm -rf "${SUBS_OUT}"
 mkdir -p "${SUBS_OUT}"
 "${PYTHON_BIN}" "${ROOT_DIR}/test/samples/Subs/subs.py" > "${SUBS_OUT}/subs.pto"
-if "${PTOAS_BIN}" --pto-arch a5 --pto-backend=a5vm --a5vm-print-ir \
+if "${PTOAS_BIN}" "${A5_SAMPLE_FLAGS[@]}" --emit-a5vm \
     "${SUBS_OUT}/subs.pto" -o "${SUBS_OUT}/subs-pto.cpp" \
     > "${SUBS_OUT}/run.log" 2>&1; then
   echo "error: Subs sample unexpectedly compiled despite unresolved A5 baseline" >&2
@@ -621,7 +622,7 @@ mkdir -p "${MAXS_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${MAXS_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Maxs
 ) > "${MAXS_OUT}/run.log" 2>&1
 require_pattern 'Maxs\(maxs\.py\)[[:space:]]+OK' "${MAXS_OUT}/run.log" \
@@ -644,7 +645,7 @@ mkdir -p "${SELS_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${SELS_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Sels
 ) > "${SELS_OUT}/run.log" 2>&1
 require_pattern 'Sels\(sels\.py\)[[:space:]]+OK' "${SELS_OUT}/run.log" \
@@ -669,7 +670,7 @@ mkdir -p "${CMP_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${CMP_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Cmps
 ) > "${CMP_OUT}/cmps.log" 2>&1
 (
@@ -677,7 +678,7 @@ mkdir -p "${CMP_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${CMP_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Cmp
 ) > "${CMP_OUT}/cmp.log" 2>&1
 require_pattern 'Cmps\(cmps\.py\)[[:space:]]+OK' "${CMP_OUT}/cmps.log" \
@@ -718,7 +719,7 @@ mkdir -p "${SEL_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${SEL_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Sel
 ) > "${SEL_OUT}/run.log" 2>&1
 require_pattern 'Sel\(sel\.py\)[[:space:]]+OK' "${SEL_OUT}/run.log" \
@@ -761,7 +762,7 @@ mkdir -p "${SYNC_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${SYNC_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Sync
 ) > "${SYNC_OUT}/run.log" 2>&1 || true
 require_pattern 'Sync\(add_double_dynamic\.py\)[[:space:]]+OK' "${SYNC_OUT}/run.log" \
@@ -816,7 +817,7 @@ mkdir -p "${LAYOUT_DN_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${LAYOUT_DN_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Layout
 ) > "${LAYOUT_DN_OUT}/run.log" 2>&1 || true
 require_pattern 'Layout\(tensor_view_layout_dn\.py\)[[:space:]]+OK' "${LAYOUT_DN_OUT}/run.log" \
@@ -825,16 +826,16 @@ require_pattern 'Layout\(tensor_view_infer_layout_dn\.py\)[[:space:]]+OK' "${LAY
   "Layout/tensor_view_infer_layout_dn sample did not compile successfully"
 LAYOUT_DN_CPP="${LAYOUT_DN_OUT}/Layout/tensor_view_layout_dn-pto.cpp"
 [[ -f "${LAYOUT_DN_CPP}" ]] || { echo "error: missing ${LAYOUT_DN_CPP}" >&2; exit 1; }
-require_pattern 'a5vm\.copy_gm_to_ubuf.*"dn"' "${LAYOUT_DN_CPP}" \
-  "Layout DN output lost DN TLOAD lowering"
-require_pattern 'a5vm\.copy_ubuf_to_gm.*"dn"' "${LAYOUT_DN_CPP}" \
-  "Layout DN output lost DN TSTORE lowering"
+require_pattern 'a5vm\.copy_gm_to_ubuf' "${LAYOUT_DN_CPP}" \
+  "Layout DN output lost TLOAD lowering"
+require_pattern 'a5vm\.copy_ubuf_to_gm' "${LAYOUT_DN_CPP}" \
+  "Layout DN output lost TSTORE lowering"
 LAYOUT_DN_INFER_CPP="${LAYOUT_DN_OUT}/Layout/tensor_view_infer_layout_dn-pto.cpp"
 [[ -f "${LAYOUT_DN_INFER_CPP}" ]] || { echo "error: missing ${LAYOUT_DN_INFER_CPP}" >&2; exit 1; }
-require_pattern 'a5vm\.copy_gm_to_ubuf.*"dn"' "${LAYOUT_DN_INFER_CPP}" \
-  "Layout infer-DN output did not infer DN TLOAD lowering"
-require_pattern 'a5vm\.copy_ubuf_to_gm.*"dn"' "${LAYOUT_DN_INFER_CPP}" \
-  "Layout infer-DN output did not infer DN TSTORE lowering"
+require_pattern 'a5vm\.copy_gm_to_ubuf' "${LAYOUT_DN_INFER_CPP}" \
+  "Layout infer-DN output lost TLOAD lowering"
+require_pattern 'a5vm\.copy_ubuf_to_gm' "${LAYOUT_DN_INFER_CPP}" \
+  "Layout infer-DN output lost TSTORE lowering"
 
 echo "sample acceptance: Reshape"
 RESHAPE_OUT="${OUT_DIR}/reshape"
@@ -845,17 +846,17 @@ mkdir -p "${RESHAPE_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${RESHAPE_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Reshape
 ) > "${RESHAPE_OUT}/run.log" 2>&1 || true
 require_pattern 'Reshape\(reshape\.py\)[[:space:]]+OK' "${RESHAPE_OUT}/run.log" \
   "Reshape/reshape sample did not compile successfully"
 RESHAPE_CPP="${RESHAPE_OUT}/Reshape/reshape-pto.cpp"
 [[ -f "${RESHAPE_CPP}" ]] || { echo "error: missing ${RESHAPE_CPP}" >&2; exit 1; }
-require_pattern 'a5vm\.copy_gm_to_ubuf.*"nd"' "${RESHAPE_CPP}" \
-  "Reshape output lost ND TLOAD lowering"
-require_pattern 'a5vm\.copy_ubuf_to_gm.*"dn"' "${RESHAPE_CPP}" \
-  "Reshape output lost DN TSTORE lowering after treshape"
+require_pattern 'a5vm\.copy_gm_to_ubuf' "${RESHAPE_CPP}" \
+  "Reshape output lost TLOAD lowering"
+require_pattern 'a5vm\.copy_ubuf_to_gm' "${RESHAPE_CPP}" \
+  "Reshape output lost TSTORE lowering after treshape"
 
 echo "sample acceptance: Expands"
 EXPANDS_OUT="${OUT_DIR}/expands"
@@ -866,7 +867,7 @@ mkdir -p "${EXPANDS_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${EXPANDS_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Expands
 ) > "${EXPANDS_OUT}/run.log" 2>&1
 require_pattern 'Expands\(expand\.py\)[[:space:]]+OK' "${EXPANDS_OUT}/run.log" \
@@ -897,7 +898,7 @@ mkdir -p "${EXPAND_FAMILY_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${EXPAND_FAMILY_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Rowexpand
 ) > "${EXPAND_FAMILY_OUT}/rowexpand.log" 2>&1
 (
@@ -905,7 +906,7 @@ mkdir -p "${EXPAND_FAMILY_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${EXPAND_FAMILY_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Colexpand
 ) > "${EXPAND_FAMILY_OUT}/colexpand.log" 2>&1
 require_pattern 'Rowexpand\(rowexpand\.py\)[[:space:]]+OK' "${EXPAND_FAMILY_OUT}/rowexpand.log" \
@@ -942,7 +943,7 @@ mkdir -p "${MULS_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${MULS_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Muls
 ) > "${MULS_OUT}/run.log" 2>&1
 require_pattern 'Muls\(muls\.py\)[[:space:]]+OK' "${MULS_OUT}/run.log" \
@@ -965,7 +966,7 @@ mkdir -p "${PARSER_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${PARSER_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t PyPTOIRParser
 ) > "${PARSER_OUT}/run.log" 2>&1 || true
 require_pattern 'PyPTOIRParser\(paged_attention_example_kernel_softmax_prepare\.py\)[[:space:]]+OK' "${PARSER_OUT}/run.log" \
@@ -1034,7 +1035,7 @@ mkdir -p "${ADDS_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${ADDS_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Adds
 ) > "${ADDS_OUT}/run.log" 2>&1
 require_pattern 'Adds\(adds\.py\)[[:space:]]+OK' "${ADDS_OUT}/run.log" \
@@ -1059,7 +1060,7 @@ mkdir -p "${DATAMOVEMENT_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${DATAMOVEMENT_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t DataMovement
 ) > "${DATAMOVEMENT_OUT}/run.log" 2>&1
 require_pattern 'DataMovement\(dataMovement\.py\)[[:space:]]+OK' "${DATAMOVEMENT_OUT}/run.log" \
@@ -1084,7 +1085,7 @@ mkdir -p "${MINS_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${MINS_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Mins
 ) > "${MINS_OUT}/run.log" 2>&1
 require_pattern 'Mins\(mins\.py\)[[:space:]]+OK' "${MINS_OUT}/run.log" \
@@ -1109,7 +1110,7 @@ mkdir -p "${MAXMIN_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${MAXMIN_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Max
 ) > "${MAXMIN_OUT}/max.log" 2>&1
 (
@@ -1117,7 +1118,7 @@ mkdir -p "${MAXMIN_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${MAXMIN_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Min
 ) > "${MAXMIN_OUT}/min.log" 2>&1
 require_pattern 'Max\(max\.py\)[[:space:]]+OK' "${MAXMIN_OUT}/max.log" \
@@ -1154,7 +1155,7 @@ mkdir -p "${CI_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${CI_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Ci
 ) > "${CI_OUT}/run.log" 2>&1
 require_pattern 'Ci\(ci\.py\)[[:space:]]+OK' "${CI_OUT}/run.log" \
@@ -1163,8 +1164,8 @@ CI_CPP="${CI_OUT}/Ci/ci-pto.cpp"
 [[ -f "${CI_CPP}" ]] || { echo "error: missing ${CI_CPP}" >&2; exit 1; }
 require_pattern 'scf\.for' "${CI_CPP}" \
   "Ci output lost software loop lowering"
-require_pattern 'llvm\.store' "${CI_CPP}" \
-  "Ci output lost llvm store lowering"
+require_pattern 'pto\.store_scalar' "${CI_CPP}" \
+  "Ci output lost PTO scalar-store lowering"
 if rg -n 'pto\.tci' "${CI_CPP}" >/dev/null; then
   echo "error: Ci output still contains pto.tci" >&2
   exit 1
@@ -1179,7 +1180,7 @@ mkdir -p "${DIVS_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${DIVS_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Divs
 ) > "${DIVS_OUT}/run.log" 2>&1
 require_pattern 'Divs\(divs\.py\)[[:space:]]+OK' "${DIVS_OUT}/run.log" \
@@ -1204,7 +1205,7 @@ mkdir -p "${DIVS2_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${DIVS2_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Divs2
 ) > "${DIVS2_OUT}/run.log" 2>&1
 require_pattern 'Divs2\(divs2\.py\)[[:space:]]+OK' "${DIVS2_OUT}/run.log" \
@@ -1229,7 +1230,7 @@ mkdir -p "${ROW_REDUCE_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${ROW_REDUCE_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Rowmax
 ) > "${ROW_REDUCE_OUT}/rowmax.log" 2>&1
 (
@@ -1237,7 +1238,7 @@ mkdir -p "${ROW_REDUCE_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${ROW_REDUCE_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Rowmin
 ) > "${ROW_REDUCE_OUT}/rowmin.log" 2>&1
 (
@@ -1245,7 +1246,7 @@ mkdir -p "${ROW_REDUCE_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${ROW_REDUCE_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Rowsum
 ) > "${ROW_REDUCE_OUT}/rowsum.log" 2>&1
 require_pattern 'Rowmax\(rowmax\.py\)[[:space:]]+OK' "${ROW_REDUCE_OUT}/rowmax.log" \
@@ -1306,7 +1307,7 @@ mkdir -p "${COL_REDUCE_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${COL_REDUCE_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Colmax
 ) > "${COL_REDUCE_OUT}/colmax.log" 2>&1
 (
@@ -1314,7 +1315,7 @@ mkdir -p "${COL_REDUCE_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${COL_REDUCE_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Colmin
 ) > "${COL_REDUCE_OUT}/colmin.log" 2>&1
 (
@@ -1322,7 +1323,7 @@ mkdir -p "${COL_REDUCE_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${COL_REDUCE_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Colsum
 ) > "${COL_REDUCE_OUT}/colsum.log" 2>&1
 require_pattern 'Colmax\(colmax\.py\)[[:space:]]+OK' "${COL_REDUCE_OUT}/colmax.log" \
@@ -1373,7 +1374,7 @@ mkdir -p "${PART_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${PART_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Partadd
 ) > "${PART_OUT}/partadd.log" 2>&1
 (
@@ -1381,7 +1382,7 @@ mkdir -p "${PART_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${PART_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Partmax
 ) > "${PART_OUT}/partmax.log" 2>&1
 (
@@ -1389,7 +1390,7 @@ mkdir -p "${PART_OUT}"
   SOC_VERSION="A5" \
   PTOAS_BIN="${PTOAS_BIN}" \
   PTOAS_OUT_DIR="${PART_OUT}" \
-  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir" \
+  PTOAS_FLAGS="--pto-arch a5 --pto-backend=a5vm" \
   ./test/samples/runop.sh -t Partmin
 ) > "${PART_OUT}/partmin.log" 2>&1
 require_pattern 'Partadd\(partadd\.py\)[[:space:]]+OK' "${PART_OUT}/partadd.log" \
