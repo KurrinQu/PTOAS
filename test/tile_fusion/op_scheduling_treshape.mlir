@@ -1,4 +1,4 @@
-// RUN: { ptoas %s --enable-op-fusion --pto-arch=a5 --op-lib-dir=%S/../../oplib/level3 --print-ir-after-all --print-ir-after-all-func-filter=op_scheduling_treshape -o /dev/null 2>&1 || true; } | FileCheck %s
+// RUN: { ptoas %s --enable-op-fusion --pto-backend=a5vm --pto-arch=a5 --op-lib-dir=%S/../../oplib/level3 --print-ir-after-all --print-ir-after-all-func-filter=op_scheduling_treshape -o /dev/null 2>&1 || true; } | FileCheck %s
 
 // 5.4 treshape scheduling regression:
 // an unrelated pto.treshape sits between members of one planned fusion group.

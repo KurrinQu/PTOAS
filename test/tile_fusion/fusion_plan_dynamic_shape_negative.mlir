@@ -1,4 +1,4 @@
-// RUN: { ptoas %s --enable-op-fusion --pto-arch=a5 --op-lib-dir=%S/../../oplib/level3 --print-ir-after-all --print-ir-after-all-func-filter=fusion_plan_dynamic_shape_negative -o /dev/null 2>&1; } | FileCheck %s
+// RUN: { ptoas %s --enable-op-fusion --pto-backend=a5vm --pto-arch=a5 --op-lib-dir=%S/../../oplib/level3 --print-ir-after-all --print-ir-after-all-func-filter=fusion_plan_dynamic_shape_negative -o /dev/null 2>&1; } | FileCheck %s
 
 module {
   func.func @fusion_plan_dynamic_shape_negative(

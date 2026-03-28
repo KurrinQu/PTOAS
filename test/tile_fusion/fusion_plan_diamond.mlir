@@ -1,4 +1,4 @@
-// RUN: { ptoas %s --enable-op-fusion --pto-arch=a5 --op-lib-dir=%S/../../oplib/level3 --print-ir-after-all --print-ir-after-all-func-filter=fusion_plan_diamond -o /dev/null 2>&1 || true; } | awk '/IR Dump After FusionPlan/{found=1} found{if ($0 ~ /^\/\/ -----\/\/ IR Dump After / && $0 !~ /FusionPlan/) exit; print}' | FileCheck %s
+// RUN: { ptoas %s --enable-op-fusion --pto-backend=a5vm --pto-arch=a5 --op-lib-dir=%S/../../oplib/level3 --print-ir-after-all --print-ir-after-all-func-filter=fusion_plan_diamond -o /dev/null 2>&1 || true; } | awk '/IR Dump After FusionPlan/{found=1} found{if ($0 ~ /^\/\/ -----\/\/ IR Dump After / && $0 !~ /FusionPlan/) exit; print}' | FileCheck %s
 
 module {
   func.func @fusion_plan_diamond(

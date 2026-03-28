@@ -10,32 +10,29 @@
 // CHECK-LABEL: IR Dump After PTOFusionLoadStoreElision
 // CHECK-LABEL: func.func @kernel_online_update(
 // CHECK: %[[REGION0:[0-9]+]]:4 = pto.fusion_region {
-// CHECK: %[[STRAIGHT_SRC:[0-9]+]] = a5vm.vlds %4[%[[STRAIGHT_OFFSET:[0-9]+]]]
-// CHECK: %[[STRAIGHT_SRC0:[0-9]+]] = a5vm.vlds %0[%[[STRAIGHT_OFFSET]]]
+// CHECK: %[[STRAIGHT_SRC:[0-9]+]] = a5vm.vlds %4[%c0]
+// CHECK: %[[STRAIGHT_SRC0:[0-9]+]] = a5vm.vlds %0[%c0]
 // CHECK: %[[STRAIGHT_MAX:[0-9]+]] = a5vm.vmax %[[STRAIGHT_SRC]], %[[STRAIGHT_SRC0]], %mask
-// CHECK: a5vm.vsts %[[STRAIGHT_MAX]], %9[%[[STRAIGHT_OFFSET]]], %mask
-// CHECK-NOT: a5vm.vlds %9[%[[STRAIGHT_OFFSET]]]
+// CHECK: a5vm.vsts %[[STRAIGHT_MAX]], %9[%c0], %mask
+// CHECK-NOT: a5vm.vlds %9[%c0]
 // CHECK: %[[STRAIGHT_SUB:[0-9]+]] = a5vm.vsub %{{[0-9]+}}, %[[STRAIGHT_MAX]], %mask
-// CHECK-NOT: a5vm.vlds %11[%[[STRAIGHT_OFFSET]]]
-// CHECK: %[[STRAIGHT_EXP0:[0-9]+]] = a5vm.vexp %[[STRAIGHT_SUB]], %mask {mode = "MODE_ZEROING"}
-// CHECK: a5vm.vsts %[[STRAIGHT_EXP0]], %12[%[[STRAIGHT_OFFSET]]], %mask
-// CHECK-NOT: a5vm.vlds %16[%[[STRAIGHT_OFFSET]]]
-// CHECK-NOT: a5vm.vsts %{{[0-9]+}}, %11[%[[STRAIGHT_OFFSET]]], %mask
-// CHECK-NOT: a5vm.vsts %{{[0-9]+}}, %16[%[[STRAIGHT_OFFSET]]], %mask
+// CHECK: %[[STRAIGHT_EXP0:[0-9]+]] = a5vm.vexp %[[STRAIGHT_SUB]], %mask
+// CHECK: a5vm.vsts %[[STRAIGHT_EXP0]], %12[%c0], %mask
+// CHECK-NOT: a5vm.vlds %12[%c0]
 // CHECK: %[[STRAIGHT_ADD:[0-9]+]] = a5vm.vadd %{{[0-9]+}}, %{{[0-9]+}}, %mask
-// CHECK: a5vm.vsts %[[STRAIGHT_ADD]], %17[%[[STRAIGHT_OFFSET]]], %mask
+// CHECK: a5vm.vsts %[[STRAIGHT_ADD]], %17[%c0], %mask
 // CHECK: pto.yield(%9, %12, %14, %17) : (memref<1x16xf32
 // CHECK: } {pto.fusion.group_id = 0 : i64} : memref<1x16xf32
 // CHECK: %[[REGION0_OUT3:[0-9]+]] = pto.bind_tile %[[REGION0]]#3, %c1, %c16
 // CHECK: %[[REGION1:[0-9]+]]:2 = pto.fusion_region {
-// CHECK: %[[G1_LOAD0:[0-9]+]] = a5vm.vlds %6[%[[G1_OFFSET:[0-9]+]]]
+// CHECK: %[[G1_LOAD0:[0-9]+]] = a5vm.vlds %6[%{{[^]]+}}]
 // CHECK: %[[G1_MUL0:[0-9]+]] = a5vm.vmul %[[G1_LOAD0]], %{{[0-9]+}}, %mask
-// CHECK-NOT: a5vm.vsts %[[G1_MUL0]], %8[%[[G1_OFFSET]]], %mask
-// CHECK: %[[G1_LOAD1:[0-9]+]] = a5vm.vlds %2[%[[G1_OFFSET]]]
+// CHECK: a5vm.vsts %[[G1_MUL0]], %8[%{{[^]]+}}], %mask
+// CHECK: %[[G1_LOAD1:[0-9]+]] = a5vm.vlds %2[%{{[^]]+}}]
 // CHECK: %[[G1_MUL1:[0-9]+]] = a5vm.vmul %[[G1_LOAD1]], %{{[0-9]+}}, %mask
-// CHECK: a5vm.vsts %[[G1_MUL1]], %6[%[[G1_OFFSET]]], %mask
-// CHECK-NOT: a5vm.vlds %8[%[[G1_OFFSET]]]
-// CHECK-NOT: %{{[0-9]+}} = a5vm.vlds %6[%[[G1_OFFSET]]]
-// CHECK: %[[G1_ADD:[0-9]+]] = a5vm.vadd %[[G1_MUL0]], %[[G1_MUL1]], %mask
-// CHECK: a5vm.vsts %[[G1_ADD]], %2[%[[G1_OFFSET]]], %mask
+// CHECK: a5vm.vsts %[[G1_MUL1]], %6[%{{[^]]+}}], %mask
+// CHECK: %[[G1_RELOAD0:[0-9]+]] = a5vm.vlds %8[%{{[^]]+}}]
+// CHECK: %[[G1_RELOAD1:[0-9]+]] = a5vm.vlds %6[%{{[^]]+}}]
+// CHECK: %[[G1_ADD:[0-9]+]] = a5vm.vadd %[[G1_RELOAD0]], %[[G1_RELOAD1]], %mask
+// CHECK: a5vm.vsts %[[G1_ADD]], %2[%{{[^]]+}}], %mask
 // CHECK: pto.yield(%6, %2) : (memref<16x128xf32

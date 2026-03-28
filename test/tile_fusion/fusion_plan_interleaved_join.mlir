@@ -1,4 +1,4 @@
-// RUN: { ptoas %s --enable-op-fusion --pto-arch=a5 --op-lib-dir=%S/../../oplib/level3 --print-ir-after-all --print-ir-after-all-func-filter=fusion_plan_interleaved_join -o /dev/null 2>&1 || true; } | FileCheck %s
+// RUN: { ptoas %s --enable-op-fusion --pto-backend=a5vm --pto-arch=a5 --op-lib-dir=%S/../../oplib/level3 --print-ir-after-all --print-ir-after-all-func-filter=fusion_plan_interleaved_join -o /dev/null 2>&1 || true; } | FileCheck %s
 
 // This case is intentionally about 5.3 planning only:
 // the fusion group is logically valid in the block-local DAG, but its members
