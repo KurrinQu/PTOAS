@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ptoas_bin="./build/tools/ptoas/ptoas"
-a5vm_ops_td="include/PTO/IR/A5VMOps.td"
+vpto_ops_td="include/PTO/IR/VPTOOps.td"
 filecheck_candidates=("FileCheck" "FileCheck-19" "/usr/lib/llvm-19/bin/FileCheck")
 filecheck_bin=""
 
@@ -28,15 +28,15 @@ if [[ ! -x "${ptoas_bin}" ]]; then
 fi
 
 for required in CopyGmToUbuf CopyUbufToGm Vlds Vabs Vsts; do
-  rg -n "def A5VM_${required}Op" "${a5vm_ops_td}" >/dev/null
+  rg -n "def PTO_${required}Op" "${vpto_ops_td}" >/dev/null
 done
 
-if rg -n 'a5vm\.(load|store|abs)\b' "${a5vm_ops_td}" >/dev/null; then
-  echo "error: legacy pseudo-op names detected in ${a5vm_ops_td}" >&2
+if rg -n 'pto\.(load|store|abs)\b' "${vpto_ops_td}" >/dev/null; then
+  echo "error: legacy pseudo-op names detected in ${vpto_ops_td}" >&2
   exit 1
 fi
 
-if rg -n 'a5vm\.(load|store|abs)\b|tabs_precheck\.mlir' test/phase2/*.mlir >/dev/null; then
+if rg -n 'pto\.(load|store|abs)\b|tabs_precheck\.mlir' test/phase2/*.mlir >/dev/null; then
   echo "error: obsolete Phase 2 fixture content detected" >&2
   exit 1
 fi
@@ -52,55 +52,55 @@ if rg -n '^// CHECK(?:(?:-[A-Z]+)?)?: scf\.for$' test/phase2/tabs_abs_loop_shape
 fi
 
 echo "phase2 check: tload_copy_family_shape.mlir"
-"${ptoas_bin}" --pto-backend=a5vm --emit-a5vm test/phase2/tload_copy_family_shape.mlir -o - 2>/dev/null | \
+"${ptoas_bin}" --pto-backend=vpto --emit-vpto test/phase2/tload_copy_family_shape.mlir -o - 2>/dev/null | \
   "${filecheck_bin}" test/phase2/tload_copy_family_shape.mlir
 
 echo "phase2 check: tabs_abs_loop_shape.mlir"
-"${ptoas_bin}" --pto-backend=a5vm --emit-a5vm test/phase2/tabs_abs_loop_shape.mlir -o - 2>/dev/null | \
+"${ptoas_bin}" --pto-backend=vpto --emit-vpto test/phase2/tabs_abs_loop_shape.mlir -o - 2>/dev/null | \
   "${filecheck_bin}" test/phase2/tabs_abs_loop_shape.mlir
 
 echo "phase2 check: tabs_precheck_a5.mlir"
-{ "${ptoas_bin}" --pto-backend=a5vm test/phase2/tabs_precheck_a5.mlir -o /dev/null 2>&1 || true; } | \
+{ "${ptoas_bin}" --pto-backend=vpto test/phase2/tabs_precheck_a5.mlir -o /dev/null 2>&1 || true; } | \
   "${filecheck_bin}" test/phase2/tabs_precheck_a5.mlir
 
 echo "phase2 check: tstore_copy_family_shape.mlir"
-"${ptoas_bin}" --pto-backend=a5vm --emit-a5vm test/phase2/tstore_copy_family_shape.mlir -o - 2>/dev/null | \
+"${ptoas_bin}" --pto-backend=vpto --emit-vpto test/phase2/tstore_copy_family_shape.mlir -o - 2>/dev/null | \
   "${filecheck_bin}" test/phase2/tstore_copy_family_shape.mlir
 
 echo "phase2 check: copy_dynamic_transfer_operands.mlir"
-"${ptoas_bin}" --pto-backend=a5vm --emit-a5vm test/phase2/copy_dynamic_transfer_operands.mlir -o - 2>/dev/null | \
+"${ptoas_bin}" --pto-backend=vpto --emit-vpto test/phase2/copy_dynamic_transfer_operands.mlir -o - 2>/dev/null | \
   "${filecheck_bin}" test/phase2/copy_dynamic_transfer_operands.mlir
 
 echo "phase2 check: copy_dynamic_transfer_operands.mlir HIVM names"
-"${ptoas_bin}" --pto-arch=a5 --pto-backend=a5vm --a5vm-emit-hivm-llvm test/phase2/copy_dynamic_transfer_operands.mlir -o - 2>/dev/null | \
+"${ptoas_bin}" --pto-arch=a5 --pto-backend=vpto --vpto-emit-hivm-llvm test/phase2/copy_dynamic_transfer_operands.mlir -o - 2>/dev/null | \
   "${filecheck_bin}" --check-prefix=CHECK-HIVM test/phase2/copy_dynamic_transfer_operands.mlir
 
 echo "phase2 check: tstore_domain_todos.mlir"
-{ "${ptoas_bin}" --pto-backend=a5vm --emit-a5vm test/phase2/tstore_domain_todos.mlir -o - 2>&1 || true; } | \
+{ "${ptoas_bin}" --pto-backend=vpto --emit-vpto test/phase2/tstore_domain_todos.mlir -o - 2>&1 || true; } | \
   "${filecheck_bin}" test/phase2/tstore_domain_todos.mlir
 
-echo "phase2 check: pto_backend_a5vm_wiring.mlir"
-"${ptoas_bin}" --pto-backend=a5vm --emit-a5vm test/phase2/pto_backend_a5vm_wiring.mlir -o - 2>/dev/null | \
-  "${filecheck_bin}" test/phase2/pto_backend_a5vm_wiring.mlir
+echo "phase2 check: pto_backend_vpto_wiring.mlir"
+"${ptoas_bin}" --pto-backend=vpto --emit-vpto test/phase2/pto_backend_vpto_wiring.mlir -o - 2>/dev/null | \
+  "${filecheck_bin}" test/phase2/pto_backend_vpto_wiring.mlir
 
-echo "phase2 check: pto_backend_a5vm_wiring.mlir EmitC smoke"
-"${ptoas_bin}" --pto-arch=a5 --pto-backend=emitc test/phase2/pto_backend_a5vm_wiring.mlir -o - 2>/dev/null | \
-  "${filecheck_bin}" --check-prefix=EMITC test/phase2/pto_backend_a5vm_wiring.mlir
+echo "phase2 check: pto_backend_vpto_wiring.mlir EmitC smoke"
+"${ptoas_bin}" --pto-arch=a5 --pto-backend=emitc test/phase2/pto_backend_vpto_wiring.mlir -o - 2>/dev/null | \
+  "${filecheck_bin}" --check-prefix=EMITC test/phase2/pto_backend_vpto_wiring.mlir
 
-echo "phase2 check: a5vm_fusion_pipeline_order.mlir"
-"${ptoas_bin}" test/samples/PyPTOIRParser/paged_attention_example_kernel_online_update.pto --enable-op-fusion --pto-arch=a5 --pto-backend=a5vm --print-ir-after-all --print-ir-after-all-func-filter=kernel_online_update -o /dev/null > /tmp/a5vm_fusion_pipeline_order.out 2>&1
-"${filecheck_bin}" test/phase2/a5vm_fusion_pipeline_order.mlir < /tmp/a5vm_fusion_pipeline_order.out
-! rg 'IR Dump After (PTOValidateSimdIR|PTOInstantiateAndLowerToLibCall|PTOInlineLibCall)' /tmp/a5vm_fusion_pipeline_order.out
+echo "phase2 check: vpto_fusion_pipeline_order.mlir"
+"${ptoas_bin}" test/samples/PyPTOIRParser/paged_attention_example_kernel_online_update.pto --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --print-ir-after-all --print-ir-after-all-func-filter=kernel_online_update -o /dev/null > /tmp/vpto_fusion_pipeline_order.out 2>&1
+"${filecheck_bin}" test/phase2/vpto_fusion_pipeline_order.mlir < /tmp/vpto_fusion_pipeline_order.out
+! rg 'IR Dump After (PTOValidateSimdIR|PTOInstantiateAndLowerToLibCall|PTOInlineLibCall)' /tmp/vpto_fusion_pipeline_order.out
 
-echo "phase2 check: a5vm_fusion_region_lifecycle.mlir (low-level)"
-"${ptoas_bin}" test/samples/PyPTOIRParser/paged_attention_example_kernel_online_update.pto --enable-op-fusion --pto-arch=a5 --pto-backend=a5vm --print-ir-after-all --print-ir-after-all-func-filter=kernel_online_update -o /dev/null 2>&1 | \
+echo "phase2 check: vpto_fusion_region_lifecycle.mlir (low-level)"
+"${ptoas_bin}" test/samples/PyPTOIRParser/paged_attention_example_kernel_online_update.pto --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --print-ir-after-all --print-ir-after-all-func-filter=kernel_online_update -o /dev/null 2>&1 | \
   awk '/IR Dump After PTOLowLevelLoopFusion/{found=1} found{if ($0 ~ /^\/\/ -----\/\/ IR Dump After / && $0 !~ /PTOLowLevelLoopFusion/) exit; print}' | \
-  "${filecheck_bin}" --check-prefix=LOW test/phase2/a5vm_fusion_region_lifecycle.mlir
+  "${filecheck_bin}" --check-prefix=LOW test/phase2/vpto_fusion_region_lifecycle.mlir
 
-echo "phase2 check: a5vm_fusion_region_lifecycle.mlir (flatten)"
-"${ptoas_bin}" test/samples/PyPTOIRParser/paged_attention_example_kernel_online_update.pto --enable-op-fusion --pto-arch=a5 --pto-backend=a5vm --print-ir-after-all --print-ir-after-all-func-filter=kernel_online_update -o /dev/null 2>&1 | \
+echo "phase2 check: vpto_fusion_region_lifecycle.mlir (flatten)"
+"${ptoas_bin}" test/samples/PyPTOIRParser/paged_attention_example_kernel_online_update.pto --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --print-ir-after-all --print-ir-after-all-func-filter=kernel_online_update -o /dev/null 2>&1 | \
   awk '/IR Dump After PTOFlattenFusionRegion/{found=1} found{if ($0 ~ /^\/\/ -----\/\/ IR Dump After / && $0 !~ /PTOFlattenFusionRegion/) exit; print}' | \
-  "${filecheck_bin}" --check-prefix=FLAT test/phase2/a5vm_fusion_region_lifecycle.mlir
+  "${filecheck_bin}" --check-prefix=FLAT test/phase2/vpto_fusion_region_lifecycle.mlir
 
 echo "phase2 check: ctest"
 ctest --test-dir build --output-on-failure

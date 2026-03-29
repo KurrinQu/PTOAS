@@ -67,6 +67,8 @@ class PTO_DpsOp<string mnemonic, list<Trait> traits = []>
 class PTO_Op<string mnemonic, list<Trait> traits = []>
     : Op<PTO_Dialect, mnemonic, !listconcat(traits, [])>;
 
+include "PTO/IR/VPTOOps.td"
+
 //===----------------------------------------------------------------------===//
 // Pointer/View Ops (for your front-end IR)
 //===----------------------------------------------------------------------===//
@@ -1119,8 +1121,10 @@ def SetFlagOp : PTO_Op<"set_flag"> {
   let arguments = (ins PTO_PipeAttr:$src_pipe, PTO_PipeAttr:$dst_pipe,
       PTO_EventAttr:$event_id);
   let results = (outs);
-  let assemblyFormat = [{
-    `[` $src_pipe `,` $dst_pipe `,` $event_id `]` attr-dict
+  let extraClassDeclaration = [{
+    void print(::mlir::OpAsmPrinter &p);
+    static ::mlir::ParseResult parse(::mlir::OpAsmParser &parser,
+                                     ::mlir::OperationState &result);
   }];
 }
 
@@ -1129,14 +1133,19 @@ def WaitFlagOp : PTO_Op<"wait_flag"> {
   let arguments = (ins PTO_PipeAttr:$src_pipe, PTO_PipeAttr:$dst_pipe,
       PTO_EventAttr:$event_id);
   let results = (outs);
-  let assemblyFormat = [{
-    `[` $src_pipe `,` $dst_pipe `,` $event_id `]` attr-dict
+  let extraClassDeclaration = [{
+    void print(::mlir::OpAsmPrinter &p);
+    static ::mlir::ParseResult parse(::mlir::OpAsmParser &parser,
+                                     ::mlir::OperationState &result);
   }];
 }
 
 //===----------------------------------------------------------------------===//
 // Buffer-ID Synchronization (A5)
 //===----------------------------------------------------------------------===//
+
+def PTO_PipeEndpointLikeAttr
+    : AnyAttrOf<[PTO_PipeEventTypeAttr, PTO_SyncOpTypeAttr, PTO_PipeAttr]>;
 
 def GetBufOp : PTO_Op<"get_buf"> {
   let summary = "Acquire a buffer-id token for a sync op type (A5)";
@@ -1153,15 +1162,17 @@ def GetBufOp : PTO_Op<"get_buf"> {
     This op is intended to be lowered to the CCEC builtin intrinsic `get_buf`.
   }];
 
-  let arguments = (ins PTO_PipeEventTypeLikeAttr:$op_type, I32Attr:$buf_id,
+  let arguments = (ins PTO_PipeEndpointLikeAttr:$op_type, I32Attr:$buf_id,
       DefaultValuedAttr<I32Attr, "0">:$mode);
 
   let results = (outs);
 
   let hasVerifier = 1;
 
-  let assemblyFormat = [{
-    `[` $op_type `,` $buf_id `]` attr-dict
+  let extraClassDeclaration = [{
+    void print(::mlir::OpAsmPrinter &p);
+    static ::mlir::ParseResult parse(::mlir::OpAsmParser &parser,
+                                     ::mlir::OperationState &result);
   }];
 }
 
@@ -1174,15 +1185,17 @@ def RlsBufOp : PTO_Op<"rls_buf"> {
     This op is intended to be lowered to the CCEC builtin intrinsic `rls_buf`.
   }];
 
-  let arguments = (ins PTO_PipeEventTypeLikeAttr:$op_type, I32Attr:$buf_id,
+  let arguments = (ins PTO_PipeEndpointLikeAttr:$op_type, I32Attr:$buf_id,
       DefaultValuedAttr<I32Attr, "0">:$mode);
 
   let results = (outs);
 
   let hasVerifier = 1;
 
-  let assemblyFormat = [{
-    `[` $op_type `,` $buf_id `]` attr-dict
+  let extraClassDeclaration = [{
+    void print(::mlir::OpAsmPrinter &p);
+    static ::mlir::ParseResult parse(::mlir::OpAsmParser &parser,
+                                     ::mlir::OperationState &result);
   }];
 }
 

@@ -1,6 +1,6 @@
 ---
 name: ptoas-build-and-abs
-description: Rebuild PTOAS in the repo build directory and compile the Abs sample to inspect generated A5VM output. Use when the user asks to build ptoas, rebuild the current build tree, or run/check the Abs sample output.
+description: Rebuild PTOAS in the repo build directory and compile the Abs sample to inspect generated VPTO output. Use when the user asks to build ptoas, rebuild the current build tree, or run/check the Abs sample output.
 ---
 
 # PTOAS Build And Abs
@@ -9,7 +9,7 @@ Use this skill when the task is specifically about:
 - rebuilding `ptoas` in this repo
 - doing a full repo build in the repo-local `build/` directory
 - compiling `test/samples/Abs/abs.py`
-- inspecting the generated A5VM text for `Abs`
+- inspecting the generated VPTO text for `Abs`
 
 ## Canonical Commands
 
@@ -49,49 +49,49 @@ source env.sh
 
 This sets `PYTHONPATH`, `LD_LIBRARY_PATH`, and the MLIR/PTO python roots needed by the samples.
 
-### 4. Compile `Abs` to A5VM text
+### 4. Compile `Abs` to VPTO text
 
 Use `runop.sh` with explicit `PTOAS_BIN`, explicit output directory, and A5 backend flags:
 
 ```bash
 source env.sh
 PTOAS_BIN="$PWD/build/tools/ptoas/ptoas" \
-PTOAS_OUT_DIR=/tmp/ptoas-abs-a5vm \
-PTOAS_FLAGS='--pto-arch a5 --pto-backend=a5vm --a5vm-print-ir' \
+PTOAS_OUT_DIR=/tmp/ptoas-abs-vpto \
+PTOAS_FLAGS='--pto-arch a5 --pto-backend=vpto --vpto-print-ir' \
 ./test/samples/runop.sh -t Abs
 ```
 
 Expected outputs:
-- `/tmp/ptoas-abs-a5vm/Abs/abs-pto-ir.pto`
-- `/tmp/ptoas-abs-a5vm/Abs/abs-pto.cpp`
+- `/tmp/ptoas-abs-vpto/Abs/abs-pto-ir.pto`
+- `/tmp/ptoas-abs-vpto/Abs/abs-pto.cpp`
 
-Despite the `.cpp` suffix, on the A5VM backend this file contains the emitted A5VM textual IR.
+Despite the `.cpp` suffix, on the VPTO backend this file contains the emitted VPTO textual IR.
 
 ## Inspection
 
 The main file to show the user is:
 
 ```bash
-sed -n '1,260p' /tmp/ptoas-abs-a5vm/Abs/abs-pto.cpp
+sed -n '1,260p' /tmp/ptoas-abs-vpto/Abs/abs-pto.cpp
 ```
 
 For quick sanity checks, look for:
-- `a5vm.copy_gm_to_ubuf`
+- `vpto.copy_gm_to_ubuf`
 - `src_strides = [32, 1]`
 - `trace_offsets = [0, 0]`
 - `trace_sizes = [32, 32]`
 - `cce_aiv_loop_hint`
 - `llvm.loop.aivector_scope`
-- `a5vm.vlds`
-- `a5vm.vabs`
-- `a5vm.vsts`
-- `a5vm.copy_ubuf_to_gm`
+- `vpto.vlds`
+- `vpto.vabs`
+- `vpto.vsts`
+- `vpto.copy_ubuf_to_gm`
 
 ## Reporting Back
 
 When you ran `Abs`, report:
 - whether `ptoas` had to be rebuilt
-- the exact generated file path for the A5VM text
+- the exact generated file path for the VPTO text
 - whether the output contains the expected copy-family metadata and vec-scope carrier attrs
 
 If the build fails, include the first concrete blocker:

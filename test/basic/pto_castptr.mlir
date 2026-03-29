@@ -1,5 +1,5 @@
-// RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm --pto-arch a5 --emit-a5vm %s -o - 2>/dev/null | FileCheck %s --check-prefix=CHECK-IR
-// RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm --pto-arch a5 --a5vm-emit-hivm-llvm %s -o - 2>/dev/null | FileCheck %s --check-prefix=CHECK-LLVM
+// RUN: ./build/tools/ptoas/ptoas --pto-backend=vpto --pto-arch a5 --emit-vpto %s -o - 2>/dev/null | FileCheck %s --check-prefix=CHECK-IR
+// RUN: ./build/tools/ptoas/ptoas --pto-backend=vpto --pto-arch a5 --vpto-emit-hivm-llvm %s -o - 2>/dev/null | FileCheck %s --check-prefix=CHECK-LLVM
 
 // CHECK-IR-LABEL: func.func @pto_castptr
 // CHECK-IR: %[[P0:.*]] = pto.castptr %arg0 : i64 -> !pto.ptr<f32, ub>

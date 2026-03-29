@@ -1496,7 +1496,7 @@ struct PTOViewToMemrefPass
                                                   op->getOperand(1),
                                                   op->getOperand(2));
         (void)config;
-        copyAttrIfPresent(op, newOp, kA5VMLoweringChoiceAttrName);
+        copyAttrIfPresent(op, newOp, kPTOLoweringChoiceAttrName);
         rewriter.replaceOp(op, newOp->getResults());
       }
 

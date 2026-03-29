@@ -20,7 +20,7 @@ Do not use this skill as the primary entry point when the task is only about:
 - assembling a fat object or replacement kernel library from the LLVM path
 
 When this validation flow needs a custom LLVM IR or LLVM BC artifact, use
-`ptoas-a5vm-llvm-artifacts` first to build that artifact, then return here to
+`ptoas-vpto-llvm-artifacts` first to build that artifact, then return here to
 run the testcase.
 
 ## Preconditions
@@ -111,7 +111,7 @@ Typical build expectations:
 
 If you need to replace the default `libabs_kernel.so` with one assembled from
 an LLVM IR or LLVM BC path, build that artifact with
-`ptoas-a5vm-llvm-artifacts` and place it first in `LD_LIBRARY_PATH` when
+`ptoas-vpto-llvm-artifacts` and place it first in `LD_LIBRARY_PATH` when
 running `./build/abs`.
 
 ### 4. Generate golden inputs

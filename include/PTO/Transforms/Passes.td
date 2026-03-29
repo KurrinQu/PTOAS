@@ -12,7 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// The A5VM backend is emitted from tools/ptoas rather than a TableGen pass;
+// The VPTO backend is emitted from tools/ptoas rather than a TableGen pass;
 // these registrations continue to describe the shared pre-backend pipeline.
 
 #ifndef MLIR_DIALECT_PTO_PASSES
@@ -147,14 +147,14 @@ def PTOFusionRegionGen : Pass<"pto-fusion-region-gen", "func::FuncOp"> {
   let dependentDialects = ["mlir::pto::PTODialect"];
 }
 
-def PTOA5VMVersionSelection
-    : Pass<"pto-a5vm-version-selection", "func::FuncOp"> {
-  let summary = "Select and materialize per-op A5VM lowering variants";
+def PTOVPTOVersionSelection
+    : Pass<"pto-vpto-version-selection", "func::FuncOp"> {
+  let summary = "Select and materialize per-op VPTO lowering variants";
   let description = [{
-    Traverses all A5VM candidate PTO ops in a function and annotates each op
-    with a per-op `pto.a5vm_lowering_choice` contract for downstream lowering.
+    Traverses all VPTO candidate PTO ops in a function and annotates each op
+    with a per-op `pto.lowering_choice` contract for downstream lowering.
   }];
-  let constructor = "mlir::pto::createPTOA5VMVersionSelectionPass()";
+  let constructor = "mlir::pto::createPTOVPTOVersionSelectionPass()";
   let dependentDialects = ["mlir::func::FuncDialect", "mlir::pto::PTODialect"];
 }
 
@@ -255,8 +255,8 @@ def PTOLowerSimdToVector : Pass<"pto-lower-simd-to-vector", "ModuleOp"> {
                            "mlir::memref::MemRefDialect"];
 }
 
-def PTOA5VMIfCanonicalize
-    : Pass<"pto-a5vm-if-canonicalize", "func::FuncOp"> {
+def PTOVPTOIfCanonicalize
+    : Pass<"pto-vpto-if-canonicalize", "func::FuncOp"> {
   let summary =
       "Canonicalize only scf.if cleanup patterns before A5 low-level fusion";
   let description = [{
@@ -265,45 +265,45 @@ def PTOA5VMIfCanonicalize
     pre-loop-fusion cleanup focused on removing residual constant-control-flow
     structure while preserving surrounding `scf.for` loop headers.
   }];
-  let constructor = "mlir::pto::createPTOA5VMIfCanonicalizePass()";
+  let constructor = "mlir::pto::createPTOVPTOIfCanonicalizePass()";
   let dependentDialects = ["mlir::func::FuncDialect",
                            "mlir::arith::ArithDialect",
                            "mlir::scf::SCFDialect"];
 }
 
-def PTOA5VMExpandBridgeOps
-    : Pass<"pto-a5vm-expand-bridge-ops", "func::FuncOp"> {
+def PTOVPTOExpandBridgeOps
+    : Pass<"pto-vpto-expand-bridge-ops", "func::FuncOp"> {
   let summary =
-      "Expand temporary A5VM bridge ops back to emission-ready A5VM IR";
+      "Expand temporary VPTO bridge ops back to emission-ready VPTO IR";
   let description = [{
-    Low-level fusion may keep temporary bridge ops in A5VM IR so legality and
+    Low-level fusion may keep temporary bridge ops in VPTO IR so legality and
     alias analysis can still see memref-form operands. This pass expands those
-    bridge ops back to the existing emission-ready pointer-level A5VM forms
+    bridge ops back to the existing emission-ready pointer-level VPTO forms
     before backend emission.
   }];
-  let constructor = "mlir::pto::createPTOA5VMExpandBridgeOpsPass()";
+  let constructor = "mlir::pto::createPTOVPTOExpandBridgeOpsPass()";
   let dependentDialects = ["mlir::func::FuncDialect",
                            "mlir::arith::ArithDialect",
                            "mlir::memref::MemRefDialect",
                            "mlir::LLVM::LLVMDialect",
-                           "mlir::a5vm::A5VMDialect"];
+                           "mlir::pto::PTODialect"];
 }
 
-def PTOA5VMPtrBoundary
-    : Pass<"pto-a5vm-ptr-boundary", "ModuleOp"> {
+def PTOVPTOPtrBoundary
+    : Pass<"pto-vpto-ptr-boundary", "ModuleOp"> {
   let summary =
-      "Canonicalize the final A5VM emission boundary from memref-first IR to ptr ABI";
+      "Canonicalize the final VPTO emission boundary from memref-first IR to ptr ABI";
   let description = [{
     Runs the final emission-boundary ptr canonicalization after the backend
     mainline has finished its memref-first optimization pipeline. This pass
     rewrites eligible memref function arguments to same-space `!pto.ptr`,
-    rejects memref function results, canonicalizes supported body-level A5VM
+    rejects memref function results, canonicalizes supported body-level VPTO
     buffer-like ops to ptr-form, and drops dead boundary/view scaffold such as
     trivial `pto.castptr`, `pto.bind_tile`, `memref.subview`,
     `memref.reinterpret_cast`, and `memref.memory_space_cast` once they become
     unused.
   }];
-  let constructor = "mlir::pto::createPTOA5VMPtrBoundaryPass()";
+  let constructor = "mlir::pto::createPTOVPTOPtrBoundaryPass()";
   let dependentDialects = ["mlir::func::FuncDialect",
                            "mlir::pto::PTODialect",
                            "mlir::memref::MemRefDialect"];
@@ -311,11 +311,11 @@ def PTOA5VMPtrBoundary
 
 def PTOLowLevelLoopFusion : Pass<"pto-low-level-loop-fusion", "ModuleOp"> {
   let summary =
-      "Fuse adjacent A5VM post-lowering loop nests inside pto.fusion_region";
+      "Fuse adjacent VPTO post-lowering loop nests inside pto.fusion_region";
   let description = [{
     Conservatively fuses adjacent post-lowering loop stages for already-planned
-    fusion groups after PTOToA5VM. The formal input contract for this pass is
-    low-level `scf.for + a5vm.*` structure that remains inside
+    fusion groups after PTOToVPTO. The formal input contract for this pass is
+    low-level `scf.for + pto.*` structure that remains inside
     `pto.fusion_region` until explicit flatten.
     Legacy `pto.simd.vec_scope` / `vector.masked_*` bridge IR is no longer the
     documented mainline contract for the A5 backend pipeline.
@@ -333,33 +333,33 @@ def PTOLowLevelLoopFusion : Pass<"pto-low-level-loop-fusion", "ModuleOp"> {
 def PTOFusionPredicateElision
     : Pass<"pto-fusion-predicate-elision", "func::FuncOp"> {
   let summary =
-      "Elide redundant fusion-local A5VM plt predicate materialization";
+      "Elide redundant fusion-local VPTO plt predicate materialization";
   let description = [{
-    Scans `pto.fusion_region` bodies after the A5VM post-lowering CSE step and
-    prepares fusion-local redundant `a5vm.plt_*` predicate elimination before
+    Scans `pto.fusion_region` bodies after the VPTO post-lowering CSE step and
+    prepares fusion-local redundant `pto.plt_*` predicate elimination before
     load/store cleanup and explicit flatten.
   }];
   let constructor = "mlir::pto::createPTOFusionPredicateElisionPass()";
   let dependentDialects = ["mlir::func::FuncDialect", "mlir::pto::PTODialect",
                            "mlir::arith::ArithDialect", "mlir::scf::SCFDialect",
-                           "mlir::a5vm::A5VMDialect"];
+                           "mlir::pto::PTODialect"];
 }
 
 def PTOFusionLoadStoreElision
     : Pass<"pto-fusion-load-store-elision", "func::FuncOp"> {
   let summary =
-      "Elide fusion-local A5VM load/store round trips before flattening";
+      "Elide fusion-local VPTO load/store round trips before flattening";
   let description = [{
     Removes local store materialization inside canonical fused loop bodies before
-    explicit flatten. The formal input contract is A5VM post-lowering
-    `scf.for + a5vm.*` (carrier loop marked with `llvm.loop.aivector_scope`).
+    explicit flatten. The formal input contract is VPTO post-lowering
+    `scf.for + pto.*` (carrier loop marked with `llvm.loop.aivector_scope`).
     It also performs conservative frontier-aware tail-store cleanup for
     non-escaping fusion-region internal buffers.
   }];
   let constructor = "mlir::pto::createPTOFusionLoadStoreElisionPass()";
   let dependentDialects = ["mlir::func::FuncDialect", "mlir::pto::PTODialect",
                            "mlir::arith::ArithDialect", "mlir::scf::SCFDialect",
-                           "mlir::a5vm::A5VMDialect"];
+                           "mlir::pto::PTODialect"];
 }
 
 def PTOFlattenFusionRegion : Pass<"pto-flatten-fusion-region", "func::FuncOp"> {
@@ -374,24 +374,23 @@ def PTOFlattenFusionRegion : Pass<"pto-flatten-fusion-region", "func::FuncOp"> {
   let dependentDialects = ["mlir::pto::PTODialect"];
 }
 
-def PTOToA5VM : Pass<"pto-to-a5vm", "ModuleOp"> {
-  let summary = "Lower PTO tile ops to A5VM backend ops";
+def PTOToVPTO : Pass<"pto-to-vpto", "ModuleOp"> {
+  let summary = "Lower PTO tile ops to VPTO backend ops";
   let description = [{
-    Lowers PTO tile ops to A5VM backend ops. For already-planned fusion groups,
+    Lowers PTO tile ops to VPTO backend ops. For already-planned fusion groups,
     the pass rewrites the `pto.fusion_region` body in place and preserves the
     wrapper until explicit flatten. Residual non-fused PTO ops may continue to
     be lowered directly in their parent block and are not wrapped into
     synthetic `pto.fusion_region` containers solely for backend lowering.
   }];
-  let constructor = "mlir::pto::createLowerPTOToA5VMPass()";
+  let constructor = "mlir::pto::createLowerPTOToVPTOPass()";
   let options = [
-    Option<"a5vmLoweringStrategy", "a5vm-lowering-strategy", "std::string",
+    Option<"loweringStrategy", "pto-lowering-strategy", "std::string",
            "\"post-update\"",
            "vector lowering strategy: post-update or no-post-update">
   ];
   let dependentDialects = [
     "pto::PTODialect",
-    "a5vm::A5VMDialect",
     "func::FuncDialect",
     "arith::ArithDialect",
     "memref::MemRefDialect",

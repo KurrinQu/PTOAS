@@ -45,19 +45,19 @@ module attributes {pto.target_arch = "a5"} {
     // Copy 32x32 f32 tile from Global Memory to Unified Buffer
     // =========================================================================
     // Configure DMA loop size (single tile: 1x1 loop, no stride needed)
-    a5vm.set_loop_size_outtoub %c1_i64, %c1_i64 : i64, i64
+    pto.set_loop_size_outtoub %c1_i64, %c1_i64 : i64, i64
 
     // DMA copy: GM[arg0] -> UB[0]
     // Args: src, dst, sid=0, n_burst=32, len_burst=128,
     //       left_pad=0, right_pad=0, data_select=false, l2_cache=0, gm_stride=128, ub_stride=128
     %false = arith.constant false
-    a5vm.copy_gm_to_ubuf %arg0, %ub_in, %c0_i64, %c32_i64, %c128_i64, %c0_i64, %c0_i64, %false, %c0_i64, %c128_i64, %c128_i64 : !pto.ptr<f32, gm>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i1, i64, i64, i64
+    pto.copy_gm_to_ubuf %arg0, %ub_in, %c0_i64, %c32_i64, %c128_i64, %c0_i64, %c0_i64, %false, %c0_i64, %c128_i64, %c128_i64 : !pto.ptr<f32, gm>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i1, i64, i64, i64
 
     // =========================================================================
     // Sync: MTE2 -> V pipe handoff (wait for DMA to complete before compute)
     // =========================================================================
-    a5vm.set_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
-    a5vm.wait_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
+    pto.set_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
+    pto.wait_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
 
     // =========================================================================
     // Stage 2: Compute vabs (V pipe)
@@ -68,16 +68,16 @@ module attributes {pto.target_arch = "a5"} {
       // Predicated vector loop with explicit offsets (no post-update)
       %_:1 = scf.for %arg3 = %c0 to %c1024 step %c64 iter_args(%remaining = %c1024_i32) -> (i32) {
         // Generate predicate mask: if remaining >= 64, full mask; else partial mask for tail
-        %mask, %next_remaining = a5vm.plt_b32 %remaining : i32 -> !a5vm.mask, i32
+        %mask, %next_remaining = pto.plt_b32 %remaining : i32 -> !pto.mask, i32
 
         // Load 64 f32 elements from UB input at current offset
-        %vec_in = a5vm.vlds %ub_in[%arg3] : !pto.ptr<f32, ub> -> !a5vm.vec<64xf32>
+        %vec_in = pto.vlds %ub_in[%arg3] : !pto.ptr<f32, ub> -> !pto.vec<64xf32>
 
         // Compute element-wise absolute value with predicate mask
-        %vec_out = a5vm.vabs %vec_in, %mask : !a5vm.vec<64xf32>, !a5vm.mask -> !a5vm.vec<64xf32>
+        %vec_out = pto.vabs %vec_in, %mask : !pto.vec<64xf32>, !pto.mask -> !pto.vec<64xf32>
 
         // Store result to UB output at current offset
-        a5vm.vsts %vec_out, %ub_out[%arg3], %mask : !a5vm.vec<64xf32>, !pto.ptr<f32, ub>, !a5vm.mask
+        pto.vsts %vec_out, %ub_out[%arg3], %mask : !pto.vec<64xf32>, !pto.ptr<f32, ub>, !pto.mask
 
         scf.yield %next_remaining : i32
       }
@@ -86,23 +86,23 @@ module attributes {pto.target_arch = "a5"} {
     // =========================================================================
     // Sync: V -> MTE3 pipe handoff (wait for compute to complete before DMA out)
     // =========================================================================
-    a5vm.set_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
-    a5vm.wait_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
+    pto.set_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
+    pto.wait_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
 
     // =========================================================================
     // Stage 3: DMA UB -> GM (MTE3 pipe)
     // Copy result tile from Unified Buffer back to Global Memory
     // =========================================================================
     // Configure DMA loop size (single tile: 1x1 loop, no stride needed)
-    a5vm.set_loop_size_ubtoout %c1_i64, %c1_i64 : i64, i64
+    pto.set_loop_size_ubtoout %c1_i64, %c1_i64 : i64, i64
 
     // DMA copy: UB[4096] -> GM[arg1]
-    a5vm.copy_ubuf_to_gm %ub_out, %arg1, %c0_i64, %c32_i64, %c128_i64, %c0_i64, %c128_i64, %c128_i64 : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64
+    pto.copy_ubuf_to_gm %ub_out, %arg1, %c0_i64, %c32_i64, %c128_i64, %c0_i64, %c128_i64, %c128_i64 : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64
 
     // =========================================================================
     // Final barrier: ensure all pipes complete before kernel exit
     // =========================================================================
-    a5vm.pipe_barrier "PIPE_ALL"
+    pto.barrier #pto.pipe<PIPE_ALL>
 
     return
   }

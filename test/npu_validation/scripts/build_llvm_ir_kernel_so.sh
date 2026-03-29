@@ -9,7 +9,7 @@ ASCEND_HOME_PATH="${ASCEND_HOME_PATH:-}"
 PTO_ISA_ROOT="${PTO_ISA_ROOT:-}"
 PTOAS_BIN="${PTOAS_BIN:-${ROOT_DIR}/build/tools/ptoas/ptoas}"
 PTOAS_FLAGS="${PTOAS_FLAGS:---pto-arch a5}"
-A5VM_FLAGS="${A5VM_FLAGS:---pto-backend=a5vm --a5vm-emit-hivm-llvm}"
+VPTO_FLAGS="${VPTO_FLAGS:---pto-backend=vpto --vpto-emit-hivm-llvm}"
 SAMPLE_NAME="${SAMPLE_NAME:-}"
 TESTCASE_NAME="${TESTCASE_NAME:-}"
 
@@ -137,7 +137,7 @@ mkdir -p "${LLVM_OUT_ROOT}"
 set +e
 PTOAS_BIN="${PTOAS_BIN}" \
 PTOAS_OUT_DIR="${LLVM_OUT_ROOT}" \
-PTOAS_FLAGS="${PTOAS_FLAGS} ${A5VM_FLAGS}" \
+PTOAS_FLAGS="${PTOAS_FLAGS} ${VPTO_FLAGS}" \
   "${ROOT_DIR}/test/samples/runop.sh" -t "${SAMPLE_NAME}" >"${RUNOP_LOG}" 2>&1
 RUNOP_RC=$?
 set -e

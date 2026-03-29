@@ -101,10 +101,10 @@ private:
 /// Function attribute that marks an explicit PTO kernel entry.
 inline constexpr llvm::StringLiteral kPTOEntryAttrName = "pto.entry";
 inline constexpr llvm::StringLiteral kLegacyHACCEntryAttrName = "hacc.entry";
-inline constexpr llvm::StringLiteral kA5VMLoweringChoiceAttrName =
-    "pto.a5vm_lowering_choice";
-inline constexpr llvm::StringLiteral kA5VMVersionSelectionAppliedAttrName =
-    "pto.a5vm_version_selection_applied";
+inline constexpr llvm::StringLiteral kPTOLoweringChoiceAttrName =
+    "pto.lowering_choice";
+inline constexpr llvm::StringLiteral kPTOVersionSelectionAppliedAttrName =
+    "pto.version_selection_applied";
 
 /// Return true if the function carries an explicit entry marker.
 bool hasExplicitPTOEntryAttr(func::FuncOp func);

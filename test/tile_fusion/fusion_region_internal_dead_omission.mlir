@@ -5,7 +5,7 @@
 // earlier write-instance into pto.yield / region results. The shared storage
 // stays outside the region for the later overwrite, while only the truly
 // escaping write is yielded.
-// This test intentionally stops at FusionRegionGen. The later A5VM lowering
+// This test intentionally stops at FusionRegionGen. The later VPTO lowering
 // path still rejects the dynamic-valid trowexpandmul in this fixture, so
 // post-lowering store-elision checks are obsolete here.
 

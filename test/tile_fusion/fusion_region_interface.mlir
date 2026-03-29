@@ -1,7 +1,7 @@
-// RUN: { ptoas %s --enable-op-fusion --pto-backend=a5vm --pto-arch=a5 --op-lib-dir=%S/../../oplib/level3 --print-ir-after-all --print-ir-after-all-func-filter=fusion_region_interface -o /dev/null 2>&1 || true; } | awk '/IR Dump After PTOFusionRegionGen/{found=1} found{if ($0 ~ /^\/\/ -----\/\/ IR Dump After / && $0 !~ /PTOFusionRegionGen/) exit; print}' | FileCheck %s --check-prefix=GEN
-// RUN: { ptoas %s --enable-op-fusion --pto-backend=a5vm --pto-arch=a5 --op-lib-dir=%S/../../oplib/level3 --print-ir-after-all --print-ir-after-all-func-filter=fusion_region_interface -o /dev/null 2>&1 || true; } | awk '/IR Dump After .*PTOViewToMemrefPass/{found=1} found{if ($0 ~ /^\/\/ -----\/\/ IR Dump After / && $0 !~ /PTOViewToMemrefPass/) exit; print}' | FileCheck %s --check-prefix=VIEW
-// RUN: { ptoas %s --enable-op-fusion --pto-backend=a5vm --pto-arch=a5 --op-lib-dir=%S/../../oplib/level3 --print-ir-after-all --print-ir-after-all-func-filter=fusion_region_interface -o /dev/null 2>&1 || true; } | awk '/IR Dump After PlanMemory/{found=1} found{if ($0 ~ /^\/\/ -----\/\/ IR Dump After / && $0 !~ /PlanMemory/) exit; print}' | FileCheck %s --check-prefix=PLAN
-// RUN: { ptoas %s --enable-op-fusion --pto-backend=a5vm --enable-insert-sync --pto-arch=a5 --op-lib-dir=%S/../../oplib/level3 --print-ir-after-all --print-ir-after-all-func-filter=fusion_region_interface -o /dev/null 2>&1 || true; } | awk '/IR Dump After PTOInsertSync/{found=1} found{if ($0 ~ /^\/\/ -----\/\/ IR Dump After / && $0 !~ /PTOInsertSync/) exit; print}' | FileCheck %s --check-prefix=SYNC
+// RUN: { ptoas %s --enable-op-fusion --pto-backend=vpto --pto-arch=a5 --op-lib-dir=%S/../../oplib/level3 --print-ir-after-all --print-ir-after-all-func-filter=fusion_region_interface -o /dev/null 2>&1 || true; } | awk '/IR Dump After PTOFusionRegionGen/{found=1} found{if ($0 ~ /^\/\/ -----\/\/ IR Dump After / && $0 !~ /PTOFusionRegionGen/) exit; print}' | FileCheck %s --check-prefix=GEN
+// RUN: { ptoas %s --enable-op-fusion --pto-backend=vpto --pto-arch=a5 --op-lib-dir=%S/../../oplib/level3 --print-ir-after-all --print-ir-after-all-func-filter=fusion_region_interface -o /dev/null 2>&1 || true; } | awk '/IR Dump After .*PTOViewToMemrefPass/{found=1} found{if ($0 ~ /^\/\/ -----\/\/ IR Dump After / && $0 !~ /PTOViewToMemrefPass/) exit; print}' | FileCheck %s --check-prefix=VIEW
+// RUN: { ptoas %s --enable-op-fusion --pto-backend=vpto --pto-arch=a5 --op-lib-dir=%S/../../oplib/level3 --print-ir-after-all --print-ir-after-all-func-filter=fusion_region_interface -o /dev/null 2>&1 || true; } | awk '/IR Dump After PlanMemory/{found=1} found{if ($0 ~ /^\/\/ -----\/\/ IR Dump After / && $0 !~ /PlanMemory/) exit; print}' | FileCheck %s --check-prefix=PLAN
+// RUN: { ptoas %s --enable-op-fusion --pto-backend=vpto --enable-insert-sync --pto-arch=a5 --op-lib-dir=%S/../../oplib/level3 --print-ir-after-all --print-ir-after-all-func-filter=fusion_region_interface -o /dev/null 2>&1 || true; } | awk '/IR Dump After PTOInsertSync/{found=1} found{if ($0 ~ /^\/\/ -----\/\/ IR Dump After / && $0 !~ /PTOInsertSync/) exit; print}' | FileCheck %s --check-prefix=SYNC
 
 // Region interface regression:
 // DPS destination tiles that remain externally visible after the fused span
@@ -9,7 +9,7 @@
 // external inputs stay implicitly captured and scratch alloc_tile temporaries
 // can be sunk into the region body. This also makes pto.yield the explicit
 // summary of which internal tiles still escape the region boundary.
-// This regression is intentionally scoped to the pre-lowering seam. The A5VM
+// This regression is intentionally scoped to the pre-lowering seam. The VPTO
 // lowering path still rejects the dynamic-valid trowexpandmul instances in this
 // fixture, and the old LIB/INLINE/LOW/ELIDE stages were checking a retired
 // pipeline branch.

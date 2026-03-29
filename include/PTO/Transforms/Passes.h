@@ -35,7 +35,7 @@ enum class PTOArch {
   A5,
 };
 
-// EmitC remains the pass-driven backend; the A5VM backend is emitted directly
+// EmitC remains the pass-driven backend; the VPTO backend is emitted directly
 // from tools/ptoas at the final backend boundary.
 
 std::unique_ptr<Pass> createPTOHighDimLoweringPass();
@@ -71,10 +71,10 @@ std::unique_ptr<Pass> createPrintPreFusionAnalysisPass();
 std::unique_ptr<Pass> createFusionPlanPass();
 std::unique_ptr<Pass> createOpSchedulingPass();
 std::unique_ptr<Pass> createPTOFusionRegionGenPass();
-std::unique_ptr<Pass> createPTOA5VMVersionSelectionPass();
-std::unique_ptr<Pass> createPTOA5VMIfCanonicalizePass();
-std::unique_ptr<Pass> createPTOA5VMExpandBridgeOpsPass();
-std::unique_ptr<Pass> createPTOA5VMPtrBoundaryPass();
+std::unique_ptr<Pass> createPTOVPTOVersionSelectionPass();
+std::unique_ptr<Pass> createPTOVPTOIfCanonicalizePass();
+std::unique_ptr<Pass> createPTOVPTOExpandBridgeOpsPass();
+std::unique_ptr<Pass> createPTOVPTOPtrBoundaryPass();
 LogicalResult importPTOOpLibTemplates(ModuleOp module, StringRef opLibDir,
                                       bool debug = false);
 std::unique_ptr<Pass> createPTOInstantiateAndLowerToLibCallPass(
@@ -88,8 +88,8 @@ std::unique_ptr<Pass> createPTOLowLevelLoopFusionPass(
 std::unique_ptr<Pass> createPTOFusionPredicateElisionPass();
 std::unique_ptr<Pass> createPTOFusionLoadStoreElisionPass();
 std::unique_ptr<Pass> createPTOFlattenFusionRegionPass();
-std::unique_ptr<Pass> createLowerPTOToA5VMPass();
-std::unique_ptr<Pass> createLowerPTOToA5VMPass(StringRef loweringStrategy);
+std::unique_ptr<Pass> createLowerPTOToVPTOPass();
+std::unique_ptr<Pass> createLowerPTOToVPTOPass(StringRef loweringStrategy);
 // Declare register function
 void registerPTOPasses();
 

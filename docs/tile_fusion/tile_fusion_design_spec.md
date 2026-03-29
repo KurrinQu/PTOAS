@@ -460,7 +460,7 @@ tile fusion 分组和 region 封装完成后，主线并不会直接进入 A5VM 
 
 - **PTOA5VMVersionSelection**：
   - 会遍历所有 A5VM candidate PTO op。
-  - 若 op 位于 `pto.fusion_region` 内，则打上 `pto.a5vm_lowering_choice = no-post-update`。
+  - 若 op 位于 `pto.fusion_region` 内，则打上 `pto.lowering_choice = no-post-update`。
   - 若 op 位于普通父 block，则选择 `post-update`。
   - 当前 loop shape 固定为 `TwoD`。
 - **PTOToA5VM**：

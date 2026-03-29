@@ -1,14 +1,14 @@
-// RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm --emit-a5vm %s -o - 2>/dev/null | FileCheck %s
+// RUN: ./build/tools/ptoas/ptoas --pto-backend=vpto --emit-vpto %s -o - 2>/dev/null | FileCheck %s
 
 // CHECK-LABEL: func.func @tabs_abs_loop_shape
 // CHECK: %[[BASE:[^ ]+]] = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, ub>
 // CHECK: scf.for %[[DUMMY:[^ ]+]] = %{{[^ ]+}} to %{{[^ ]+}} step %{{[^ ]+}} {
 // CHECK: scf.for %[[CHUNK:[^ ]+]] = %{{[^ ]+}} to %{{[^ ]+}} step %{{[^ ]+}}
-// CHECK: a5vm.vlds
-// CHECK: a5vm.vabs
-// CHECK: a5vm.vsts
+// CHECK: pto.vlds
+// CHECK: pto.vabs
+// CHECK: pto.vsts
 // CHECK-NOT: unrealized_conversion_cast
-// CHECK-NOT: a5vm.scope = "__VEC_SCOPE__"
+// CHECK-NOT: pto.scope = "__VEC_SCOPE__"
 // CHECK-NOT: dist = "__VEC_SCOPE__"
 // CHECK: llvm.loop.aivector_scope
 // CHECK-NOT: emitc.call_opaque "TABS"
@@ -26,4 +26,4 @@ module {
 // The chosen lowered loop carries explicit AIV vec-scope semantics through
 // llvm.loop.aivector_scope on the carrier loop.
 // This contract therefore locks both loop ownership and the ordered
-// a5vm.vlds -> a5vm.vabs -> a5vm.vsts vector primitive sequence.
+// pto.vlds -> pto.vabs -> pto.vsts vector primitive sequence.

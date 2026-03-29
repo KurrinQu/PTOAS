@@ -1,4 +1,4 @@
-#include "PTO/IR/A5VM.h"
+#include "PTO/IR/PTO.h"
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
 #include "../Utils.h"
@@ -27,7 +27,7 @@ using namespace mlir;
 namespace {
 
 // Contract note:
-//   PTOLowLevelLoopFusion now runs on A5VM post-lowering `scf.for + a5vm.*`
+//   PTOLowLevelLoopFusion now runs on VPTO post-lowering `scf.for + pto.*`
 //   loop nests that remain inside pto.fusion_region until explicit flatten.
 //   The matcher below intentionally stays conservative: it only fuses adjacent
 //   loop stages with the same loop-header structure and side-effect-free setup

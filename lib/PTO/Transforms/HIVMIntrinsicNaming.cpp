@@ -8,7 +8,6 @@
 
 #include "PTO/Transforms/HIVMIntrinsicNaming.h"
 
-#include "PTO/IR/A5VM.h"
 #include "PTO/IR/PTO.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -43,6 +42,13 @@ static std::string sanitizeNameFragment(llvm::StringRef text) {
   return out;
 }
 
+static std::string printAttrText(Attribute attr) {
+  std::string storage;
+  llvm::raw_string_ostream os(storage);
+  os << attr;
+  return storage;
+}
+
 static std::string getElementTypeFragment(Type type) {
   if (type.isF16())
     return "f16";
@@ -56,7 +62,7 @@ static std::string getElementTypeFragment(Type type) {
 }
 
 static std::string getVectorTypeFragment(Type type) {
-  auto vecType = dyn_cast<a5vm::VecType>(type);
+  auto vecType = dyn_cast<pto::VecType>(type);
   if (!vecType)
     return {};
   return ("v" + std::to_string(vecType.getElementCount()) +
@@ -143,18 +149,18 @@ static FailureOr<IntrinsicSelection> selectSyncLike(Operation *op) {
   llvm::SmallVector<std::string, 4> usedFields;
   usedFields.push_back("op=" + getOpMnemonic(op));
 
-  if (auto setFlag = dyn_cast<a5vm::SetFlagOp>(op)) {
-    usedFields.push_back("src_pipe=" + setFlag.getSrcPipe().str());
-    usedFields.push_back("dst_pipe=" + setFlag.getDstPipe().str());
-    usedFields.push_back("event=" + setFlag.getEventId().str());
+  if (auto setFlag = dyn_cast<pto::SetFlagOp>(op)) {
+    usedFields.push_back("src_pipe=" + printAttrText(setFlag.getSrcPipe()));
+    usedFields.push_back("dst_pipe=" + printAttrText(setFlag.getDstPipe()));
+    usedFields.push_back("event=" + printAttrText(setFlag.getEventId()));
     return makeResolved(op, "llvm.hivm.SET.FLAG.IMM", usedFields, "");
-  } else if (auto waitFlag = dyn_cast<a5vm::WaitFlagOp>(op)) {
-    usedFields.push_back("src_pipe=" + waitFlag.getSrcPipe().str());
-    usedFields.push_back("dst_pipe=" + waitFlag.getDstPipe().str());
-    usedFields.push_back("event=" + waitFlag.getEventId().str());
+  } else if (auto waitFlag = dyn_cast<pto::WaitFlagOp>(op)) {
+    usedFields.push_back("src_pipe=" + printAttrText(waitFlag.getSrcPipe()));
+    usedFields.push_back("dst_pipe=" + printAttrText(waitFlag.getDstPipe()));
+    usedFields.push_back("event=" + printAttrText(waitFlag.getEventId()));
     return makeResolved(op, "llvm.hivm.WAIT.FLAG.IMM", usedFields, "");
-  } else if (auto barrier = dyn_cast<a5vm::PipeBarrierOp>(op)) {
-    usedFields.push_back("pipe=" + barrier.getPipe().str());
+  } else if (auto barrier = dyn_cast<pto::BarrierOp>(op)) {
+    usedFields.push_back("pipe=" + printAttrText(barrier.getPipe()));
     return makeResolved(op, "llvm.hivm.BARRIER", usedFields, "");
   }
 
@@ -165,21 +171,21 @@ static FailureOr<IntrinsicSelection> selectSyncLike(Operation *op) {
 static FailureOr<IntrinsicSelection> selectConfigLike(Operation *op) {
   llvm::SmallVector<std::string, 2> usedFields = {"op=" + getOpMnemonic(op)};
 
-  if (isa<a5vm::SetLoop2StrideOutToUbOp>(op))
+  if (isa<pto::SetLoop2StrideOutToUbOp>(op))
     return makeResolved(op, "llvm.hivm.SET.LOOP2.STRIDE.OUTTOUB", usedFields,
                         "");
-  if (isa<a5vm::SetLoop1StrideOutToUbOp>(op))
+  if (isa<pto::SetLoop1StrideOutToUbOp>(op))
     return makeResolved(op, "llvm.hivm.SET.LOOP1.STRIDE.OUTTOUB",
                         usedFields, "");
-  if (isa<a5vm::SetLoopSizeOutToUbOp>(op))
+  if (isa<pto::SetLoopSizeOutToUbOp>(op))
     return makeResolved(op, "llvm.hivm.SET.LOOP.SIZE.OUTTOUB", usedFields, "");
-  if (isa<a5vm::SetLoop2StrideUbToOutOp>(op))
+  if (isa<pto::SetLoop2StrideUbToOutOp>(op))
     return makeResolved(op, "llvm.hivm.SET.LOOP2.STRIDE.UBTOOUT", usedFields,
                         "");
-  if (isa<a5vm::SetLoop1StrideUbToOutOp>(op))
+  if (isa<pto::SetLoop1StrideUbToOutOp>(op))
     return makeResolved(op, "llvm.hivm.SET.LOOP1.STRIDE.UBTOOUT", usedFields,
                         "");
-  if (isa<a5vm::SetLoopSizeUbToOutOp>(op))
+  if (isa<pto::SetLoopSizeUbToOutOp>(op))
     return makeResolved(op, "llvm.hivm.SET.LOOP.SIZE.UBTOOUT", usedFields, "");
 
   llvm::SmallVector<std::string, 2> missingFields = {"confirmed_hivm_name"};
@@ -191,7 +197,7 @@ static FailureOr<IntrinsicSelection> selectPredicateIntrinsic(Operation *op) {
   llvm::SmallVector<std::string, 4> usedFields;
   llvm::SmallVector<std::string, 2> missingFields = {"confirmed_hivm_name"};
 
-  if (auto plt = dyn_cast<a5vm::PltB32Op>(op)) {
+  if (auto plt = dyn_cast<pto::PltB32Op>(op)) {
     const std::string resultFragment = getVectorTypeFragment(plt.getMask().getType());
     usedFields = {"family=plt", "bitwidth=32", "result=" + resultFragment,
                   "variant=v300", "scalar=i32", "scalar_out=i32"};
@@ -204,7 +210,7 @@ static FailureOr<IntrinsicSelection> selectPredicateIntrinsic(Operation *op) {
 } // namespace
 
 FailureOr<IntrinsicSelection> selectLoadIntrinsic(Operation *op) {
-  if (auto vlds = dyn_cast<a5vm::VldsOp>(op)) {
+  if (auto vlds = dyn_cast<pto::VldsOp>(op)) {
     const std::string vecFragment = getVectorTypeFragment(vlds.getResult().getType());
     llvm::SmallVector<std::string, 4> usedFields = {
         "family=vldsx1", "vector=" + vecFragment, "mode=NO_POST_UPDATE"};
@@ -220,7 +226,7 @@ FailureOr<IntrinsicSelection> selectLoadIntrinsic(Operation *op) {
                           vecFragment);
   }
 
-  if (auto vldsPost = dyn_cast<a5vm::VldsPostOp>(op)) {
+  if (auto vldsPost = dyn_cast<pto::VldsPostOp>(op)) {
     const std::string vecFragment =
         getVectorTypeFragment(vldsPost.getResult().getType());
     llvm::SmallVector<std::string, 6> usedFields = {
@@ -242,7 +248,7 @@ FailureOr<IntrinsicSelection> selectLoadIntrinsic(Operation *op) {
 }
 
 FailureOr<IntrinsicSelection> selectUnaryIntrinsic(Operation *op) {
-  auto vabs = dyn_cast<a5vm::VabsOp>(op);
+  auto vabs = dyn_cast<pto::VabsOp>(op);
   if (vabs) {
     const std::string vecFragment = getVectorTypeFragment(vabs.getResult().getType());
     llvm::SmallVector<std::string, 3> usedFields = {
@@ -259,7 +265,7 @@ FailureOr<IntrinsicSelection> selectUnaryIntrinsic(Operation *op) {
                           vecFragment);
   }
 
-  if (auto vexp = dyn_cast<a5vm::VexpOp>(op)) {
+  if (auto vexp = dyn_cast<pto::VexpOp>(op)) {
     const std::string vecFragment = getVectorTypeFragment(vexp.getResult().getType());
     llvm::SmallVector<std::string, 3> usedFields = {
         "family=vexp", "vector=" + vecFragment, "variant=x"};
@@ -269,7 +275,7 @@ FailureOr<IntrinsicSelection> selectUnaryIntrinsic(Operation *op) {
     return makeResolved(op, candidate, usedFields, vecFragment);
   }
 
-  if (auto vdup = dyn_cast<a5vm::VdupOp>(op)) {
+  if (auto vdup = dyn_cast<pto::VdupOp>(op)) {
     const std::string vecFragment = getVectorTypeFragment(vdup.getResult().getType());
     llvm::SmallVector<std::string, 3> usedFields = {
         "family=vdups", "vector=" + vecFragment, "variant=z"};
@@ -284,7 +290,7 @@ FailureOr<IntrinsicSelection> selectUnaryIntrinsic(Operation *op) {
     return makeResolved(op, candidate, usedFields, vecFragment);
   }
 
-  if (auto binary = dyn_cast<a5vm::VaddOp>(op)) {
+  if (auto binary = dyn_cast<pto::VaddOp>(op)) {
     const std::string vecFragment = getVectorTypeFragment(binary.getResult().getType());
     llvm::SmallVector<std::string, 3> usedFields = {
         "family=vadd", "vector=" + vecFragment, "variant=x"};
@@ -294,7 +300,7 @@ FailureOr<IntrinsicSelection> selectUnaryIntrinsic(Operation *op) {
     return makeResolved(op, candidate, usedFields, vecFragment);
   }
 
-  if (auto binary = dyn_cast<a5vm::VsubOp>(op)) {
+  if (auto binary = dyn_cast<pto::VsubOp>(op)) {
     const std::string vecFragment = getVectorTypeFragment(binary.getResult().getType());
     llvm::SmallVector<std::string, 3> usedFields = {
         "family=vsub", "vector=" + vecFragment, "variant=x"};
@@ -304,7 +310,7 @@ FailureOr<IntrinsicSelection> selectUnaryIntrinsic(Operation *op) {
     return makeResolved(op, candidate, usedFields, vecFragment);
   }
 
-  if (auto binary = dyn_cast<a5vm::VmulOp>(op)) {
+  if (auto binary = dyn_cast<pto::VmulOp>(op)) {
     const std::string vecFragment = getVectorTypeFragment(binary.getResult().getType());
     llvm::SmallVector<std::string, 3> usedFields = {
         "family=vmul", "vector=" + vecFragment, "variant=x"};
@@ -314,7 +320,7 @@ FailureOr<IntrinsicSelection> selectUnaryIntrinsic(Operation *op) {
     return makeResolved(op, candidate, usedFields, vecFragment);
   }
 
-  if (auto binary = dyn_cast<a5vm::VmaxOp>(op)) {
+  if (auto binary = dyn_cast<pto::VmaxOp>(op)) {
     const std::string vecFragment = getVectorTypeFragment(binary.getResult().getType());
     llvm::SmallVector<std::string, 3> usedFields = {
         "family=vmax", "vector=" + vecFragment, "variant=x"};
@@ -324,7 +330,7 @@ FailureOr<IntrinsicSelection> selectUnaryIntrinsic(Operation *op) {
     return makeResolved(op, candidate, usedFields, vecFragment);
   }
 
-  if (auto binary = dyn_cast<a5vm::VmulsOp>(op)) {
+  if (auto binary = dyn_cast<pto::VmulsOp>(op)) {
     const std::string vecFragment = getVectorTypeFragment(binary.getResult().getType());
     llvm::SmallVector<std::string, 3> usedFields = {
         "family=vmuls", "vector=" + vecFragment, "variant=x"};
@@ -334,7 +340,7 @@ FailureOr<IntrinsicSelection> selectUnaryIntrinsic(Operation *op) {
     return makeResolved(op, candidate, usedFields, vecFragment);
   }
 
-  if (auto binary = dyn_cast<a5vm::VaddsOp>(op)) {
+  if (auto binary = dyn_cast<pto::VaddsOp>(op)) {
     const std::string vecFragment = getVectorTypeFragment(binary.getResult().getType());
     llvm::SmallVector<std::string, 3> usedFields = {
         "family=vadds", "vector=" + vecFragment, "variant=x"};
@@ -344,7 +350,7 @@ FailureOr<IntrinsicSelection> selectUnaryIntrinsic(Operation *op) {
     return makeResolved(op, candidate, usedFields, vecFragment);
   }
 
-  if (auto binary = dyn_cast<a5vm::VmaxsOp>(op)) {
+  if (auto binary = dyn_cast<pto::VmaxsOp>(op)) {
     const std::string vecFragment = getVectorTypeFragment(binary.getResult().getType());
     llvm::SmallVector<std::string, 3> usedFields = {
         "family=vmaxs", "vector=" + vecFragment, "variant=x"};
@@ -354,7 +360,7 @@ FailureOr<IntrinsicSelection> selectUnaryIntrinsic(Operation *op) {
     return makeResolved(op, candidate, usedFields, vecFragment);
   }
 
-  if (auto binary = dyn_cast<a5vm::VminsOp>(op)) {
+  if (auto binary = dyn_cast<pto::VminsOp>(op)) {
     const std::string vecFragment = getVectorTypeFragment(binary.getResult().getType());
     llvm::SmallVector<std::string, 3> usedFields = {
         "family=vmins", "vector=" + vecFragment, "variant=x"};
@@ -364,7 +370,7 @@ FailureOr<IntrinsicSelection> selectUnaryIntrinsic(Operation *op) {
     return makeResolved(op, candidate, usedFields, vecFragment);
   }
 
-  if (auto binary = dyn_cast<a5vm::VlreluOp>(op)) {
+  if (auto binary = dyn_cast<pto::VlreluOp>(op)) {
     const std::string vecFragment = getVectorTypeFragment(binary.getResult().getType());
     llvm::SmallVector<std::string, 3> usedFields = {
         "family=vlrelu", "vector=" + vecFragment, "variant=x"};
@@ -381,7 +387,7 @@ FailureOr<IntrinsicSelection> selectStoreIntrinsic(Operation *op) {
   llvm::SmallVector<std::string, 4> usedFields;
   llvm::SmallVector<std::string, 2> missingFields = {"confirmed_hivm_name"};
 
-  if (auto vsts = dyn_cast<a5vm::VstsOp>(op)) {
+  if (auto vsts = dyn_cast<pto::VstsOp>(op)) {
     const std::string vecFragment = getVectorTypeFragment(vsts.getValue().getType());
     usedFields = {"family=vstsx1", "vector=" + vecFragment,
                   "predicate_source=explicit_mask", "mode=NO_POST_UPDATE"};
@@ -393,7 +399,7 @@ FailureOr<IntrinsicSelection> selectStoreIntrinsic(Operation *op) {
                           vecFragment);
   }
 
-  if (auto vstsPost = dyn_cast<a5vm::VstsPostOp>(op)) {
+  if (auto vstsPost = dyn_cast<pto::VstsPostOp>(op)) {
     const std::string vecFragment =
         getVectorTypeFragment(vstsPost.getValue().getType());
     usedFields = {"family=vstsx1", "variant=post", "vector=" + vecFragment,
@@ -408,7 +414,7 @@ FailureOr<IntrinsicSelection> selectStoreIntrinsic(Operation *op) {
                           missingFields, vecFragment);
   }
 
-  if (auto copy = dyn_cast<a5vm::CopyGmToUbufOp>(op)) {
+  if (auto copy = dyn_cast<pto::CopyGmToUbufOp>(op)) {
     std::string elemFragment = getCopyElementFragment(copy.getSource().getType());
     usedFields = {"family=copy_gm_to_ubuf"};
     if (!elemFragment.empty())
@@ -428,7 +434,7 @@ FailureOr<IntrinsicSelection> selectStoreIntrinsic(Operation *op) {
                           missingFields, "");
   }
 
-  if (auto copy = dyn_cast<a5vm::CopyUbufToGmOp>(op)) {
+  if (auto copy = dyn_cast<pto::CopyUbufToGmOp>(op)) {
     std::string elemFragment = getCopyElementFragment(copy.getSource().getType());
     usedFields = {"family=copy_ubuf_to_gm"};
     if (!elemFragment.empty())
@@ -444,7 +450,7 @@ FailureOr<IntrinsicSelection> selectStoreIntrinsic(Operation *op) {
                           missingFields, "");
   }
 
-  if (isa<a5vm::CopyUbufToUbufOp>(op)) {
+  if (isa<pto::CopyUbufToUbufOp>(op)) {
     usedFields = {"family=copy_ubuf_to_ubuf"};
     return makeUnresolved(op, "copy_ubuf_to_ubuf", "copy_ubuf_to_ubuf",
                           usedFields, missingFields, "");
@@ -454,12 +460,12 @@ FailureOr<IntrinsicSelection> selectStoreIntrinsic(Operation *op) {
 }
 
 FailureOr<IntrinsicSelection> selectIntrinsic(Operation *op) {
-  if (isa<a5vm::SetFlagOp, a5vm::WaitFlagOp, a5vm::PipeBarrierOp>(op))
+  if (isa<pto::SetFlagOp, pto::WaitFlagOp, pto::BarrierOp>(op))
     return selectSyncLike(op);
 
-  if (isa<a5vm::SetLoop2StrideOutToUbOp, a5vm::SetLoop1StrideOutToUbOp,
-          a5vm::SetLoopSizeOutToUbOp, a5vm::SetLoop2StrideUbToOutOp,
-          a5vm::SetLoop1StrideUbToOutOp, a5vm::SetLoopSizeUbToOutOp>(op))
+  if (isa<pto::SetLoop2StrideOutToUbOp, pto::SetLoop1StrideOutToUbOp,
+          pto::SetLoopSizeOutToUbOp, pto::SetLoop2StrideUbToOutOp,
+          pto::SetLoop1StrideUbToOutOp, pto::SetLoopSizeUbToOutOp>(op))
     return selectConfigLike(op);
 
   if (succeeded(selectLoadIntrinsic(op)))

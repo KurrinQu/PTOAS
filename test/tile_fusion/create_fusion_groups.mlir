@@ -1,4 +1,4 @@
-// RUN: { ptoas %S/../oplib/softmax_chain.pto --enable-op-fusion --pto-backend=a5vm --op-lib-dir=%S/../../oplib/level3 --pto-arch=a5 --print-ir-after-all --print-ir-after-all-func-filter=flash_attention_softmax_block -o /dev/null 2>&1; } | FileCheck %s
+// RUN: { ptoas %S/../oplib/softmax_chain.pto --enable-op-fusion --pto-backend=vpto --op-lib-dir=%S/../../oplib/level3 --pto-arch=a5 --print-ir-after-all --print-ir-after-all-func-filter=flash_attention_softmax_block -o /dev/null 2>&1; } | FileCheck %s
 
 // CHECK-LABEL: IR Dump After FusionPlan
 // CHECK-LABEL: func.func @flash_attention_softmax_block(

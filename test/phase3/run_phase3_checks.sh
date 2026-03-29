@@ -11,7 +11,7 @@ if [[ ! -x "${ptoas_bin}" ]]; then
 fi
 
 echo "phase3 check: llvm_wrapper_abi_abs.pto"
-"${ptoas_bin}" --pto-arch a5 --pto-backend=a5vm --a5vm-emit-hivm-llvm \
+"${ptoas_bin}" --pto-arch a5 --pto-backend=vpto --vpto-emit-hivm-llvm \
   test/phase3/llvm_wrapper_abi_abs.pto -o "${work_dir}/abs.ll" >/dev/null 2>/dev/null
 rg -n '^define dso_local void @abs_wrapper_abi\(ptr addrspace\(1\) %arg0, ptr addrspace\(1\) %arg1\)' "${work_dir}/abs.ll" >/dev/null
 if rg -n '__ptoas_impl_|insertvalue' "${work_dir}/abs.ll" >/dev/null; then
@@ -24,7 +24,7 @@ if rg -n 'addrspacecast ptr addrspace\(1\).*to ptr|addrspacecast ptr .*to ptr ad
 fi
 
 echo "phase3 check: llvm_wrapper_abi_dynamic_tabs.pto"
-"${ptoas_bin}" --pto-arch a5 --pto-backend=a5vm --a5vm-emit-hivm-llvm \
+"${ptoas_bin}" --pto-arch a5 --pto-backend=vpto --vpto-emit-hivm-llvm \
   test/phase3/llvm_wrapper_abi_dynamic_tabs.pto -o "${work_dir}/dynamic.ll" >/dev/null 2>/dev/null
 rg -n '^define dso_local void @dynamic_tabs_wrapper_abi\(ptr addrspace\(1\) %arg0, ptr addrspace\(1\) %arg1, i32 %arg2\)' "${work_dir}/dynamic.ll" >/dev/null
 if rg -n '__ptoas_impl_|insertvalue' "${work_dir}/dynamic.ll" >/dev/null; then

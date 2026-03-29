@@ -1,4 +1,4 @@
-#include "PTO/IR/A5VM.h"
+#include "PTO/IR/PTO.h"
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
 
@@ -97,15 +97,15 @@ static void setEquivalenceState(ValueEquivalenceContext &context, Value lhs,
 }
 
 static std::optional<PltCandidate> buildPltCandidate(Operation *op) {
-  if (auto plt = dyn_cast<a5vm::PltB8Op>(op)) {
+  if (auto plt = dyn_cast<pto::PltB8Op>(op)) {
     return PltCandidate{
         op, plt.getScalar(), plt.getMask(), plt.getScalarOut(), 8, {}};
   }
-  if (auto plt = dyn_cast<a5vm::PltB16Op>(op)) {
+  if (auto plt = dyn_cast<pto::PltB16Op>(op)) {
     return PltCandidate{
         op, plt.getScalar(), plt.getMask(), plt.getScalarOut(), 16, {}};
   }
-  if (auto plt = dyn_cast<a5vm::PltB32Op>(op)) {
+  if (auto plt = dyn_cast<pto::PltB32Op>(op)) {
     return PltCandidate{
         op, plt.getScalar(), plt.getMask(), plt.getScalarOut(), 32, {}};
   }
@@ -133,11 +133,11 @@ static std::optional<PltScalarOutInfo> getPltScalarOutInfo(Value value) {
   if (!result || result.getResultNumber() != 1)
     return std::nullopt;
 
-  if (auto plt = dyn_cast<a5vm::PltB8Op>(result.getOwner()))
+  if (auto plt = dyn_cast<pto::PltB8Op>(result.getOwner()))
     return PltScalarOutInfo{plt.getScalar(), 8};
-  if (auto plt = dyn_cast<a5vm::PltB16Op>(result.getOwner()))
+  if (auto plt = dyn_cast<pto::PltB16Op>(result.getOwner()))
     return PltScalarOutInfo{plt.getScalar(), 16};
-  if (auto plt = dyn_cast<a5vm::PltB32Op>(result.getOwner()))
+  if (auto plt = dyn_cast<pto::PltB32Op>(result.getOwner()))
     return PltScalarOutInfo{plt.getScalar(), 32};
   return std::nullopt;
 }

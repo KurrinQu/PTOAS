@@ -201,3 +201,5 @@ def TileBufType : TypeDef<PTO_Dialect, "TileBuf"> {
     int32_t getPadValueI32() const;       // 0 null, 1 zero, 2 max, 3 min
   }];
 }
+
+include "PTO/IR/VPTOTypeDefs.td"

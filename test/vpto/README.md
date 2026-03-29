@@ -1,7 +1,7 @@
 # VPTO Host Validation
 
 `test/vpto` provides an end-to-end A5 validation path for hand-curated VPTO
-cases whose input `kernel.pto` is already A5VM MLIR.
+cases whose input `kernel.pto` is already VPTO MLIR.
 
 The driver script is:
 
@@ -27,7 +27,7 @@ Optional overrides:
 
 ```bash
 export PTOAS_FLAGS="--pto-arch a5"
-export A5VM_FLAGS="--pto-backend=a5vm --a5vm-emit-hivm-llvm"
+export VPTO_FLAGS="--pto-backend=vpto --vpto-emit-hivm-llvm"
 export AICORE_ARCH=dav-c310-vec
 export HOST_RUNNER="ssh root@localhost"
 export CASE_NAME=abs
@@ -74,7 +74,7 @@ test/vpto/cases/<case-name>/
 
 File roles:
 
-- `kernel.pto`: A5VM MLIR input consumed by `ptoas`
+- `kernel.pto`: VPTO MLIR input consumed by `ptoas`
 - `stub.cpp`: host-side fatobj stub that exports the final kernel symbol
 - `launch.cpp`: kernel launch wrapper
 - `main.cpp`: host executable entry for validation

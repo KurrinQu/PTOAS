@@ -1,15 +1,15 @@
-// RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm %s -o /dev/null 2>&1 | FileCheck %s
+// RUN: ./build/tools/ptoas/ptoas --pto-backend=vpto %s -o /dev/null 2>&1 | FileCheck %s
 
-// CHECK: abs lowering requires tile domain vec
-// CHECK: abs lowering requires row-major tile layout
-// CHECK: abs lowering requires destination valid rows not to exceed source
-// CHECK: abs lowering supports only f16 and f32 element types
+// CHECK: expects src to be in the vec address space
+// CHECK: expects src to use the row_major blayout
+// CHECK: expects src and dst to have the same valid_shape
+// CHECK: expects element type to be f16 or f32
 // CHECK-NOT: failed to legalize operation
-// CHECK-NOT: a5vm.copy_gm_to_ubuf
-// CHECK-NOT: a5vm.vlds
-// CHECK-NOT: a5vm.vabs
-// CHECK-NOT: a5vm.vsts
-// CHECK-NOT: a5vm.copy_ubuf_to_gm
+// CHECK-NOT: pto.copy_gm_to_ubuf
+// CHECK-NOT: pto.vlds
+// CHECK-NOT: pto.vabs
+// CHECK-NOT: pto.vsts
+// CHECK-NOT: pto.copy_ubuf_to_gm
 
 module {
   func.func @tabs_bad_domain() {

@@ -156,6 +156,11 @@ static std::optional<int64_t> getConstantIntegerValue(Value value);
 static LogicalResult verifyPartialValidPattern(Operation *op, Type src0Ty,
                                                Type src1Ty, Type dstTy);
 static bool isRowMajorTileBuf(Type ty);
+static ParseResult parseQuotedPipeToken(OpAsmParser &parser, PipeAttr &attr);
+static ParseResult parseQuotedEventToken(OpAsmParser &parser, EventAttr &attr);
+static ParseResult parseLegacyOrAttrPipe(OpAsmParser &parser, PipeAttr &attr);
+static ParseResult parseLegacyOrAttrEvent(OpAsmParser &parser, EventAttr &attr);
+static ParseResult parseI32LiteralAttr(OpAsmParser &parser, IntegerAttr &attr);
 
 #define GET_ENUM_CLASSES
 #include "PTO/IR/PTOEnums.cpp.inc"
@@ -4192,14 +4197,19 @@ static LogicalResult verifyBufSyncOp(Operation *op, Attribute opTypeAttr,
   if (!opTypeAttr)
     return op->emitOpError("expects 'op_type' attribute");
 
-  auto opTypeOr = parseSyncOpTypeLikeAttr(opTypeAttr);
-  if (failed(opTypeOr)) {
-    auto diag = op->emitOpError(
-        "expects 'op_type' to be pipe_event_type/sync_op_type, got ");
-    diag << opTypeAttr;
-    return failure();
+  pto::PIPE pipe = pto::PIPE::PIPE_UNASSIGNED;
+  if (auto pipeAttr = dyn_cast<PipeAttr>(opTypeAttr)) {
+    pipe = pipeAttr.getPipe();
+  } else {
+    auto opTypeOr = parseSyncOpTypeLikeAttr(opTypeAttr);
+    if (failed(opTypeOr)) {
+      auto diag = op->emitOpError(
+          "expects 'op_type' to be pipe_event_type/sync_op_type/pipe, got ");
+      diag << opTypeAttr;
+      return failure();
+    }
+    pipe = mapSyncOpTypeToPipe(*opTypeOr);
   }
-  pto::PIPE pipe = mapSyncOpTypeToPipe(*opTypeOr);
   if (!isConcreteSyncPipe(pipe))
     return op->emitOpError("expects 'op_type' to map to a concrete pipe, not "
                            "PIPE_ALL/PIPE_UNASSIGNED");
@@ -4227,6 +4237,282 @@ LogicalResult GetBufOp::verify() {
 LogicalResult RlsBufOp::verify() {
   return verifyBufSyncOp(getOperation(), getOpTypeAttr(), getBufIdAttr(),
                          getModeAttr());
+}
+
+static ParseResult parseQuotedPipeToken(OpAsmParser &parser, PipeAttr &attr) {
+  std::string pipeName;
+  auto loc = parser.getCurrentLocation();
+  if (failed(parser.parseString(&pipeName)))
+    return failure();
+  auto pipe = symbolizePIPE(pipeName);
+  if (!pipe)
+    return parser.emitError(loc) << "invalid pipe token: " << pipeName;
+  attr = PipeAttr::get(parser.getContext(), *pipe);
+  return success();
+}
+
+static ParseResult parseQuotedEventToken(OpAsmParser &parser, EventAttr &attr) {
+  std::string eventName;
+  auto loc = parser.getCurrentLocation();
+  if (failed(parser.parseString(&eventName)))
+    return failure();
+  auto event = symbolizeEVENT(eventName);
+  if (!event)
+    return parser.emitError(loc) << "invalid event token: " << eventName;
+  attr = EventAttr::get(parser.getContext(), *event);
+  return success();
+}
+
+static ParseResult parseLegacyOrAttrPipe(OpAsmParser &parser, PipeAttr &attr) {
+  auto loc = parser.getCurrentLocation();
+  std::string token;
+  if (succeeded(parser.parseOptionalString(&token))) {
+    auto pipe = symbolizePIPE(token);
+    if (!pipe)
+      return parser.emitError(loc) << "invalid pipe token: " << token;
+    attr = PipeAttr::get(parser.getContext(), *pipe);
+    return success();
+  }
+
+  if (succeeded(parser.parseOptionalLess())) {
+    StringRef keyword;
+    if (parser.parseKeyword(&keyword) || parser.parseGreater())
+      return failure();
+    auto pipe = symbolizePIPE(keyword);
+    if (!pipe)
+      return parser.emitError(loc) << "invalid pipe token: " << keyword;
+    attr = PipeAttr::get(parser.getContext(), *pipe);
+    return success();
+  }
+
+  Attribute parsed;
+  if (failed(parser.parseAttribute(parsed)))
+    return failure();
+  auto pipeAttr = dyn_cast<PipeAttr>(parsed);
+  if (!pipeAttr)
+    return parser.emitError(loc, "expected pipe attribute");
+  attr = pipeAttr;
+  return success();
+}
+
+static ParseResult parseLegacyOrAttrEvent(OpAsmParser &parser, EventAttr &attr) {
+  auto loc = parser.getCurrentLocation();
+  std::string token;
+  if (succeeded(parser.parseOptionalString(&token))) {
+    auto event = symbolizeEVENT(token);
+    if (!event)
+      return parser.emitError(loc) << "invalid event token: " << token;
+    attr = EventAttr::get(parser.getContext(), *event);
+    return success();
+  }
+
+  if (succeeded(parser.parseOptionalLess())) {
+    StringRef keyword;
+    if (parser.parseKeyword(&keyword) || parser.parseGreater())
+      return failure();
+    auto event = symbolizeEVENT(keyword);
+    if (!event)
+      return parser.emitError(loc) << "invalid event token: " << keyword;
+    attr = EventAttr::get(parser.getContext(), *event);
+    return success();
+  }
+
+  Attribute parsed;
+  if (failed(parser.parseAttribute(parsed)))
+    return failure();
+  auto eventAttr = dyn_cast<EventAttr>(parsed);
+  if (!eventAttr)
+    return parser.emitError(loc, "expected event attribute");
+  attr = eventAttr;
+  return success();
+}
+
+static ParseResult parseI32LiteralAttr(OpAsmParser &parser, IntegerAttr &attr) {
+  auto loc = parser.getCurrentLocation();
+  int64_t value = 0;
+  if (failed(parser.parseInteger(value)))
+    return failure();
+  if (value < std::numeric_limits<int32_t>::min() ||
+      value > std::numeric_limits<int32_t>::max())
+    return parser.emitError(loc, "expected 32-bit integer literal");
+  attr = IntegerAttr::get(IntegerType::get(parser.getContext(), 32), value);
+  return success();
+}
+
+static void printLegacySyncTriplet(OpAsmPrinter &p, PipeAttr srcPipe,
+                                   PipeAttr dstPipe, EventAttr eventId,
+                                   ArrayRef<NamedAttribute> attrs) {
+  p << "[\"" << stringifyPIPE(srcPipe.getPipe()) << "\", \""
+    << stringifyPIPE(dstPipe.getPipe()) << "\", \""
+    << stringifyEVENT(eventId.getEvent()) << "\"]";
+  p.printOptionalAttrDict(attrs, {"src_pipe", "dst_pipe", "event_id"});
+}
+
+ParseResult SetFlagOp::parse(OpAsmParser &parser, OperationState &result) {
+  PipeAttr srcPipe;
+  PipeAttr dstPipe;
+  EventAttr eventId;
+  if (parser.parseLSquare() || parseLegacyOrAttrPipe(parser, srcPipe) ||
+      parser.parseComma() || parseLegacyOrAttrPipe(parser, dstPipe) ||
+      parser.parseComma() || parseLegacyOrAttrEvent(parser, eventId) ||
+      parser.parseRSquare())
+    return failure();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+  result.addAttribute("src_pipe", srcPipe);
+  result.addAttribute("dst_pipe", dstPipe);
+  result.addAttribute("event_id", eventId);
+  return success();
+}
+
+void SetFlagOp::print(OpAsmPrinter &p) {
+  printLegacySyncTriplet(p, getSrcPipe(), getDstPipe(), getEventId(),
+                         (*this)->getAttrs());
+}
+
+ParseResult WaitFlagOp::parse(OpAsmParser &parser, OperationState &result) {
+  PipeAttr srcPipe;
+  PipeAttr dstPipe;
+  EventAttr eventId;
+  if (parser.parseLSquare() || parseLegacyOrAttrPipe(parser, srcPipe) ||
+      parser.parseComma() || parseLegacyOrAttrPipe(parser, dstPipe) ||
+      parser.parseComma() || parseLegacyOrAttrEvent(parser, eventId) ||
+      parser.parseRSquare())
+    return failure();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+  result.addAttribute("src_pipe", srcPipe);
+  result.addAttribute("dst_pipe", dstPipe);
+  result.addAttribute("event_id", eventId);
+  return success();
+}
+
+void WaitFlagOp::print(OpAsmPrinter &p) {
+  printLegacySyncTriplet(p, getSrcPipe(), getDstPipe(), getEventId(),
+                         (*this)->getAttrs());
+}
+
+static ParseResult parseLegacyOrAttrOpType(OpAsmParser &parser,
+                                           Attribute &opTypeAttr) {
+  auto loc = parser.getCurrentLocation();
+  std::string token;
+  if (succeeded(parser.parseOptionalString(&token))) {
+    if (auto pipe = symbolizePIPE(token)) {
+      opTypeAttr = PipeAttr::get(parser.getContext(), *pipe);
+      return success();
+    }
+    if (auto opType = symbolizeSyncOpType(token)) {
+      opTypeAttr = PipeEventTypeAttr::get(parser.getContext(), *opType);
+      return success();
+    }
+    return parser.emitError(loc) << "invalid get_buf/rls_buf token: " << token;
+  }
+
+  if (succeeded(parser.parseOptionalLSquare())) {
+    if (failed(parser.parseAttribute(opTypeAttr)))
+      return failure();
+    return success();
+  }
+
+  if (failed(parser.parseAttribute(opTypeAttr)))
+    return failure();
+  return success();
+}
+
+static ParseResult parseBufSyncOp(OpAsmParser &parser, OperationState &result) {
+  Attribute opTypeAttr;
+  IntegerAttr bufIdAttr;
+  IntegerAttr modeAttr;
+
+  auto loc = parser.getCurrentLocation();
+  std::string token;
+  if (succeeded(parser.parseOptionalString(&token))) {
+    if (auto pipe = symbolizePIPE(token))
+      opTypeAttr = PipeAttr::get(parser.getContext(), *pipe);
+    else if (auto opType = symbolizeSyncOpType(token))
+      opTypeAttr = PipeEventTypeAttr::get(parser.getContext(), *opType);
+    else
+      return parser.emitError(loc) << "invalid get_buf/rls_buf token: " << token;
+
+    if (parser.parseComma() || parseI32LiteralAttr(parser, bufIdAttr))
+      return failure();
+    if (succeeded(parser.parseOptionalComma())) {
+      if (parseI32LiteralAttr(parser, modeAttr))
+        return failure();
+    } else {
+      modeAttr = IntegerAttr::get(IntegerType::get(parser.getContext(), 32), 0);
+    }
+  } else if (succeeded(parser.parseOptionalLSquare())) {
+    if (parser.parseAttribute(opTypeAttr) || parser.parseComma() ||
+        parseI32LiteralAttr(parser, bufIdAttr))
+      return failure();
+    if (succeeded(parser.parseOptionalComma())) {
+      if (parseI32LiteralAttr(parser, modeAttr))
+        return failure();
+    } else {
+      modeAttr = IntegerAttr::get(IntegerType::get(parser.getContext(), 32), 0);
+    }
+    if (parser.parseRSquare())
+      return failure();
+  } else {
+    return parser.emitError(loc, "expected string pipe/op_type or '['");
+  }
+
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+  result.addAttribute("op_type", opTypeAttr);
+  result.addAttribute("buf_id", bufIdAttr);
+  result.addAttribute("mode", modeAttr);
+  return success();
+}
+
+static void printBufSyncOp(OpAsmPrinter &p, Attribute opTypeAttr,
+                           IntegerAttr bufIdAttr, IntegerAttr modeAttr,
+                           ArrayRef<NamedAttribute> attrs) {
+  if (auto pipeAttr = dyn_cast<PipeAttr>(opTypeAttr)) {
+    p << " \"" << stringifyPIPE(pipeAttr.getPipe()) << "\", "
+      << bufIdAttr.getInt() << ", " << modeAttr.getInt();
+  } else if (auto pipeEventType = dyn_cast<PipeEventTypeAttr>(opTypeAttr)) {
+    auto pipe = mapSyncOpTypeToPipe(pipeEventType.getOpType());
+    if (isConcreteSyncPipe(pipe)) {
+      p << " \"" << stringifyPIPE(pipe) << "\", " << bufIdAttr.getInt()
+        << ", " << modeAttr.getInt();
+    } else {
+      p << "[" << opTypeAttr << ", " << bufIdAttr.getInt() << ", "
+        << modeAttr.getInt() << "]";
+    }
+  } else if (auto syncOpType = dyn_cast<SyncOpTypeAttr>(opTypeAttr)) {
+    auto pipe = mapSyncOpTypeToPipe(syncOpType.getOpType());
+    if (isConcreteSyncPipe(pipe)) {
+      p << " \"" << stringifyPIPE(pipe) << "\", " << bufIdAttr.getInt()
+        << ", " << modeAttr.getInt();
+    } else {
+      p << "[" << opTypeAttr << ", " << bufIdAttr.getInt() << ", "
+        << modeAttr.getInt() << "]";
+    }
+  } else {
+    p << "[" << opTypeAttr << ", " << bufIdAttr.getInt() << ", "
+      << modeAttr.getInt() << "]";
+  }
+  p.printOptionalAttrDict(attrs, {"op_type", "buf_id", "mode"});
+}
+
+ParseResult GetBufOp::parse(OpAsmParser &parser, OperationState &result) {
+  return parseBufSyncOp(parser, result);
+}
+
+void GetBufOp::print(OpAsmPrinter &p) {
+  printBufSyncOp(p, getOpTypeAttr(), getBufIdAttr(), getModeAttr(),
+                 (*this)->getAttrs());
+}
+
+ParseResult RlsBufOp::parse(OpAsmParser &parser, OperationState &result) {
+  return parseBufSyncOp(parser, result);
+}
+
+void RlsBufOp::print(OpAsmPrinter &p) {
+  printBufSyncOp(p, getOpTypeAttr(), getBufIdAttr(), getModeAttr(),
+                 (*this)->getAttrs());
 }
 // ---- TOp ----
 LogicalResult TGemvBiasOp::verify() {

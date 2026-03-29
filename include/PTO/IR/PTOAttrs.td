@@ -405,41 +405,41 @@ def PTO_PadValueAttr : PTO_Attr<"PadValue", "pad_value"> {
 }
 
 //===----------------------------------------------------------------------===//
-// A5VM per-op lowering choice
+// PTO per-op low-level lowering choice
 //===----------------------------------------------------------------------===//
 
-def PTO_A5VMUpdateMode_PostUpdate
+def PTO_PTOUpdateMode_PostUpdate
     : I32EnumAttrCase<"PostUpdate", 0, "post_update">;
-def PTO_A5VMUpdateMode_NoPostUpdate
+def PTO_PTOUpdateMode_NoPostUpdate
     : I32EnumAttrCase<"NoPostUpdate", 1, "no_post_update">;
 
-def PTO_A5VMUpdateModeEnum : PTO_I32Enum<
-  "A5VMUpdateMode", "A5VM lowering update mode", [
-    PTO_A5VMUpdateMode_PostUpdate,
-    PTO_A5VMUpdateMode_NoPostUpdate
+def PTO_PTOUpdateModeEnum : PTO_I32Enum<
+  "PTOUpdateMode", "PTO low-level lowering update mode", [
+    PTO_PTOUpdateMode_PostUpdate,
+    PTO_PTOUpdateMode_NoPostUpdate
   ]>;
 
-def PTO_A5VMLoopShape_OneD : I32EnumAttrCase<"OneD", 0, "one_d">;
-def PTO_A5VMLoopShape_TwoD : I32EnumAttrCase<"TwoD", 1, "two_d">;
+def PTO_PTOLoopShape_OneD : I32EnumAttrCase<"OneD", 0, "one_d">;
+def PTO_PTOLoopShape_TwoD : I32EnumAttrCase<"TwoD", 1, "two_d">;
 
-def PTO_A5VMLoopShapeEnum : PTO_I32Enum<
-  "A5VMLoopShape", "A5VM lowering loop shape", [
-    PTO_A5VMLoopShape_OneD,
-    PTO_A5VMLoopShape_TwoD
+def PTO_PTOLoopShapeEnum : PTO_I32Enum<
+  "PTOLoopShape", "PTO low-level lowering loop shape", [
+    PTO_PTOLoopShape_OneD,
+    PTO_PTOLoopShape_TwoD
   ]>;
 
-def PTO_A5VMLoweringChoiceAttr
-    : PTO_Attr<"A5VMLoweringChoice", "a5vm_lowering_choice"> {
+def PTO_PTOLoweringChoiceAttr
+    : PTO_Attr<"PTOLoweringChoice", "lowering_choice"> {
   let parameters = (ins
-    EnumParameter<PTO_A5VMUpdateModeEnum>:$updateMode,
-    EnumParameter<PTO_A5VMLoopShapeEnum>:$loopShape
+    EnumParameter<PTO_PTOUpdateModeEnum>:$updateMode,
+    EnumParameter<PTO_PTOLoopShapeEnum>:$loopShape
   );
   let assemblyFormat = [{
     `<` `update_mode` `=` $updateMode `,`
          `loop_shape` `=` $loopShape `>`
   }];
   let description = [{
-    Per-op A5VM lowering choice. Encodes the selected update mode and loop
+    Per-op PTO low-level lowering choice. Encodes the selected update mode and loop
     shape as one indivisible lowering decision.
   }];
 }

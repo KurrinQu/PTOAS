@@ -2,15 +2,15 @@ add_mlir_dialect_library(PTOTransforms
   TileFusion/FusionAnalysis.cpp
   TileFusion/FusionOpSemantics.cpp
   HIVMIntrinsicNaming.cpp
-  A5VMLowering.cpp
-  A5VMTextEmitter.cpp
-  A5VMLLVMEmitter.cpp
-  PTOA5VMVersionSelection.cpp
-  TileFusion/PTOA5VMIfCanonicalize.cpp
-  PTOA5VMExpandBridgeOps.cpp
-  PTOA5VMPtrBoundary.cpp
-  PTOToA5VM.cpp
-  PTOToA5VMLowering.cpp
+  VPTOLowering.cpp
+  VPTOTextEmitter.cpp
+  VPTOLLVMEmitter.cpp
+  PTOVPTOVersionSelection.cpp
+  TileFusion/PTOVPTOIfCanonicalize.cpp
+  PTOVPTOExpandBridgeOps.cpp
+  PTOVPTOPtrBoundary.cpp
+  PTOToVPTO.cpp
+  PTOToVPTOLowering.cpp
   InsertLoadStoreForMixCV.cpp
   TileFusion/PTOPrintPreFusionAnalysis.cpp
   PTOInsertCVMov.cpp

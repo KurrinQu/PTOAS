@@ -1,11 +1,11 @@
-// RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm --a5vm-print-ir %s -o /dev/null 2>&1 | FileCheck %s
+// RUN: ./build/tools/ptoas/ptoas --pto-backend=vpto --vpto-print-ir %s -o /dev/null 2>&1 | FileCheck %s
 
 // CHECK-LABEL: func.func @tbinary_tail_mask_select
-// CHECK: %[[MASK:.*]], %[[SCALAR_OUT:.*]] = a5vm.plt_b32
-// CHECK: %[[LHS:.*]] = a5vm.vlds
-// CHECK: %[[RHS:.*]] = a5vm.vlds
-// CHECK: %[[BIN:.*]] = a5vm.vmax %[[LHS]], %[[RHS]], %[[MASK]]
-// CHECK: a5vm.vsts %[[BIN]], %{{.+}}, %[[MASK]]
+// CHECK: %[[MASK:.*]], %[[SCALAR_OUT:.*]] = pto.plt_b32
+// CHECK: %[[LHS:.*]] = pto.vlds
+// CHECK: %[[RHS:.*]] = pto.vlds
+// CHECK: %[[BIN:.*]] = pto.vmax %[[LHS]], %[[RHS]], %[[MASK]]
+// CHECK: pto.vsts %[[BIN]], %{{.+}}, %[[MASK]]
 
 module {
   func.func @tbinary_tail_mask_select() {

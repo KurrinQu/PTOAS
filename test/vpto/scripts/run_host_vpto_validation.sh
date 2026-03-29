@@ -10,7 +10,7 @@ WORK_SPACE="${WORK_SPACE:-}"
 ASCEND_HOME_PATH="${ASCEND_HOME_PATH:-}"
 PTOAS_BIN="${PTOAS_BIN:-${ROOT_DIR}/build/tools/ptoas/ptoas}"
 PTOAS_FLAGS="${PTOAS_FLAGS:---pto-arch a5}"
-A5VM_FLAGS="${A5VM_FLAGS:---pto-backend=a5vm --a5vm-emit-hivm-llvm}"
+VPTO_FLAGS="${VPTO_FLAGS:---pto-backend=vpto --vpto-emit-hivm-llvm}"
 AICORE_ARCH="${AICORE_ARCH:-dav-c310-vec}"
 HOST_RUNNER="${HOST_RUNNER:-ssh root@localhost}"
 CASE_NAME="${CASE_NAME:-}"
@@ -320,8 +320,8 @@ build_one() {
   rm -rf "${out_dir}"
   mkdir -p "${out_dir}"
 
-  log "[$case_name] step 1/6: lower A5VM MLIR to LLVM IR"
-  "${PTOAS_BIN}" ${PTOAS_FLAGS} ${A5VM_FLAGS} \
+  log "[$case_name] step 1/6: lower VPTO MLIR to LLVM IR"
+  "${PTOAS_BIN}" ${PTOAS_FLAGS} ${VPTO_FLAGS} \
     "${case_dir}/kernel.pto" -o "${llvm_ir}"
 
   log "[$case_name] step 2/6: compile LLVM IR to device object"
@@ -385,7 +385,7 @@ log "WORK_SPACE=${WORK_SPACE}"
 log "ASCEND_HOME_PATH=${ASCEND_HOME_PATH}"
 log "PTOAS_BIN=${PTOAS_BIN}"
 log "PTOAS_FLAGS=${PTOAS_FLAGS}"
-log "A5VM_FLAGS=${A5VM_FLAGS}"
+log "VPTO_FLAGS=${VPTO_FLAGS}"
 log "CASE_NAME=${CASE_NAME:-<all>}"
 
 for case_name in "${CASES[@]}"; do

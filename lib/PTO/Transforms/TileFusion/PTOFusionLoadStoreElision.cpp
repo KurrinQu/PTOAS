@@ -1,4 +1,4 @@
-#include "PTO/IR/A5VM.h"
+#include "PTO/IR/PTO.h"
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
 
@@ -107,13 +107,13 @@ static bool isPureNoRegionOp(Operation *op) {
 }
 
 static bool isSupportedLoopPreludeOp(Operation *op) {
-  if (isa<a5vm::UvldOp>(op))
+  if (isa<pto::UvldOp>(op))
     return true;
   return isPureNoRegionOp(op);
 }
 
 static bool isSupportedLeafOp(Operation *op) {
-  if (isa<a5vm::VldsOp, a5vm::VstsOp>(op))
+  if (isa<pto::VldsOp, pto::VstsOp>(op))
     return true;
   return isPureNoRegionOp(op);
 }
@@ -310,7 +310,7 @@ static bool isSupportedStraightLineBlock(Block &body) {
   return true;
 }
 
-static Value inferA5VMLoadUserMask(a5vm::VldsOp load) {
+static Value inferVPTOLoadUserMask(pto::VldsOp load) {
   Value inferredMask;
   for (OpOperand &use : load.getResult().getUses()) {
     Operation *owner = use.getOwner();
@@ -319,7 +319,7 @@ static Value inferA5VMLoadUserMask(a5vm::VldsOp load) {
 
     Value ownerMask;
     for (Value operand : owner->getOperands()) {
-      if (!isa<a5vm::MaskType>(operand.getType()))
+      if (!isa<pto::MaskType>(operand.getType()))
         continue;
       if (!ownerMask)
         ownerMask = operand;
@@ -432,10 +432,10 @@ static bool elideLoadStoreRoundTripsInLeafBody(
   };
 
   for (Operation &op : body.without_terminator()) {
-    if (auto load = dyn_cast<a5vm::VldsOp>(op)) {
-      Value inferredMask = inferA5VMLoadUserMask(load);
+    if (auto load = dyn_cast<pto::VldsOp>(op)) {
+      Value inferredMask = inferVPTOLoadUserMask(load);
       if (!inferredMask) {
-        // A5VM vlds does not carry an explicit predicate operand. If use-side
+        // VPTO vlds does not carry an explicit predicate operand. If use-side
         // mask information is not uniquely recoverable, keep behavior
         // conservative by dropping only potentially aliasing tracked stores.
         pruneTrackedStoresForLoadBase(trackedStores, load.getSource());
@@ -457,7 +457,7 @@ static bool elideLoadStoreRoundTripsInLeafBody(
       continue;
     }
 
-    if (auto store = dyn_cast<a5vm::VstsOp>(op)) {
+    if (auto store = dyn_cast<pto::VstsOp>(op)) {
       Value base = store.getDestination();
       Value offset = store.getOffset();
       Value mask = store.getMask();
