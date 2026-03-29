@@ -23,6 +23,74 @@ When this validation flow needs a custom LLVM IR or LLVM BC artifact, use
 `ptoas-vpto-llvm-artifacts` first to build that artifact, then return here to
 run the testcase.
 
+## Important Constraint
+
+The `npu_validation` flow still depends on an EmitC-generated sample export to
+materialize the host-side testcase skeleton.
+
+For the existing automation, this EmitC export step is not something the user
+must run manually first. The provided host-validation scripts already do it for
+you.
+
+Specifically:
+- `run_host_npu_validation.sh` automatically invokes `test/samples/runop.sh`
+  first
+- that export is written under `WORK_SPACE/emitc/...`
+- `run_host_npu_validation_case.sh` then uses that generated EmitC `*-pto.cpp`
+  as the input to `generate_testcase.py`
+
+Even when the final kernel under validation comes from the VPTO/LLVM path, the
+current scripts do not generate a standalone host runner from VPTO MLIR or
+LLVM IR directly. The canonical automated flow is:
+
+1. `run_host_npu_validation.sh` automatically exports the sample through the
+   default EmitC path to get `*-pto.cpp`
+2. `run_host_npu_validation_case.sh` runs `generate_testcase.py` on that
+   generated EmitC kernel to create the testcase directory, host `main.cpp`,
+   kernel wrapper source, `launch.cpp`, and build system
+3. if LLVM/VPTO validation is desired, `run_host_npu_validation_case.sh`
+   optionally calls `build_llvm_ir_kernel_so.sh` to rebuild and replace only
+   the final `lib<testcase>_kernel.so`
+4. the generated testcase binary is then run against that replacement kernel
+   library
+
+In other words:
+- the scripts automatically do the EmitC export step before testcase
+  generation
+- EmitC is still required to produce the host/testcase scaffolding
+- LLVM/VPTO replaces the device kernel library, not the host testcase
+- feeding raw VPTO textual MLIR directly into `generate_testcase.py` is not a
+  supported path
+
+## Automation Entry Points
+
+Use these scripts as the default automation entry points instead of rebuilding
+the flow by hand:
+
+- `test/npu_validation/scripts/run_host_npu_validation.sh`
+  - top-level driver for host/NPU validation
+  - automatically runs `test/samples/runop.sh` first
+  - automatically writes the EmitC export under `WORK_SPACE/emitc/...`
+  - discovers testcase names from `test/samples/<sample>/npu_validation/...`
+  - dispatches each testcase to `run_host_npu_validation_case.sh`
+
+- `test/npu_validation/scripts/run_host_npu_validation_case.sh`
+  - per-testcase execution driver
+  - consumes the already-generated EmitC kernel from `WORK_SPACE/emitc/...`
+  - runs `generate_testcase.py`
+  - configures and builds the testcase
+  - when `KERNEL_MODE=llvm`, calls `build_llvm_ir_kernel_so.sh` to replace the
+    device kernel shared library
+  - runs the testcase binary and then `compare.py`
+
+- `test/npu_validation/scripts/build_llvm_ir_kernel_so.sh`
+  - helper used by the case runner for LLVM/VPTO validation
+  - assumes the EmitC-derived testcase and host wrapper already exist
+  - rebuilds only the replacement `lib<testcase>_kernel.so`
+  - its internal `runop.sh` export may return non-zero because another sample
+    in the same family failed, but the script intentionally continues if the
+    requested testcase's LLVM IR artifact was still produced
+
 ## Preconditions
 
 Before running `npu_validation`, make sure:
@@ -76,6 +144,8 @@ PTOAS_OUT_DIR=/tmp/ptoas-abs-emitc \
 
 Expected output:
 - `/tmp/ptoas-abs-emitc/Abs/abs-pto.cpp`
+- this EmitC kernel is also the required host/testcase input for the later
+  LLVM/VPTO replacement flow
 
 ### 2. Generate the `npu_validation` testcase
 
@@ -113,6 +183,11 @@ If you need to replace the default `libabs_kernel.so` with one assembled from
 an LLVM IR or LLVM BC path, build that artifact with
 `ptoas-vpto-llvm-artifacts` and place it first in `LD_LIBRARY_PATH` when
 running `./build/abs`.
+
+Important:
+- the LLVM/VPTO path does not bypass EmitC testcase generation
+- `build_llvm_ir_kernel_so.sh` assumes the testcase was already generated from
+  the EmitC export and reuses its host wrapper/build artifacts
 
 ### 4. Generate golden inputs
 
@@ -154,8 +229,21 @@ LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}" \
   ./build/abs
 ```
 
-If the current user cannot open the device context but `sudo` is acceptable in
-your environment, retry with:
+For the repo's automated host-validation flow, prefer the script's default
+remote runner:
+
+```bash
+HOST_RUNNER='ssh root@localhost'
+```
+
+This is already the default in `run_host_npu_validation.sh` /
+`run_host_npu_validation_case.sh`, and it is the preferred way to reach a root
+context on the local machine when passwordless root SSH is already configured.
+
+Use that path first instead of assuming `sudo` is available or passwordless.
+
+If you are not using the repo scripts and your environment explicitly supports
+`sudo`, you may still retry manually with:
 
 ```bash
 sudo bash -lc '
@@ -168,8 +256,20 @@ sudo bash -lc '
 
 Observed runtime result on this machine for the `Abs` testcase:
 - normal user run failed at `aclrtSetDevice(0)` with `507033`
-- `sudo` run of the existing `./build/abs` binary succeeded
+- root-context execution is expected to go through the script default
+  `ssh root@localhost` path when available
 - `python3 ./compare.py` then reported `[INFO] compare passed`
+
+Observed runtime result on this machine for the VPTO LLVM-path host validation
+of `PyPTOIRParser/paged_attention_example_kernel_online_update`:
+- `test/npu_validation/scripts/run_host_npu_validation.sh` passed end-to-end
+- the replacement kernel library from `build_llvm_ir_kernel_so.sh` was loaded
+  successfully
+- `compare.py` reported `[INFO] compare passed`
+- during the LLVM artifact export step, `runop.sh` returned non-zero because
+  `paged_attention_example_kernel_softmax_prepare` failed in the same sample
+  batch, but the requested `online_update` LLVM IR was still generated and the
+  validation flow remained valid
 
 ### Simulator run
 
