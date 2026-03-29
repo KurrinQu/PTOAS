@@ -1870,6 +1870,14 @@ static bool satisfiesAIVectorScopeLatchPostcondition(llvm::Loop *loop) {
          predTerm->getSuccessor(0) == latch;
 }
 
+static llvm::SmallVector<llvm::Loop *, 8>
+collectTopLevelLoopsInPreorder(llvm::LoopInfo &loopInfo) {
+  llvm::SmallVector<llvm::Loop *, 8> loops;
+  for (llvm::Loop *loop : loopInfo)
+    loops.push_back(loop);
+  return loops;
+}
+
 // Bisheng imposes a strict CFG contract on loops carrying
 // `llvm.loop.aivector_scope` metadata:
 //   1. the latch must have exactly one predecessor
@@ -1931,50 +1939,65 @@ static LogicalResult attachAIVectorScopeMetadata(
     auto it = counts.find(function.getName());
     if (it == counts.end() || it->second == 0)
       continue;
-    if (it->second != 1)
-      continue;
 
     llvm::DominatorTree dt(function);
     llvm::LoopInfo loopInfo(dt);
-    if (loopInfo.empty())
-      continue;
-
-    llvm::Loop *loop = *loopInfo.begin();
-    if (failed(ensureDummyPredForAIVectorScopeLatch(loop, diagOS)))
-      return failure();
-
-    dt.recalculate(function);
-    loopInfo.releaseMemory();
-    loopInfo.analyze(dt);
     if (loopInfo.empty()) {
-      diagOS << "VPTO LLVM emission failed: aivscope loop disappeared after "
-                "latch normalization in function "
-             << function.getName() << "\n";
-      return failure();
-    }
-    loop = *loopInfo.begin();
-
-    llvm::BasicBlock *latch = loop->getLoopLatch();
-    if (!latch) {
-      diagOS << "VPTO LLVM emission failed: aivscope loop has no latch after "
-                "normalization in function "
-             << function.getName() << "\n";
-      return failure();
-    }
-    auto *terminator = latch->getTerminator();
-    if (!terminator) {
-      diagOS << "VPTO LLVM emission failed: aivscope latch has no terminator "
-                "in function "
-             << function.getName() << "\n";
+      diagOS << "VPTO LLVM emission failed: expected " << it->second
+             << " aivscope loop(s) in function " << function.getName()
+             << ", but no LLVM loops were found\n";
       return failure();
     }
 
-    llvm::LLVMContext &ctx = llvmModule.getContext();
-    llvm::Metadata *ops[] = {
-        nullptr, llvm::MDNode::get(ctx, llvm::MDString::get(ctx, "llvm.loop.aivector_scope"))};
-    auto *loopID = llvm::MDNode::getDistinct(ctx, ops);
-    loopID->replaceOperandWith(0, loopID);
-    terminator->setMetadata(llvm::LLVMContext::MD_loop, loopID);
+    unsigned expectedCount = it->second;
+    for (unsigned index = 0; index < expectedCount; ++index) {
+      auto loops = collectTopLevelLoopsInPreorder(loopInfo);
+      if (loops.size() <= index) {
+        diagOS << "VPTO LLVM emission failed: expected at least "
+               << expectedCount << " top-level loop(s) in function "
+               << function.getName() << ", but only found " << loops.size()
+               << " after lowering\n";
+        return failure();
+      }
+
+      llvm::Loop *loop = loops[index];
+      if (failed(ensureDummyPredForAIVectorScopeLatch(loop, diagOS)))
+        return failure();
+
+      dt.recalculate(function);
+      loopInfo.releaseMemory();
+      loopInfo.analyze(dt);
+      loops = collectTopLevelLoopsInPreorder(loopInfo);
+      if (loops.size() <= index) {
+        diagOS << "VPTO LLVM emission failed: aivscope loop disappeared after "
+                  "latch normalization in function "
+               << function.getName() << "\n";
+        return failure();
+      }
+      loop = loops[index];
+
+      llvm::BasicBlock *latch = loop->getLoopLatch();
+      if (!latch) {
+        diagOS << "VPTO LLVM emission failed: aivscope loop has no latch after "
+                  "normalization in function "
+               << function.getName() << "\n";
+        return failure();
+      }
+      auto *terminator = latch->getTerminator();
+      if (!terminator) {
+        diagOS << "VPTO LLVM emission failed: aivscope latch has no terminator "
+                  "in function "
+               << function.getName() << "\n";
+        return failure();
+      }
+
+      llvm::LLVMContext &ctx = llvmModule.getContext();
+      llvm::Metadata *ops[] = {
+          nullptr, llvm::MDNode::get(ctx, llvm::MDString::get(ctx, "llvm.loop.aivector_scope"))};
+      auto *loopID = llvm::MDNode::getDistinct(ctx, ops);
+      loopID->replaceOperandWith(0, loopID);
+      terminator->setMetadata(llvm::LLVMContext::MD_loop, loopID);
+    }
   }
   return success();
 }
