@@ -7139,6 +7139,19 @@ computeExpectedTileBufMemrefStrides(TileBufType tileTy,
 }
 
 // ---- Tile Fusion Region Ops ----
+LogicalResult VecScopeOp::verify() {
+  Region &bodyRegion = getBody();
+  if (bodyRegion.empty())
+    return emitOpError("expects a non-empty body region");
+
+  Block &body = bodyRegion.front();
+  if (body.getNumArguments() != 0)
+    return emitOpError() << "expects body block to have no arguments, got "
+                         << body.getNumArguments();
+
+  return success();
+}
+
 LogicalResult FusionRegionOp::verify() {
   Region &bodyRegion = getBody();
   if (bodyRegion.empty())

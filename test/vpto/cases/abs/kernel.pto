@@ -64,7 +64,7 @@ module attributes {pto.target_arch = "a5"} {
     // Process 1024 elements as flat 1D array, 64 elements per iteration (16 iterations)
     // Use no-post-update vlds/vsts while keeping predicate generation inside vector scope
     // =========================================================================
-    scf.for %arg2 = %c0 to %c1 step %c1 {
+    pto.vecscope {
       // Predicated vector loop with explicit offsets (no post-update)
       %_:1 = scf.for %arg3 = %c0 to %c1024 step %c64 iter_args(%remaining = %c1024_i32) -> (i32) {
         // Generate predicate mask: if remaining >= 64, full mask; else partial mask for tail
@@ -81,7 +81,7 @@ module attributes {pto.target_arch = "a5"} {
 
         scf.yield %next_remaining : i32
       }
-    } {llvm.loop.aivector_scope}
+    }
 
     // =========================================================================
     // Sync: V -> MTE3 pipe handoff (wait for compute to complete before DMA out)

@@ -1073,6 +1073,20 @@ class PTO_SectionOp<string mnemonic>
 def SectionCubeOp : PTO_SectionOp<"section.cube">;
 def SectionVectorOp : PTO_SectionOp<"section.vector">;
 
+def VecScopeOp : PTO_Op<"vecscope", [SingleBlock, NoTerminator]> {
+  let summary = "Structured region container for one VPTO vector scope";
+  let description = [{
+    `pto.vecscope` marks a structured vector-scope interval without overloading
+    a dummy carrier loop with scope metadata. Lowering and emission passes may
+    use the region boundary to preserve loop shape and to attach backend loop
+    metadata to loops emitted from the enclosed body.
+  }];
+
+  let regions = (region SizedRegion<1>:$body);
+  let hasVerifier = 1;
+  let assemblyFormat = "$body attr-dict";
+}
+
 //===----------------------------------------------------------------------===//
 // Tile Fusion Region Ops
 //===----------------------------------------------------------------------===//

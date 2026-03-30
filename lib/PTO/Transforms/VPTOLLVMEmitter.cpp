@@ -2002,15 +2002,39 @@ static void normalizeFuncSignaturesForOfficialLLVMLowering(ModuleOp module) {
 static llvm::StringMap<unsigned>
 collectVecScopeLoopCounts(ModuleOp module) {
   llvm::StringMap<unsigned> counts;
-  module.walk([&](scf::ForOp forOp) {
-    if (!forOp->hasAttr("llvm.loop.aivector_scope"))
-      return;
-    auto func = forOp->getParentOfType<func::FuncOp>();
+  module.walk([&](pto::VecScopeOp vecScope) {
+    auto func = vecScope->getParentOfType<func::FuncOp>();
     if (!func)
       return;
     counts[func.getName().str()]++;
   });
   return counts;
+}
+
+static void materializeVecScopeCarrierLoops(ModuleOp module) {
+  SmallVector<pto::VecScopeOp, 16> scopes;
+  module.walk([&](pto::VecScopeOp vecScope) { scopes.push_back(vecScope); });
+
+  IRRewriter rewriter(module.getContext());
+  for (pto::VecScopeOp vecScope : llvm::reverse(scopes)) {
+    if (!vecScope || vecScope.getBody().empty())
+      continue;
+
+    rewriter.setInsertionPoint(vecScope);
+    auto loc = vecScope.getLoc();
+    Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    scf::ForOp carrier = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
+
+    Block &vecScopeBody = vecScope.getBody().front();
+    Block *carrierBody = carrier.getBody();
+    Operation *yield = carrierBody->getTerminator();
+    carrierBody->getOperations().splice(Block::iterator(yield),
+                                        vecScopeBody.getOperations(),
+                                        vecScopeBody.begin(),
+                                        vecScopeBody.end());
+    rewriter.eraseOp(vecScope);
+  }
 }
 
 static bool satisfiesAIVectorScopeLatchPostcondition(llvm::Loop *loop) {
@@ -2644,6 +2668,7 @@ buildLLVMModuleFromVPTO(ModuleOp module, llvm::LLVMContext &llvmContext,
                         llvm::raw_ostream &diagOS) {
   OwningOpRef<ModuleOp> cloned(cast<ModuleOp>(module->clone()));
   auto vecScopeCounts = collectVecScopeLoopCounts(*cloned);
+  materializeVecScopeCarrierLoops(*cloned);
 
   if (failed(convertVPTOEmissionBoundaryToPtr(*cloned, &diagOS)))
     return nullptr;

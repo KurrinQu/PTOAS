@@ -336,8 +336,8 @@ def PTOVPTOTrivialLoopCanonicalize
       "Simplify trivial scf.for loops while preserving aivector-scope carriers";
   let description = [{
     Re-applies the upstream scf.for trivial-loop simplifications after the
-    VPTO fusion-mainline canonicalizer, but explicitly skips loops marked with
-    `llvm.loop.aivector_scope` so the carrier loop shape remains available to
+    VPTO fusion-mainline canonicalizer, but explicitly skips loops nested under
+    `pto.vecscope` so the vector-scope body shape remains available to
     downstream VPTO passes and backend emission.
   }];
   let constructor = "mlir::pto::createPTOVPTOTrivialLoopCanonicalizePass()";
@@ -368,7 +368,7 @@ def PTOFusionLoadStoreElision
   let description = [{
     Removes local store materialization inside canonical fused loop bodies before
     explicit flatten. The formal input contract is VPTO post-lowering
-    `scf.for + pto.*` (carrier loop marked with `llvm.loop.aivector_scope`).
+    `pto.vecscope + pto.*`.
     It also performs conservative frontier-aware tail-store cleanup for
     non-escaping fusion-region internal buffers.
   }];

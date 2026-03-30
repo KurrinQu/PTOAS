@@ -2,7 +2,7 @@
 
 // CHECK-LABEL: func.func @tabs_abs_loop_shape
 // CHECK: %[[BASE:[^ ]+]] = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, ub>
-// CHECK: scf.for %[[DUMMY:[^ ]+]] = %{{[^ ]+}} to %{{[^ ]+}} step %{{[^ ]+}} {
+// CHECK: pto.vecscope {
 // CHECK: scf.for %[[CHUNK:[^ ]+]] = %{{[^ ]+}} to %{{[^ ]+}} step %{{[^ ]+}}
 // CHECK: pto.vlds
 // CHECK: pto.vabs
@@ -10,7 +10,6 @@
 // CHECK-NOT: unrealized_conversion_cast
 // CHECK-NOT: pto.scope = "__VEC_SCOPE__"
 // CHECK-NOT: dist = "__VEC_SCOPE__"
-// CHECK: llvm.loop.aivector_scope
 // CHECK-NOT: emitc.call_opaque "TABS"
 
 module {
@@ -23,7 +22,7 @@ module {
   }
 }
 
-// The chosen lowered loop carries explicit AIV vec-scope semantics through
-// llvm.loop.aivector_scope on the carrier loop.
-// This contract therefore locks both loop ownership and the ordered
+// The chosen lowered vector interval is represented as an explicit
+// pto.vecscope region instead of a dummy carrier loop.
+// This contract therefore locks both scope ownership and the ordered
 // pto.vlds -> pto.vabs -> pto.vsts vector primitive sequence.

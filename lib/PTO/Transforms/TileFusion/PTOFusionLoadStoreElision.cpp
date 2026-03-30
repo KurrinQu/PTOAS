@@ -40,9 +40,6 @@ struct FusionRegionStoreContext {
 };
 
 static bool areEquivalentValues(Value lhs, Value rhs);
-static constexpr llvm::StringLiteral kAIVLoopScopeAttrName =
-    "llvm.loop.aivector_scope";
-
 static bool areEquivalentValueRanges(ArrayRef<Value> lhs, ArrayRef<Value> rhs) {
   return lhs.size() == rhs.size() &&
          llvm::all_of(llvm::zip(lhs, rhs), [](auto pair) {
@@ -256,7 +253,7 @@ buildFusionRegionStoreContext(pto::FusionRegionOp fusionRegion) {
 }
 
 static bool isAIVectorScopeCarrierLoop(scf::ForOp loop) {
-  return loop && loop->hasAttr(kAIVLoopScopeAttrName);
+  return loop && isa_and_nonnull<pto::VecScopeOp>(loop->getParentOp());
 }
 
 static Block *getLeafLoopBody(scf::ForOp carrierLoop) {

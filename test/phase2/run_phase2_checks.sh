@@ -41,8 +41,8 @@ if rg -n 'pto\.(load|store|abs)\b|tabs_precheck\.mlir' test/phase2/*.mlir >/dev/
   exit 1
 fi
 
-if ! rg -n 'cce_aiv_loop_hint|llvm\.loop\.aivector_scope' test/phase2/tabs_abs_loop_shape.mlir >/dev/null; then
-  echo "error: tabs_abs_loop_shape.mlir must require explicit AIV carrier strings" >&2
+if ! rg -n 'cce_aiv_loop_hint|pto\.vecscope' test/phase2/tabs_abs_loop_shape.mlir >/dev/null; then
+  echo "error: tabs_abs_loop_shape.mlir must require explicit vecscope markers" >&2
   exit 1
 fi
 

@@ -18,8 +18,6 @@ using namespace mlir;
 
 namespace {
 
-constexpr StringLiteral kAIVLoopScopeAttrName = "llvm.loop.aivector_scope";
-
 static std::optional<int64_t> computeConstDiff(Value lowerBound,
                                                Value upperBound) {
   IntegerAttr constLowerBound;
@@ -55,7 +53,7 @@ static void replaceOpWithRegion(IRRewriter &rewriter, Operation *op,
 
 static LogicalResult simplifyTrivialLoop(scf::ForOp loop,
                                          IRRewriter &rewriter) {
-  if (!loop || loop->hasAttr(kAIVLoopScopeAttrName))
+  if (!loop || isa_and_nonnull<pto::VecScopeOp>(loop->getParentOp()))
     return failure();
 
   if (loop.getLowerBound() == loop.getUpperBound()) {

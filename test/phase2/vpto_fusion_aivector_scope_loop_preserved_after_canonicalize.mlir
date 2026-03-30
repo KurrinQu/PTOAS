@@ -3,11 +3,11 @@
 
 // CHECK-LABEL: IR Dump After Canonicalizer
 // CHECK: func.func @kernel_online_update
-// CHECK: scf.for %{{.*}} = %c0{{(_[0-9]+)?}} to %c1{{(_[0-9]+)?}} step %c1{{(_[0-9]+)?}} {
+// CHECK: pto.vecscope {
 // CHECK: pto.plt_b32
 // CHECK: pto.vdup
 // CHECK: pto.vsts
-// CHECK: } {llvm.loop.aivector_scope}
+// CHECK: }
 
 module {
 }

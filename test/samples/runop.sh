@@ -402,8 +402,8 @@ process_one_dir() {
           overall=1
           continue
         fi
-        if ! grep -Fq "{llvm.loop.aivector_scope}" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tmissing llvm.loop.aivector_scope on vector section loop"
+        if ! grep -Fq "pto.vecscope" "$cpp"; then
+          echo -e "${A}(${base}.py)\tFAIL\tmissing pto.vecscope region in vector section lowering"
           overall=1
           continue
         fi

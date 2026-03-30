@@ -30,7 +30,7 @@ module attributes {pto.target_arch = "a5"} {
     %10 = arith.index_castui %c32 : index to i32
     %11 = arith.cmpi eq, %c32, %c32 : index
     %12 = arith.andi %11, %11 : i1
-    scf.for %arg2 = %c0 to %c1 step %c1 {
+    pto.vecscope {
       scf.if %12 {
         %16 = scf.for %arg3 = %c0 to %8 step %c64 iter_args(%arg4 = %9) -> (i32) {
           %mask, %scalar_out = pto.plt_b32 %arg4 : i32 -> !pto.mask, i32
@@ -54,7 +54,7 @@ module attributes {pto.target_arch = "a5"} {
           }
         }
       }
-    } {llvm.loop.aivector_scope}
+    }
     pto.set_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
     pto.wait_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
     %13 = pto.castptr %arg1 : !pto.ptr<f32, gm> -> !pto.ptr<i8, gm>
@@ -68,4 +68,3 @@ module attributes {pto.target_arch = "a5"} {
     return
   }
 }
-
