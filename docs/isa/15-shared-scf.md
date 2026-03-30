@@ -14,7 +14,7 @@ These ops are part of the documented PTO micro Instruction surface, but they are
 
 | Op | Role in PTO micro Instruction Code | Notes |
 |----|------------------------|-------|
-| `scf.for` | counted loops and loop-carried values | may appear inside `pto.vecscope` vector intervals |
+| `scf.for` | counted loops and loop-carried values | common structured counted loop form |
 | `scf.if` | structured conditional execution | may yield values or act as side-effect-only branch |
 | `scf.yield` | region terminator for `for` / `if` / `while` bodies | carries loop or branch results |
 | `scf.while` | break-like or stateful loops | useful for source-level structured control |
@@ -27,7 +27,6 @@ Ops such as `scf.execute_region`, `scf.forall`, or `scf.index_switch` are not pa
 ## Current PTOAS Coverage
 
 - `scf.for`, `scf.if`, and `scf.yield` are directly exercised in the shared-dialect PTO fixture and appear widely across PTO samples
-- the `__VEC_SCOPE__` contract in PTO micro Instruction source IR is modeled as `pto.vecscope`
 - PTO synchronization and memory analyses explicitly reason about `scf.for`, `scf.if`, `scf.yield`, and `scf.while`
 - `scf.while` and `scf.condition` appear in control-flow samples and are handled in PTO-to-EmitC control-flow lowering, but they are less broadly exercised than `for` / `if` on all backend paths
 
