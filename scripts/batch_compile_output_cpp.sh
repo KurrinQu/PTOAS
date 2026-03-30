@@ -4,6 +4,7 @@ set -u
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+ASCEND_HOME_PATH="${ASCEND_HOME_PATH:-${HOME}/cann}"
 
 DEFAULT_SOURCE_DIR="${PTO_SOURCE_DIR:-${REPO_ROOT}}"
 SRC_ROOT="${PTOAS_OUT_DIR:-${DEFAULT_SOURCE_DIR}/build/output}"
