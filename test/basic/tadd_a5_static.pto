@@ -1,0 +1,33 @@
+// RUN: ptoas --pto-arch=a5 %s 2>&1 | FileCheck %s --check-prefix=A5
+
+module {
+  func.func @TADD(
+      %a: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
+                        blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+      %b: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
+                        blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+      %c: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
+                        blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+      attributes { pto.tile_function = "pto.tadd" } {
+    %vecA = pto.tile_buf_addr %a : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0> -> memref<16x64xf32, strided<[64, 1]>, #pto.address_space<vec>>
+    %vecB = pto.tile_buf_addr %b : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0> -> memref<16x64xf32, strided<[64, 1]>, #pto.address_space<vec>>
+    %vecC = pto.tile_buf_addr %c : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0> -> memref<16x64xf32, strided<[64, 1]>, #pto.address_space<vec>>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c16 = arith.constant 16 : index
+    %c64 = arith.constant 64 : index
+
+    pto.vecscope {
+      scf.for %arg0 = %c0 to %c16 step %c1 {
+        scf.for %arg1 = %c0 to %c64 step %c64 {
+          %va = pto.vlds %vecA[%arg0, %arg1] : memref<16x64xf32, strided<[64, 1]>, #pto.address_space<vec>> -> !pto.vreg<64xf32>
+          %vb = pto.vlds %vecB[%arg0, %arg1] : memref<16x64xf32, strided<[64, 1]>, #pto.address_space<vec>> -> !pto.vreg<64xf32>
+          %vc = pto.vadd %va, %vb : !pto.vreg<64xf32>, !pto.vreg<64xf32> -> !pto.vreg<64xf32>
+          pto.vsts %vc, %vecC[%arg0, %arg1] : !pto.vreg<64xf32>, memref<16x64xf32, strided<[64, 1]>, #pto.address_space<vec>>
+        }
+      }
+    }
+    return
+  }
+}
+
