@@ -168,6 +168,7 @@ For clarity in API documentation, the following type aliases are used:
 | `GMPtr` | `ptr(..., MemorySpace.GM)` | Pointer to Global Memory |
 | `UBPtr` | `ptr(..., MemorySpace.UB)` | Pointer to Unified Buffer |
 | `UBRef` | `Union[MemRefType, UBPtr]` | UB buffer or pointer (accepted by load/store ops) |
+| `Tile` | `pto.tile(...)` | Tile buffer with layout and configuration |
 
 ### MemRef Types
 
@@ -186,6 +187,168 @@ MemRefs are used for stateless load/store operations that accept `buf_like` oper
 ### Alignment Type
 
 The `pto.align` type is used for alignment carrier operations and maps to `!pto.align`.
+
+### Tile Types
+
+Tile types represent data blocks in memory with layout and configuration information, corresponding to `!pto.tile_buf` in the VPTO IR. Tiles are commonly used as kernel parameters for tiled computations.
+
+#### Tile Type Definition
+
+```python
+# Create a tile with shape, element type, and memory space
+tile = pto.tile((256, 128), pto.f32, MemorySpace.UB)
+
+# With explicit configuration
+config = pto.tile_config(
+    b_layout=pto.BLayout.ROW_MAJOR,
+    s_layout=pto.SLayout.NONE_BOX,
+    s_fractal_size=pto.i32(16),
+    pad_value=pto.PadValue.ZERO
+)
+tile = pto.tile((256, 128), pto.f32, MemorySpace.UB, config=config)
+
+# With valid shape (actual data dimensions within tile)
+tile = pto.tile((256, 128), pto.f32, MemorySpace.UB, valid_shape=(240, 120))
+```
+
+#### Tile Attributes
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `shape` | `tuple[int, ...]` | Full tile dimensions |
+| `element_type` | `Type` | Element data type (e.g., `pto.f32`) |
+| `memory_space` | `MemorySpace` | Memory space (GM, UB, etc.) |
+| `valid_shape` | `tuple[int, ...]` | Actual data dimensions within tile (may be smaller than shape) |
+| `config` | `TileConfig` | Layout and padding configuration |
+
+#### Tile Configuration
+
+The tile configuration includes layout and padding information:
+
+```python
+# Layout enums
+pto.BLayout.ROW_MAJOR     # 0: row-major base layout
+pto.BLayout.COL_MAJOR     # 1: column-major base layout
+
+pto.SLayout.NONE_BOX      # 0: no secondary layout
+pto.SLayout.ROW_MAJOR     # 1: row-major secondary layout  
+pto.SLayout.COL_MAJOR     # 2: column-major secondary layout
+
+pto.PadValue.NULL         # 0: no padding
+pto.PadValue.ZERO         # 1: zero padding
+pto.PadValue.MAX          # 2: maximum value padding
+pto.PadValue.MIN          # 3: minimum value padding
+```
+
+#### Tile Shape Concepts
+
+- **Shape vs Valid Shape**: The `shape` represents the full tile dimensions allocated in memory, while `valid_shape` represents the actual data dimensions within the tile (e.g., due to padding or partial data). When `valid_shape` is not specified, it defaults to `shape`.
+
+- **Fractal Layout**: The `s_fractal_size` in tile configuration specifies the size of fractal blocks for secondary layout. This is used for optimized memory access patterns in matrix operations.
+
+- **Padding Behavior**: The `pad_value` determines how out-of-bounds accesses are handled when reading beyond `valid_shape` but within `shape`.
+
+### Tile Operations
+
+#### Basic Access Operations
+
+```python
+# Get tile properties
+shape = tile.shape                    # (256, 128)
+elem_type = tile.element_type         # pto.f32
+mem_space = tile.memory_space         # MemorySpace.UB
+valid_shape = tile.valid_shape        # (240, 120) or same as shape
+
+# Get configuration properties
+config = tile.config
+b_layout = config.b_layout            # pto.BLayout.ROW_MAJOR
+s_layout = config.s_layout            # pto.SLayout.NONE_BOX
+s_fractal = config.s_fractal_size     # pto.i32(16)
+pad = config.pad_value                # pto.PadValue.ZERO
+
+# Dynamic properties
+rank = tile.rank                      # 2
+num_elements = tile.num_elements      # 32768 (256 * 128)
+valid_elements = tile.valid_elements  # 28800 (240 * 120)
+```
+
+#### Layout and Stride Queries
+
+```python
+# Get layout descriptors
+layout_desc = tile.layout_descriptor  # Returns layout description object
+
+# Get strides (in elements)
+strides = tile.strides                # (128, 1) for row-major 256x128
+
+# Get byte strides
+byte_strides = tile.byte_strides      # (512, 4) for f32 row-major
+
+# Get base offset (in bytes)
+offset = tile.offset                  # pto.i64(0) or specified offset
+```
+
+#### Conversion Operations
+
+Tiles support both explicit and implicit conversion to UBRef. When a tile is used in operations expecting a UBRef (e.g., `pto.vlds`, `pto.vsts`), it is automatically converted.
+
+```python
+# Convert to UBRef (implicit in vector operations)
+ub_ref = tile.to_ubref()              # Explicit conversion
+# or use tile as UBRef directly in vector ops
+vec = pto.vlds(tile, offset)          # Implicit conversion
+
+# Convert to typed pointer
+ptr = tile.as_ptr()                   # Returns pto.ptr(pto.f32, MemorySpace.UB)
+
+# Convert to MemRef (for compatibility)
+memref = tile.to_memref()             # Returns pto.memref((256, 128), pto.f32, MemorySpace.UB)
+
+# Extract slice of tile
+slice_tile = tile.slice((0, 0), (64, 128))  # 64x128 slice from top-left corner
+
+# Reshape tile (logical reshape, no data movement)
+reshaped = tile.reshape((32768,))     # 1D reshape of 256x128 tile
+```
+
+#### Kernel Parameter Usage
+
+```python
+@pto.vkernel(target="a5", name="tiled_kernel")
+def tiled_kernel(
+    input_tile: pto.Tile,              # Tile parameter
+    output_tile: pto.Tile,             # Another tile parameter
+    scale: pto.f32
+):
+    # Convert tiles to UBRef for vector operations
+    ub_in = input_tile.to_ubref()
+    ub_out = output_tile.to_ubref()
+    
+    # Or use tiles directly (implicit conversion)
+    with pto.vecscope():
+        all_mask = pto.pset_b32("PAT_ALL")
+        for i in range(0, 256, 64):
+            # tile implicitly converts to UBRef in vlds
+            vec = pto.vlds(input_tile, i * 128 * 4)  # Byte offset for row i
+            scaled = pto.vmuls(vec, scale, all_mask)
+            pto.vsts(scaled, output_tile, i * 128 * 4, all_mask)
+```
+
+#### Tile Creation from Existing Buffers
+
+```python
+# Create tile from existing pointer with shape
+ptr = pto.castptr(0, pto.ptr(pto.f32, MemorySpace.UB))
+tile = pto.tile_from_ptr(ptr, (256, 128), pto.f32)
+
+# Create tile from memref
+memref = pto.memref((256, 128), pto.f32, MemorySpace.UB)
+tile = pto.tile_from_memref(memref)
+
+# Create tile with explicit stride
+tile = pto.tile_with_strides((256, 128), pto.f32, MemorySpace.UB, 
+                             strides=(256, 1))  # Column-major strides
+```
 
 ## Control Flow
 
