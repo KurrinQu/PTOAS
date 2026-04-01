@@ -159,6 +159,16 @@ The `MemorySpace` enum provides type-safe memory space specification:
 
 This replaces string literals (`MemorySpace.GM`/`MemorySpace.UB`) with compile-time checked enums.
 
+### Pointer Type Aliases
+
+For clarity in API documentation, the following type aliases are used:
+
+| Alias | Equivalent Type | Description |
+|-------|----------------|-------------|
+| `GMPtr` | `ptr(..., MemorySpace.GM)` | Pointer to Global Memory |
+| `UBPtr` | `ptr(..., MemorySpace.UB)` | Pointer to Unified Buffer |
+| `UBRef` | `Union[MemRefType, UBPtr]` | UB buffer or pointer (accepted by load/store ops) |
+
 ### MemRef Types
 
 For buffer-like authoring, use memref types:
@@ -468,15 +478,15 @@ pto.set_loop_size_outtoub(1, 1)
 
 Operations for executing DMA data transfers.
 
-#### `pto.copy_gm_to_ubuf(src: PtrType, dst: PtrType, src_offset: pto.i64, src_stride0: pto.i64, src_stride1: pto.i64, dst_offset: pto.i64, dst_stride0: pto.i64, transpose: pto.i1, pad_left: pto.i64, pad_right: pto.i64, pad_value: pto.i64) -> None`
+#### `pto.copy_gm_to_ubuf(src: GMPtr, dst: UBPtr, src_offset: pto.i64, src_stride0: pto.i64, src_stride1: pto.i64, dst_offset: pto.i64, dst_stride0: pto.i64, transpose: pto.i1, pad_left: pto.i64, pad_right: pto.i64, pad_value: pto.i64) -> None`
 
 **Description**: Copies data from Global Memory (GM) to Unified Buffer (UB).
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `src` | `PtrType` | Source GM pointer |
-| `dst` | `PtrType` | Destination UB pointer |
+| `src` | `GMPtr` | Source GM pointer |
+| `dst` | `UBPtr` | Destination UB pointer |
 | `src_offset` | `pto.i64` | Source offset |
 | `src_stride0` | `pto.i64` | Source stride dimension 0 |
 | `src_stride1` | `pto.i64` | Source stride dimension 1 |
@@ -494,15 +504,15 @@ Operations for executing DMA data transfers.
 pto.copy_gm_to_ubuf(gm_ptr, ub_ptr, 0, 32, 128, 0, 0, False, 0, 128, 128)
 ```
 
-#### `pto.copy_ubuf_to_ubuf(src: PtrType, dst: PtrType, src_offset: pto.i64, src_stride0: pto.i64, src_stride1: pto.i64, dst_offset: pto.i64, dst_stride0: pto.i64, dst_stride1: pto.i64) -> None`
+#### `pto.copy_ubuf_to_ubuf(src: UBPtr, dst: UBPtr, src_offset: pto.i64, src_stride0: pto.i64, src_stride1: pto.i64, dst_offset: pto.i64, dst_stride0: pto.i64, dst_stride1: pto.i64) -> None`
 
 **Description**: Copies data within Unified Buffer (UB → UB).
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `src` | `PtrType` | Source UB pointer |
-| `dst` | `PtrType` | Destination UB pointer |
+| `src` | `UBPtr` | Source UB pointer |
+| `dst` | `UBPtr` | Destination UB pointer |
 | `src_offset` | `pto.i64` | Source offset |
 | `src_stride0` | `pto.i64` | Source stride dimension 0 |
 | `src_stride1` | `pto.i64` | Source stride dimension 1 |
@@ -512,15 +522,15 @@ pto.copy_gm_to_ubuf(gm_ptr, ub_ptr, 0, 32, 128, 0, 0, False, 0, 128, 128)
 
 **Returns**: None (side-effect operation)
 
-#### `pto.copy_ubuf_to_gm(src: PtrType, dst: PtrType, src_offset: pto.i64, src_stride0: pto.i64, src_stride1: pto.i64, dst_offset: pto.i64, dst_stride0: pto.i64, dst_stride1: pto.i64) -> None`
+#### `pto.copy_ubuf_to_gm(src: UBPtr, dst: GMPtr, src_offset: pto.i64, src_stride0: pto.i64, src_stride1: pto.i64, dst_offset: pto.i64, dst_stride0: pto.i64, dst_stride1: pto.i64) -> None`
 
 **Description**: Copies data from Unified Buffer (UB) to Global Memory (GM).
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `src` | `PtrType` | Source UB pointer |
-| `dst` | `PtrType` | Destination GM pointer |
+| `src` | `UBPtr` | Source UB pointer |
+| `dst` | `GMPtr` | Destination GM pointer |
 | `src_offset` | `pto.i64` | Source offset |
 | `src_stride0` | `pto.i64` | Source stride dimension 0 |
 | `src_stride1` | `pto.i64` | Source stride dimension 1 |
