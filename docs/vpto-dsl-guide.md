@@ -8,23 +8,24 @@ Here's a minimal example of a vector absolute value kernel:
 
 ```python
 import pto
+from pto import MemorySpace, PIPE, EVENT
 
 @pto.vkernel(target="a5", name="abs_kernel")
-def abs_kernel(src: pto.ptr(pto.f32, "gm"),
-               dst: pto.ptr(pto.f32, "gm")):
+def abs_kernel(src: pto.ptr(pto.f32, MemorySpace.GM),
+               dst: pto.ptr(pto.f32, MemorySpace.GM)):
     # Configure DMA copy parameters
     pto.set_loop_size_outtoub(1, 1)
 
     # Allocate UB pointers
-    ub_in = pto.castptr(0, pto.ptr(pto.f32, "ub"))
-    ub_out = pto.castptr(4096, pto.ptr(pto.f32, "ub"))
+    ub_in = pto.castptr(0, pto.ptr(pto.f32, MemorySpace.UB))
+    ub_out = pto.castptr(4096, pto.ptr(pto.f32, MemorySpace.UB))
 
     # Copy data from GM to UB
     pto.copy_gm_to_ubuf(src, ub_in, 0, 32, 128, 0, 0, False, 0, 128, 128)
 
     # Synchronize pipelines
-    pto.set_flag("PIPE_MTE2", "PIPE_V", "EVENT_ID0")
-    pto.wait_flag("PIPE_MTE2", "PIPE_V", "EVENT_ID0")
+    pto.set_flag(PIPE.MTE2, PIPE.V, EVENT.ID0)
+    pto.wait_flag(PIPE.MTE2, PIPE.V, EVENT.ID0)
 
     # Vector computation scope
     with pto.strict_vecscope(ub_in, ub_out, 0, 1024, 64, pto.i32(1024)) as (
@@ -38,10 +39,10 @@ def abs_kernel(src: pto.ptr(pto.f32, "gm"),
             pto.vsts(out, vout, lane, mask)
 
     # Synchronize and copy back
-    pto.set_flag("PIPE_V", "PIPE_MTE3", "EVENT_ID0")
-    pto.wait_flag("PIPE_V", "PIPE_MTE3", "EVENT_ID0")
+    pto.set_flag(PIPE.V, PIPE.MTE3, EVENT.ID0)
+    pto.wait_flag(PIPE.V, PIPE.MTE3, EVENT.ID0)
     pto.copy_ubuf_to_gm(ub_out, dst, 0, 32, 128, 0, 128, 128)
-    pto.pipe_barrier("PIPE_ALL")
+    pto.pipe_barrier(PIPE.ALL)
 ```
 
 This kernel demonstrates the key DSL concepts: kernel declaration with `@pto.vkernel`, typed pointers, pipeline synchronization, vector scopes, typed masks, and vector operations.
@@ -72,8 +73,8 @@ The DSL operates on symbolic values, not Python runtime values:
 ### Memory Spaces
 
 The DSL supports different memory spaces:
-- `"gm"`: Global Memory
-- `"ub"`: Unified Buffer (local storage for vector computation)
+- `MemorySpace.GM`: Global Memory
+- `MemorySpace.UB`: Unified Buffer (local storage for vector computation)
 
 ## Type System
 
@@ -143,17 +144,28 @@ out = pto.vabs(vec_f32, mask16)  # Type error!
 Pointers combine element type and memory space:
 
 ```python
-ptr_gm = pto.ptr(pto.f32, "gm")    # GM pointer to f32
-ptr_ub = pto.ptr(pto.f16, "ub")    # UB pointer to f16
+from pto import MemorySpace
+
+ptr_gm = pto.ptr(pto.f32, MemorySpace.GM)    # GM pointer to f32
+ptr_ub = pto.ptr(pto.f16, MemorySpace.UB)    # UB pointer to f16
 ```
+
+The `MemorySpace` enum provides type-safe memory space specification:
+
+| Enum Value | Description |
+|------------|-------------|
+| `MemorySpace.GM` | Global Memory (off-chip HBM/DDR) |
+| `MemorySpace.UB` | Unified Buffer (on-chip SRAM, 256KB) |
+
+This replaces string literals (`MemorySpace.GM`/`MemorySpace.UB`) with compile-time checked enums.
 
 ### MemRef Types
 
 For buffer-like authoring, use memref types:
 
 ```python
-buf1d = pto.memref(256, pto.f32, "ub")          # 1D: 256-element f32 buffer in UB
-buf2d = pto.memref((256, 128), pto.f32, "ub")   # 2D: 256x128 f32 buffer in UB
+buf1d = pto.memref(256, pto.f32, MemorySpace.UB)          # 1D: 256-element f32 buffer in UB
+buf2d = pto.memref((256, 128), pto.f32, MemorySpace.UB)   # 2D: 256x128 f32 buffer in UB
 ```
 
 - **1D shapes**: Use a scalar integer (e.g., `256`)
@@ -237,7 +249,7 @@ Operations for creating and manipulating typed pointers.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `offset` | `pto.i64` | Byte offset from base address |
-| `ptr_type` | `Type` | Target pointer type (e.g., `pto.ptr(pto.f32, "gm")`) |
+| `ptr_type` | `Type` | Target pointer type (e.g., `pto.ptr(pto.f32, MemorySpace.GM)`) |
 
 **Returns**:
 | Return Value | Type | Description |
@@ -246,7 +258,7 @@ Operations for creating and manipulating typed pointers.
 
 **Example**:
 ```python
-ub_ptr = pto.castptr(0, pto.ptr(pto.f32, "ub"))
+ub_ptr = pto.castptr(0, pto.ptr(pto.f32, MemorySpace.UB))
 ```
 
 #### `pto.addptr(ptr: PtrType, offset: pto.i64) -> PtrType`
@@ -273,66 +285,72 @@ next_ptr = pto.addptr(ub_ptr, 4096)
 
 Operations for pipeline synchronization and buffer management.
 
-#### `pto.set_flag(pipe_from: str, pipe_to: str, event: str) -> None`
+#### `pto.set_flag(pipe_from: PIPE, pipe_to: PIPE, event: EVENT) -> None`
 
 **Description**: Sets a synchronization flag between hardware pipelines.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `pipe_from` | `str` | Source pipeline (e.g., `"PIPE_MTE2"`) |
-| `pipe_to` | `str` | Destination pipeline (e.g., `"PIPE_V"`) |
-| `event` | `str` | Event identifier (e.g., `"EVENT_ID0"`) |
+| `pipe_from` | `PIPE` | Source pipeline (e.g., `PIPE.MTE2`) |
+| `pipe_to` | `PIPE` | Destination pipeline (e.g., `PIPE.V`) |
+| `event` | `EVENT` | Event identifier (e.g., `EVENT.ID0`) |
 
 **Returns**: None (side-effect operation)
 
 **Example**:
 ```python
-pto.set_flag("PIPE_MTE2", "PIPE_V", "EVENT_ID0")
+from pto import PIPE, EVENT
+
+pto.set_flag(PIPE.MTE2, PIPE.V, EVENT.ID0)
 ```
 
-#### `pto.wait_flag(pipe_from: str, pipe_to: str, event: str) -> None`
+#### `pto.wait_flag(pipe_from: PIPE, pipe_to: PIPE, event: EVENT) -> None`
 
 **Description**: Waits for a synchronization flag between hardware pipelines.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `pipe_from` | `str` | Source pipeline (e.g., `"PIPE_MTE2"`) |
-| `pipe_to` | `str` | Destination pipeline (e.g., `"PIPE_V"`) |
-| `event` | `str` | Event identifier (e.g., `"EVENT_ID0"`) |
+| `pipe_from` | `PIPE` | Source pipeline (e.g., `PIPE.MTE2`) |
+| `pipe_to` | `PIPE` | Destination pipeline (e.g., `PIPE.V`) |
+| `event` | `EVENT` | Event identifier (e.g., `EVENT.ID0`) |
 
 **Returns**: None (side-effect operation)
 
 **Example**:
 ```python
-pto.wait_flag("PIPE_MTE2", "PIPE_V", "EVENT_ID0")
+from pto import PIPE, EVENT
+
+pto.wait_flag(PIPE.MTE2, PIPE.V, EVENT.ID0)
 ```
 
-#### `pto.pipe_barrier(pipes: str) -> None`
+#### `pto.pipe_barrier(pipes: PIPE) -> None`
 
 **Description**: Executes a barrier across specified pipelines.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `pipes` | `str` | Pipeline specification (e.g., `"PIPE_ALL"`) |
+| `pipes` | `PIPE` | Pipeline specification (e.g., `PIPE.ALL`) |
 
 **Returns**: None (side-effect operation)
 
 **Example**:
 ```python
-pto.pipe_barrier("PIPE_ALL")
+from pto import PIPE
+
+pto.pipe_barrier(PIPE.ALL)
 ```
 
-#### `pto.get_buf(op_type: str, buf_id: pto.i32, mode: pto.i32 = 0) -> None`
+#### `pto.get_buf(op_type: SyncOpType, buf_id: pto.i32, mode: pto.i32 = 0) -> None`
 
 **Description**: Acquires a buffer for producer-consumer synchronization.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `op_type` | `str` | Operation type (e.g., `"TLOAD"`) |
+| `op_type` | `SyncOpType` | Operation type (e.g., `SyncOpType.TLOAD`) |
 | `buf_id` | `pto.i32` | Buffer identifier |
 | `mode` | `pto.i32` | Acquisition mode (default: 0) |
 
@@ -340,25 +358,29 @@ pto.pipe_barrier("PIPE_ALL")
 
 **Example**:
 ```python
-pto.get_buf("TLOAD", 0)
+from pto import SyncOpType
+
+pto.get_buf(SyncOpType.TLOAD, 0)
 ```
 
-#### `pto.rls_buf(op_type: str, buf_id: pto.i32, mode: pto.i32 = 0) -> None`
+#### `pto.rls_buf(op_type: SyncOpType, buf_id: pto.i32, mode: pto.i32 = 0) -> None`
 
 **Description**: Releases a previously acquired buffer.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `op_type` | `str` | Operation type (e.g., `"TLOAD"`) |
+| `op_type` | `SyncOpType` | Operation type (e.g., `SyncOpType.TLOAD`) |
 | `buf_id` | `pto.i32` | Buffer identifier |
 | `mode` | `pto.i32` | Release mode (default: 0) |
 
-**Returns**: None (side-effect operation)
+**Returns**: None (side-effect操作)
 
 **Example**:
 ```python
-pto.rls_buf("TLOAD", 0)
+from pto import SyncOpType
+
+pto.rls_buf(SyncOpType.TLOAD, 0)
 ```
 
 ### Copy Programming
@@ -1669,8 +1691,8 @@ Operations for storing data with stateful semantics.
 
 ```python
 @pto.vkernel(name="vector_copy")
-def vector_copy(src: pto.memref(256, pto.f32, "ub"),
-                dst: pto.memref(256, pto.f32, "ub")):
+def vector_copy(src: pto.memref(256, pto.f32, MemorySpace.UB),
+                dst: pto.memref(256, pto.f32, MemorySpace.UB)):
     with pto.vecscope():
         all_mask = pto.pset_b32("PAT_ALL")
         for offset in range(0, 256, 64):
@@ -1682,8 +1704,8 @@ def vector_copy(src: pto.memref(256, pto.f32, "ub"),
 
 ```python
 @pto.vkernel(name="conditional_scale")
-def conditional_scale(src: pto.ptr(pto.f32, "gm"),
-                      dst: pto.ptr(pto.f32, "gm"),
+def conditional_scale(src: pto.ptr(pto.f32, MemorySpace.GM),
+                      dst: pto.ptr(pto.f32, MemorySpace.GM),
                       threshold: pto.f32):
     # ... setup ...
 
@@ -1707,8 +1729,8 @@ def conditional_scale(src: pto.ptr(pto.f32, "gm"),
 
 ```python
 @pto.vkernel(name="prefix_sum")
-def prefix_sum(src: pto.ptr(pto.i32, "ub"),
-               dst: pto.ptr(pto.i32, "ub")):
+def prefix_sum(src: pto.ptr(pto.i32, MemorySpace.UB),
+               dst: pto.ptr(pto.i32, MemorySpace.UB)):
     with pto.vecscope():
         all_mask = pto.pset_b32("PAT_ALL")
         carry = pto.i32(0)
