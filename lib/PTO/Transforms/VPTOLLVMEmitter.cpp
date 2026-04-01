@@ -2018,10 +2018,14 @@ collectVecScopeLoopCounts(ModuleOp module) {
 }
 
 static void materializeVecScopeCarrierLoops(ModuleOp module) {
+  MLIRContext *ctx = module.getContext();
+  (void)ctx->getOrLoadDialect<arith::ArithDialect>();
+  (void)ctx->getOrLoadDialect<scf::SCFDialect>();
+
   SmallVector<pto::VecScopeOp, 16> scopes;
   module.walk([&](pto::VecScopeOp vecScope) { scopes.push_back(vecScope); });
 
-  IRRewriter rewriter(module.getContext());
+  IRRewriter rewriter(ctx);
   for (pto::VecScopeOp vecScope : llvm::reverse(scopes)) {
     if (!vecScope || vecScope.getBody().empty())
       continue;

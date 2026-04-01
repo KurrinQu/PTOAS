@@ -30,6 +30,45 @@ config.test_exec_root = os.path.join(build_root, "test")
 os.makedirs(config.test_exec_root, exist_ok=True)
 
 
+def _sanitize_lit_test_times(exec_root):
+    times_path = os.path.join(exec_root, ".lit_test_times.txt")
+    if not os.path.isfile(times_path):
+        return
+
+    cleaned_lines = []
+    saw_invalid_line = False
+    with open(times_path, "r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.rstrip("\n")
+            if not line:
+                saw_invalid_line = True
+                continue
+
+            parts = line.split(maxsplit=1)
+            if len(parts) != 2:
+                saw_invalid_line = True
+                continue
+
+            try:
+                float(parts[0])
+            except ValueError:
+                saw_invalid_line = True
+                continue
+
+            cleaned_lines.append(line)
+
+    if not saw_invalid_line:
+        return
+
+    with open(times_path, "w", encoding="utf-8") as handle:
+        for line in cleaned_lines:
+            handle.write(line)
+            handle.write("\n")
+
+
+_sanitize_lit_test_times(config.test_exec_root)
+
+
 def _resolve_llvm_bin_dir():
     env_build_dir = os.environ.get("LLVM_BUILD_DIR")
     candidates = []

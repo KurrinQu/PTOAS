@@ -1,6 +1,6 @@
 // RUN: ! ptoas --pto-backend=vpto --emit-vpto %s -o /dev/null 2>&1 | FileCheck %s
 
-// CHECK: error: 'pto.pset_b32' op requires enclosing scf.for with 'llvm.loop.aivector_scope'
+// CHECK: error: 'pto.pset_b32' op requires enclosing dedicated pto.vecscope/pto.strict_vecscope
 // CHECK: Error: VPTO authoring-stage legality verification failed.
 
 module {

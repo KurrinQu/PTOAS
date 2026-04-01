@@ -432,6 +432,37 @@ def PTOFusionLoadStoreElision
                            "mlir::pto::PTODialect"];
 }
 
+def PTOPostFusionLoopUnroll
+    : Pass<"pto-post-fusion-loop-unroll", "func::FuncOp"> {
+  let summary =
+      "Prepare fusion-local post-cleanup carrier loops for pre-flatten unroll";
+  let description = [{
+    Scans `pto.fusion_region` bodies after low-level loop fusion, CSE,
+    predicate elision, and load/store cleanup, and reserves the formal
+    pre-flatten insertion point for conservative post-fusion loop unroll.
+    The default behavior uses a conservative auto policy over the v1 decision
+    set `skip / x2 / x4`. For focused testing and debugging, callers may
+    override the factor with `forced-unroll-factor=2|4` while keeping the
+    pass scoped to the same fusion-local carrier-loop contract.
+    This pass also establishes the fixed cleanup order
+    `... -> PTOFusionLoadStoreElision -> PTOPostFusionLoopUnroll
+    -> PTOFlattenFusionRegion -> CSE`.
+    The formal input contract is fusion-local post-cleanup carrier loops
+    represented as low-level `scf.for + pto.*` structure that still remains
+    nested inside `pto.fusion_region`; residual non-fused parent-block VPTO ops
+    are outside the scope of this pass.
+  }];
+  let constructor = "mlir::pto::createPTOPostFusionLoopUnrollPass()";
+  let dependentDialects = ["mlir::func::FuncDialect", "mlir::pto::PTODialect",
+                           "mlir::arith::ArithDialect", "mlir::scf::SCFDialect"];
+  let options = [
+    Option<"forcedUnrollFactor", "forced-unroll-factor", "unsigned",
+           /*default=*/"0",
+           "Override the auto strategy with a fixed factor. "
+           "Accepted values: 0 (auto), 2, 4">
+  ];
+}
+
 def PTOFlattenFusionRegion : Pass<"pto-flatten-fusion-region", "func::FuncOp"> {
   let summary = "Flatten pto.fusion_region wrappers back into the parent block";
   let description = [{

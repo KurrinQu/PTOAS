@@ -74,7 +74,6 @@ enum class VPTOLoopScopeKind {
 
 struct VPTOLoopScopeContract {
   VPTOLoopScopeKind kind = VPTOLoopScopeKind::None;
-  StringRef loweredAttr = "llvm.loop.aivector_scope";
   int64_t loopDepth = 0;
 };
 

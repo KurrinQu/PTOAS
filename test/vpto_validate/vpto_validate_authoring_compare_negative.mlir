@@ -7,15 +7,14 @@ module {
   func.func @compare_granularity_mismatch(%src: !pto.ptr<f32, ub>,
                                           %dst: !pto.ptr<f32, ub>, %idx: index)
       attributes {pto.version_selection_applied} {
-    %c1 = arith.constant 1 : index
-    scf.for %i = %idx to %c1 step %c1 {
+    pto.vecscope {
       %seed = pto.pset_b16 "PAT_ALL" : !pto.mask<b16>
       %lhs = pto.vlds %src[%idx] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
       %rhs = pto.vlds %dst[%idx] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
       %cmp = pto.vcmp %lhs, %rhs, %seed, "lt"
         : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b16> -> !pto.mask<b32>
       pto.vsts %lhs, %dst[%idx], %cmp : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
-    } {llvm.loop.aivector_scope}
+    }
     return
   }
 }

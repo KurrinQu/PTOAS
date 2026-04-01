@@ -7,13 +7,12 @@ module {
   func.func @mask_granularity_mismatch(%src: !pto.ptr<f32, ub>,
                                        %dst: !pto.ptr<f32, ub>, %idx: index)
       attributes {pto.version_selection_applied} {
-    %c1 = arith.constant 1 : index
-    scf.for %i = %idx to %c1 step %c1 {
+    pto.vecscope {
       %mask = pto.pset_b16 "PAT_ALL" : !pto.mask<b16>
       %v = pto.vlds %src[%idx] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
       %abs = pto.vabs %v, %mask : !pto.vreg<64xf32>, !pto.mask<b16> -> !pto.vreg<64xf32>
       pto.vsts %abs, %dst[%idx], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b16>
-    } {llvm.loop.aivector_scope}
+    }
     return
   }
 }

@@ -91,11 +91,12 @@ std::unique_ptr<Pass> createPTOLowLevelLoopFusionPass(
 std::unique_ptr<Pass> createPTOVPTOTrivialLoopCanonicalizePass();
 std::unique_ptr<Pass> createPTOFusionPredicateElisionPass();
 std::unique_ptr<Pass> createPTOFusionLoadStoreElisionPass();
+std::unique_ptr<Pass> createPTOPostFusionLoopUnrollPass();
+std::unique_ptr<Pass> createPTOPostFusionLoopUnrollPass(
+    const PTOPostFusionLoopUnrollOptions &options);
 std::unique_ptr<Pass> createPTOFlattenFusionRegionPass();
 std::unique_ptr<Pass> createLowerPTOToVPTOPass();
 std::unique_ptr<Pass> createLowerPTOToVPTOPass(StringRef loweringStrategy);
-// Declare register function
-void registerPTOPasses();
 
 } // namespace pto
 } // namespace mlir

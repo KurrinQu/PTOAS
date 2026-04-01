@@ -17,12 +17,11 @@ module {
       %src: memref<256xf32, #pto.address_space<vec>>,
       %dst: memref<256xf32, #pto.address_space<vec>>,
       %offset: index) attributes {pto.version_selection_applied} {
-    %c1 = arith.constant 1 : index
-    scf.for %i = %offset to %c1 step %c1 {
+    pto.vecscope {
       %mask = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
       %v = pto.vlds %src[%offset] : memref<256xf32, #pto.address_space<vec>> -> !pto.vreg<64xf32>
       pto.vsts %v, %dst[%offset], %mask : !pto.vreg<64xf32>, memref<256xf32, #pto.address_space<vec>>, !pto.mask<b32>
-    } {llvm.loop.aivector_scope}
+    }
     return
   }
 }

@@ -6,12 +6,11 @@
 module {
   func.func @mask_only_mismatch(%idx: index)
       attributes {pto.version_selection_applied} {
-    %c1 = arith.constant 1 : index
-    scf.for %i = %idx to %c1 step %c1 {
+    pto.vecscope {
       %in = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
       %gate = pto.pset_b16 "PAT_ALL" : !pto.mask<b16>
       %out = pto.pnot %in, %gate : !pto.mask<b32>, !pto.mask<b16> -> !pto.mask<b32>
-    } {llvm.loop.aivector_scope}
+    }
     return
   }
 }

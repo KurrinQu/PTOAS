@@ -33,6 +33,7 @@
 #include "mlir/InitAllPasses.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/Pass/PassRegistry.h"
 #include "ptobc/ptobc_decode.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -266,6 +267,13 @@ static llvm::cl::opt<bool>
                                  "fusion pipeline"),
                   llvm::cl::init(false));
 
+static llvm::cl::opt<unsigned> postFusionLoopUnrollFactor(
+    "post-fusion-loop-unroll-factor",
+    llvm::cl::desc("Forward a fixed unroll factor into "
+                   "PTOPostFusionLoopUnroll when the A5 VPTO fusion mainline "
+                   "is enabled. Accepted values: 0 (auto), 2, 4"),
+    llvm::cl::value_desc("0|2|4"), llvm::cl::init(0));
+
 static llvm::cl::opt<bool> printIRAfterAll(
     "print-ir-after-all",
     llvm::cl::desc("Print MLIR IR after each pass in all PTOAS pass pipelines "
@@ -284,6 +292,9 @@ static llvm::cl::opt<std::string> printIRAfterAllFuncFilter(
                    "func.func whose symbol name contains this substring "
                    "(overrides the default user-related filtering)"),
     llvm::cl::value_desc("substring"), llvm::cl::init(""));
+
+static mlir::PassPipelineCLParser passPipeline(
+    "", "Run a custom MLIR pass pipeline and exit");
 
 static llvm::cl::opt<bool> disableInferLayout(
     "disable-infer-layout",
@@ -471,6 +482,10 @@ static bool parseBackend(llvm::StringRef backendStr, PTOBackend &out) {
     return true;
   }
   return false;
+}
+
+static bool isSupportedPostFusionLoopUnrollFactor(unsigned factor) {
+  return factor == 0 || factor == 2 || factor == 4;
 }
 
 namespace {
@@ -687,7 +702,8 @@ static void addA5FusionRegionMainlinePreBackendPasses(OpPassManager &pm) {
 }
 
 static void addVPTOBackendMainlinePasses(OpPassManager &pm,
-                                         bool enableFusionMainline) {
+                                         bool enableFusionMainline,
+                                         unsigned forwardedUnrollFactor) {
   // Keep the A5 backend lowering boundary explicit:
   //   FusionRegionGen -> shared pre-backend normalization
   //   -> PTOVPTOVersionSelection -> PTOToVPTO
@@ -696,7 +712,8 @@ static void addVPTOBackendMainlinePasses(OpPassManager &pm,
   //   -> PTOFusionMergeVecScope
   //   -> PTOLowLevelLoopFusion -> Canonicalize
   //   -> CSE -> PTOFusionPredicateElision
-  //   -> PTOFusionLoadStoreElision -> PTOFlattenFusionRegion
+  //   -> PTOFusionLoadStoreElision -> PTOPostFusionLoopUnroll
+  //   -> PTOFlattenFusionRegion
   //   -> backend emission.
   if (enableFusionMainline) {
     pm.addNestedPass<mlir::func::FuncOp>(
@@ -728,6 +745,10 @@ static void addVPTOBackendMainlinePasses(OpPassManager &pm,
         pto::createPTOFusionPredicateElisionPass());
     pm.addNestedPass<mlir::func::FuncOp>(
         pto::createPTOFusionLoadStoreElisionPass());
+    pto::PTOPostFusionLoopUnrollOptions postFusionLoopUnrollOptions;
+    postFusionLoopUnrollOptions.forcedUnrollFactor = forwardedUnrollFactor;
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOPostFusionLoopUnrollPass(
+        postFusionLoopUnrollOptions));
     pm.addNestedPass<mlir::func::FuncOp>(
         pto::createPTOFlattenFusionRegionPass());
   }
@@ -1186,6 +1207,9 @@ int main(int argc, char **argv) {
 
   registry.insert<emitc::EmitCDialect>();
   registry.insert<mlir::LLVM::LLVMDialect>();
+  mlir::registerAllPasses();
+  ::registerPTOPostFusionLoopUnroll();
+  mlir::registerPassManagerCLOptions();
 
   llvm::cl::SetVersionPrinter(printPTOASVersion);
 
@@ -1398,6 +1422,12 @@ int main(int argc, char **argv) {
       llvm::errs() << "Warning: --op-fusion-debug is ignored because "
                       "VPTO fusion mainline is not enabled.\n";
     }
+    if (postFusionLoopUnrollFactor.getNumOccurrences() > 0 &&
+        !enableA5FusionMainline) {
+      llvm::errs()
+          << "Warning: --post-fusion-loop-unroll-factor is ignored because "
+             "VPTO fusion mainline is not enabled.\n";
+    }
     if (enableA5FusionMainline && vptoLoweringStrategy.getNumOccurrences() > 0) {
       llvm::errs() << "Warning: --vpto-lowering-strategy is ignored because "
                       "VPTO fusion mainline uses per-op "
@@ -1405,9 +1435,22 @@ int main(int argc, char **argv) {
     }
   }
 
+  if (!isSupportedPostFusionLoopUnrollFactor(postFusionLoopUnrollFactor)) {
+    llvm::errs() << "Error: invalid --post-fusion-loop-unroll-factor='"
+                 << postFusionLoopUnrollFactor << "'. Expected 0, 2, or 4.\n";
+    return 1;
+  }
+
   if (!printIRAfterAll && !printIRAfterAllFuncFilter.empty()) {
     llvm::errs() << "Warning: --print-ir-after-all-func-filter has no effect "
                     "without --print-ir-after-all.\n";
+  }
+
+  if (passPipeline.hasAnyOccurrences() &&
+      postFusionLoopUnrollFactor.getNumOccurrences() > 0) {
+    llvm::errs() << "Warning: --post-fusion-loop-unroll-factor is ignored "
+                    "when --pass-pipeline is used; set the pass option inside "
+                    "the textual pipeline instead.\n";
   }
 
   if (testOnlyFusionRegionGen) {
@@ -1430,6 +1473,35 @@ int main(int argc, char **argv) {
       llvm::errs() << "Error: Pass execution failed.\n";
       return 1;
     }
+    return 0;
+  }
+
+  if (passPipeline.hasAnyOccurrences()) {
+    PassManager customPm(&context);
+    maybeEnablePrintIRAfterAll(customPm, inputFuncNames);
+    if (failed(mlir::applyPassManagerCLOptions(customPm))) {
+      llvm::errs() << "Error: Failed to apply pass-manager CLI options.\n";
+      return 1;
+    }
+    if (failed(passPipeline.addToPipeline(customPm, [&](const Twine &msg) {
+          llvm::errs() << "Error: " << msg << "\n";
+          return failure();
+        }))) {
+      return 1;
+    }
+    if (failed(customPm.run(*module))) {
+      llvm::errs() << "Error: custom pass pipeline execution failed.\n";
+      return 1;
+    }
+
+    std::error_code ec;
+    llvm::ToolOutputFile outputFile(outputFilename, ec, llvm::sys::fs::OF_None);
+    if (ec) {
+      llvm::errs() << ec.message() << "\n";
+      return 1;
+    }
+    module->print(outputFile.os());
+    outputFile.keep();
     return 0;
   }
 
@@ -1469,7 +1541,8 @@ int main(int argc, char **argv) {
     if (!skipPreBackendPasses) {
       PassManager backendPM(&context);
       maybeEnablePrintIRAfterAll(backendPM, inputFuncNames);
-      addVPTOBackendMainlinePasses(backendPM, enableA5FusionMainline);
+      addVPTOBackendMainlinePasses(backendPM, enableA5FusionMainline,
+                                   postFusionLoopUnrollFactor);
       backendPM.addNestedPass<mlir::func::FuncOp>(
           pto::createPTOVPTOExpandBridgeOpsPass());
       if (enableA5FusionMainline) {

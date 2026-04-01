@@ -5,10 +5,9 @@
 module {
   func.func @family_suffix_mismatch(%idx: index)
       attributes {pto.version_selection_applied} {
-    %c1 = arith.constant 1 : index
-    scf.for %i = %idx to %c1 step %c1 {
+    pto.vecscope {
       %mask = pto.pset_b32 "PAT_ALL" : !pto.mask<b16>
-    } {llvm.loop.aivector_scope}
+    }
     return
   }
 }

@@ -98,16 +98,10 @@ public:
     return isa_and_nonnull<VecScopeOp, StrictVecScopeOp>(op);
   }
 
-  static bool isAnyVectorScopeCarrier(Operation *op) {
-    if (auto loop = dyn_cast_or_null<scf::ForOp>(op))
-      return isAIVectorScopeCarrier(loop);
-    return isDedicatedVecScopeCarrier(op);
-  }
-
-  static Operation *getEnclosingVectorScopeCarrier(Operation *op) {
+  static Operation *getEnclosingDedicatedVecScopeCarrier(Operation *op) {
     for (Operation *parent = op ? op->getParentOp() : nullptr; parent;
          parent = parent->getParentOp()) {
-      if (isAnyVectorScopeCarrier(parent))
+      if (isDedicatedVecScopeCarrier(parent))
         return parent;
     }
     return nullptr;
@@ -566,20 +560,10 @@ private:
       if (!VPTOLegalityHelper::isAIVectorScopeCarrier(loop))
         return WalkResult::advance();
 
-      Operation *parentScope =
-          VPTOLegalityHelper::getEnclosingVectorScopeCarrier(loop);
-      if (!parentScope)
-        return WalkResult::advance();
-
-      if (isa<scf::ForOp>(parentScope)) {
-        loop.emitOpError() << "does not allow nested scf.for with '"
-                           << kAIVectorScopeAttrName << "'";
-        return WalkResult::interrupt();
-      }
-
       loop.emitOpError()
-          << "does not allow legacy scf.for carrier nested inside dedicated "
-             "pto.vecscope/pto.strict_vecscope";
+          << "legacy VPTO authoring form is no longer accepted; use dedicated "
+             "pto.vecscope/pto.strict_vecscope instead of scf.for with '"
+          << kAIVectorScopeAttrName << "'";
       return WalkResult::interrupt();
     });
     if (loopWalkResult.wasInterrupted())
@@ -589,7 +573,7 @@ private:
       if (!VPTOLegalityHelper::isDedicatedVecScopeCarrier(op))
         return WalkResult::advance();
 
-      if (!VPTOLegalityHelper::getEnclosingVectorScopeCarrier(op))
+      if (!VPTOLegalityHelper::getEnclosingDedicatedVecScopeCarrier(op))
         return WalkResult::advance();
 
       op->emitOpError()
@@ -606,17 +590,15 @@ private:
       if (!VPTOLegalityHelper::requiresVecScope(op))
         return WalkResult::advance();
 
-      if (VPTOLegalityHelper::getEnclosingVectorScopeCarrier(op))
+      if (VPTOLegalityHelper::getEnclosingDedicatedVecScopeCarrier(op))
         return (failed(validateFamilySuffixMaskContracts(op)) ||
                 failed(validateMaskGranularityContracts(op)))
                    ? WalkResult::interrupt()
                    : WalkResult::advance();
 
       op->emitOpError()
-          << "requires enclosing scf.for with '"
-          << kAIVectorScopeAttrName
-          << "' or dedicated pto.vecscope/pto.strict_vecscope"
-          << "' because it consumes or produces !pto.vreg/!pto.mask/!pto.align";
+          << "requires enclosing dedicated pto.vecscope/pto.strict_vecscope"
+          << " because it consumes or produces !pto.vreg/!pto.mask/!pto.align";
       return WalkResult::interrupt();
     });
     return opWalkResult.wasInterrupted() ? failure() : success();

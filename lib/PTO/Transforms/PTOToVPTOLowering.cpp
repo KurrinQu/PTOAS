@@ -34,8 +34,6 @@ namespace pto {
 
 namespace {
 
-constexpr StringLiteral kLoweredLoopScopeAttrName = "llvm.loop.aivector_scope";
-
 struct ResolvedTensorView {
   Value root;
   Attribute layoutAttr;
@@ -1684,7 +1682,6 @@ VPTOUnaryContract extractTAbsContract(TAbsOp op) {
   deriveValidShape(op.getSrc(), contract.validRows, contract.validCols);
   contract.elementType = getElementType(op.getSrc());
   contract.loopScope.kind = VPTOLoopScopeKind::AIVVectorScope;
-  contract.loopScope.loweredAttr = kLoweredLoopScopeAttrName;
   contract.loopScope.loopDepth = 0;
   return contract;
 }
@@ -1698,7 +1695,6 @@ VPTOBinaryContract buildBinaryContract(StringRef family, Value src0) {
   deriveValidShape(src0, contract.validRows, contract.validCols);
   contract.elementType = getElementType(src0);
   contract.loopScope.kind = VPTOLoopScopeKind::AIVVectorScope;
-  contract.loopScope.loweredAttr = kLoweredLoopScopeAttrName;
   contract.loopScope.loopDepth = 0;
   return contract;
 }
@@ -1728,7 +1724,6 @@ VPTOUnaryContract buildUnaryContract(StringRef family, Value src) {
   deriveValidShape(src, contract.validRows, contract.validCols);
   contract.elementType = getElementType(src);
   contract.loopScope.kind = VPTOLoopScopeKind::AIVVectorScope;
-  contract.loopScope.loweredAttr = kLoweredLoopScopeAttrName;
   contract.loopScope.loopDepth = 0;
   return contract;
 }
@@ -1808,7 +1803,6 @@ VPTOUnaryContract extractTExpandSContract(TExpandsOp op) {
   deriveValidShape(op.getDst(), contract.validRows, contract.validCols);
   contract.elementType = getElementType(op.getDst());
   contract.loopScope.kind = VPTOLoopScopeKind::AIVVectorScope;
-  contract.loopScope.loweredAttr = kLoweredLoopScopeAttrName;
   contract.loopScope.loopDepth = 0;
   return contract;
 }
@@ -1828,7 +1822,6 @@ VPTOExpandContract extractTRowExpandContract(TRowExpandOp op) {
                          contract.dstValidColsValue);
   deriveValidShape(op.getDst(), contract.dstValidRows, contract.dstValidCols);
   contract.loopScope.kind = VPTOLoopScopeKind::AIVVectorScope;
-  contract.loopScope.loweredAttr = kLoweredLoopScopeAttrName;
   contract.loopScope.loopDepth = 0;
   return contract;
 }
@@ -1848,7 +1841,6 @@ VPTOExpandContract extractTColExpandContract(TColExpandOp op) {
                          contract.dstValidColsValue);
   deriveValidShape(op.getDst(), contract.dstValidRows, contract.dstValidCols);
   contract.loopScope.kind = VPTOLoopScopeKind::AIVVectorScope;
-  contract.loopScope.loweredAttr = kLoweredLoopScopeAttrName;
   contract.loopScope.loopDepth = 0;
   return contract;
 }
@@ -1867,7 +1859,6 @@ VPTORowReduceContract extractTRowReduceContract(Value src, Value dst,
   int64_t dstRows = ShapedType::kDynamic;
   deriveValidShape(dst, dstRows, contract.dstValidCols);
   contract.loopScope.kind = VPTOLoopScopeKind::AIVVectorScope;
-  contract.loopScope.loweredAttr = kLoweredLoopScopeAttrName;
   contract.loopScope.loopDepth = 0;
   return contract;
 }
@@ -1897,7 +1888,6 @@ VPTOColReduceContract extractTColReduceContract(Value src, Value dst,
   deriveValidShape(src, contract.validRows, contract.validCols);
   deriveValidShape(dst, contract.dstValidRows, contract.dstValidCols);
   contract.loopScope.kind = VPTOLoopScopeKind::AIVVectorScope;
-  contract.loopScope.loweredAttr = kLoweredLoopScopeAttrName;
   contract.loopScope.loopDepth = 0;
   return contract;
 }
@@ -1936,7 +1926,6 @@ VPTOPartContract extractTPartContract(Value src0, Value src1, Value dst,
   deriveValidShape(src1, contract.src1ValidRows, contract.src1ValidCols);
   deriveValidShape(dst, contract.dstValidRows, contract.dstValidCols);
   contract.loopScope.kind = VPTOLoopScopeKind::AIVVectorScope;
-  contract.loopScope.loweredAttr = kLoweredLoopScopeAttrName;
   contract.loopScope.loopDepth = 0;
   return contract;
 }
@@ -5640,7 +5629,6 @@ LogicalResult lowerTGather(TGatherOp op, PatternRewriter &rewriter) {
   Value c1 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 1);
   VPTOLoopScopeContract loopScope;
   loopScope.kind = VPTOLoopScopeKind::AIVVectorScope;
-  loopScope.loweredAttr = kLoweredLoopScopeAttrName;
   loopScope.loopDepth = 0;
 
   FailureOr<pto::VecScopeOp> vecScope =
@@ -5848,7 +5836,6 @@ LogicalResult lowerTGatherB(TGatherBOp op, PatternRewriter &rewriter) {
 
   VPTOLoopScopeContract loopScope;
   loopScope.kind = VPTOLoopScopeKind::AIVVectorScope;
-  loopScope.loweredAttr = kLoweredLoopScopeAttrName;
   loopScope.loopDepth = 0;
 
   FailureOr<pto::VecScopeOp> vecScope =
@@ -5994,7 +5981,6 @@ LogicalResult lowerTScatter(TScatterOp op, PatternRewriter &rewriter) {
 
   VPTOLoopScopeContract loopScope;
   loopScope.kind = VPTOLoopScopeKind::AIVVectorScope;
-  loopScope.loweredAttr = kLoweredLoopScopeAttrName;
   loopScope.loopDepth = 0;
 
   FailureOr<pto::VecScopeOp> vecScope =
@@ -7009,7 +6995,6 @@ LogicalResult lowerTRowExpandBinaryLike(OpTy op, PatternRewriter &rewriter,
 
   VPTOLoopScopeContract loopScope;
   loopScope.kind = VPTOLoopScopeKind::AIVVectorScope;
-  loopScope.loweredAttr = kLoweredLoopScopeAttrName;
   loopScope.loopDepth = 0;
 
   auto buildRowExpandValue = [&](Value baseVec, Value expandedVec,

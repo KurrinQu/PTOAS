@@ -7,13 +7,12 @@ module {
   func.func @carry_granularity_mismatch(%lhs: !pto.vreg<64xi32>,
                                         %rhs: !pto.vreg<64xi32>, %idx: index)
       attributes {pto.version_selection_applied} {
-    %c1 = arith.constant 1 : index
-    scf.for %i = %idx to %c1 step %c1 {
+    pto.vecscope {
       %mask = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
       %sum, %carry = pto.vaddc %lhs, %rhs, %mask
         : !pto.vreg<64xi32>, !pto.vreg<64xi32>, !pto.mask<b32>
        -> !pto.vreg<64xi32>, !pto.mask<b16>
-    } {llvm.loop.aivector_scope}
+    }
     return
   }
 }

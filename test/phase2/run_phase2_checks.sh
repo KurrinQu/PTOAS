@@ -100,6 +100,13 @@ echo "phase2 check: vpto_fusion_aivector_scope_loop_preserved_after_canonicalize
 awk '/IR Dump After PTOLowLevelLoopFusion/{seen_low=1; next} seen_low && /IR Dump After Canonicalizer/{found=1} found{if (found > 1 && /IR Dump After /) exit; print; found=2}' /tmp/vpto_fusion_aivector_scope_loop_preserved.out | \
   "${filecheck_bin}" test/phase2/vpto_fusion_aivector_scope_loop_preserved_after_canonicalize.mlir
 
+echo "phase2 check: vpto_no_legacy_vecscope_form.mlir"
+"${ptoas_bin}" test/samples/PyPTOIRParser/paged_attention_example_kernel_online_update.pto --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --print-ir-after-all --print-ir-after-all-func-filter=kernel_online_update -o /dev/null > /tmp/vpto_no_legacy_vecscope_form.out 2>&1
+awk '/IR Dump After PTOToVPTO/{found=1} found{if (found > 1 && /IR Dump After /) exit; print; found=2}' /tmp/vpto_no_legacy_vecscope_form.out | \
+  "${filecheck_bin}" --check-prefix=LOWER test/phase2/vpto_no_legacy_vecscope_form.mlir
+awk '/IR Dump After PTOPostFusionLoopUnroll/{found=1} found{if (found > 1 && /IR Dump After /) exit; print; found=2}' /tmp/vpto_no_legacy_vecscope_form.out | \
+  "${filecheck_bin}" --check-prefix=UNROLL test/phase2/vpto_no_legacy_vecscope_form.mlir
+
 echo "phase2 check: vpto_fusion_pipeline_order.mlir"
 "${ptoas_bin}" test/samples/PyPTOIRParser/paged_attention_example_kernel_online_update.pto --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --print-ir-after-all --print-ir-after-all-func-filter=kernel_online_update -o /dev/null > /tmp/vpto_fusion_pipeline_order.out 2>&1
 "${filecheck_bin}" test/phase2/vpto_fusion_pipeline_order.mlir < /tmp/vpto_fusion_pipeline_order.out
