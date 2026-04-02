@@ -3,7 +3,6 @@
 
 #include <cstdint>
 #include <pto/pto-inst.hpp>
-#include "tensor.h"
 
 using namespace pto;
 
@@ -235,32 +234,4 @@ static __aicore__ void scope3_incore_0_incore_0_aiv(__gm__ float* v1, __gm__ bfl
 
   ptoas_auto_sync_tail(PTOAutoSyncTailMode::kBarrierAll);
   return;
-}
-
-// --- Kernel entry point ---
-extern "C" __aicore__ __attribute__((always_inline)) void kernel_entry(__gm__ int64_t* args)
-{
-    // Unpack tensor: attn_out__ssa_v0
-    __gm__ Tensor* attn_out__ssa_v0_tensor = reinterpret_cast<__gm__ Tensor*>(args[0]);
-    __gm__ float* attn_out__ssa_v0 = reinterpret_cast<__gm__ float*>(attn_out__ssa_v0_tensor->buffer.addr) + attn_out__ssa_v0_tensor->start_offset;
-
-    // Unpack tensor: hidden_states__ssa_v0
-    __gm__ Tensor* hidden_states__ssa_v0_tensor = reinterpret_cast<__gm__ Tensor*>(args[1]);
-    __gm__ bfloat16_t* hidden_states__ssa_v0 = reinterpret_cast<__gm__ bfloat16_t*>(hidden_states__ssa_v0_tensor->buffer.addr) + hidden_states__ssa_v0_tensor->start_offset;
-
-    // Unpack tensor: resid1_tile__co_l0_iter_v1
-    __gm__ Tensor* resid1_tile__co_l0_iter_v1_tensor = reinterpret_cast<__gm__ Tensor*>(args[2]);
-    __gm__ float* resid1_tile__co_l0_iter_v1 = reinterpret_cast<__gm__ float*>(resid1_tile__co_l0_iter_v1_tensor->buffer.addr) + resid1_tile__co_l0_iter_v1_tensor->start_offset;
-
-    // Unpack tensor: wo__ssa_v0
-    __gm__ Tensor* wo__ssa_v0_tensor = reinterpret_cast<__gm__ Tensor*>(args[3]);
-    __gm__ bfloat16_t* wo__ssa_v0 = reinterpret_cast<__gm__ bfloat16_t*>(wo__ssa_v0_tensor->buffer.addr) + wo__ssa_v0_tensor->start_offset;
-
-    // Unpack scalar: ob__co_idx_v0
-    union { uint64_t u64; int64_t val; } ob__co_idx_v0_conv;
-    ob__co_idx_v0_conv.u64 = args[4];
-    int64_t ob__co_idx_v0 = ob__co_idx_v0_conv.val;
-
-    // Forward to ptoas-generated function
-    scope3_incore_0_incore_0_aic(attn_out__ssa_v0, hidden_states__ssa_v0, resid1_tile__co_l0_iter_v1, wo__ssa_v0, ob__co_idx_v0);
 }

@@ -30,10 +30,6 @@ typedef struct {
 #include <cstdlib>
 #include <cstdint>
 
-#if !defined(__CCE_AICORE__) && !defined(__CPU_SIM)
-#define __CPU_SIM
-#endif
-
 #include "kernel.cpp"
 
 __global__ AICORE void scope3_incore_0_incore_0_kernel(
@@ -46,19 +42,7 @@ __global__ AICORE void scope3_incore_0_incore_0_kernel(
 void LaunchScope3Incore0Incore0(float *attn_out, uint16_t *hidden_states,
                                 float *resid_out, uint16_t *wo, int32_t ob_idx,
                                 void *stream) {
-#if defined(__CCE_AICORE__)
   scope3_incore_0_incore_0_kernel<<<1, nullptr, stream>>>(
       (__gm__ float *)attn_out, (__gm__ bfloat16_t *)hidden_states,
       (__gm__ float *)resid_out, (__gm__ bfloat16_t *)wo, ob_idx);
-#else
-  (void)attn_out;
-  (void)hidden_states;
-  (void)resid_out;
-  (void)wo;
-  (void)ob_idx;
-  (void)stream;
-  std::fprintf(stderr,
-               "LaunchScope3Incore0Incore0 requires device compilation/runtime.\n");
-  std::abort();
-#endif
 }
