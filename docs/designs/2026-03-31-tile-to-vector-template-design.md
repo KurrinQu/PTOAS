@@ -1,38 +1,53 @@
-# Tile→Vector 模板实例化与向量库方案设计
-
+# Tile Lib 向量库方案设计
 
 ## 第一章 背景与问题
 
-### 1.1 IR 的层级关系
+### 1.1 当前编译栈与编译时长问题
 
-PTOAS 编译栈分为三层，Tile IR 面向用户，Vector IR 面向硬件，LLVM IR 由后端接管：
+当前从 DSL 到硬件二进制的完整编译栈如下：
 
 ```
-用户代码 / 上层框架
-        │
-        ▼
-┌──────────────────────┐
-│  PTO Tile IR         │  pto.tadd, pto.tmul, pto.tload ...
-│  操作对象: tile_buf   │  形状/dtype 由 tile_buf 类型携带
-└──────────┬───────────┘
-           │  Tile→Vector Lowering
-           ▼
-┌──────────────────────┐
-│  Vector IR (vPTO)    │  pto.vadd, pto.vlds, pto.vsts ...
-│  操作对象: vreg/ptr  │  循环遍历 tile，每次处理一个 vreg
-└──────────┬───────────┘
-           │  Vector→LLVM Lowering
-           ▼
-┌──────────────────────┐
-│  LLVM IR             │  由 LLVM 编译器接管
-└──────────────────────┘
+PTO DSL (TileLang...)
+       ↓
+     PTOAS (MLIR)
+       ↓
+  Tile Lib (CCE)          ← C++ 模板库
+       ↓
+     CCEC                 ← C++ 编译器
+       ↓
+    LLVM IR
+       ↓
+    BiSheng
+       ↓
+  Davinci Binary
 ```
 
-Tile IR 中一条 op 表达完整的 tile 语义，Vector IR 则必须显式展开为循环、按 vreg 宽度分块、处理尾部 mask。
+这条编译栈层次较深。PTOAS 生成 CCE C++ 代码后，需要经过 C++ 模板实例化和 CCEC 编译才能产生 LLVM IR，再由 BiSheng 编译器生成最终的 Davinci 二进制。其中 **C++ 模板实例化和 CCE 编译** 是主要的编译时间瓶颈。
 
-### 1.2 用 `pto.tadd` 看两层之间的差距
+我们希望简化编译栈，跳过 CCE 代码生成和编译的过程，直接从 PTOAS 输出 LLVM IR：
 
-**Tile IR 层**——一条指令，语义完整：
+```
+PTO DSL (TileLang...) + Tile Lib
+       ↓
+     PTOAS (MLIR)         ← 直接输出 LLVM IR，跳过 CCE
+       ↓
+    LLVM IR
+       ↓
+    BiSheng
+       ↓
+  Davinci Binary
+```
+
+这样可以显著缩短编译时间。但当前的 Tile Lib 是基于 CCE 和 C++ 模板开发的，因此需要用其它方式重新实现 Tile Lib。
+
+### 1.2 PTOAS 中向量库实现的挑战
+
+PTOAS 中目前设计两层粒度的 IR：
+
+- **PTO Tile IR**：面向上层用户的高层抽象，操作对象是 `tile_buf`，一条指令表达完整的 tile 语义（如 `pto.tadd`、`pto.tmul`、`pto.tload`）。
+- **Vector IR (vPTO)**：面向底层硬件的指令接口，操作对象是 `vreg`/`ptr`，需要显式循环、显式寄存器宽度、显式 mask 处理（如 `pto.vadd`、`pto.vlds`、`pto.vsts`）。
+
+Tile Lib 的一种实现方式是直接使用 Vector IR 编写。以 `pto.tadd`（逐元素加法）为例，在 Tile IR 层只需一条指令：
 
 ```mlir
 pto.tadd ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, ...>,
@@ -40,7 +55,7 @@ pto.tadd ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, ...>,
          outs(%c : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, ...>)
 ```
 
-**Vector IR 层**——同一个 `pto.tadd` 的向量实现（`dtype=f32, rows=16, cols=64`）：
+而用 Vector IR 实现同样的语义（`dtype=f32, rows=16, cols=64`），需要展开为完整的向量循环：
 
 ```mlir
 func.func @TADD(
@@ -79,78 +94,243 @@ func.func @TADD(
 }
 ```
 
-从这段向量实现可以看到：`dtype=f32` 决定了 vreg 类型 `vreg<64xf32>`（64 = 256B / sizeof(f32)）；`rows=16, cols=64` 决定了 memref 形状和循环边界；`blayout` 决定了 stride 模式。这些值贯穿整个函数体。
+直接基于 Vector IR 开发 Tile Lib 面临以下困难：
 
-### 1.3 问题的本质
+1. **MLIR 语法门槛高**：需要熟悉 `memref`、`index`、`strided` 等 MLIR 数据类型和语法，使用 MLIR 的方式定义变量、表达运算和控制流。
+2. **参数组合无法穷举**：`dtype` 有 f16/f32/bf16 等，`rows`/`cols` 可以是任意正整数，为每种 `(op, dtype, rows, cols, layout)` 组合手写向量实现不可行。
 
-`pto.tadd` 只是一个例子，所有 Tile 指令（`pto.tsub`、`pto.tmul`、`pto.tneg` ...）都面临相同问题：
+因此，直接基于 PTO Vector IR 开发 Tile Lib，技术难度大且工作无法收敛。
 
-- 实际使用中 `tile_buf` 的参数组合千变万化——dtype 有 f16/f32/bf16 等，rows/cols 可以是任意正整数。
-- 为每种 `(op, dtype, rows, cols, layout)` 组合手写向量实现不可行。
-- 需要一种方案：按 `dtype` 分模板函数，shape 和布局用占位符表示，由 lowering 在编译期用具体 `tile_buf` 类型特化。
-
-## 第二章 方案与模板库
+## 第二章 方案：使用 Python 开发 Tile Lib
 
 ### 2.1 总体思路
 
-将每个 Tile 指令的 Vector 实现写成模板函数，组成向量库：
+为了降低开发门槛并解决参数组合的穷举问题，我们采用 PTO DSL 来编写 Tile Lib 的向量库实现。这套语法定义在 TileLang 中，库开发者使用 Python 编写模板函数，由 PTOAS 编译器在编译时进行实例化。
 
-1. **按 `(tile op, dtype)` 组织**：`dtype` 决定 vreg 元素类型和向量宽度，必须固化。种类有限（f16/f32/bf16/i8/i16/i32），每种一个模板。
-2. **shape 用 intrinsic 占位**：`rows/cols/v_row/v_col` 不写死，通过 intrinsic op 从 `tile_buf` 类型中提取。
-3. **编译期特化**：Lowering 遇到 Tile op 时，选择模板、克隆、用实际 `tile_buf` 类型特化、inline 到调用点。
+整体方案：
 
-### 2.2 模板库接口约定
+1. **用 Python DSL 编写模板函数**：使用 `pto.Tile` 数据类型和向量操作接口，按 Tile 指令语义编写向量实现。
+2. **编译器实例化模板**：PTOAS 在编译过程中遇到 Tile op 时，调用对应的模板函数，填入具体的 `tile_buf` 类型参数，生成特化后的向量 IR。
+3. **inline 到调用点**：特化后的向量 IR 直接 inline 到原 Tile op 的位置，继续后续优化和 lowering 流程。
 
-| 项目 | 约定 |
+### 2.2 TADD 模板示例
+
+以 `pto.tadd`（逐元素加法）为例，使用 Python DSL 编写的模板函数如下：
+
+```python
+@pto.tile_template(target="a5", op="pto.tadd")
+def template_tadd(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
+    dtype = src0.element_type
+    elem_size = src0.element_size
+    rows, cols = src0.shape
+    v_rows, v_cols = src0.valid_shape
+
+    for i in range(0, v_rows, 1):
+        remaining = v_cols
+        for j in range(0, v_cols, 256 / elem_size):
+            all_mask, remaining = pto.make_mask(dtype, remaining)
+            vec_a = pto.vlds(a[i, j])
+            vec_b = pto.vlds(b[i, j])
+            result = pto.vadd(vec_a, vec_b, all_mask)
+            pto.vsts(result, c[i, j], all_mask)
+```
+
+代码解读：
+
+- **`@pto.tile_template`** 装饰器指示这是一个 `pto.tadd` 指令的模板，会在编译时进行实例化。
+- **输入参数**为 3 个 `pto.Tile` 数据类型参数，2 个输入（`src0`、`src1`），1 个输出（`dst`）。
+- 通过 **`Tile` 数据类型接口**获取元素类型（`element_type`）、元素大小（`element_size`）、静态 shape（`shape`）和 valid shape（`valid_shape`）信息。
+- 通过 **2 层循环**分别遍历 tile 的行和列。
+- 通过 **`pto.make_mask`** 指令，根据基础数据类型大小及有效数据数量设置 mask 寄存器。
+- 通过 **`pto.vlds`** 指令，以 `a[i, j]` 和 `b[i, j]` 为起始地址分别将数据读入向量寄存器。
+- 通过 **`pto.vadd`** 计算相加结果，写入寄存器 `result`。
+- 通过 **`pto.vsts`** 将 `result` 写入以 `c[i, j]` 为起始的地址区间。
+
+### 2.3 TileLang DSL 语法参考
+
+#### 2.3.1 基础数据类型
+
+| DSL 类型 | 说明 | 位宽 |
+|----------|------|------|
+| `pto.i8` | 8 位整数 | 8 |
+| `pto.i16` | 16 位整数 | 16 |
+| `pto.i32` | 32 位整数 | 32 |
+| `pto.i64` | 64 位整数 | 64 |
+| `pto.f16` | 半精度浮点 | 16 |
+| `pto.bf16` | BFloat16 | 16 |
+| `pto.f32` | 单精度浮点 | 32 |
+
+Python 字面量自动推导类型：`int` → `pto.i32`，`float` → `pto.f32`。
+
+#### 2.3.2 Tile 数据类型
+
+`pto.Tile` 表示一个带有布局和配置信息的数据块，对应 MLIR 中的 `!pto.tile_buf` 类型。
+
+**Tile 属性接口：**
+
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| `shape` | `tuple[int, ...]` | Tile 的完整维度（rows, cols） |
+| `valid_shape` | `tuple[int, ...]` | 有效数据维度（v_row, v_col），可能小于 shape |
+| `element_type` | `Type` | 元素数据类型（如 `pto.f32`） |
+| `element_size` | `int` | 元素字节大小（如 f32 → 4） |
+| `memory_space` | `MemorySpace` | 内存空间（GM, UB） |
+| `config` | `TileConfig` | 布局和 padding 配置 |
+
+**Tile 配置：**
+
+```python
+pto.BLayout.ROW_MAJOR     # 行主序
+pto.BLayout.COL_MAJOR     # 列主序
+pto.SLayout.NONE_BOX      # 无二级布局
+pto.PadValue.NULL          # 无 padding
+pto.PadValue.ZERO          # 零填充
+```
+
+#### 2.3.3 向量操作接口
+
+向量寄存器固定 256 字节宽度，每次处理的元素数量由数据类型决定：f32 → 64 个元素，f16 → 128 个元素。
+
+**Mask 操作：**
+
+| 操作 | 说明 |
 |------|------|
-| 函数命名 | `@{OP}_{dtype}`，如 `@TADD_f32`、`@TMUL_f16` |
-| 函数属性 | `pto.tile_function = "pto.tadd"` 标记对应的 Tile 指令 |
-| 参数顺序 | 与 Tile op ODS 定义一致，`ins` 在前，`outs` 在后 |
-| 参数类型 | `!pto.tile_buf<..., rows=?, cols=?, v_row=?, v_col=?, ...>` 通用模板签名 |
-| 读写属性 | `pto.access = "read" / "write" |
+| `pto.make_mask(dtype, remaining)` | 根据数据类型和剩余元素数量生成 mask，返回 `(mask, new_remaining)` |
+| `pto.make_mask(dtype, PAT.ALL)` | 生成全 1 mask |
 
-**Tile 属性 Intrinsic**——在模板中作为占位符使用，特化后 fold 为常量：
+**向量 Load/Store：**
 
-| Intrinsic | 语义 | 返回类型 |
-|-----------|------|----------|
-| `pto.tile_rows %tb` | 提取 rows | `index` |
-| `pto.tile_cols %tb` | 提取 cols | `index` |
-| `pto.tile_valid_rows %tb` | 提取 v_row | `index` |
-| `pto.tile_valid_cols %tb` | 提取 v_col | `index` |
-| `pto.tile_blayout %tb` | 提取 blayout 编码 | `i32` |
-| `pto.tile_slayout %tb` | 提取 slayout 编码 | `i32` |
-| `pto.tile_fractal %tb` | 提取 fractal size | `i32` |
-| `pto.tile_pad %tb` | 提取 pad 策略编码 | `i32` |
+| 操作 | 说明 |
+|------|------|
+| `pto.vlds(tile[i, j])` | 从 Tile 的 `[i, j]` 位置加载一个向量寄存器的数据 |
+| `pto.vsts(vec, tile[i, j], mask)` | 将向量寄存器数据写入 Tile 的 `[i, j]` 位置 |
 
-**`pto.tile_buf_addr`**——从 `tile_buf` 提取 memref，输出类型在特化阶段由 tile_buf 类型自动推导：
+**二元向量运算：**
+
+| 操作 | 说明 |
+|------|------|
+| `pto.vadd(vec1, vec2, mask)` | 逐元素加法 |
+| `pto.vsub(vec1, vec2, mask)` | 逐元素减法 |
+| `pto.vmul(vec1, vec2, mask)` | 逐元素乘法 |
+| `pto.vdiv(vec1, vec2, mask)` | 逐元素除法 |
+| `pto.vmax(vec1, vec2, mask)` | 逐元素取大 |
+| `pto.vmin(vec1, vec2, mask)` | 逐元素取小 |
+
+**一元向量运算：**
+
+| 操作 | 说明 |
+|------|------|
+| `pto.vabs(vec, mask)` | 逐元素绝对值 |
+| `pto.vexp(vec, mask)` | 逐元素指数 |
+| `pto.vln(vec, mask)` | 逐元素对数 |
+| `pto.vsqrt(vec, mask)` | 逐元素开方 |
+| `pto.vrelu(vec, mask)` | 逐元素 ReLU |
+
+**向量-标量运算：**
+
+| 操作 | 说明 |
+|------|------|
+| `pto.vmuls(vec, scalar, mask)` | 向量乘标量 |
+| `pto.vadds(vec, scalar, mask)` | 向量加标量 |
+
+#### 2.3.4 控制流
+
+**循环**使用 Python 的 `range` 语法：
+
+```python
+for i in range(0, v_rows, 1):
+    # 循环体
+```
+
+当循环边界来自 `shape`（编译期常量）时，DSL 在 Python 层展开循环；当来自 `valid_shape`（可能是运行时动态值）时，生成 `scf.for` MLIR 循环。
+
+## 第三章 PTOAS 编译器：TileOp Expand
+
+### 3.1 编译流程
+
+PTOAS 编译器的输入可以是 Tile 指令、向量指令、或两者的混合。完整的编译 pipeline 如下：
 
 ```
-特化前: pto.tile_buf_addr %src0 : tile_buf<..., rows=?, cols=?> -> memref<?x?xf32, strided<[?, 1]>, #pto.address_space<vec>>
-特化后: pto.tile_buf_addr %src0 : tile_buf<..., rows=16, cols=64, blayout=row_major, loc=vec>
-        -> memref<16x64xf32, strided<[64, 1]>, #pto.address_space<vec>>
+输入：TileOp / 向量指令 / TileOp + 向量指令混合
+       ↓
+  VF Fusion Analysis        ← 在 Tile IR 层分析可融合的操作组
+       ↓
+  PlanMemory                ← UB 内存分配规划
+       ↓
+  InsertSync                ← 管线同步插入
+       ↓
+  Expand TileOp             ← 将 TileOp 实例化为向量指令
+       ↓
+  VF Fusion                 ← 合并相邻向量循环，消除中间 UB 读写
+       ↓
+  LLVM IR
 ```
 
-推导规则：`rows/cols` → memref shape；`blayout=row_major` → `strided<[cols, 1]>`，`col_major` → `strided<[1, rows]>`；`loc` → `#pto.address_space<loc>`。
+其中 **Expand TileOp** 是本方案的核心 pass，负责将 Tile 指令展开为实例化后的向量库指令。
 
-### 2.3 用 `TADD_f32` 说明模板怎么写
+### 3.2 Expand TileOp Pass 的工作流程
+
+以编译时遇到 `pto.tadd` 为例，Expand TileOp pass 的处理步骤如下：
+
+```
+Step 1: 识别 Tile Op
+───────────────────
+  遇到 pto.tadd ins(%a, %b) outs(%c)
+  从操作数的 tile_buf 类型提取属性：
+    dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
+    blayout=row_major, slayout=none_box, fractal=512, pad=0
+
+Step 2: 匹配模板函数
+───────────────────
+  根据 Tile op 种类（pto.tadd）和 dtype（f32）
+  查找对应的 Python DSL 模板 → template_tadd
+
+Step 3: 实例化模板
+───────────────────
+  调用模板函数，填入具体的 tile_buf 类型参数
+  Python DSL 在编译期折叠静态字段（rows, cols, elem_size, ...）
+  动态字段（v_row, v_col）生成为函数参数
+  输出实例化后的 MLIR 向量 IR
+
+Step 4: Inline 到调用点
+───────────────────────
+  将实例化后的向量 IR 直接 inline 到原 pto.tadd 的位置
+  绑定函数参数到调用点的实际值
+  删除原 Tile op
+
+Step 5: Cleanup
+───────────────
+  运行 canonicalize，消除多余常量和中间符号
+```
+
+### 3.3 Pass 输出示例
+
+经过 Expand TileOp 处理后，原来的 `pto.tadd` 被替换为向量循环体：
+
+**输入（Tile IR）：**
+
+```mlir
+pto.tadd ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, ...>,
+                      !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, ...>)
+         outs(%c : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, ...>)
+```
+
+**输出（Vector IR）：**
 
 ```mlir
 func.func @TADD_f32(
-    %src0: !pto.tile_buf<loc=vec, dtype=f32, rows=?, cols=?, v_row=?, v_col=?,
-                         blayout=row_major, slayout=none_box, fractal=512, pad=0>
-           {pto.access = "read"},
-    %src1: !pto.tile_buf<loc=vec, dtype=f32, rows=?, cols=?, v_row=?, v_col=?,
-                         blayout=row_major, slayout=none_box, fractal=512, pad=0>
-           {pto.access = "read"},
-    %dst:  !pto.tile_buf<loc=vec, dtype=f32, rows=?, cols=?, v_row=?, v_col=?,
-                         blayout=row_major, slayout=none_box, fractal=512, pad=0>
-           {pto.access = "write"})
-    attributes { pto.tile_function = "pto.tadd" } {
+    %src0: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=?, v_col=?,
+                         blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+    %src1: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=?, v_col=?,
+                         blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+    %dst:  !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=?, v_col=?,
+                         blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+  {
 
   // 1. 从 tile_buf 提取 memref（shape 和 stride 为占位，特化后推导）
-  %mSrc0 = pto.tile_buf_addr %src0 : ... -> memref<?x?xf32, strided<[?, 1]>, #pto.address_space<vec>>
-  %mSrc1 = pto.tile_buf_addr %src1 : ... -> memref<?x?xf32, strided<[?, 1]>, #pto.address_space<vec>>
-  %mDst  = pto.tile_buf_addr %dst  : ... -> memref<?x?xf32, strided<[?, 1]>, #pto.address_space<vec>>
+  %mSrc0 = pto.tile_buf_addr %src0 : ... -> memref<16x64xf32, strided<[64, 1]>, #pto.address_space<vec>>
+  %mSrc1 = pto.tile_buf_addr %src1 : ... -> memref<16x64xf32, strided<[64, 1]>, #pto.address_space<vec>>
+  %mDst  = pto.tile_buf_addr %dst  : ... -> memref<16x64xf32, strided<[64, 1]>, #pto.address_space<vec>>
 
   // 2. 通过 intrinsic 提取有效形状（占位，特化后 fold 为常量）
   %v_rows = pto.tile_valid_rows %src0 : ... -> index
@@ -169,13 +349,13 @@ func.func @TADD_f32(
         %mask, %next = pto.plt_b32 %remain : i32 -> !pto.mask, i32
 
         %va = pto.vlds %mSrc0[%i, %j]
-            : memref<?x?xf32, strided<[?, 1]>, #pto.address_space<vec>> -> !pto.vreg<64xf32>
+            : memref<16x64xf32, strided<[?, 1]>, #pto.address_space<vec>> -> !pto.vreg<64xf32>
         %vb = pto.vlds %mSrc1[%i, %j]
-            : memref<?x?xf32, strided<[?, 1]>, #pto.address_space<vec>> -> !pto.vreg<64xf32>
+            : memref<16x64xf32, strided<[?, 1]>, #pto.address_space<vec>> -> !pto.vreg<64xf32>
         %vc = pto.vadd %va, %vb, %mask
             : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
         pto.vsts %vc, %mDst[%i, %j], %mask
-            : !pto.vreg<64xf32>, memref<?x?xf32, strided<[?, 1]>, #pto.address_space<vec>>, !pto.mask
+            : !pto.vreg<64xf32>, memref<16x64xf32, strided<[?, 1]>, #pto.address_space<vec>>, !pto.mask
 
         scf.yield %next : i32
       }
@@ -185,155 +365,30 @@ func.func @TADD_f32(
 }
 ```
 
-这个模板体现的写法要点：
-
-1. `f32` 对应的 vreg 类型 `!pto.vreg<64xf32>` 和向量宽度 `%c64` 是固化的——这是按 dtype 分模板的原因。
-2. `rows/cols` 不写死，通过 `tile_valid_rows/tile_valid_cols` 提取，特化后成为常量。
-3. `tile_buf_addr` 把 `tile_buf` 转成 memref，特化后 shape/stride 自动推导。
-4. 尾块处理通过 `pto.plt_b32` + mask 显式表达。
-5. 整个函数本质上就是一段"可被具体 tile_buf 类型特化的 Vector IR"。
-
-### 2.4 特化与 Fold
-
-模板特化是编译期行为。当某个调用点的实际类型为 `tile_buf<..., rows=16, cols=64, v_row=16, v_col=64, ...>` 时：
-
-1. 模板参数类型被替换为具体 `tile_buf` 类型。
-2. `tile_buf_addr` 结果类型推导为 `memref<16x64xf32, strided<[64, 1]>, #pto.address_space<vec>>`。
-3. 静态字段的 intrinsic fold 为 `arith.constant`：
-
-```cpp
-OpFoldResult TileRowsOp::fold(FoldAdaptor adaptor) {
-  auto tbType = getOperand().getType().cast<TileBufType>();
-  int64_t rows = tbType.getShape()[0];
-  if (rows == ShapedType::kDynamic)
-    return {};  // 动态字段，无法折叠
-  return IntegerAttr::get(IndexType::get(getContext()), rows);
-}
-```
-
-4. 动态字段（如 `v_row=?`）的 intrinsic 保留，inline 到调用点后由 canonicalize 在上下文中解析：
-
-```mlir
-// inline 后（调用点处）：
-%rows = arith.constant 16 : index       // rows 静态，已折叠
-%cols = arith.constant 64 : index       // cols 静态，已折叠
-%v_row = pto.tile_valid_rows %a : ...   // v_row 动态，保留 intrinsic
-```
-
-### 2.5 模板库的约束
-
-1. **Intrinsic 只允许出现在顶层 `pto.tile_function` 函数中。** 模板内部的辅助函数不直接使用 intrinsic，而是通过参数接收已提取的值。这保证特化逻辑只处理顶层函数，无需递归分析。
-2. **模板库内置到编译器中**（编译期链接的 MLIR module）。Lowering pass 初始化时加载，通过 `pto.tile_function` 属性值 + dtype 匹配模板。
-
-## 第三章 编译器方案：Tile→Vector Lowering
-
-### 3.1 整体 Pass Pipeline
-
-```
-ConvertToPTOOp → tile ops (tile_buf)
-       ↓
-PTOViewToMemref            ← tile_buf → memref
-       ↓
-PlanMemory (memref)        ← 保持不变
-       ↓
-InsertSync (memref)        ← 保持不变
-       ↓
-  ┌─── 路径选择 ────────────────────┐
-  │                                │
-  ▼                                ▼
-MemrefToTileBuf (new pass)     PTOToEmitC / A5VM (memref)
-  ↓
-VF Fusion Analysis (tile_buf)
-  ↓
-Tile→Vector Lowering (tile_buf)
-  ↓
-Vector Fusion / Cleanup
-  ↓
-Vector→LLVM Lowering
-```
-
-关键设计决策：
-
-- **Tile→Vector lowering 必须在 `tile_buf` 级别工作**，因为模板中的 intrinsic 依赖 `tile_buf` 类型信息。
-- **PlanMemory / InsertSync 继续在 memref 上工作**（短期方案），在 InsertSync 之后通过 `MemrefToTileBuf` pass 将 memref 转回 tile_buf。
-- **VF 融合分析在 Tile IR 层完成**，基于 `ins/outs` 数据流和 tile_buf 类型兼容性判断。
-- **模板 inline 后不保留 `func.call` 边界**，使后续向量循环融合可以跨原 Tile op 边界执行。
-
-> 长期方向是将 PlanMemory / InsertSync 迁移为基于 tile_buf 工作，两条路径共享，但当前改造量较大，作为后续独立演进目标。
-
-### 3.2 Lowering 核心步骤
-
-以 `pto.tadd ins(%a, %b) outs(%c)` 为例，`%a/%b/%c` 类型为 `tile_buf<f32, 16, 64, ...>`：
-
-```
-Step 1: 识别 Tile op，读取 dtype → f32
-Step 2: 查找 pto.tile_function="pto.tadd" 且 dtype=f32 的模板 → @TADD_f32
-Step 3: 克隆模板，用实际 tile_buf 类型替换签名中的动态类型 (rows=16, cols=64, ...)
-Step 4: 推导 tile_buf_addr 的结果 memref 类型
-Step 5: Fold intrinsic
-         - 静态字段：pto.tile_rows → arith.constant 16
-         - 动态字段：pto.tile_valid_rows → 保留
-Step 6: 将特化后的函数体 inline 到原 Tile op 位置
-Step 7: Cleanup / canonicalize
-```
-
-输出——原 `pto.tadd` 被替换为向量循环体：
-
-```mlir
-pto.vecscope {
-  scf.for %i = ... {
-    scf.for %j = ... {
-      %va = pto.vlds ...
-      %vb = pto.vlds ...
-      %vc = pto.vadd %va, %vb, %mask ...
-      pto.vsts %vc, ...
-    }
-  }
-}
-```
-
-### 3.3 与融合的关系
-
-VF 融合分析在 Tile IR 层完成：
-
-```mlir
-pto.tadd ins(%a, %b) outs(%tmp)    // tmp = a + b
-pto.tmul ins(%tmp, %d) outs(%c)    // c = tmp * d
-// %tmp 是 tadd 的输出、tmul 的输入，类型兼容 → 标记为可融合
-```
-
-Tile→Vector lowering 将两个 op 分别 inline 为向量循环体后，Vector Fusion pass 根据融合标记合并相邻循环，消除 `%tmp` 的 UB 读写，减少 `vlds/vsts` 和 VF 发射次数。
 
 ## 第四章 前置工作
 
-### 4.1 `TileBufType` parser 支持 `rows=?`, `cols=?`
+### 4.1 Python DSL 扩展
 
-当前 parser 只对 `v_row`/`v_col` 支持 `?`（`parseOptionalQuestion` → `kDynamic`），`rows`/`cols` 使用 `parseInteger` 且校验 `rows < 0 || cols < 0` 会拒绝动态值。
+| 工作项 | 说明 |
+|--------|------|
+| `@pto.tile_template` 装饰器 | 标记模板函数，指定对应的 Tile op 和 target |
+| `pto.Tile` 属性接口 | 支持 `shape`、`valid_shape`、`element_type`、`element_size` 等属性访问 |
+| `Tile` 下标访问 | 支持 `tile[i, j]` 语法用于 `vlds`/`vsts` 的地址计算 |
+| 动态循环边界 | 当 `valid_shape` 为运行时动态值时，`range` 生成 `scf.for` |
 
-模板函数签名需要 `rows=?, cols=?` 表示通用模板，需对 parser 做相同适配（`PTOTypeDefs.cpp:122-134, 202`）。
+### 4.2 PTOAS 编译器：Expand TileOp Pass
 
-### 4.2 `MemrefToTileBuf` pass
+| 工作项 | 说明 |
+|--------|------|
+| 模板查找机制 | 根据 Tile op 种类和 dtype 匹配 Python DSL 模板 |
+| 模板实例化 | 调用 Python DSL，传入具体 `tile_buf` 类型，获取实例化后的 MLIR |
+| MLIR 解析与 inline | 解析生成的 MLIR 文本，inline 到调用点，绑定参数 |
+| Cleanup | 实例化后运行 canonicalize 清理冗余 |
 
-在 InsertSync 之后将 memref 转回 tile_buf，使 Tile→Vector lowering 可以在 tile_buf 语义上工作。该 pass 需要解决：
+### 4.3 测试与文档
 
-1. **类型恢复**：从 `memref` 及其关联信息恢复 `tile_buf` 类型（rows、cols、dtype、loc、layout、fractal、pad）。
-2. **语义保留**：保留 PlanMemory / InsertSync 已插入的地址规划、buffer 绑定和同步指令。
-
-### 4.3 新增 `pto.tile_buf_addr`
-
-从 `tile_buf` 提取 memref 的 op，是模板库和 lowering 的连接点。尚未正式定义在 `PTOOps.td` 中，需作为前置依赖实现。
-
-### 4.4 新增 tile 属性 intrinsic 的 ODS、verifier 与 fold
-
-在 `PTOOps.td` 中新增 `tile_rows/cols/valid_rows/valid_cols/blayout/slayout/fractal/pad` 8 个 intrinsic op，并实现：
-
-- **Verifier**：操作数必须是 `!pto.tile_buf`；shape 类返回 `index`，配置类返回 `i32`。
-- **Fold**：静态字段折叠为常量，动态字段返回空结果保留 op。
-
-### 4.5 测试与文档
-
-- `TileBufType` parser 的 `rows=?/cols=?` 解析测试
-- tile intrinsic 的 parser / verifier / fold 测试
-- 模板函数查找、克隆、特化和 inline 的单元测试
-- 端到端用例（`pto.tadd` → Vector IR）
-- 更新 `PTO_IR_manual.md`
+- Python DSL 模板编写和实例化的单元测试
+- Expand TileOp pass 的端到端测试（`pto.tadd` → Vector IR）
+- 融合场景测试（多个 Tile op 连续使用后的 VF Fusion）
+- 更新 `PTO_IR_manual.md` 和 TileLang DSL Guide
