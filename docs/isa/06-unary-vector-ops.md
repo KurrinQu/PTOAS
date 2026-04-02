@@ -5,6 +5,23 @@
 
 Element-wise operations that take one vector input and produce one vector output.
 
+## CA latency (A5, Ascend910_9599 CA)
+
+Cycle-accurate simulator **popped→retire** latency (cycles). **fp16** values use **aclFloat16** in traces where measured. **bf16:** no simple-tile ST coverage on this surface; treat as **—**.
+
+| PTO op | RV (CA) | fp32 | fp16 | bf16 |
+|--------|---------|------|------|------|
+| `pto.vabs` | `RV_VABS_FP` | **5** | **5** | — |
+| `pto.vneg` | `RV_VMULS` | **8** | **8** | — |
+| `pto.vexp` | `RV_VEXP` | **16** | **21** | — |
+| `pto.vln` | `RV_VLN` | **18** | **23** | — |
+| `pto.vsqrt` | `RV_VSQRT` | **17** | **22** | — |
+| `pto.vrsqrt` | `RV_VSQRT` / `RV_VDIV` | **17** / **17** | **22** / **22** | — |
+| `pto.vrec` | `RV_VDIV` | **17** | **22** | — |
+| `pto.vrelu` | `RV_VRELU` | **5** | **5** | — |
+| `pto.vnot` | `RV_VNOT` | — | int-only paths | — |
+| `pto.vmov` | `RV_VLD` proxy | **9** | **9** | — |
+
 ## Common Operand Model
 
 - `%input` is the source vector register value.
