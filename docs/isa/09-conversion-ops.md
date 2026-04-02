@@ -5,15 +5,6 @@
 
 Operations that convert between data types (float/int, narrowing/widening).
 
-## CA latency (A5, Ascend910_9599 CA)
-
-Cycle-accurate simulator **popped→retire** latency (cycles). Only representative traces below; other `pto.vcvt` conversion pairs depend on the RV lowering in the trace.
-
-| PTO op | RV (CA) | Note | Latency |
-|--------|---------|------|---------|
-| `pto.vcvt` | `RV_VCVT_F2F` | f32→f16 | **7** |
-| `pto.vci` | — | no vector `RV_*` in sampled `veccore0` trace | — |
-
 ## Common Operand Model
 
 - `%input` is the source vector register value.
@@ -22,6 +13,15 @@ Cycle-accurate simulator **popped→retire** latency (cycles). Only representati
   selection in attribute form.
 - The single `pto.vcvt` surface covers float-int, float-float, int-float, and
   int-int conversion families.
+
+## CA latency (A5, Ascend910_9599 CA)
+
+Cycle-accurate simulator **popped→retire** latency (cycles). Only representative traces below; other `pto.vcvt` conversion pairs depend on the RV lowering in the trace.
+
+| PTO op | RV (CA) | Note | Latency |
+|--------|---------|------|---------|
+| `pto.vcvt` | `RV_VCVT_F2F` | f32→f16 | **7** |
+| `pto.vci` | — | no vector `RV_*` in sampled `veccore0` trace | — |
 
 ---
 
@@ -120,7 +120,7 @@ For conversions that change width (e.g., f32→f16), use even/odd parts and comb
     : !pto.vreg<64xf32> -> !pto.vreg<128xf16>
 %odd  = pto.vcvt %in1 {round_mode = "ROUND_R", sat = "RS_ENABLE", part = "PART_ODD"}
     : !pto.vreg<64xf32> -> !pto.vreg<128xf16>
-%result = pto.vor %even, %odd, %mask : !pto.vreg<128xf16>, !pto.vreg<128xf16>, !pto.mask<b16> -> !pto.vreg<128xf16>
+%result = pto.vor %even, %odd, %mask : !pto.vreg<128xf16>, !pto.vreg<128xf16>, !pto.mask -> !pto.vreg<128xf16>
 ```
 
 ---
@@ -159,7 +159,7 @@ for (int i = 0; i < N; i++)
 
 ```mlir
 // Quantization: f32 → i8 with saturation
-%scaled = pto.vmuls %input, %scale, %mask : !pto.vreg<64xf32>, f32, !pto.mask<b32> -> !pto.vreg<64xf32>
+%scaled = pto.vmuls %input, %scale, %mask : !pto.vreg<64xf32>, f32, !pto.mask -> !pto.vreg<64xf32>
 %quantized = pto.vcvt %scaled {round_mode = "ROUND_R", sat = "RS_ENABLE"}
     : !pto.vreg<64xf32> -> !pto.vreg<64xi32>
 // Then narrow i32 → i8 via pack ops

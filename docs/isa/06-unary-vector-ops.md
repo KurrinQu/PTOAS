@@ -5,6 +5,15 @@
 
 Element-wise operations that take one vector input and produce one vector output.
 
+## Common Operand Model
+
+- `%input` is the source vector register value.
+- `%mask` is the predicate operand. For this family, inactive lanes follow the
+  predication behavior of the selected instruction form: zeroing forms
+  zero-fill inactive lanes, while merging forms preserve the destination value.
+- `%result` is the destination vector register value. Unless stated otherwise,
+  `%result` has the same lane count and element type as `%input`.
+
 ## CA latency (A5, Ascend910_9599 CA)
 
 Cycle-accurate simulator **popped→retire** latency (cycles). **fp16** values use **aclFloat16** in traces where measured. **bf16:** no simple-tile ST coverage on this surface; treat as **—**.
@@ -22,22 +31,13 @@ Cycle-accurate simulator **popped→retire** latency (cycles). **fp16** values u
 | `pto.vnot` | `RV_VNOT` | — | int-only paths | — |
 | `pto.vmov` | `RV_VLD` proxy | **9** | **9** | — |
 
-## Common Operand Model
-
-- `%input` is the source vector register value.
-- `%mask` is the predicate operand. For this family, inactive lanes follow the
-  predication behavior of the selected instruction form: zeroing forms
-  zero-fill inactive lanes, while merging forms preserve the destination value.
-- `%result` is the destination vector register value. Unless stated otherwise,
-  `%result` has the same lane count and element type as `%input`.
-
 ---
 
 ## Arithmetic
 
 ### `pto.vabs`
 
-- **syntax:** `%result = pto.vabs %input, %mask : !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vabs %input, %mask : !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - **A5 types:** i8-i32, f16, f32
 
 ```c
@@ -56,7 +56,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vneg`
 
-- **syntax:** `%result = pto.vneg %input, %mask : !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vneg %input, %mask : !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - **A5 types:** i8-i32, f16, f32
 
 ```c
@@ -74,7 +74,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vexp`
 
-- **syntax:** `%result = pto.vexp %input, %mask : !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vexp %input, %mask : !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - **A5 types:** f16, f32
 
 ```c
@@ -90,7 +90,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vln`
 
-- **syntax:** `%result = pto.vln %input, %mask : !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vln %input, %mask : !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - **A5 types:** f16, f32
 
 ```c
@@ -108,7 +108,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vsqrt`
 
-- **syntax:** `%result = pto.vsqrt %input, %mask : !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vsqrt %input, %mask : !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - **A5 types:** f16, f32
 
 ```c
@@ -125,7 +125,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vrsqrt`
 
-- **syntax:** `%result = pto.vrsqrt %input, %mask : !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vrsqrt %input, %mask : !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - **A5 types:** f16, f32
 
 ```c
@@ -143,7 +143,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vrec`
 
-- **syntax:** `%result = pto.vrec %input, %mask : !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vrec %input, %mask : !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - **A5 types:** f16, f32
 
 ```c
@@ -163,7 +163,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vrelu`
 
-- **syntax:** `%result = pto.vrelu %input, %mask : !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vrelu %input, %mask : !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - **A5 types:** f16, f32
 
 ```c
@@ -182,7 +182,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vnot`
 
-- **syntax:** `%result = pto.vnot %input, %mask : !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vnot %input, %mask : !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - **A5 types:** all integer types
 
 ```c
@@ -198,7 +198,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vbcnt`
 
-- **syntax:** `%result = pto.vbcnt %input, %mask : !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vbcnt %input, %mask : !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - **A5 types:** all integer types
 
 ```c
@@ -215,7 +215,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vcls`
 
-- **syntax:** `%result = pto.vcls %input, %mask : !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vcls %input, %mask : !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - **A5 types:** all integer types
 
 ```c
@@ -234,7 +234,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vmov`
 
-- **syntax:** `%result = pto.vmov %input, %mask : !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vmov %input, %mask : !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - **semantics:** Vector register copy.
 
 ```c
@@ -253,12 +253,12 @@ for (int i = 0; i < N; i++)
 
 ```mlir
 // Softmax numerator: exp(x - max)
-%sub = pto.vsub %x, %max_broadcast, %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<G> -> !pto.vreg<64xf32>
-%exp = pto.vexp %sub, %mask : !pto.vreg<64xf32>, !pto.mask<G> -> !pto.vreg<64xf32>
+%sub = pto.vsub %x, %max_broadcast, %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
+%exp = pto.vexp %sub, %mask : !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
 
 // Reciprocal for division
-%sum_rcp = pto.vrec %sum, %mask : !pto.vreg<64xf32>, !pto.mask<G> -> !pto.vreg<64xf32>
+%sum_rcp = pto.vrec %sum, %mask : !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
 
 // ReLU activation
-%activated = pto.vrelu %linear_out, %mask : !pto.vreg<64xf32>, !pto.mask<G> -> !pto.vreg<64xf32>
+%activated = pto.vrelu %linear_out, %mask : !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
 ```
