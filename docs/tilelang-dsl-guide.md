@@ -234,6 +234,92 @@ buf2d = pto.memref((256, 128), pto.f32, MemorySpace.UB)   # 2D: 256x128 f32 buff
 
 MemRefs are used for stateless load/store operations that accept `buf_like` operands in VPTO.
 
+
+### TensorView Types
+
+TensorView types represent views into tensors residing in Global Memory (GM). They are used as kernel parameters for describing GM data and support slicing operations to create logical partitions for TLOAD/TSTORE operations.
+
+### TensorView Type Definition
+
+TensorView types are parameterized by shape and element type:
+
+```python
+# Kernel parameter using TensorView
+@pto.vkernel(target="a5", name="tiled_kernel")
+def tiled_kernel(
+    input_tensor: pto.TensorView,   # GM tensor view
+    output_tensor: pto.TensorView,  # GM tensor view
+    tile_buf: pto.Tile              # UB tile
+):
+    # Access tensor view properties
+    rows, cols = input_tensor.shape      # (dynamic or static)
+    dtype = input_tensor.element_type    # e.g., pto.f32
+    strides = input_tensor.strides       # stride in elements
+```
+
+**Important Notes:**
+- TensorView is a **read-only descriptor** for GM data (though TSTORE can write to it)
+- Shape can be **static** (compile-time constants) or **dynamic** (determined at runtime)
+- Strides are expressed in elements, not bytes
+- Memory space is always GM (Global Memory)
+
+### TensorView Attributes
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `shape` | `tuple[int, ...]` | Tensor dimensions (2D only in current profile) |
+| `element_type` | `Type` | Element data type (e.g., `pto.f32`, `pto.f16`) |
+| `strides` | `tuple[int, ...]` | Stride in elements for each dimension |
+| `offset` | `pto.i64` | Byte offset from base pointer (internal) |
+
+### Padding Mode Enum
+
+Padding mode controls how out-of-bounds accesses are handled during TLOAD/TSTORE operations:
+
+| Enum Value | Description |
+|------------|-------------|
+| `PadMode.PadNull` | No padding (out-of-bounds access is invalid) |
+| `PadMode.PadFirstElem` | Pad using the first element of the source |
+| `PadMode.PadValue` | Pad using a specified value (requires `pad_value` parameter) |
+
+**Usage:**
+```python
+from pto import PadMode
+
+# Load with zero padding
+pto.tload(src_partition, dst_tile, 
+          pad_mode=PadMode.PadValue, 
+          pad_value=pto.f32(0.0))
+
+# Load with first-element padding
+pto.tload(src_partition, dst_tile, pad_mode=PadMode.PadFirstElem)
+
+# Load without padding (default)
+pto.tload(src_partition, dst_tile)  # pad_mode=PadMode.PadNull
+```
+
+### Slicing Syntax
+
+TensorView supports Python slicing syntax to create logical partitions:
+
+```python
+# Create a partition from a tensor view
+partition = tensor_view[row_start:row_end, col_start:col_end]
+
+# Example: extract a 16x16 tile from a larger tensor
+tile_view = large_tensor[0:16, 0:16]
+
+# Dynamic offsets and sizes
+start_row = pto.i32(0)
+start_col = pto.i32(0)
+dynamic_partition = tensor_view[start_row:start_row+16, start_col:start_col+16]
+```
+
+**Constraints:**
+- Slicing returns a new TensorView representing the logical partition
+- The partition must be within the original tensor bounds
+- Slices can be static (constant bounds) or dynamic (runtime values)
+
 ### Alignment Type
 
 The `pto.align` type is used for alignment carrier operations and maps to `!pto.align`.
