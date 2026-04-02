@@ -5,6 +5,15 @@
 
 Element-wise operations that take two vector inputs and produce one vector output.
 
+## Common Operand Model
+
+- `%lhs` and `%rhs` are the two source vector register values.
+- `%mask` is the predicate operand `Pg` that gates which lanes participate.
+- `%result` is the destination vector register value. Unless explicitly noted,
+  it has the same lane count and element type as the inputs.
+- Unless explicitly documented otherwise, `%lhs`, `%rhs`, and `%result` MUST
+  have matching vector shapes and element types.
+
 ## CA latency (A5, Ascend910_9599 CA)
 
 Cycle-accurate simulator **popped→retire** latency (cycles). **fp16** uses **aclFloat16** in measured traces. **bf16:** — (no dedicated vec tile ST on this surface).
@@ -16,22 +25,13 @@ Cycle-accurate simulator **popped→retire** latency (cycles). **fp16** uses **a
 | `pto.vmul` | `RV_VMUL` | **8** | **8** | — |
 | `pto.vdiv` | `RV_VDIV` | **17** | **22** | — |
 
-## Common Operand Model
-
-- `%lhs` and `%rhs` are the two source vector register values.
-- `%mask` is the predicate operand `Pg` that gates which lanes participate.
-- `%result` is the destination vector register value. Unless explicitly noted,
-  it has the same lane count and element type as the inputs.
-- Unless explicitly documented otherwise, `%lhs`, `%rhs`, and `%result` MUST
-  have matching vector shapes and element types.
-
 ---
 
 ## Arithmetic
 
 ### `pto.vadd`
 
-- **syntax:** `%result = pto.vadd %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vadd %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - **A5 types:** i8-i64, f16, bf16, f32
 
 ```c
@@ -48,7 +48,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vsub`
 
-- **syntax:** `%result = pto.vsub %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vsub %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - **A5 types:** i8-i64, f16, bf16, f32
 
 ```c
@@ -65,7 +65,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vmul`
 
-- **syntax:** `%result = pto.vmul %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vmul %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - **A5 types:** i16-i32, f16, bf16, f32 (**NOT** i8/u8)
 
 ```c
@@ -83,7 +83,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vdiv`
 
-- **syntax:** `%result = pto.vdiv %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vdiv %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - **A5 types:** f16, f32 only (no integer division)
 
 ```c
@@ -102,7 +102,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vmax`
 
-- **syntax:** `%result = pto.vmax %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vmax %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - **A5 types:** i8-i32, f16, bf16, f32
 
 ```c
@@ -118,7 +118,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vmin`
 
-- **syntax:** `%result = pto.vmin %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vmin %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - **A5 types:** i8-i32, f16, bf16, f32
 
 ```c
@@ -136,7 +136,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vand`
 
-- **syntax:** `%result = pto.vand %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vand %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - **A5 types:** all integer types
 
 ```c
@@ -152,7 +152,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vor`
 
-- **syntax:** `%result = pto.vor %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vor %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - **A5 types:** all integer types
 
 ```c
@@ -168,7 +168,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vxor`
 
-- **syntax:** `%result = pto.vxor %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vxor %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - **A5 types:** all integer types
 
 ```c
@@ -186,7 +186,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vshl`
 
-- **syntax:** `%result = pto.vshl %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vshl %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - **A5 types:** all integer types
 
 ```c
@@ -205,7 +205,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vshr`
 
-- **syntax:** `%result = pto.vshr %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vshr %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
 - **A5 types:** all integer types
 
 ```c
@@ -225,7 +225,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.vaddc`
 
-- **syntax:** `%result, %carry = pto.vaddc %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>, !pto.mask<G>`
+- **syntax:** `%result, %carry = pto.vaddc %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>, !pto.mask`
 - **semantics:** Add with carry output.
 
 ```c
@@ -248,7 +248,7 @@ for (int i = 0; i < N; i++) {
 
 ### `pto.vsubc`
 
-- **syntax:** `%result, %borrow = pto.vsubc %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>, !pto.mask<G>`
+- **syntax:** `%result, %borrow = pto.vsubc %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>, !pto.mask`
 - **semantics:** Subtract with borrow output.
 
 ```c
@@ -272,15 +272,15 @@ for (int i = 0; i < N; i++) {
 
 ```mlir
 // Vector addition
-%sum = pto.vadd %a, %b, %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<G> -> !pto.vreg<64xf32>
+%sum = pto.vadd %a, %b, %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
 
 // Element-wise multiply
-%prod = pto.vmul %x, %y, %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<G> -> !pto.vreg<64xf32>
+%prod = pto.vmul %x, %y, %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
 
 // Clamp to range [min, max]
-%clamped_low = pto.vmax %input, %min_vec, %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<G> -> !pto.vreg<64xf32>
-%clamped = pto.vmin %clamped_low, %max_vec, %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<G> -> !pto.vreg<64xf32>
+%clamped_low = pto.vmax %input, %min_vec, %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
+%clamped = pto.vmin %clamped_low, %max_vec, %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
 
 // Bit manipulation
-%masked = pto.vand %data, %bitmask, %mask : !pto.vreg<64xi32>, !pto.vreg<64xi32>, !pto.mask<G> -> !pto.vreg<64xi32>
+%masked = pto.vand %data, %bitmask, %mask : !pto.vreg<64xi32>, !pto.vreg<64xi32>, !pto.mask -> !pto.vreg<64xi32>
 ```
