@@ -28,24 +28,23 @@ def tile_scale(input_tensor: pto.TensorView,   # Input tensor view (shape: 256x1
     pto.dma_load(input_tensor, ub_tile)
     
     # Vector computation: scale all elements in the tile
-    with pto.vecscope():
-        all_mask = pto.make_mask(dtype, PAT.ALL)
-        
-        # Process tile in row-major order
-        for row in range(0, rows):
-            # Process each row in vector chunks
-            # Vector width is hardware-defined: 256 bytes / element size
-            # For f32: 256/4 = 64 lanes, for f16: 256/2 = 128 lanes
-            vector_lanes = pto.get_lanes(dtype)  # Compute vector lanes based on element type (e.g., 64 for f32, 128 for f16)
-            for col_start in range(0, cols, vector_lanes):
-                # Load vector using element-indexing syntax (no manual byte calculation)
-                vec = pto.vlds(ub_tile[row, col_start:])
-                
-                # Scale vector
-                scaled = pto.vmuls(vec, scale_factor, all_mask)
-                
-                # Store result back using element-indexing syntax
-                pto.vsts(scaled, ub_tile[row, col_start:], all_mask)
+    all_mask = pto.make_mask(dtype, PAT.ALL)
+    
+    # Process tile in row-major order
+    for row in range(0, rows):
+        # Process each row in vector chunks
+        # Vector width is hardware-defined: 256 bytes / element size
+        # For f32: 256/4 = 64 lanes, for f16: 256/2 = 128 lanes
+        vector_lanes = pto.get_lanes(dtype)  # Compute vector lanes based on element type (e.g., 64 for f32, 128 for f16)
+        for col_start in range(0, cols, vector_lanes):
+            # Load vector using element-indexing syntax (no manual byte calculation)
+            vec = pto.vlds(ub_tile[row, col_start:])
+            
+            # Scale vector
+            scaled = pto.vmuls(vec, scale_factor, all_mask)
+            
+            # Store result back using element-indexing syntax
+            pto.vsts(scaled, ub_tile[row, col_start:], all_mask)
     
     # Store result from UB back to GM output tensor using high-level DMA operation
     pto.dma_store(ub_tile, output_tensor)
@@ -69,24 +68,23 @@ def ub_tile_computation(a: pto.Tile,  # UB tile
     dtype = a.element_type
 
     # All tiles are in UB memory space
-    with pto.vecscope():
-        all_mask = pto.make_mask(dtype, PAT.ALL)
-        rows, cols = a.shape
+    all_mask = pto.make_mask(dtype, PAT.ALL)
+    rows, cols = a.shape
+    
+    # Element-wise: c = a + b * 2.0
+    for i in range(0, rows * cols, 64):
+        # Load vectors from UB tiles using element-indexing syntax
+        vec_a = pto.vlds(a[i:])         # Implicit tile→UBRef with automatic offset calculation
+        vec_b = pto.vlds(b[i:])
         
-        # Element-wise: c = a + b * 2.0
-        for i in range(0, rows * cols, 64):
-            # Load vectors from UB tiles using element-indexing syntax
-            vec_a = pto.vlds(a[i:])         # Implicit tile→UBRef with automatic offset calculation
-            vec_b = pto.vlds(b[i:])
-            
-            # Compute: b * 2.0
-            scaled_b = pto.vmuls(vec_b, 2.0, all_mask)
-            
-            # Compute: a + scaled_b
-            result = pto.vadd(vec_a, scaled_b, all_mask)
-            
-            # Store result to output tile using element-indexing syntax
-            pto.vsts(result, c[i:], all_mask)
+        # Compute: b * 2.0
+        scaled_b = pto.vmuls(vec_b, 2.0, all_mask)
+        
+        # Compute: a + scaled_b
+        result = pto.vadd(vec_a, scaled_b, all_mask)
+        
+        # Store result to output tile using element-indexing syntax
+        pto.vsts(result, c[i:], all_mask)
 ```
 
 ## Core Concepts
@@ -478,13 +476,12 @@ def tiled_kernel(
     ub_out = output_tile.to_ubref()
     
     # Or use tiles directly (implicit conversion)
-    with pto.vecscope():
-        all_mask = pto.make_mask(pto.f32, PAT.ALL)
-        for i in range(0, 256, 64):
-            # tile implicitly converts to UBRef in vlds with element-indexing syntax
-            vec = pto.vlds(input_tile[i, 0:])        # Load from row i, columns 0 to vector_lanes-1
-            scaled = pto.vmuls(vec, scale, all_mask)
-            pto.vsts(scaled, output_tile[i, 0:], all_mask)  # Store to same position
+    all_mask = pto.make_mask(pto.f32, PAT.ALL)
+    for i in range(0, 256, 64):
+        # tile implicitly converts to UBRef in vlds with element-indexing syntax
+        vec = pto.vlds(input_tile[i, 0:])        # Load from row i, columns 0 to vector_lanes-1
+        scaled = pto.vmuls(vec, scale, all_mask)
+        pto.vsts(scaled, output_tile[i, 0:], all_mask)  # Store to same position
 ```
 
 #### Tile Creation from Existing Buffers
@@ -507,26 +504,46 @@ tile = pto.tile_with_strides((256, 128), pto.f32, MemorySpace.UB,
 
 ### Vector Scopes
 
-Vector scopes define regions for vector computation:
+The TileLang DSL supports implicit vector scope inference, allowing developers to write vector operations directly without explicit `pto.vecscope()` blocks. The compiler automatically groups consecutive, data-dependent vector operations into implicit vector scopes during lowering.
 
-**Regular vector scope** (implicit capture):
+#### Implicit Scope Inference
+
+**Note:** The explicit `pto.vecscope()` construct is deprecated. Vector operations are automatically grouped into implicit scopes by the compiler's Scope Inference Pass.
+
+When you write vector operations like `pto.vlds`, `pto.vadd`, `pto.vsts` directly in your code, the compiler's **Scope Inference Pass** analyzes the control flow graph and automatically creates vector scopes:
+
 ```python
-with pto.vecscope():
-    # Can reference outer values
-    vec = pto.vlds(outer_ptr, offset)
-    pto.vsts(vec, dst_ptr, offset, mask)
+# No explicit vecscope needed - compiler infers scope boundaries
+vec = pto.vlds(outer_ptr, offset)
+result = pto.vadd(vec, vec, all_mask)
+pto.vsts(result, dst_ptr, offset, all_mask)
 ```
 
-**Strict vector scope** (explicit capture only):
+The compiler automatically groups these three operations into a single implicit vector scope because they form a data-dependent chain.
+
+**Scope boundary rules:**
+1. **Control flow boundaries**: Branches (`if`/`else`), loops (`for`/`while`), and function calls create implicit scope boundaries
+2. **Scalar operations**: Non-vector operations (e.g., scalar arithmetic, pointer arithmetic) create boundaries
+3. **Explicit strict_vecscope**: User-defined `strict_vecscope` blocks create hard boundaries
+
+#### Explicit Scope Boundaries with `strict_vecscope`
+
+For precise control over scope boundaries, use explicit `strict_vecscope` blocks. These create hard boundaries that prevent the compiler from merging operations across the block boundary:
+
 ```python
 with pto.strict_vecscope(src_ptr, dst_ptr, start, end) as (s, d, lb, ub):
-    # Can only use: s, d, lb, ub and locally defined values
+    # Operations inside this block are isolated from outside
+    # Compiler will not merge operations across this boundary
     for i in range(lb, ub, 64):
         vec = pto.vlds(s, i)
         pto.vsts(vec, d, i, all_mask)
 ```
 
-Strict scopes enforce explicit data flow and prevent implicit captures.
+**Use cases for strict_vecscope:**
+- Performance optimization: Isolate critical vector computation regions
+- Debugging: Create explicit boundaries to isolate vector operations
+- Resource management: Control vector register allocation boundaries
+- Compatibility: Ensure deterministic scope placement for hardware constraints
 
 ### Loops
 
@@ -1240,14 +1257,13 @@ vec = pto.vlds(tile[k:])         # Load from 1D tile, elements k to k+vector_lan
 @pto.vkernel(target="a5", name="generic_scale")
 def generic_scale(src: pto.Tile, dst: pto.Tile, scale: pto.f32):
     rows, cols = src.shape
-    with pto.vecscope():
-        all_mask = pto.make_mask(src.element_type, PAT.ALL)
-        for i in range(0, rows):
-            for j in range(0, cols, vector_lanes):  # vector_lanes computed from element type
-                # No manual byte calculation needed!
-                vec = pto.vlds(src[i, j:])
-                scaled = pto.vmuls(vec, scale, all_mask)
-                pto.vsts(scaled, dst[i, j:], all_mask)
+    all_mask = pto.make_mask(src.element_type, PAT.ALL)
+    for i in range(0, rows):
+        for j in range(0, cols, vector_lanes):  # vector_lanes computed from element type
+            # No manual byte calculation needed!
+            vec = pto.vlds(src[i, j:])
+            scaled = pto.vmuls(vec, scale, all_mask)
+            pto.vsts(scaled, dst[i, j:], all_mask)
 ```
 
 #### `pto.vldas(buf: UBRef, offset: Index, align: pto.align) -> VRegType`  
@@ -2426,12 +2442,11 @@ pto.vsts(vec, tile[k:], mask)         # Store to 1D tile, elements k to k+vector
 @pto.vkernel(target="a5", name="generic_store")
 def generic_store(src: pto.Tile, dst: pto.Tile):
     rows, cols = src.shape
-    with pto.vecscope():
-        all_mask = pto.make_mask(src.element_type, PAT.ALL)
-        for i in range(0, rows):
-            for j in range(0, cols, vector_lanes):
-                vec = pto.vlds(src[i, j:])
-                pto.vsts(vec, dst[i, j:], all_mask)  # No manual offset calculation
+    all_mask = pto.make_mask(src.element_type, PAT.ALL)
+    for i in range(0, rows):
+        for j in range(0, cols, vector_lanes):
+            vec = pto.vlds(src[i, j:])
+            pto.vsts(vec, dst[i, j:], all_mask)  # No manual offset calculation
 ```
 
 #### `pto.psts(mask: MaskType, buf: UBRef, offset: Index) -> None`  
@@ -2627,11 +2642,10 @@ Operations for storing data with stateful semantics.
 @pto.vkernel(name="vector_copy")
 def vector_copy(src: pto.memref(256, pto.f32, MemorySpace.UB),
                 dst: pto.memref(256, pto.f32, MemorySpace.UB)):
-    with pto.vecscope():
-        all_mask = pto.make_mask(pto.f32, PAT.ALL)
-        for offset in range(0, 256, 64):
-            vec = pto.vlds(src, offset)
-            pto.vsts(vec, dst, offset, all_mask)
+    all_mask = pto.make_mask(pto.f32, PAT.ALL)
+    for offset in range(0, 256, 64):
+        vec = pto.vlds(src, offset)
+        pto.vsts(vec, dst, offset, all_mask)
 ```
 
 ### Conditional Computation
@@ -2665,14 +2679,13 @@ def conditional_scale(src: pto.ptr(pto.f32, MemorySpace.GM),
 @pto.vkernel(name="prefix_sum")
 def prefix_sum(src: pto.ptr(pto.i32, MemorySpace.UB),
                dst: pto.ptr(pto.i32, MemorySpace.UB)):
-    with pto.vecscope():
-        all_mask = pto.make_mask(pto.i32, PAT.ALL)
-        carry = pto.i32(0)
+    all_mask = pto.make_mask(pto.i32, PAT.ALL)
+    carry = pto.i32(0)
 
-        for i in range(0, 256, 64):
-            vec = pto.vlds(src, i)
-            result, carry = pto.vaddcs(vec, carry, all_mask)
-            pto.vsts(result, dst, i, all_mask)
+    for i in range(0, 256, 64):
+        vec = pto.vlds(src, i)
+        result, carry = pto.vaddcs(vec, carry, all_mask)
+        pto.vsts(result, dst, i, all_mask)
 ```
 
 ## Common Errors
