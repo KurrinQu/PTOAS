@@ -54,13 +54,25 @@ static float weightValue(int row, int col) {
 int main() {
   constexpr int Rows = 16;
   constexpr int Dim = 5120;
-  constexpr int BlockCols = 64;
-  constexpr int ObInner = 8;
-  constexpr int ObWidth = BlockCols * ObInner;
-  constexpr int ObIdx = 0;
+  constexpr int RowsPerSubBlock = 8;
+  constexpr int SubBlocks = 2;
+  constexpr int TileCols = 64;
+  constexpr int KTileCols = 128;
+  constexpr int KTiles = 40;
+  constexpr int ObCiTiles = 8;
+  constexpr int ObTiles = 10;
+  constexpr int ObWidth = TileCols * ObCiTiles;
   constexpr float InitValue = -777.0f;
   constexpr float Atol = 1e-2f;
   constexpr float Rtol = 2e-2f;
+
+  int obIdx = 0;
+  if (const char *env = std::getenv("PTO_SCOPE3_OB_IDX"))
+    obIdx = std::atoi(env);
+  if (obIdx < 0 || obIdx >= ObTiles) {
+    std::fprintf(stderr, "Invalid ob_idx=%d, expect [0, %d).\n", obIdx, ObTiles);
+    return 1;
+  }
 
   constexpr size_t attnElems = static_cast<size_t>(Rows) * Dim;
   constexpr size_t hiddenElems = static_cast<size_t>(Rows) * Dim;
@@ -97,19 +109,46 @@ int main() {
     }
   }
 
-  const int colBase = ObIdx * ObWidth;
-  for (int row = 0; row < Rows; ++row) {
-    for (int localCol = 0; localCol < ObWidth; ++localCol) {
-      const int outCol = colBase + localCol;
-      float acc = 0.0f;
-      for (int k = 0; k < Dim; ++k) {
-        const float a = hostAttnRounded[static_cast<size_t>(row) * Dim + k];
-        const float b =
-            bf16BitsToFloat(hostWeight[static_cast<size_t>(k) * Dim + outCol]);
-        acc += a * b;
+  // Mirror scope3_incore_0_incore_0.pto:
+  //   for ob_ci in 0..8:
+  //     for kb in 0..40:
+  //       vector(subblock 0/1) pushes 8x128 bf16 tiles
+  //       cube consumes them as one 16x128 tile and produces 16x64
+  //       vector pops 8x64, adds hidden_states, stores to output.
+  for (int subblock = 0; subblock < SubBlocks; ++subblock) {
+    const int rowBase = subblock * RowsPerSubBlock;
+    for (int obCi = 0; obCi < ObCiTiles; ++obCi) {
+      const int colBase = (obIdx * ObCiTiles + obCi) * TileCols;
+      float accTile[RowsPerSubBlock][TileCols] = {};
+
+      for (int kb = 0; kb < KTiles; ++kb) {
+        const int kBase = kb * KTileCols;
+        for (int row = 0; row < RowsPerSubBlock; ++row) {
+          const int globalRow = rowBase + row;
+          for (int col = 0; col < TileCols; ++col) {
+            float sum = accTile[row][col];
+            const int globalCol = colBase + col;
+            for (int k = 0; k < KTileCols; ++k) {
+              const int globalK = kBase + k;
+              const float a = hostAttnRounded[static_cast<size_t>(globalRow) * Dim +
+                                              globalK];
+              const float b = bf16BitsToFloat(
+                  hostWeight[static_cast<size_t>(globalK) * Dim + globalCol]);
+              sum += a * b;
+            }
+            accTile[row][col] = sum;
+          }
+        }
       }
-      hostGolden[static_cast<size_t>(row) * Dim + outCol] =
-          acc + hostHiddenF32[static_cast<size_t>(row) * Dim + outCol];
+
+      for (int row = 0; row < RowsPerSubBlock; ++row) {
+        const int globalRow = rowBase + row;
+        for (int col = 0; col < TileCols; ++col) {
+          const int globalCol = colBase + col;
+          const size_t idx = static_cast<size_t>(globalRow) * Dim + globalCol;
+          hostGolden[idx] = accTile[row][col] + hostHiddenF32[idx];
+        }
+      }
     }
   }
 
@@ -142,7 +181,7 @@ int main() {
   ACL_CHECK(aclrtMemcpy(devWeight, weightBytes, hostWeight.data(), weightBytes,
                         ACL_MEMCPY_HOST_TO_DEVICE));
 
-  LaunchScope3Incore0Incore0(devAttn, devHidden, devOut, devWeight, ObIdx,
+  LaunchScope3Incore0Incore0(devAttn, devHidden, devOut, devWeight, obIdx,
                              stream);
 
   ACL_CHECK(aclrtSynchronizeStream(stream));
