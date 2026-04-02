@@ -376,3 +376,29 @@ def mixed_kernel(src: pto.ptr(pto.f32, MemorySpace.GM),
 5. **Testing**: Ensure all syntax sugar correctly lowers to VPTO IR and maintains performance
 
 These enhancements will significantly improve the VPTO DSL's usability while maintaining the close correspondence with underlying VPTO IR that performance engineers require.
+
+1. 软件流水线（Software Pipelining）的表达成本
+在 NPU 上写 Vector 级算子，最难的往往不是数值计算，而是利用 UB (Unified Buffer) 进行 Double/Multi-Buffering（乒乓缓存），并手动排布内存搬运与计算的流水线。
+
+现状挑战：如果开发者全靠手写 set_flag、wait_flag，以及手动维护 Ping-Pong 缓冲的偏移量，代码会迅速膨胀且极易死锁或读写冲突。
+
+优化建议：DSL 在保留底层原语的同时，可以提供稍微高级一点的流水线抽象。例如，引入 pto.CircularBuffer(tile, num_stages=2) 的概念，让开发者可以专注于“当前 stage 的计算”，而由底层生成器自动完成不同 stage 的指针轮转和 Flag 同步。
+
+2. Python 宿主变量 vs MLIR SSA 变量的心智模型边界
+因为 DSL 的本质是用 Python 元编程来生成 MLIR（静态图），开发者在写代码时很容易混淆“Python 运行期的值”和“NPU 运行期的值”。
+
+现状挑战：手册中提到“变量的自动合并”（比如 if 分支产生合并），这涉及到复杂的 SSA 转换。特别是在 for 循环中，**循环携带状态（Loop-carried state）**的处理往往是个痛点。如果开发者在循环外定义了一个 Python 列表或字典，在循环内去修改它，这在生成 MLIR 的 scf.for 时是无法正确映射的。
+
+优化建议：需要有极其明确的类型系统提示或语法边界，强制区分编译期求值的变量（Meta-variables）和生成的 MLIR Value。可以考虑借鉴 Triton 的方式，提供类似 tl.constexpr 的装饰或类型，让开发者清楚哪些分支在生成 MLIR 时会被静态展开，哪些会真正生成 scf.if。
+
+3. 地址计算（Address Generation）的易错性
+即使是对底层开发者，手动计算字节偏移也是痛苦且容易出 Bug 的。
+
+现状挑战：i * cols * 4 这种强依赖 f32 占用 4 字节的硬编码，在泛型算子开发中会带来负担（比如想写一个同时兼容 f16 和 f32 的模板算子）。
+
+优化建议：提供基于语义的视图（View）操作。保留控制力不代表必须算字节。可以提供类似 tile.get_vector_slice(row_idx, vec_idx) 的接口，它在内部自动 Emit（发射）对应的 MLIR 乘法和加法指令来计算 offset。这不仅防呆，还能让生成的 MLIR 结构更规范。
+
+4. Mask 的隐式推导（针对边界处理）
+NPU 算子经常要处理尾部不对齐的数据（Tail processing）。
+
+优化建议：虽然底层需要具体的 Mask 寄存器配置（如 PAT_ALL），但在 for 循环的最后一步边界处理时，能否提供一个类似 pto.make_mask(remaining_elements) 的宏/内联函数？让它在生成 MLIR 时，自动展开为对应的硬件 plt_b32 等指令，这样可以大幅减少手写冗长边界判断的样板代码。
