@@ -33,20 +33,19 @@ def tile_scale(input_tensor: pto.TensorView,   # Input tensor view (shape: 256x1
         
         # Process tile in row-major order
         for row in range(0, rows):
-            row_offset = row * cols * 4  # f32 = 4 bytes
-            
-            # Process each row in vector chunks (64 elements per vector)
-            for chunk in range(0, cols, 64):
-                offset = row_offset + chunk * 4
-                
-                # Load vector from UB tile (implicit tile→UBRef conversion)
-                vec = pto.vlds(ub_tile, offset)
+            # Process each row in vector chunks
+            # Vector width is hardware-defined: 256 bytes / element size
+            # For f32: 256/4 = 64 lanes, for f16: 256/2 = 128 lanes
+            vector_lanes = 256 // (pto.sizeof(dtype) if hasattr(pto, 'sizeof') else 4)  # example
+            for col_start in range(0, cols, vector_lanes):
+                # Load vector using element-indexing syntax (no manual byte calculation)
+                vec = pto.vlds(ub_tile[row, col_start:])
                 
                 # Scale vector
                 scaled = pto.vmuls(vec, scale_factor, all_mask)
                 
-                # Store result back to UB tile
-                pto.vsts(scaled, ub_tile, offset, all_mask)
+                # Store result back using element-indexing syntax
+                pto.vsts(scaled, ub_tile[row, col_start:], all_mask)
     
     # Store result from UB back to GM output tensor using high-level DMA operation
     pto.dma_store(ub_tile, output_tensor)
@@ -76,9 +75,9 @@ def ub_tile_computation(a: pto.Tile,  # UB tile
         
         # Element-wise: c = a + b * 2.0
         for i in range(0, rows * cols, 64):
-            # Load vectors from UB tiles
-            vec_a = pto.vlds(a, i * 4)      # Implicit tile→UBRef
-            vec_b = pto.vlds(b, i * 4)
+            # Load vectors from UB tiles using element-indexing syntax
+            vec_a = pto.vlds(a[i:])         # Implicit tile→UBRef with automatic offset calculation
+            vec_b = pto.vlds(b[i:])
             
             # Compute: b * 2.0
             scaled_b = pto.vmuls(vec_b, 2.0, all_mask)
@@ -86,8 +85,8 @@ def ub_tile_computation(a: pto.Tile,  # UB tile
             # Compute: a + scaled_b
             result = pto.vadd(vec_a, scaled_b, all_mask)
             
-            # Store result to output tile
-            pto.vsts(result, c, i * 4, all_mask)
+            # Store result to output tile using element-indexing syntax
+            pto.vsts(result, c[i:], all_mask)
 ```
 
 ## Core Concepts
@@ -482,10 +481,10 @@ def tiled_kernel(
     with pto.vecscope():
         all_mask = pto.make_mask(pto.f32, PAT.ALL)
         for i in range(0, 256, 64):
-            # tile implicitly converts to UBRef in vlds
-            vec = pto.vlds(input_tile, i * 128 * 4)  # Byte offset for row i
+            # tile implicitly converts to UBRef in vlds with element-indexing syntax
+            vec = pto.vlds(input_tile[i, 0:])        # Load from row i, columns 0 to vector_lanes-1
             scaled = pto.vmuls(vec, scale, all_mask)
-            pto.vsts(scaled, output_tile, i * 128 * 4, all_mask)
+            pto.vsts(scaled, output_tile[i, 0:], all_mask)  # Store to same position
 ```
 
 #### Tile Creation from Existing Buffers
@@ -1043,19 +1042,178 @@ The high-level DMA operations in TileLang DSL map to corresponding operations in
 These mappings allow the TileLang compiler to generate efficient VPTO IR code while providing a higher-level, more intuitive API for developers. The compiler automatically handles the conversion between Tile/TensorView abstractions and the low-level pointer/stride representation required by VPTO IR operations.
 
 
+### Address Generation Syntax Sugar
+
+To simplify address calculation and reduce manual byte offset computation errors, TileLang DSL provides syntactic sugar for vector load/store operations using element-based indexing. This syntax automatically computes the byte offset based on tile shape, element type, and layout.
+
+#### Indexing Syntax
+
+The syntax supports two indexing modes for different operations:
+
+1. **Vector-range indexing** (for vector load/store operations):
+   - **Row-major layout (default)**: `tile[row_index, col_start:]`
+     - `row_index`: Row index (0-based)
+     - `col_start:`: Starting column index followed by colon, indicating a vector-width contiguous region starting from this column
+     - The colon (`:`) indicates an implicit vector-width range determined by hardware vector size (256 bytes) and element type
+   
+   - **Column-major layout**: `tile[row_start:, col_index]`
+     - `row_start:`: Starting row index followed by colon, indicating a vector-width contiguous region starting from this row
+     - `col_index`: Column index (0-based)
+     - Used for column-major tiles (`BLayout.COL_MAJOR`) where elements are stored column-wise
+   
+   - **1D tile indexing**: `tile[start:]` (or equivalently `tile[0, start:]` for row-major or `tile[start:, 0]` for column-major)
+     - `start:`: Starting element index followed by colon
+
+2. **Single-element indexing** (for scalar load operations like `pto.vsld`):
+   - **Row-major layout (default)**: `tile[row_index, col_index]`
+     - `row_index`: Row index (0-based)
+     - `col_index`: Column index (0-based)
+     - Loads a single element at the specified position and broadcasts it to all vector lanes
+   
+   - **Column-major layout**: `tile[row_index, col_index]` (same syntax)
+     - `row_index`: Row index (0-based)
+     - `col_index`: Column index (0-based)
+     - Same syntax as row-major; the layout determines how the offset is computed
+   
+   - **1D tile indexing**: `tile[pos]`
+     - `pos`: Element index (0-based)
+     - Loads a single element at the specified position and broadcasts it to all vector lanes
+
+#### Vector Width Calculation
+
+The number of elements loaded/stored in a single vector operation is determined by:
+
+```
+vector_lanes = 256 // element_size_bytes(element_type)
+```
+
+Where `element_size_bytes` is:
+- 1 byte for `i8`
+- 2 bytes for `i16`, `f16`, `bf16`
+- 4 bytes for `i32`, `f32`
+- 8 bytes for `i64`
+
+#### Offset Computation
+
+The byte offset is automatically computed based on tile layout:
+
+- **Row-major layout** (`BLayout.ROW_MAJOR`):
+  ```
+  offset = (row_index * stride_row + col_start) * element_size_bytes
+  ```
+  where `stride_row` is the row stride in elements (typically `tile.shape[1]` for contiguous tiles).
+
+- **Column-major layout** (`BLayout.COL_MAJOR`):
+  - For syntax `tile[row_start:, col_index]`:
+    ```
+    offset = (col_index * stride_col + row_start) * element_size_bytes
+    ```
+  - For backward compatibility with traditional offset calculation:
+    ```
+    offset = (col_start * stride_col + row_index) * element_size_bytes
+    ```
+  where `stride_col` is the column stride in elements (typically `tile.shape[0]` for contiguous tiles), `row_start` is the starting row index, and `col_index` is the column index.
+
+**Note**: 
+- For single-element indexing (`tile[row, col]` or `tile[pos]`), the same offset formulas apply with `col_start` replaced by `col_index` (or `start` replaced by `pos` for 1D tiles).
+- For column-major vector-range indexing (`tile[row_start:, col_index]`), the offset formula uses `row_start` as the starting position along the contiguous dimension.
+- The compiler automatically handles the appropriate substitution based on the indexing syntax and tile layout.
+
+#### Constraints
+
+1. **Boundary checks**: The requested region must be within tile bounds:
+   - **For vector-range indexing** (`:` syntax):
+     - **Row-major layout** (`tile[row_index, col_start:]`):
+       - `row_index < tile.shape[0]` and `col_start + vector_lanes <= tile.shape[1]`
+     - **Column-major layout** (`tile[row_start:, col_index]`):
+       - `row_start + vector_lanes <= tile.shape[0]` and `col_index < tile.shape[1]`
+     - **1D tile indexing**: `tile[start:]`
+       - `start + vector_lanes <= tile.shape[0]` (or `tile.shape[1]` for 1D tiles)
+   - **For single-element indexing** (no `:` syntax):
+     - 2D: `row_index < tile.shape[0]` and `col_index < tile.shape[1]` (same for both layouts)
+     - 1D: `pos < tile.shape[0]` (or `tile.shape[1]` for 1D tiles)
+
+2. **Alignment**: The computed offset must satisfy hardware alignment requirements for the operation.
+
+3. **Full vectors only**: The `:` syntax always loads/stores a full vector width. For partial vectors, use the traditional byte offset approach with explicit mask handling.
+
+4. **Single-element operations**: The single-element indexing syntax (`tile[row, col]` or `tile[pos]`) is only supported for scalar load operations like `pto.vsld`. For other operations, use vector-range indexing with `:` syntax.
+
+#### Supported Operations
+
+The indexing syntax is supported for all vector load and store operations with the following syntax mapping:
+
+- **Vector-range indexing** (`tile[row, col:]` or `tile[start:]`):
+  - Load operations: `vlds`, `vldas`, `vldus`, `vplds`, `vldx2`
+  - Store operations: `vsts`, `vsta`, `psts`, `vsst`, `vstx2`
+
+- **Single-element indexing** (`tile[row, col]` or `tile[pos]`):
+  - Load operations: `vsld` (scalar load with broadcast)
+
+#### Examples
+
+The following examples use row-major layout syntax. For column-major tiles, use `tile[row_start:, col_index]` syntax instead of `tile[row_index, col_start:]`.
+
+```python
+# 2D tile indexing (row-major layout)
+vec = pto.vlds(tile[i, j:])          # Load vector from row i, columns j to j+vector_lanes-1
+pto.vsts(vec, tile[i, j:], mask)     # Store vector with mask
+
+# 1D tile indexing  
+vec = pto.vlds(tile[k:])             # Load vector from elements k to k+vector_lanes-1
+pto.vsts(vec, tile[k:], mask)        # Store vector with mask
+
+# Dual load with indexing
+vec1, vec2 = pto.vldx2(tile_a[i, j:], tile_b[i, j:])
+
+# Aligned load with indexing
+vec = pto.vldas(tile[i, j:], align)
+
+# Scalar load (broadcast)
+vec = pto.vsld(tile[i, j])          # Load scalar at tile[i,j] and broadcast to vector
+```
+
+#### Comparison with Manual Offset Calculation
+
+**Traditional approach (error-prone):**
+```python
+# Manual byte offset calculation for f32 tile
+rows, cols = tile.shape
+row_offset = i * cols * 4  # Hard-coded 4 bytes for f32
+col_offset = j * 4
+offset = row_offset + col_offset
+vec = pto.vlds(tile, offset)
+```
+
+**New syntax (type-safe):**
+```python
+# Automatic offset calculation
+vec = pto.vlds(tile[i, j:])  # Compiler computes correct offset for any element type
+```
+
+The syntax sugar eliminates manual byte calculations, reduces errors, and makes code generic across different element types (e.g., the same kernel works for both `f16` and `f32` without modification).
+
 ### Vector Load Operations
 
 Operations for loading data from memory into vector registers.
 
-#### `pto.vlds(buf: UBRef, offset: Index) -> VRegType`
+#### `pto.vlds(buf: UBRef, offset: Index) -> VRegType`  
+#### `pto.vlds(tile[row, col:]) -> VRegType`
+#### `pto.vlds(tile[start:]) -> VRegType`
 
-**Description**: Stateless vector load from buffer.
+**Description**: Stateless vector load from buffer. Supports both traditional byte-offset syntax and new element-indexing syntax.
 
-**Parameters**:
+**Parameters (byte-offset syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `buf` | `UBRef` | Buffer or pointer (UB memory space) |
 | `offset` | `Index` | Byte offset |
+
+**Parameters (element-indexing syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `tile[row, col:]` | `Tile` with indexing | 2D tile with row index and starting column (vector-width range) |
+| `tile[start:]` | `Tile` with indexing | 1D tile with starting element index (vector-width range) |
 
 **Returns**:
 | Return Value | Type | Description |
@@ -1064,22 +1222,50 @@ Operations for loading data from memory into vector registers.
 
 **Constraints**:
 - Buffer must be in UB memory space
-- Offset must be properly aligned based on element type
+- For byte-offset syntax: offset must be properly aligned based on element type
+- For element-indexing syntax: the requested vector region must be within tile bounds and satisfy alignment requirements
 
-**Example**:
+**Examples**:
 ```python
+# Traditional byte-offset syntax
 vec = pto.vlds(ub_ptr, lane * 256)
+
+# New element-indexing syntax
+vec = pto.vlds(tile[i, j:])      # Load from row i, columns j to j+vector_lanes-1
+vec = pto.vlds(tile[k:])         # Load from 1D tile, elements k to k+vector_lanes-1
+
+# Generic kernel that works for both f16 and f32
+@pto.vkernel(target="a5", name="generic_scale")
+def generic_scale(src: pto.Tile, dst: pto.Tile, scale: pto.f32):
+    rows, cols = src.shape
+    with pto.vecscope():
+        all_mask = pto.make_mask(src.element_type, PAT.ALL)
+        for i in range(0, rows):
+            for j in range(0, cols, vector_lanes):  # vector_lanes computed from element type
+                # No manual byte calculation needed!
+                vec = pto.vlds(src[i, j:])
+                scaled = pto.vmuls(vec, scale, all_mask)
+                pto.vsts(scaled, dst[i, j:], all_mask)
 ```
 
-#### `pto.vldas(buf: UBRef, offset: Index, align: pto.align) -> VRegType`
+#### `pto.vldas(buf: UBRef, offset: Index, align: pto.align) -> VRegType`  
+#### `pto.vldas(tile[row, col:], align: pto.align) -> VRegType`  
+#### `pto.vldas(tile[start:], align: pto.align) -> VRegType`
 
-**Description**: Aligned vector load with explicit alignment carrier.
+**Description**: Aligned vector load with explicit alignment carrier. Supports both byte-offset and element-indexing syntax.
 
-**Parameters**:
+**Parameters (byte-offset syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `buf` | `UBRef` | Buffer or pointer (UB memory space) |
 | `offset` | `Index` | Byte offset |
+| `align` | `pto.align` | Alignment specification |
+
+**Parameters (element-indexing syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `tile[row, col:]` | `Tile` with indexing | 2D tile with row index and starting column |
+| `tile[start:]` | `Tile` with indexing | 1D tile with starting element index |
 | `align` | `pto.align` | Alignment specification |
 
 **Returns**:
@@ -1087,30 +1273,67 @@ vec = pto.vlds(ub_ptr, lane * 256)
 |--------------|------|-------------|
 | `vec` | `VRegType` | Loaded vector register |
 
-#### `pto.vldus(buf: UBRef, offset: Index) -> VRegType`
+**Examples**:
+```python
+# Byte-offset syntax
+vec = pto.vldas(ub_ptr, offset, align)
 
-**Description**: Unaligned vector load.
+# Element-indexing syntax
+vec = pto.vldas(tile[i, j:], align)
+vec = pto.vldas(tile[k:], align)
+```
 
-**Parameters**:
+#### `pto.vldus(buf: UBRef, offset: Index) -> VRegType`  
+#### `pto.vldus(tile[row, col:]) -> VRegType`  
+#### `pto.vldus(tile[start:]) -> VRegType`
+
+**Description**: Unaligned vector load. Supports both byte-offset and element-indexing syntax.
+
+**Parameters (byte-offset syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `buf` | `UBRef` | Buffer or pointer (UB memory space) |
 | `offset` | `Index` | Byte offset |
+
+**Parameters (element-indexing syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `tile[row, col:]` | `Tile` with indexing | 2D tile with row index and starting column |
+| `tile[start:]` | `Tile` with indexing | 1D tile with starting element index |
 
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
 | `vec` | `VRegType` | Loaded vector register |
 
-#### `pto.vplds(buf: UBRef, offset: Index, pred: MaskType) -> VRegType`
+**Examples**:
+```python
+# Byte-offset syntax
+vec = pto.vldus(ub_ptr, offset)
 
-**Description**: Predicated vector load stateless.
+# Element-indexing syntax
+vec = pto.vldus(tile[i, j:])
+vec = pto.vldus(tile[k:])
+```
 
-**Parameters**:
+#### `pto.vplds(buf: UBRef, offset: Index, pred: MaskType) -> VRegType`  
+#### `pto.vplds(tile[row, col:], pred: MaskType) -> VRegType`  
+#### `pto.vplds(tile[start:], pred: MaskType) -> VRegType`
+
+**Description**: Predicated vector load stateless. Supports both byte-offset and element-indexing syntax.
+
+**Parameters (byte-offset syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `buf` | `UBRef` | Buffer or pointer (UB memory space) |
 | `offset` | `Index` | Byte offset |
+| `pred` | `MaskType` | Predicate mask |
+
+**Parameters (element-indexing syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `tile[row, col:]` | `Tile` with indexing | 2D tile with row index and starting column |
+| `tile[start:]` | `Tile` with indexing | 1D tile with starting element index |
 | `pred` | `MaskType` | Predicate mask |
 
 **Returns**:
@@ -1118,16 +1341,37 @@ vec = pto.vlds(ub_ptr, lane * 256)
 |--------------|------|-------------|
 | `vec` | `VRegType` | Loaded vector register |
 
-#### `pto.vldx2(buf1: UBRef, buf2: UBRef, offset: Index) -> (VRegType, VRegType)`
+**Examples**:
+```python
+# Byte-offset syntax
+vec = pto.vplds(ub_ptr, offset, mask)
 
-**Description**: Dual vector load from two buffers.
+# Element-indexing syntax
+vec = pto.vplds(tile[i, j:], mask)
+vec = pto.vplds(tile[k:], mask)
+```
 
-**Parameters**:
+#### `pto.vldx2(buf1: UBRef, buf2: UBRef, offset: Index) -> (VRegType, VRegType)`  
+#### `pto.vldx2(tile1[row, col:], tile2[row, col:]) -> (VRegType, VRegType)`  
+#### `pto.vldx2(tile1[start:], tile2[start:]) -> (VRegType, VRegType)`
+
+**Description**: Dual vector load from two buffers. Supports both byte-offset and element-indexing syntax.
+
+**Parameters (byte-offset syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `buf1` | `UBRef` | First buffer or pointer |
 | `buf2` | `UBRef` | Second buffer or pointer |
 | `offset` | `Index` | Byte offset (applied to both buffers) |
+
+**Parameters (element-indexing syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `tile1[row, col:]` | `Tile` with indexing | First 2D tile with row index and starting column |
+| `tile2[row, col:]` | `Tile` with indexing | Second 2D tile with row index and starting column |
+| _or_ | | |
+| `tile1[start:]` | `Tile` with indexing | First 1D tile with starting element index |
+| `tile2[start:]` | `Tile` with indexing | Second 1D tile with starting element index |
 
 **Returns**:
 | Return Value | Type | Description |
@@ -1135,20 +1379,48 @@ vec = pto.vlds(ub_ptr, lane * 256)
 | `vec1` | `VRegType` | Vector from first buffer |
 | `vec2` | `VRegType` | Vector from second buffer |
 
-#### `pto.vsld(buf: UBRef, offset: Index) -> VRegType`
+**Examples**:
+```python
+# Byte-offset syntax
+vec1, vec2 = pto.vldx2(ub_ptr1, ub_ptr2, offset)
 
-**Description**: Scalar load to vector (broadcast scalar to all lanes).
+# Element-indexing syntax
+vec1, vec2 = pto.vldx2(tile_a[i, j:], tile_b[i, j:])
+vec1, vec2 = pto.vldx2(tile_a[k:], tile_b[k:])
+```
 
-**Parameters**:
+#### `pto.vsld(buf: UBRef, offset: Index) -> VRegType`  
+#### `pto.vsld(tile[row, col]) -> VRegType`  
+#### `pto.vsld(tile[pos]) -> VRegType`
+
+**Description**: Scalar load to vector (broadcast scalar to all lanes). Supports both byte-offset and element-indexing syntax. The element-indexing syntax loads a single element (not a vector) and broadcasts it to all lanes.
+
+**Parameters (byte-offset syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `buf` | `UBRef` | Buffer or pointer (UB memory space) |
 | `offset` | `Index` | Byte offset |
 
+**Parameters (element-indexing syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `tile[row, col]` | `Tile` with indexing | 2D tile with row and column indices (single element) |
+| `tile[pos]` | `Tile` with indexing | 1D tile with element index (single element) |
+
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
 | `vec` | `VRegType` | Vector with scalar broadcast to all lanes |
+
+**Examples**:
+```python
+# Byte-offset syntax
+vec = pto.vsld(ub_ptr, offset)
+
+# Element-indexing syntax
+vec = pto.vsld(tile[i, j])    # Load single element at (i,j) and broadcast
+vec = pto.vsld(tile[k])       # Load single element at position k and broadcast
+```
 
 ### Predicate Operations
 
@@ -2110,11 +2382,13 @@ Type conversion and specialized operations.
 
 Operations for storing data from vector registers to memory (stateless).
 
-#### `pto.vsts(vec: VRegType, buf: UBRef, offset: Index, mask: MaskType) -> None`
+#### `pto.vsts(vec: VRegType, buf: UBRef, offset: Index, mask: MaskType) -> None`  
+#### `pto.vsts(vec: VRegType, tile[row, col:], mask: MaskType) -> None`  
+#### `pto.vsts(vec: VRegType, tile[start:], mask: MaskType) -> None`
 
-**Description**: Stateless vector store to buffer.
+**Description**: Stateless vector store to buffer. Supports both byte-offset and element-indexing syntax.
 
-**Parameters**:
+**Parameters (byte-offset syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `vec` | `VRegType` | Vector to store |
@@ -2122,35 +2396,76 @@ Operations for storing data from vector registers to memory (stateless).
 | `offset` | `Index` | Byte offset |
 | `mask` | `MaskType` | Predicate mask |
 
+**Parameters (element-indexing syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Vector to store |
+| `tile[row, col:]` | `Tile` with indexing | 2D tile with row index and starting column |
+| `tile[start:]` | `Tile` with indexing | 1D tile with starting element index |
+| `mask` | `MaskType` | Predicate mask |
+
 **Returns**: None (side-effect operation)
 
 **Constraints**:
 - Buffer must be in UB memory space
-- Offset must be properly aligned based on element type
+- For byte-offset syntax: offset must be properly aligned based on element type
+- For element-indexing syntax: the destination vector region must be within tile bounds and satisfy alignment requirements
 
-**Example**:
+**Examples**:
 ```python
+# Byte-offset syntax
 pto.vsts(vec_f32, ub_ptr, lane * 256, mask32)
+
+# Element-indexing syntax
+pto.vsts(vec, tile[i, j:], mask)      # Store to row i, columns j to j+vector_lanes-1
+pto.vsts(vec, tile[k:], mask)         # Store to 1D tile, elements k to k+vector_lanes-1
+
+# In a generic kernel
+@pto.vkernel(target="a5", name="generic_store")
+def generic_store(src: pto.Tile, dst: pto.Tile):
+    rows, cols = src.shape
+    with pto.vecscope():
+        all_mask = pto.make_mask(src.element_type, PAT.ALL)
+        for i in range(0, rows):
+            for j in range(0, cols, vector_lanes):
+                vec = pto.vlds(src[i, j:])
+                pto.vsts(vec, dst[i, j:], all_mask)  # No manual offset calculation
 ```
 
-#### `pto.psts(mask: MaskType, buf: UBRef, offset: Index) -> None`
+#### `pto.psts(mask: MaskType, buf: UBRef, offset: Index) -> None`  
+#### `pto.psts(mask: MaskType, tile[row, col:]) -> None`  
+#### `pto.psts(mask: MaskType, tile[start:]) -> None`
 
-**Description**: Predicate store to buffer.
+**Description**: Predicate store to buffer. Supports both traditional byte-offset syntax and new element-indexing syntax.
 
-**Parameters**:
+**Parameters (byte-offset syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `mask` | `MaskType` | Mask to store |
 | `buf` | `UBRef` | Destination buffer or pointer |
 | `offset` | `Index` | Byte offset |
 
+**Parameters (element-indexing syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `mask` | `MaskType` | Mask to store |
+| `tile[row, col:]` | `Tile` with indexing | 2D tile with row index and starting column (vector-width range) |
+
+**Parameters (1D element-indexing syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `mask` | `MaskType` | Mask to store |
+| `tile[start:]` | `Tile` with indexing | 1D tile with starting element index (vector-width range) |
+
 **Returns**: None (side-effect operation)
 
-#### `pto.vsst(scalar: ScalarType, buf: UBRef, offset: Index, mask: MaskType) -> None`
+#### `pto.vsst(scalar: ScalarType, buf: UBRef, offset: Index, mask: MaskType) -> None`  
+#### `pto.vsst(scalar: ScalarType, tile[row, col:], mask: MaskType) -> None`  
+#### `pto.vsst(scalar: ScalarType, tile[start:], mask: MaskType) -> None`
 
-**Description**: Scalar to vector store (broadcast scalar to all lanes).
+**Description**: Scalar to vector store (broadcast scalar to all lanes). Supports both traditional byte-offset syntax and new element-indexing syntax.
 
-**Parameters**:
+**Parameters (byte-offset syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `scalar` | `ScalarType` | Scalar value |
@@ -2158,13 +2473,29 @@ pto.vsts(vec_f32, ub_ptr, lane * 256, mask32)
 | `offset` | `Index` | Byte offset |
 | `mask` | `MaskType` | Predicate mask |
 
+**Parameters (element-indexing syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `scalar` | `ScalarType` | Scalar value |
+| `tile[row, col:]` | `Tile` with indexing | 2D tile with row index and starting column (vector-width range) |
+| `mask` | `MaskType` | Predicate mask |
+
+**Parameters (1D element-indexing syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `scalar` | `ScalarType` | Scalar value |
+| `tile[start:]` | `Tile` with indexing | 1D tile with starting element index (vector-width range) |
+| `mask` | `MaskType` | Predicate mask |
+
 **Returns**: None (side-effect operation)
 
-#### `pto.vstx2(vec1: VRegType, vec2: VRegType, buf1: UBRef, buf2: UBRef, offset: Index, mask: MaskType) -> None`
+#### `pto.vstx2(vec1: VRegType, vec2: VRegType, buf1: UBRef, buf2: UBRef, offset: Index, mask: MaskType) -> None`  
+#### `pto.vstx2(vec1: VRegType, vec2: VRegType, tile1[row, col:], tile2[row, col:], mask: MaskType) -> None`  
+#### `pto.vstx2(vec1: VRegType, vec2: VRegType, tile1[start:], tile2[start:], mask: MaskType) -> None`
 
-**Description**: Dual vector store to two buffers.
+**Description**: Dual vector store to two buffers. Supports both traditional byte-offset syntax and new element-indexing syntax.
 
-**Parameters**:
+**Parameters (byte-offset syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `vec1` | `VRegType` | First vector to store |
@@ -2174,18 +2505,54 @@ pto.vsts(vec_f32, ub_ptr, lane * 256, mask32)
 | `offset` | `Index` | Byte offset (applied to both buffers) |
 | `mask` | `MaskType` | Predicate mask |
 
+**Parameters (element-indexing syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec1` | `VRegType` | First vector to store |
+| `vec2` | `VRegType` | Second vector to store |
+| `tile1[row, col:]` | `Tile` with indexing | First 2D tile with row index and starting column (vector-width range) |
+| `tile2[row, col:]` | `Tile` with indexing | Second 2D tile with row index and starting column (vector-width range) |
+| `mask` | `MaskType` | Predicate mask |
+
+**Parameters (1D element-indexing syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec1` | `VRegType` | First vector to store |
+| `vec2` | `VRegType` | Second vector to store |
+| `tile1[start:]` | `Tile` with indexing | First 1D tile with starting element index (vector-width range) |
+| `tile2[start:]` | `Tile` with indexing | Second 1D tile with starting element index (vector-width range) |
+| `mask` | `MaskType` | Predicate mask |
+
 **Returns**: None (side-effect operation)
 
-#### `pto.vsta(vec: VRegType, buf: UBRef, offset: Index, align: pto.align, mask: MaskType) -> None`
+#### `pto.vsta(vec: VRegType, buf: UBRef, offset: Index, align: pto.align, mask: MaskType) -> None`  
+#### `pto.vsta(vec: VRegType, tile[row, col:], align: pto.align, mask: MaskType) -> None`  
+#### `pto.vsta(vec: VRegType, tile[start:], align: pto.align, mask: MaskType) -> None`
 
-**Description**: Aligned vector store with explicit alignment carrier.
+**Description**: Aligned vector store with explicit alignment carrier. Supports both traditional byte-offset syntax and new element-indexing syntax.
 
-**Parameters**:
+**Parameters (byte-offset syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `vec` | `VRegType` | Vector to store |
 | `buf` | `UBRef` | Destination buffer or pointer |
 | `offset` | `Index` | Byte offset |
+| `align` | `pto.align` | Alignment specification |
+| `mask` | `MaskType` | Predicate mask |
+
+**Parameters (element-indexing syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Vector to store |
+| `tile[row, col:]` | `Tile` with indexing | 2D tile with row index and starting column (vector-width range) |
+| `align` | `pto.align` | Alignment specification |
+| `mask` | `MaskType` | Predicate mask |
+
+**Parameters (1D element-indexing syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Vector to store |
+| `tile[start:]` | `Tile` with indexing | 1D tile with starting element index (vector-width range) |
 | `align` | `pto.align` | Alignment specification |
 | `mask` | `MaskType` | Predicate mask |
 
