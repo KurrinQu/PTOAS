@@ -1,8 +1,8 @@
-# VPTO DSL Syntax Sugar Proposals
+# TileLang DSL Syntax Sugar Proposals
 
 ## Overview
 
-This document proposes syntax sugar enhancements for the VPTO Python DSL to improve programming ergonomics while maintaining close correspondence with the underlying VPTO IR. The current DSL design closely mirrors VPTO instructions, which can lead to verbose and error-prone code. These proposals aim to provide higher-level abstractions that compile down to the existing VPTO operations.
+This document proposes syntax sugar enhancements for the TileLang Python DSL to improve programming ergonomics while maintaining close correspondence with the underlying VPTO IR. The current DSL design closely mirrors VPTO instructions, which can lead to verbose and error-prone code. These proposals aim to provide higher-level abstractions that compile down to the existing VPTO operations.
 
 ## Current Usability Challenges
 
@@ -375,7 +375,7 @@ def mixed_kernel(src: pto.ptr(pto.f32, MemorySpace.GM),
 4. **Documentation**: Update DSL guide with syntax sugar examples and migration guides
 5. **Testing**: Ensure all syntax sugar correctly lowers to VPTO IR and maintains performance
 
-These enhancements will significantly improve the VPTO DSL's usability while maintaining the close correspondence with underlying VPTO IR that performance engineers require.
+These enhancements will significantly improve the TileLang DSL's usability while maintaining the close correspondence with underlying VPTO IR that performance engineers require.
 
 1. 软件流水线（Software Pipelining）的表达成本
 在 NPU 上写 Vector 级算子，最难的往往不是数值计算，而是利用 UB (Unified Buffer) 进行 Double/Multi-Buffering（乒乓缓存），并手动排布内存搬运与计算的流水线。
