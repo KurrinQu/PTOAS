@@ -227,7 +227,7 @@ PTO micro Instruction source programs are not restricted to `pto` operations alo
 
 ### Core Types
 
-### Element Types
+#### Element Types
 `vreg<T>`: `!pto.vreg<NxT>` Fixed-width PTO micro Instruction vector type with total width exactly 256 bytes (2048 bits). `N` is the lane count, `T` is the element type, and `N * bitwidth(T) = 2048`.
 
 | Type | Bits | Description |
@@ -242,7 +242,7 @@ PTO micro Instruction source programs are not restricted to `pto` operations alo
 | `f8e4m3` | 8 | FP8 (4-bit exponent, 3-bit mantissa) |
 | `f8e5m2` | 8 | FP8 (5-bit exponent, 2-bit mantissa) |
 
-### Address Space Conventions
+#### Address Space Conventions
 
 PTO micro Instruction memory operands use `!pto.ptr<element-type, space>`. This specification models the following memory-space attributes:
 
@@ -258,7 +258,7 @@ Typical pointer construction and pointer arithmetic follow the same `!pto.ptr<..
 %1 = pto.addptr %0, %c1024 : !pto.ptr<f32, ub> -> !pto.ptr<f32, ub>
 ```
 
-### `!pto.ptr<T, space>`
+#### `!pto.ptr<T, space>`
 
 `!pto.ptr<T, space>` is the typed pointer form used for explicit memory operands in PTO micro Instruction.
 
@@ -274,7 +274,7 @@ Typical examples:
 - `!pto.ptr<f32, ub>`
 - `!pto.ptr<bf16, gm>`
 
-### Pointer Operations
+#### Pointer Operations
 
 #### `pto.castptr`
 
@@ -318,7 +318,7 @@ scf.for %arg2 = %c0 to %c1 step %c1 {
 
 In this pattern, `pto.castptr` materializes a typed UB pointer, `pto.addptr` shifts the base by 1024 `f32` elements, and the subsequent `[%arg3]` indexing on `pto.vlds` / `pto.vsts` applies an additional element offset relative to that base.
 
-### Special Types
+#### Special Types
 
 #### `!pto.mask`
 
@@ -565,8 +565,7 @@ for (int g = 0; g < 8; g++) {
 
 ---
 
-## Part III: ISA Instruction Reference
-# Part III: ISA Instruction Reference — Summary
+## Part III: ISA Instruction Reference — Summary
 
 This section provides a categorized overview of all PTO micro Instruction operations plus the shared MLIR `arith` and `scf` ops that may appear in PTO micro Instruction programs. Detailed documentation for each group is included later in this merged document.
 
@@ -2407,7 +2406,7 @@ for (int i = 0; i < TOTAL_LANES; i++)
 
 ---
 
-### `pto.plt_b8` / `pto.plt_b16` / `pto.plt_b32`
+##### `pto.plt_b8` / `pto.plt_b16` / `pto.plt_b32`
 
 - **syntax:** `%mask, %scalar_out = pto.plt_b32 %scalar : i32 -> !pto.mask, i32`
 - **semantics:** Generate predicate state together with updated scalar state.
