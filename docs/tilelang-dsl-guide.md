@@ -74,7 +74,7 @@ For an even more concise example showing pure computation on UB tiles (assuming 
 def ub_tile_computation(a: pto.Tile,  # UB tile
                         b: pto.Tile,  # UB tile  
                         c: pto.Tile): # UB tile (output)
-    dtype = input_tile.element_type
+    dtype = a.element_type
 
     # All tiles are in UB memory space
     with pto.vecscope():
@@ -261,14 +261,19 @@ tile = pto.tile((256, 128), pto.f32, MemorySpace.UB, config=config)
 tile = pto.tile((256, 128), pto.f32, MemorySpace.UB, valid_shape=(240, 120))
 ```
 
+**Important Notes on Shape and Valid Shape:**
+- **Static Shape Requirement**: The `shape` parameter must be a compile-time constant. Tile dimensions are fixed at compilation time and cannot change at runtime.
+- **Valid Shape Constraints**: The `valid_shape` parameter can be either static (compile-time constant) or dynamic (determined at runtime). It must be less than or equal to the physical `shape` in each dimension. This allows for variable-sized data within a fixed tile allocation.
+- **Default Behavior**: When `valid_shape` is not specified, it defaults to the full `shape`.
+
 #### Tile Attributes
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `shape` | `tuple[int, ...]` | Full tile dimensions |
+| `shape` | `tuple[int, ...]` | **Static** full tile dimensions (compile-time constant) |
 | `element_type` | `Type` | Element data type (e.g., `pto.f32`) |
 | `memory_space` | `MemorySpace` | Memory space (GM, UB, etc.) |
-| `valid_shape` | `tuple[int, ...]` | Actual data dimensions within tile (may be smaller than shape) |
+| `valid_shape` | `tuple[int, ...]` | Actual data dimensions within tile (can be static/compile-time or dynamic/runtime). Must be ≤ shape in each dimension. |
 | `config` | `TileConfig` | Layout and padding configuration |
 
 #### Tile Configuration
@@ -292,11 +297,31 @@ pto.PadValue.MIN          # 3: minimum value padding
 
 #### Tile Shape Concepts
 
-- **Shape vs Valid Shape**: The `shape` represents the full tile dimensions allocated in memory, while `valid_shape` represents the actual data dimensions within the tile (e.g., due to padding or partial data). When `valid_shape` is not specified, it defaults to `shape`.
+- **Static Physical Shape**: The `shape` parameter represents the **static physical dimensions** of the tile allocated in memory. This must be a **compile-time constant** because tile memory allocation is fixed during compilation. The shape determines the total memory footprint and cannot change at runtime.
+
+- **Valid Shape**: The `valid_shape` parameter represents the logical dimensions of actual data within the tile. It can be either **static** (compile-time constant) or **dynamic** (determined at runtime). It must be less than or equal to the physical `shape` in each dimension. When `valid_shape` is not specified, it defaults to the full `shape`.
+
+- **Key Distinction**:
+  - `shape`: **Static, compile-time** - Fixed tile allocation
+  - `valid_shape`: **Static or Dynamic** - Actual data region (must be ≤ shape)
+
+- **Constraints**:
+  - `valid_shape[i] ≤ shape[i]` for each dimension i
+  - `shape` must be compile-time constants
+  - `valid_shape` can be compile-time constants or runtime values
+
+- **Use Cases**:
+  - Fixed-size tile buffers with variable data (e.g., batch processing with different input sizes)
+  - Padding scenarios where physical allocation is larger than actual data
+  - Partial tile utilization in tiled algorithms
 
 - **Fractal Layout**: The `s_fractal_size` in tile configuration specifies the size of fractal blocks for secondary layout. This is used for optimized memory access patterns in matrix operations.
 
-- **Padding Behavior**: The `pad_value` determines how out-of-bounds accesses are handled when reading beyond `valid_shape` but within `shape`.
+- **Padding Behavior**: The `pad_value` determines how out-of-bounds accesses are handled when reading beyond `valid_shape` but within `shape`. Padding values are used for accesses in the padded region (between valid_shape and shape).
+
+> **⚠️ Important: Shape Constraints**
+> 
+> The tile `shape` must be **compile-time constants**. `valid_shape` can be compile-time constants or determined at runtime, but must satisfy `valid_shape[i] ≤ shape[i]` for all dimensions i.
 
 ### Tile Operations
 
