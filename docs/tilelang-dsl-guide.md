@@ -36,7 +36,7 @@ def tile_scale(input_tensor: pto.TensorView,   # Input tensor view (shape: 256x1
             # Process each row in vector chunks
             # Vector width is hardware-defined: 256 bytes / element size
             # For f32: 256/4 = 64 lanes, for f16: 256/2 = 128 lanes
-            vector_lanes = 256 // (pto.sizeof(dtype) if hasattr(pto, 'sizeof') else 4)  # example
+            vector_lanes = pto.get_lanes(dtype)  # Compute vector lanes based on element type (e.g., 64 for f32, 128 for f16)
             for col_start in range(0, cols, vector_lanes):
                 # Load vector using element-indexing syntax (no manual byte calculation)
                 vec = pto.vlds(ub_tile[row, col_start:])
@@ -1086,6 +1086,8 @@ The number of elements loaded/stored in a single vector operation is determined 
 ```
 vector_lanes = 256 // element_size_bytes(element_type)
 ```
+
+**Convenience API**: Use `pto.get_lanes(dtype)` to compute vector lanes for a given element type (e.g., `pto.get_lanes(pto.f32)` returns 64, `pto.get_lanes(pto.f16)` returns 128).
 
 Where `element_size_bytes` is:
 - 1 byte for `i8`
