@@ -1,0 +1,64 @@
+// ---------------------------------------------------------------------------
+// PTOAS compatibility layer
+// ---------------------------------------------------------------------------
+#ifndef __VEC_SCOPE__
+#define __VEC_SCOPE__
+#endif
+
+#if defined(__CCE_AICORE__) && defined(__NPU_ARCH__) && (__NPU_ARCH__ == 2201)
+typedef struct {
+  unsigned char v;
+} hifloat8_t;
+typedef struct {
+  unsigned char v;
+} float8_e4m3_t;
+typedef struct {
+  unsigned char v;
+} float8_e5m2_t;
+typedef struct {
+  unsigned char v;
+} float8_e8m0_t;
+typedef struct {
+  unsigned char v;
+} float4_e1m2x2_t;
+typedef struct {
+  unsigned char v;
+} float4_e2m1x2_t;
+#endif
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstdint>
+
+#if !defined(__CCE_AICORE__) && !defined(__CPU_SIM)
+#define __CPU_SIM
+#endif
+
+#include "kernel.cpp"
+
+__global__ AICORE void scope3_incore_0_incore_0_kernel(
+    __gm__ float *attn_out, __gm__ bfloat16_t *hidden_states,
+    __gm__ float *resid_out, __gm__ bfloat16_t *wo, int32_t ob_idx) {
+  scope3_incore_0_incore_0_aic(attn_out, hidden_states, resid_out, wo, ob_idx);
+  scope3_incore_0_incore_0_aiv(attn_out, hidden_states, resid_out, wo, ob_idx);
+}
+
+void LaunchScope3Incore0Incore0(float *attn_out, uint16_t *hidden_states,
+                                float *resid_out, uint16_t *wo, int32_t ob_idx,
+                                void *stream) {
+#if defined(__CCE_AICORE__)
+  scope3_incore_0_incore_0_kernel<<<1, nullptr, stream>>>(
+      (__gm__ float *)attn_out, (__gm__ bfloat16_t *)hidden_states,
+      (__gm__ float *)resid_out, (__gm__ bfloat16_t *)wo, ob_idx);
+#else
+  (void)attn_out;
+  (void)hidden_states;
+  (void)resid_out;
+  (void)wo;
+  (void)ob_idx;
+  (void)stream;
+  std::fprintf(stderr,
+               "LaunchScope3Incore0Incore0 requires device compilation/runtime.\n");
+  std::abort();
+#endif
+}
