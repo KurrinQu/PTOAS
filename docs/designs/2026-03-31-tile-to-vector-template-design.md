@@ -146,9 +146,57 @@ def template_tadd(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
 - 通过 **`pto.vadd`** 计算相加结果，写入寄存器 `result`。
 - 通过 **`pto.vsts`** 将 `result` 写入以 `c[i, j]` 为起始的地址区间。
 
-### 2.3 TileLang DSL 语法参考
+### 2.3 值模型与 Staging 语义
 
-#### 2.3.1 基础数据类型
+模板函数中使用的 `pto.Tile` 属性，在模板执行时分为两类不同阶段（stage）的值：
+
+#### 编译期静态值（Compile-time Static）
+
+以下属性在模板实例化时已经确定，由 Python Codegen 在编译期折叠为字面量，**不会**生成 MLIR SSA 值：
+
+| 属性 | 来源 | 说明 |
+|------|------|------|
+| `element_type` | `tile_buf` 的 `dtype` 字段 | 决定 vreg 类型和向量宽度 |
+| `element_size` | 由 `dtype` 推导 | f32→4, f16→2, i8→1 |
+| `shape` | `tile_buf` 的 `rows`, `cols` 字段 | **必须是编译期静态值**，参与模板实例化的 specialization key |
+| `config` | `tile_buf` 的 blayout/slayout/fractal/pad | 布局和配置信息 |
+
+这些值在 Python 层直接参与运算（如 `256 / elem_size`），结果在编译期确定。
+
+#### 运行时 SSA 值（Runtime Dynamic）
+
+以下属性可能在编译期未知，生成为 MLIR 函数参数或 SSA 值：
+
+| 属性 | 来源 | 说明 |
+|------|------|------|
+| `valid_shape` | `tile_buf` 的 `v_row`, `v_col` 字段 | **可以是静态也可以是动态** |
+
+当 `valid_shape` 为静态值时，Python Codegen 在编译期折叠（与 `shape` 相同处理方式）；当为动态值时，生成为 MLIR 函数参数（`index` 类型），循环边界等依赖它的地方生成 `scf.for`。
+
+#### 正式约束
+
+1. **`shape` 必须是编译期静态值**，并参与模板实例化的 specialization key。如果 `shape` 为动态值，模板实例化应报错拒绝。
+2. **`valid_shape` 可以是静态也可以是动态**。当为静态值时，Python Codegen 侧应检查 `valid_shape <= shape`（逐维度）。
+3. **`element_type`、`element_size`、`config` 必须是编译期静态值**，它们决定了模板函数体的结构（vreg 类型、向量宽度、stride 模式等）。
+
+#### 对控制流的影响
+
+```python
+rows, cols = src0.shape           # 编译期静态 → Python 层直接展开或折叠
+v_rows, v_cols = src0.valid_shape # 可能是动态 → 生成 scf.for
+
+for i in range(0, v_rows, 1):    # v_rows 动态 → scf.for %i = 0 to %v_rows
+    for j in range(0, v_cols, 64): # v_cols 动态 → scf.for %j = 0 to %v_cols step 64
+        ...
+
+# 对比：如果用 shape（静态），Python 层可以直接展开
+for i in range(0, rows, 1):       # rows=16 静态 → Python 展开 16 次迭代
+    ...
+```
+
+### 2.4 TileLang DSL 语法参考
+
+#### 2.4.1 基础数据类型
 
 | DSL 类型 | 说明 | 位宽 |
 |----------|------|------|
@@ -162,7 +210,7 @@ def template_tadd(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
 
 Python 字面量自动推导类型：`int` → `pto.i32`，`float` → `pto.f32`。
 
-#### 2.3.2 Tile 数据类型
+#### 2.4.2 Tile 数据类型
 
 `pto.Tile` 表示一个带有布局和配置信息的数据块，对应 MLIR 中的 `!pto.tile_buf` 类型。
 
@@ -187,7 +235,7 @@ pto.PadValue.NULL          # 无 padding
 pto.PadValue.ZERO          # 零填充
 ```
 
-#### 2.3.3 向量操作接口
+#### 2.4.3 向量操作接口
 
 向量寄存器固定 256 字节宽度，每次处理的元素数量由数据类型决定：f32 → 64 个元素，f16 → 128 个元素。
 
@@ -233,7 +281,7 @@ pto.PadValue.ZERO          # 零填充
 | `pto.vmuls(vec, scalar, mask)` | 向量乘标量 |
 | `pto.vadds(vec, scalar, mask)` | 向量加标量 |
 
-#### 2.3.4 控制流
+#### 2.4.4 控制流
 
 **循环**使用 Python 的 `range` 语法：
 
@@ -280,17 +328,22 @@ Step 1: 识别 Tile Op
     dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
     blayout=row_major, slayout=none_box, fractal=512, pad=0
 
-Step 2: 匹配模板函数
-───────────────────
+Step 2: 匹配模板函数 + 查询缓存
+──────────────────────────────
   根据 Tile op 种类（pto.tadd）和 dtype（f32）
   查找对应的 Python DSL 模板 → template_tadd
 
-Step 3: 实例化模板
+  构造 specialization key，查询实例化缓存：
+    key = (template_id, op_type, target, dtype, shape, layout/config)
+  如果缓存命中，直接复用已实例化的 MLIR，跳到 Step 4
+
+Step 3: 实例化模板（缓存未命中时执行）
 ───────────────────
   调用模板函数，填入具体的 tile_buf 类型参数
   Python DSL 在编译期折叠静态字段（rows, cols, elem_size, ...）
   动态字段（v_row, v_col）生成为函数参数
   输出实例化后的 MLIR 向量 IR
+  将结果写入缓存（以 specialization key 索引）
 
 Step 4: Inline 到调用点
 ───────────────────────
@@ -302,6 +355,23 @@ Step 5: Cleanup
 ───────────────
   运行 canonicalize，消除多余常量和中间符号
 ```
+
+#### Specialization Key 与缓存
+
+模板展开本质上是一个特化过程。当同一个 module 中存在多个相同类型的 Tile op（如多处 `pto.tadd` 且 `tile_buf` 类型参数相同），应复用已实例化的结果而非重复展开。
+
+Expand TileOp pass 维护一个实例化缓存，key 包含以下字段：
+
+| Key 字段 | 说明 |
+|----------|------|
+| `template_id` | 模板函数标识（如 `template_tadd`） |
+| `op_type` | Tile op 类型（如 `pto.tadd`） |
+| `target` | 目标平台（如 `a5`） |
+| `dtype` | 元素数据类型（如 `f32`） |
+| `shape` | Tile 的静态 shape（如 `(16, 64)`） |
+| `layout/config` | blayout、slayout、fractal、pad 等配置 |
+
+`valid_shape` 不参与 key——因为它可能是动态的，作为运行时参数传入已实例化的函数。相同 `(op, dtype, shape, config)` 但不同 `valid_shape` 的 Tile op 可以共享同一份实例化结果。
 
 ### 3.3 Pass 输出示例
 
