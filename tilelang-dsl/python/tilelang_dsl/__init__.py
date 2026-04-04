@@ -30,6 +30,7 @@ from .types import (
     bf16,
     f16,
     f32,
+    get_lanes,
     i1,
     i8,
     i16,
@@ -70,4 +71,5 @@ __all__ = [
     "AnyInt",
     "AnyType",
     "AnyMask",
+    "get_lanes",
 ]
