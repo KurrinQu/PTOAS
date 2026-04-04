@@ -20,6 +20,9 @@ It does not define:
 - advanced vector-family surface
 - implicit vecscope inference
 
+For implemented lowering details, examples, and `verify()` behavior, see
+`tilelang-dsl/docs/v1-lowering.md`.
+
 ## Source Of Truth
 
 TileLang DSL v1 source of truth lives under:
@@ -228,8 +231,6 @@ changes:
 - implicit vecscope inference
 - raw pointer authoring surface
 - advanced vector-family support
-- final TileLang DSL to VPTO lowering implementation
 
 Matcher-related extensions are deferred to
 `extend-tilelang-dsl-matcher-and-advanced-surface`.
-Lowering work is deferred to `add-tilelang-dsl-authoring-vpto-lowering`.

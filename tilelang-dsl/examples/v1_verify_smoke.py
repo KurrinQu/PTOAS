@@ -1,4 +1,4 @@
-"""Minimal TileLang DSL v1 demo that materializes a kernel into MLIR."""
+"""Minimal TileLang DSL v1 verify smoke for the repo PTOAS legality path."""
 
 import sys
 from pathlib import Path
@@ -22,25 +22,24 @@ pto = _import_tilelang_dsl()
 
 
 @pto.vkernel(
-    op="eltwise_with_tile",
-    dtypes=[(pto.f32, pto.f16, pto.i32)],
-    name="tilelang_v1_demo_kernel",
+    op="eltwise",
+    dtypes=[(pto.f32, pto.f32)],
+    name="tilelang_v1_verify_smoke",
 )
-def kernel(inp: pto.TensorView, tile: pto.Tile, scale: pto.i32):
+def kernel(inp: pto.TensorView, tile: pto.Tile):
     return None
 
 
 def build_specialized_kernel():
     return kernel.specialize(
         tile=pto.TileSpecialization(
-            shape=(16, 32),
+            shape=(8, 16),
             memory_space=pto.MemorySpace.UB,
-            config=pto.TileConfig.from_mapping({"layout": "row_major"}),
         )
     )
 
 
-def main(argv: list[str]) -> int:
+def main(argv) -> int:
     specialized = build_specialized_kernel()
 
     if len(argv) > 2:
@@ -53,8 +52,15 @@ def main(argv: list[str]) -> int:
         print(f"wrote MLIR to {output_path}")
         return 0
 
-    print(specialized.mlir_text())
-    return 0
+    result = specialized.verify()
+    print(f"status={result.status}")
+    print(f"available={result.available}")
+    print(f"passed={result.passed}")
+    if result.command is not None:
+        print("command=" + " ".join(result.command))
+    if result.message:
+        print(f"message={result.message}")
+    return 0 if result else 1
 
 
 if __name__ == "__main__":

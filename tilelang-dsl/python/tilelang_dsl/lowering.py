@@ -22,11 +22,14 @@ from .semantic import (
     SemanticKernel,
     SemanticLiteralExpr,
     SemanticMaskType,
+    SemanticMetaType,
+    SemanticBindingRef,
     SemanticPipeBarrierStmt,
     SemanticReturnStmt,
     SemanticScalarType,
     SemanticSetFlagStmt,
     SemanticStmt,
+    SemanticVecscopeStmt,
     SemanticStrictVecscopeStmt,
     SemanticSubscriptAccess,
     SemanticSymbolExpr,
@@ -34,6 +37,8 @@ from .semantic import (
     SemanticTensorViewType,
     SemanticTileType,
     SemanticType,
+    SemanticTupleExpr,
+    SemanticTupleType,
     SemanticVRegType,
     SemanticVectorStoreStmt,
     SemanticWaitFlagStmt,
@@ -42,6 +47,7 @@ from .types import MaskPattern, ScalarType
 
 
 _I1_TYPE = SemanticScalarType(dtype=ScalarType("i1"))
+_I32_TYPE = SemanticScalarType(dtype=ScalarType("i32"))
 _I64_TYPE = SemanticScalarType(dtype=ScalarType("i64"))
 
 
@@ -92,6 +98,7 @@ class _AuthoringRenderer:
             f"// tilelang.op = {self.kernel.op}",
             f"// tilelang.dtypes = {self.kernel.dtype_signature}",
             f"// tilelang.verify = {self.kernel.verify_enabled}",
+            f"// tilelang.advanced = {self.kernel.advanced_enabled}",
         ]
         for binding in self.kernel.tile_bindings:
             lines.append(
@@ -157,6 +164,8 @@ class _AuthoringRenderer:
                 return [self._indent(indent) + "return"]
             value = self._lower_expr(stmt.value, env, indent=indent)
             return [self._indent(indent) + f"return {value.name} : {self._render_type(value.type)}"]
+        if isinstance(stmt, SemanticVecscopeStmt):
+            return self._render_vecscope(stmt, env, indent=indent)
         if isinstance(stmt, SemanticStrictVecscopeStmt):
             return self._render_strict_vecscope(stmt, env, indent=indent)
         if isinstance(stmt, SemanticForStmt):
@@ -173,8 +182,13 @@ class _AuthoringRenderer:
         indent: int,
     ) -> list[str]:
         if len(stmt.targets) != 1:
-            raise NotImplementedError("multiple-result assignment is not supported in TileLang DSL v1 yet")
+            if isinstance(stmt.value, SemanticTupleExpr):
+                return self._render_tuple_expr_assign(stmt, env, indent=indent)
+            return self._render_multi_result_assign(stmt, env, indent=indent)
         target = stmt.targets[0]
+        if isinstance(target.type, SemanticMetaType):
+            env[target.name] = _RenderedValue(name=target.ssa_name, type=target.type)
+            return []
         lines: list[str] = []
         lowered = self._lower_expr(
             stmt.value,
@@ -186,6 +200,66 @@ class _AuthoringRenderer:
         env[target.name] = lowered
         return lines
 
+    def _render_tuple_expr_assign(
+        self,
+        stmt: SemanticAssignStmt,
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+    ) -> list[str]:
+        if not isinstance(stmt.value, SemanticTupleExpr):
+            raise NotImplementedError("tuple expression assignment expects a SemanticTupleExpr")
+        if len(stmt.targets) != len(stmt.value.elements):
+            raise NotImplementedError("tuple expression assignment arity mismatch")
+
+        lines: list[str] = []
+        for target, element in zip(stmt.targets, stmt.value.elements):
+            lowered = self._lower_expr(
+                element,
+                env,
+                indent=indent,
+                desired_name=target.ssa_name,
+                into=lines,
+            )
+            env[target.name] = lowered
+        return lines
+
+    def _render_multi_result_assign(
+        self,
+        stmt: SemanticAssignStmt,
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+    ) -> list[str]:
+        if not isinstance(stmt.value, SemanticCallExpr):
+            raise NotImplementedError("multi-result assignment expects a call expression in TileLang DSL v1")
+        if stmt.value.namespace != "pto" or stmt.value.name != "make_mask":
+            raise NotImplementedError(
+                f"multi-result assignment for `pto.{stmt.value.name}` is not supported in TileLang DSL v1"
+            )
+        if len(stmt.targets) != 2:
+            raise NotImplementedError("tail make_mask lowering expects exactly two assignment targets")
+        if not isinstance(stmt.value.type, SemanticTupleType) or len(stmt.value.type.elements) != 2:
+            raise NotImplementedError("tail make_mask lowering expects a two-result tuple type")
+
+        dtype_expr, remaining_expr = stmt.value.args
+        if not self._is_dtype_meta_expr(dtype_expr):
+            raise NotImplementedError("make_mask dtype lowering expects a dtype symbol")
+
+        lines: list[str] = []
+        remaining = self._lower_remaining_to_i32(remaining_expr, env, indent=indent, into=lines)
+        mask_target, remaining_target = stmt.targets
+        mask_type, remaining_type = stmt.value.type.elements
+        suffix = self._mask_suffix(mask_type)
+        lines.append(
+            self._indent(indent)
+            + f"{mask_target.ssa_name}, {remaining_target.ssa_name} = pto.plt_{suffix} {remaining.name} : "
+            + f"i32 -> {self._render_type(mask_type)}, {self._render_type(remaining_type)}"
+        )
+        env[mask_target.name] = _RenderedValue(name=mask_target.ssa_name, type=mask_type)
+        env[remaining_target.name] = _RenderedValue(name=remaining_target.ssa_name, type=remaining_type)
+        return lines
+
     def _render_dma_load(
         self,
         stmt: SemanticDmaLoadStmt,
@@ -193,9 +267,10 @@ class _AuthoringRenderer:
         *,
         indent: int,
     ) -> list[str]:
-        src = self._lower_expr(stmt.src.base, env, indent=indent)
-        dst = self._lower_expr(stmt.dst, env, indent=indent)
-        row_count, col_count = self._tensor_slice_extents(stmt.src)
+        lines: list[str] = []
+        src = self._lower_expr(stmt.src.base, env, indent=indent, into=lines)
+        dst = self._lower_expr(stmt.dst, env, indent=indent, into=lines)
+        row_count, col_count = self._dma_transfer_extents(stmt.src, stmt.dst.type)
         element_bytes = self._dtype_byte_width(stmt.src.type.element_dtype)
         burst_bytes = col_count * element_bytes
 
@@ -205,16 +280,19 @@ class _AuthoringRenderer:
         len_burst = self._materialize_constant(burst_bytes, _I64_TYPE)
         false_bit = self._materialize_constant(False, _I1_TYPE)
 
-        return [
-            self._indent(indent)
-            + f"pto.set_loop_size_outtoub {c1_i64}, {c1_i64} : i64, i64",
-            self._indent(indent)
-            + "pto.copy_gm_to_ubuf "
-            + f"{src.name}, {dst.name}, {c0_i64}, {n_burst}, {len_burst}, {c0_i64}, {c0_i64}, "
-            + f"{false_bit}, {c0_i64}, {len_burst}, {len_burst} : "
-            + f"{self._render_type(src.type)}, {self._render_type(dst.type)}, "
-            + "i64, i64, i64, i64, i64, i1, i64, i64, i64",
-        ]
+        lines.extend(
+            [
+                self._indent(indent)
+                + f"pto.set_loop_size_outtoub {c1_i64}, {c1_i64} : i64, i64",
+                self._indent(indent)
+                + "pto.copy_gm_to_ubuf "
+                + f"{src.name}, {dst.name}, {c0_i64}, {n_burst}, {len_burst}, {c0_i64}, {c0_i64}, "
+                + f"{false_bit}, {c0_i64}, {len_burst}, {len_burst} : "
+                + f"{self._render_type(src.type)}, {self._render_type(dst.type)}, "
+                + "i64, i64, i64, i64, i64, i1, i64, i64, i64",
+            ]
+        )
+        return lines
 
     def _render_dma_store(
         self,
@@ -223,9 +301,10 @@ class _AuthoringRenderer:
         *,
         indent: int,
     ) -> list[str]:
-        src = self._lower_expr(stmt.src, env, indent=indent)
-        dst = self._lower_expr(stmt.dst.base, env, indent=indent)
-        row_count, col_count = self._tensor_slice_extents(stmt.dst)
+        lines: list[str] = []
+        src = self._lower_expr(stmt.src, env, indent=indent, into=lines)
+        dst = self._lower_expr(stmt.dst.base, env, indent=indent, into=lines)
+        row_count, col_count = self._dma_transfer_extents(stmt.dst, stmt.src.type)
         element_bytes = self._dtype_byte_width(stmt.dst.type.element_dtype)
         burst_bytes = col_count * element_bytes
 
@@ -234,15 +313,18 @@ class _AuthoringRenderer:
         n_burst = self._materialize_constant(row_count, _I64_TYPE)
         len_burst = self._materialize_constant(burst_bytes, _I64_TYPE)
 
-        return [
-            self._indent(indent)
-            + f"pto.set_loop_size_ubtoout {c1_i64}, {c1_i64} : i64, i64",
-            self._indent(indent)
-            + "pto.copy_ubuf_to_gm "
-            + f"{src.name}, {dst.name}, {c0_i64}, {n_burst}, {len_burst}, {c0_i64}, "
-            + f"{len_burst}, {len_burst} : {self._render_type(src.type)}, {self._render_type(dst.type)}, "
-            + "i64, i64, i64, i64, i64, i64",
-        ]
+        lines.extend(
+            [
+                self._indent(indent)
+                + f"pto.set_loop_size_ubtoout {c1_i64}, {c1_i64} : i64, i64",
+                self._indent(indent)
+                + "pto.copy_ubuf_to_gm "
+                + f"{src.name}, {dst.name}, {c0_i64}, {n_burst}, {len_burst}, {c0_i64}, "
+                + f"{len_burst}, {len_burst} : {self._render_type(src.type)}, {self._render_type(dst.type)}, "
+                + "i64, i64, i64, i64, i64, i64",
+            ]
+        )
+        return lines
 
     def _render_vector_store(
         self,
@@ -251,21 +333,35 @@ class _AuthoringRenderer:
         *,
         indent: int,
     ) -> list[str]:
-        value = self._lower_expr(stmt.value, env, indent=indent)
-        destination = self._lower_expr(stmt.destination, env, indent=indent)
-        offset = self._lower_expr(stmt.offset, env, indent=indent)
-        mask = self._lower_expr(stmt.mask, env, indent=indent)
-        return [
+        lines: list[str] = []
+        value = self._lower_expr(stmt.value, env, indent=indent, into=lines)
+        destination = self._lower_expr(stmt.destination, env, indent=indent, into=lines)
+        offset = self._lower_expr(stmt.offset, env, indent=indent, into=lines)
+        mask = self._lower_expr(stmt.mask, env, indent=indent, into=lines)
+        lines.append(
             self._indent(indent)
             + "pto.vsts "
             + f"{value.name}, {destination.name}[{offset.name}], {mask.name} : "
             + f"{self._render_type(value.type)}, {self._render_type(destination.type)}, {self._render_type(mask.type)}"
-        ]
+        )
+        return lines
 
     def _tensor_slice_extents(self, expr: SemanticTensorSliceExpr) -> tuple[int, int]:
         if expr.type.rank != 2 or len(expr.type.extents) != 2:
             raise NotImplementedError("TileLang DSL v1 DMA lowering currently only supports rank-2 TensorView slices")
         return expr.type.extents
+
+    def _dma_transfer_extents(
+        self,
+        slice_expr: SemanticTensorSliceExpr,
+        tile_type: SemanticTileType,
+    ) -> tuple[int, int]:
+        row_count, col_count = self._tensor_slice_extents(slice_expr)
+        if row_count is not None and col_count is not None:
+            return row_count, col_count
+        if tile_type.shape is None or len(tile_type.shape) != 2:
+            raise NotImplementedError("DMA lowering requires a statically specialized rank-2 Tile shape")
+        return tile_type.shape
 
     def _render_strict_vecscope(
         self,
@@ -274,7 +370,11 @@ class _AuthoringRenderer:
         *,
         indent: int,
     ) -> list[str]:
-        capture_values = [self._lower_expr(expr, env, indent=indent) for expr in stmt.captures]
+        lines: list[str] = []
+        capture_values = [
+            self._lower_expr(expr, env, indent=indent, into=lines)
+            for expr in stmt.captures
+        ]
         capture_names = ", ".join(value.name for value in capture_values)
         block_args = ", ".join(
             f"{binding.ssa_name}: {self._render_type(binding.type)}"
@@ -289,10 +389,23 @@ class _AuthoringRenderer:
             for binding in stmt.block_arguments
         }
 
-        lines = [self._indent(indent) + f"pto.strict_vecscope({capture_names}) {{"]
+        lines.append(self._indent(indent) + f"pto.strict_vecscope({capture_names}) {{")
         lines.append(self._indent(indent) + f"^bb0({block_args}):")
         lines.extend(self._render_block(stmt.body, scope_env, indent=indent + 2))
         lines.append(self._indent(indent) + f"}} : ({function_type}) -> ()")
+        return lines
+
+    def _render_vecscope(
+        self,
+        stmt: SemanticVecscopeStmt,
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+    ) -> list[str]:
+        scope_env = dict(env)
+        lines = [self._indent(indent) + "pto.vecscope {"]
+        lines.extend(self._render_block(stmt.body, scope_env, indent=indent + 2))
+        lines.append(self._indent(indent) + "}")
         return lines
 
     def _render_for(
@@ -302,9 +415,10 @@ class _AuthoringRenderer:
         *,
         indent: int,
     ) -> list[str]:
-        lower_bound = self._lower_expr(stmt.lower_bound, env, indent=indent)
-        upper_bound = self._lower_expr(stmt.upper_bound, env, indent=indent)
-        step = self._lower_expr(stmt.step, env, indent=indent)
+        lines: list[str] = []
+        lower_bound = self._lower_expr(stmt.lower_bound, env, indent=indent, into=lines)
+        upper_bound = self._lower_expr(stmt.upper_bound, env, indent=indent, into=lines)
+        step = self._lower_expr(stmt.step, env, indent=indent, into=lines)
 
         body_env = dict(env)
         body_env[stmt.induction_variable.name] = _RenderedValue(
@@ -313,11 +427,11 @@ class _AuthoringRenderer:
         )
 
         if not stmt.loop_carried:
-            lines = [
+            lines.append(
                 self._indent(indent)
                 + f"scf.for {stmt.induction_variable.ssa_name} = {lower_bound.name} "
                 f"to {upper_bound.name} step {step.name} {{"
-            ]
+            )
             lines.extend(self._render_block(stmt.body, body_env, indent=indent + 2))
             lines.append(self._indent(indent) + "}")
             return lines
@@ -336,13 +450,13 @@ class _AuthoringRenderer:
             type=carried_binding.type,
         )
 
-        lines = [
+        lines.append(
             self._indent(indent)
             + f"{carried_binding.ssa_name}:1 = scf.for {stmt.induction_variable.ssa_name} = "
             f"{lower_bound.name} to {upper_bound.name} step {step.name} "
             f"iter_args({iter_arg_name} = {initial_value.name}) -> "
             f"({self._render_type(carried_binding.type)}) {{"
-        ]
+        )
         lines.extend(self._render_block(stmt.body, body_env, indent=indent + 2))
         yielded_value = body_env[carried_binding.name]
         lines.append(
@@ -422,7 +536,7 @@ class _AuthoringRenderer:
         indent: int,
         into: list[str],
     ) -> _RenderedValue:
-        value = self._lower_expr(expr, env, indent=indent)
+        value = self._lower_expr(expr, env, indent=indent, into=into)
         if isinstance(value.type, SemanticScalarType) and value.type.dtype.name == "i1":
             return value
 
@@ -472,21 +586,18 @@ class _AuthoringRenderer:
                 type=expr.type,
             )
         if isinstance(expr, SemanticSubscriptAccess):
-            if desired_name is not None and into is not None:
-                value = self._extract_static_subscript_value(expr, env)
-                into.append(
-                    self._indent(indent)
-                    + f"{desired_name} = arith.constant {self._format_constant(value, expr.type)} : "
-                    f"{self._render_type(expr.type)}"
-                )
-                return _RenderedValue(name=desired_name, type=expr.type)
-            constant_name = self._lower_static_subscript(expr, env)
-            return _RenderedValue(name=constant_name, type=expr.type)
+            return self._lower_subscript_access(
+                expr,
+                env,
+                indent=indent,
+                desired_name=desired_name,
+                into=into,
+            )
         if isinstance(expr, SemanticBinaryExpr):
-            lhs = self._lower_expr(expr.lhs, env, indent=indent)
-            rhs = self._lower_expr(expr.rhs, env, indent=indent)
             if into is None:
                 into = []
+            lhs = self._lower_expr(expr.lhs, env, indent=indent, into=into)
+            rhs = self._lower_expr(expr.rhs, env, indent=indent, into=into)
             result_name = desired_name or self._new_temp()
             into.append(
                 self._indent(indent)
@@ -515,13 +626,15 @@ class _AuthoringRenderer:
     ) -> _RenderedValue:
         if expr.namespace != "pto":
             raise NotImplementedError(f"unsupported call namespace {expr.namespace!r}")
+        if isinstance(expr.type, SemanticTupleType):
+            raise NotImplementedError("multi-result call values must be assigned directly in TileLang DSL v1")
         if into is None:
             into = []
         result_name = desired_name or self._new_temp()
 
         if expr.name == "make_mask":
             dtype_expr, pattern_expr = expr.args
-            if not isinstance(dtype_expr, SemanticSymbolExpr):
+            if not self._is_dtype_meta_expr(dtype_expr):
                 raise NotImplementedError("make_mask dtype lowering expects a dtype symbol")
             if not isinstance(pattern_expr, SemanticSymbolExpr) or not isinstance(pattern_expr.value, MaskPattern):
                 raise NotImplementedError("make_mask pattern lowering expects a MaskPattern symbol")
@@ -533,8 +646,8 @@ class _AuthoringRenderer:
             return _RenderedValue(name=result_name, type=expr.type)
 
         if expr.name == "vlds":
-            source = self._lower_expr(expr.args[0], env, indent=indent)
-            offset = self._lower_expr(expr.args[1], env, indent=indent)
+            source = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+            offset = self._lower_expr(expr.args[1], env, indent=indent, into=into)
             into.append(
                 self._indent(indent)
                 + f"{result_name} = pto.vlds {source.name}[{offset.name}] : "
@@ -543,8 +656,8 @@ class _AuthoringRenderer:
             return _RenderedValue(name=result_name, type=expr.type)
 
         if expr.name in {"vabs", "vrelu", "vexp", "vnot"}:
-            value = self._lower_expr(expr.args[0], env, indent=indent)
-            mask = self._lower_expr(expr.args[1], env, indent=indent)
+            value = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+            mask = self._lower_expr(expr.args[1], env, indent=indent, into=into)
             into.append(
                 self._indent(indent)
                 + f"{result_name} = pto.{expr.name} {value.name}, {mask.name} : "
@@ -553,9 +666,9 @@ class _AuthoringRenderer:
             return _RenderedValue(name=result_name, type=expr.type)
 
         if expr.name in {"vadd", "vsub", "vmul", "vdiv", "vmax", "vmin", "vand", "vor", "vxor"}:
-            lhs = self._lower_expr(expr.args[0], env, indent=indent)
-            rhs = self._lower_expr(expr.args[1], env, indent=indent)
-            mask = self._lower_expr(expr.args[2], env, indent=indent)
+            lhs = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+            rhs = self._lower_expr(expr.args[1], env, indent=indent, into=into)
+            mask = self._lower_expr(expr.args[2], env, indent=indent, into=into)
             into.append(
                 self._indent(indent)
                 + f"{result_name} = pto.{expr.name} {lhs.name}, {rhs.name}, {mask.name} : "
@@ -565,9 +678,9 @@ class _AuthoringRenderer:
             return _RenderedValue(name=result_name, type=expr.type)
 
         if expr.name in {"vadds", "vsubs", "vmuls", "vdivs", "vmaxs", "vmins"}:
-            value = self._lower_expr(expr.args[0], env, indent=indent)
-            scalar = self._lower_expr(expr.args[1], env, indent=indent)
-            mask = self._lower_expr(expr.args[2], env, indent=indent)
+            value = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+            scalar = self._lower_expr(expr.args[1], env, indent=indent, into=into)
+            mask = self._lower_expr(expr.args[2], env, indent=indent, into=into)
             into.append(
                 self._indent(indent)
                 + f"{result_name} = pto.{expr.name} {value.name}, {scalar.name}, {mask.name} : "
@@ -578,19 +691,74 @@ class _AuthoringRenderer:
 
         raise NotImplementedError(f"unsupported pto call `{expr.name}` in lowering")
 
-    def _lower_static_subscript(
+    def _lower_remaining_to_i32(
         self,
-        expr: SemanticSubscriptAccess,
+        expr: SemanticExpr,
         env: dict[str, _RenderedValue],
-    ) -> str:
-        value = self._extract_static_subscript_value(expr, env)
-        return self._materialize_constant(value, expr.type)
+        *,
+        indent: int,
+        into: list[str],
+    ) -> _RenderedValue:
+        value = self._lower_expr(expr, env, indent=indent, into=into)
+        if isinstance(value.type, SemanticScalarType) and value.type.dtype.name == "i32":
+            return value
+        if isinstance(value.type, SemanticIndexType):
+            cast_name = self._new_temp()
+            into.append(
+                self._indent(indent)
+                + f"{cast_name} = arith.index_cast {value.name} : index to i32"
+            )
+            return _RenderedValue(name=cast_name, type=_I32_TYPE)
+        raise NotImplementedError("tail make_mask lowering expects an i32 or index remaining operand")
 
-    def _extract_static_subscript_value(
+    def _mask_suffix(self, ty: SemanticType) -> str:
+        if not isinstance(ty, SemanticMaskType):
+            raise NotImplementedError("tail make_mask lowering expects a mask result type")
+        return ty.granularity
+
+    def _is_dtype_meta_expr(self, expr: SemanticExpr) -> bool:
+        if isinstance(expr, SemanticSymbolExpr):
+            return isinstance(expr.value, ScalarType) and expr.type.kind == "dtype"
+        if isinstance(expr, SemanticBindingRef):
+            return (
+                isinstance(expr.type, SemanticMetaType)
+                and expr.type.kind == "dtype"
+                and isinstance(expr.binding.value, ScalarType)
+            )
+        return False
+
+    def _lower_subscript_access(
         self,
         expr: SemanticSubscriptAccess,
         env: dict[str, _RenderedValue],
-    ) -> int:
+        *,
+        indent: int,
+        desired_name: str | None,
+        into: list[str] | None,
+    ) -> _RenderedValue:
+        value = self._extract_shape_subscript_value(expr, env)
+        if isinstance(value, _RenderedValue):
+            return value
+        if desired_name is not None and into is not None:
+            into.append(
+                self._indent(indent)
+                + f"{desired_name} = arith.constant {self._format_constant(value, expr.type)} : "
+                f"{self._render_type(expr.type)}"
+            )
+            return _RenderedValue(name=desired_name, type=expr.type)
+        return _RenderedValue(
+            name=self._materialize_constant(value, expr.type),
+            type=expr.type,
+        )
+
+    def _tensor_shape_binding_name(self, tensor_name: str, axis: int) -> str:
+        return f"__shape_{tensor_name}_{axis}"
+
+    def _extract_shape_subscript_value(
+        self,
+        expr: SemanticSubscriptAccess,
+        env: dict[str, _RenderedValue],
+    ) -> int | _RenderedValue:
         if not isinstance(expr.base, SemanticAttributeAccess):
             raise NotImplementedError("only shape indexing is supported in TileLang DSL v1 lowering")
         if expr.base.attr != "shape":
@@ -611,9 +779,13 @@ class _AuthoringRenderer:
             return base_type.shape[index]
 
         if isinstance(base_type, SemanticTensorViewType):
-            raise NotImplementedError(
-                "dynamic TensorView shape materialization is not implemented in TileLang DSL v1 lowering yet"
-            )
+            hidden_name = self._tensor_shape_binding_name(base_binding.name, index)
+            hidden_value = env.get(hidden_name)
+            if hidden_value is None:
+                raise NotImplementedError(
+                    f"missing TensorView shape binding for '{base_binding.name}.shape[{index}]'"
+                )
+            return hidden_value
 
         raise NotImplementedError("shape indexing expects a Tile or TensorView operand")
 

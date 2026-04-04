@@ -111,6 +111,23 @@ def TypeVar(name: str) -> TypeVariable:
     return TypeVariable(name)
 
 
+def get_lanes(dtype: ScalarType) -> int:
+    if not isinstance(dtype, ScalarType):
+        raise TypeError("get_lanes expects a TileLang scalar dtype")
+    byte_widths = {
+        "i8": 1,
+        "i16": 2,
+        "i32": 4,
+        "f16": 2,
+        "bf16": 2,
+        "f32": 4,
+    }
+    width = byte_widths.get(dtype.name)
+    if width is None:
+        raise TypeError(f"dtype `{dtype.name}` is not supported by get_lanes")
+    return 256 // width
+
+
 __all__ = [
     "ScalarType",
     "WildcardType",
@@ -139,4 +156,5 @@ __all__ = [
     "AnyInt",
     "AnyType",
     "AnyMask",
+    "get_lanes",
 ]

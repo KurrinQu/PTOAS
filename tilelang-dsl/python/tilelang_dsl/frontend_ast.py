@@ -145,6 +145,7 @@ class FrontendKernelNode:
     op: str
     name: str
     verify_enabled: bool
+    advanced_enabled: bool
     dtype_signature: tuple[Any, ...]
     parameters: tuple[FrontendParameterNode, ...]
     tile_specializations: tuple[FrontendTileSpecializationNode, ...]
@@ -346,6 +347,7 @@ def build_frontend_kernel_node(descriptor: Any) -> FrontendKernelNode:
         op=descriptor.op,
         name=descriptor.name,
         verify_enabled=descriptor.verify_enabled,
+        advanced_enabled=descriptor.advanced_enabled,
         dtype_signature=descriptor.dtype_signature,
         parameters=parameters,
         tile_specializations=tile_specializations,
