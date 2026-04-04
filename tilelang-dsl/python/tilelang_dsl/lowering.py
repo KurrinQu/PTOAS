@@ -74,11 +74,17 @@ class _RenderedValue:
     type: SemanticType
 
 
+@dataclass(frozen=True)
+class _RenderedTextualType(SemanticType):
+    text: str
+
+
 class _AuthoringRenderer:
     def __init__(self, kernel: SemanticKernel):
         self.kernel = kernel
         self._constant_lines: list[str] = []
         self._constant_cache: dict[tuple[str, object], str] = {}
+        self._castptr_cache: dict[tuple[str, str], str] = {}
         self._temp_counter = 0
         self._loop_counter = 0
 
@@ -270,6 +276,8 @@ class _AuthoringRenderer:
         lines: list[str] = []
         src = self._lower_expr(stmt.src.base, env, indent=indent, into=lines)
         dst = self._lower_expr(stmt.dst, env, indent=indent, into=lines)
+        src_name, src_type = self._materialize_copy_buffer_ptr(src, indent=indent, into=lines)
+        dst_name, dst_type = self._materialize_copy_buffer_ptr(dst, indent=indent, into=lines)
         row_count, col_count = self._dma_transfer_extents(stmt.src, stmt.dst.type)
         element_bytes = self._dtype_byte_width(stmt.src.type.element_dtype)
         burst_bytes = col_count * element_bytes
@@ -286,9 +294,9 @@ class _AuthoringRenderer:
                 + f"pto.set_loop_size_outtoub {c1_i64}, {c1_i64} : i64, i64",
                 self._indent(indent)
                 + "pto.copy_gm_to_ubuf "
-                + f"{src.name}, {dst.name}, {c0_i64}, {n_burst}, {len_burst}, {c0_i64}, {c0_i64}, "
+                + f"{src_name}, {dst_name}, {c0_i64}, {n_burst}, {len_burst}, {c0_i64}, {c0_i64}, "
                 + f"{false_bit}, {c0_i64}, {len_burst}, {len_burst} : "
-                + f"{self._render_type(src.type)}, {self._render_type(dst.type)}, "
+                + f"{src_type}, {dst_type}, "
                 + "i64, i64, i64, i64, i64, i1, i64, i64, i64",
             ]
         )
@@ -304,6 +312,8 @@ class _AuthoringRenderer:
         lines: list[str] = []
         src = self._lower_expr(stmt.src, env, indent=indent, into=lines)
         dst = self._lower_expr(stmt.dst.base, env, indent=indent, into=lines)
+        src_name, src_type = self._materialize_copy_buffer_ptr(src, indent=indent, into=lines)
+        dst_name, dst_type = self._materialize_copy_buffer_ptr(dst, indent=indent, into=lines)
         row_count, col_count = self._dma_transfer_extents(stmt.dst, stmt.src.type)
         element_bytes = self._dtype_byte_width(stmt.dst.type.element_dtype)
         burst_bytes = col_count * element_bytes
@@ -319,8 +329,8 @@ class _AuthoringRenderer:
                 + f"pto.set_loop_size_ubtoout {c1_i64}, {c1_i64} : i64, i64",
                 self._indent(indent)
                 + "pto.copy_ubuf_to_gm "
-                + f"{src.name}, {dst.name}, {c0_i64}, {n_burst}, {len_burst}, {c0_i64}, "
-                + f"{len_burst}, {len_burst} : {self._render_type(src.type)}, {self._render_type(dst.type)}, "
+                + f"{src_name}, {dst_name}, {c0_i64}, {n_burst}, {len_burst}, {c0_i64}, "
+                + f"{len_burst}, {len_burst} : {src_type}, {dst_type}, "
                 + "i64, i64, i64, i64, i64, i64",
             ]
         )
@@ -336,15 +346,28 @@ class _AuthoringRenderer:
         lines: list[str] = []
         value = self._lower_expr(stmt.value, env, indent=indent, into=lines)
         destination = self._lower_expr(stmt.destination, env, indent=indent, into=lines)
-        offset = self._lower_expr(stmt.offset, env, indent=indent, into=lines)
+        rendered_indices = self._render_index_list(stmt.indices, env, indent=indent, into=lines)
         mask = self._lower_expr(stmt.mask, env, indent=indent, into=lines)
         lines.append(
             self._indent(indent)
             + "pto.vsts "
-            + f"{value.name}, {destination.name}[{offset.name}], {mask.name} : "
+            + f"{value.name}, {destination.name}[{rendered_indices}], {mask.name} : "
             + f"{self._render_type(value.type)}, {self._render_type(destination.type)}, {self._render_type(mask.type)}"
         )
         return lines
+
+    def _render_index_list(
+        self,
+        indices: tuple[SemanticExpr, ...],
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+        into: list[str],
+    ) -> str:
+        rendered = [
+            self._lower_expr(index, env, indent=indent, into=into).name for index in indices
+        ]
+        return ", ".join(rendered)
 
     def _tensor_slice_extents(self, expr: SemanticTensorSliceExpr) -> tuple[int, int]:
         if expr.type.rank != 2 or len(expr.type.extents) != 2:
@@ -371,22 +394,30 @@ class _AuthoringRenderer:
         indent: int,
     ) -> list[str]:
         lines: list[str] = []
-        capture_values = [
-            self._lower_expr(expr, env, indent=indent, into=lines)
-            for expr in stmt.captures
-        ]
+        capture_values = []
+        block_argument_values = []
+        for expr, binding in zip(stmt.captures, stmt.block_arguments):
+            capture = self._lower_expr(expr, env, indent=indent, into=lines)
+            capture, block_arg = self._materialize_strict_vecscope_capture(
+                capture,
+                binding,
+                indent=indent,
+                into=lines,
+            )
+            capture_values.append(capture)
+            block_argument_values.append(block_arg)
         capture_names = ", ".join(value.name for value in capture_values)
         block_args = ", ".join(
-            f"{binding.ssa_name}: {self._render_type(binding.type)}"
-            for binding in stmt.block_arguments
+            f"{binding.ssa_name}: {self._render_type(value.type)}"
+            for binding, value in zip(stmt.block_arguments, block_argument_values)
         )
         function_type = ", ".join(
-            self._render_type(binding.type) for binding in stmt.block_arguments
+            self._render_type(value.type) for value in block_argument_values
         )
 
         scope_env = {
-            binding.name: _RenderedValue(name=binding.ssa_name, type=binding.type)
-            for binding in stmt.block_arguments
+            binding.name: _RenderedValue(name=binding.ssa_name, type=value.type)
+            for binding, value in zip(stmt.block_arguments, block_argument_values)
         }
 
         lines.append(self._indent(indent) + f"pto.strict_vecscope({capture_names}) {{")
@@ -442,7 +473,12 @@ class _AuthoringRenderer:
             )
 
         carried_binding = stmt.loop_carried[0]
-        initial_value = env[carried_binding.name]
+        initial_value = self._coerce_rendered_value(
+            env[carried_binding.name],
+            carried_binding.type,
+            indent=indent,
+            into=lines,
+        )
         iter_arg_name = f"%{carried_binding.name}_iter_{self._loop_counter}"
         self._loop_counter += 1
         body_env[carried_binding.name] = _RenderedValue(
@@ -647,10 +683,10 @@ class _AuthoringRenderer:
 
         if expr.name == "vlds":
             source = self._lower_expr(expr.args[0], env, indent=indent, into=into)
-            offset = self._lower_expr(expr.args[1], env, indent=indent, into=into)
+            rendered_indices = self._render_index_list(expr.args[1:], env, indent=indent, into=into)
             into.append(
                 self._indent(indent)
-                + f"{result_name} = pto.vlds {source.name}[{offset.name}] : "
+                + f"{result_name} = pto.vlds {source.name}[{rendered_indices}] : "
                 + f"{self._render_type(source.type)} -> {self._render_type(expr.type)}"
             )
             return _RenderedValue(name=result_name, type=expr.type)
@@ -710,6 +746,74 @@ class _AuthoringRenderer:
             )
             return _RenderedValue(name=cast_name, type=_I32_TYPE)
         raise NotImplementedError("tail make_mask lowering expects an i32 or index remaining operand")
+
+    def _materialize_copy_buffer_ptr(
+        self,
+        value: _RenderedValue,
+        *,
+        indent: int,
+        into: list[str],
+    ) -> tuple[str, str]:
+        ptr_type = self._render_copy_buffer_type(value.type)
+        cache_key = (value.name, ptr_type)
+        existing = self._castptr_cache.get(cache_key)
+        if existing is not None:
+            return existing, ptr_type
+
+        if self._is_memref_like_type(value.type):
+            cast_name = self._new_temp()
+            into.append(
+                self._indent(indent)
+                + f"{cast_name} = pto.castptr {value.name} : {self._render_type(value.type)} -> {ptr_type}"
+            )
+            self._castptr_cache[cache_key] = cast_name
+            return cast_name, ptr_type
+
+        return value.name, ptr_type
+
+    def _coerce_rendered_value(
+        self,
+        value: _RenderedValue,
+        target_type: SemanticType,
+        *,
+        indent: int,
+        into: list[str],
+    ) -> _RenderedValue:
+        if type(value.type) is type(target_type) and value.type == target_type:
+            return value
+        if isinstance(value.type, SemanticIndexType) and isinstance(target_type, SemanticScalarType):
+            if target_type.dtype.name == "i32":
+                cast_name = self._new_temp()
+                into.append(
+                    self._indent(indent)
+                    + f"{cast_name} = arith.index_cast {value.name} : index to i32"
+                )
+                return _RenderedValue(name=cast_name, type=target_type)
+        raise NotImplementedError(
+            f"unsupported value coercion from {value.type!r} to {target_type!r} in TileLang DSL v1 lowering"
+        )
+
+    def _materialize_strict_vecscope_capture(
+        self,
+        capture: _RenderedValue,
+        binding: SemanticBinding,
+        *,
+        indent: int,
+        into: list[str],
+    ) -> tuple[_RenderedValue, _RenderedValue]:
+        if not self._is_memref_like_type(capture.type):
+            return capture, _RenderedValue(name=binding.ssa_name, type=binding.type)
+
+        ptr_name, ptr_type = self._materialize_copy_buffer_ptr(
+            capture,
+            indent=indent,
+            into=into,
+        )
+        rendered_ptr_type = _RenderedTextualType(ptr_type)
+        return (
+            _RenderedValue(name=ptr_name, type=rendered_ptr_type),
+            _RenderedValue(name=binding.ssa_name, type=rendered_ptr_type),
+        )
 
     def _mask_suffix(self, ty: SemanticType) -> str:
         if not isinstance(ty, SemanticMaskType):
@@ -826,7 +930,7 @@ class _AuthoringRenderer:
             return str(value)
         if isinstance(ty, SemanticScalarType):
             if ty.dtype.name == "i1" and isinstance(value, bool):
-                return "true" if value else "false"
+                return "1" if value else "0"
             return str(value)
         raise NotImplementedError(f"unsupported constant type {ty!r}")
 
@@ -843,20 +947,59 @@ class _AuthoringRenderer:
         raise NotImplementedError(f"unsupported binary op '{op}' for type {ty!r}")
 
     def _render_type(self, ty: SemanticType) -> str:
+        if isinstance(ty, _RenderedTextualType):
+            return ty.text
         if isinstance(ty, SemanticIndexType):
             return "index"
         if isinstance(ty, SemanticScalarType):
             return ty.dtype.name
         if isinstance(ty, SemanticTensorViewType):
-            return f"!pto.ptr<{ty.element_dtype.name}, gm>"
+            return self._render_memref_type(
+                element_dtype=ty.element_dtype.name,
+                shape=("?",) * ty.rank,
+                memory_space="gm",
+            )
         if isinstance(ty, SemanticTileType):
             memory_space = ty.memory_space or "ub"
-            return f"!pto.ptr<{ty.element_dtype.name}, {memory_space}>"
+            shape = ty.shape if ty.shape is not None else ("?",) * ty.rank
+            return self._render_memref_type(
+                element_dtype=ty.element_dtype.name,
+                shape=shape,
+                memory_space=memory_space,
+            )
         if isinstance(ty, SemanticMaskType):
             return f"!pto.mask<{ty.granularity}>"
         if isinstance(ty, SemanticVRegType):
             return f"!pto.vreg<{ty.lanes}x{ty.element_dtype.name}>"
         raise NotImplementedError(f"unsupported semantic type {ty!r}")
+
+    def _is_memref_like_type(self, ty: SemanticType) -> bool:
+        return isinstance(ty, (SemanticTensorViewType, SemanticTileType))
+
+    def _render_copy_buffer_type(self, ty: SemanticType) -> str:
+        if isinstance(ty, SemanticTensorViewType):
+            return f"!pto.ptr<{ty.element_dtype.name}, gm>"
+        if isinstance(ty, SemanticTileType):
+            memory_space = ty.memory_space or "ub"
+            return f"!pto.ptr<{ty.element_dtype.name}, {memory_space}>"
+        return self._render_type(ty)
+
+    def _render_memref_type(
+        self,
+        *,
+        element_dtype: str,
+        shape: tuple[int | str, ...],
+        memory_space: str,
+    ) -> str:
+        dims = "x".join(str(dim) for dim in shape)
+        return f"memref<{dims}x{element_dtype}, {self._render_memref_memory_space(memory_space)}>"
+
+    def _render_memref_memory_space(self, memory_space: str) -> str:
+        if memory_space == "gm":
+            return "#pto.address_space<gm>"
+        if memory_space == "ub":
+            return "#pto.address_space<vec>"
+        raise NotImplementedError(f"unsupported memref memory space '{memory_space}' in TileLang DSL v1 lowering")
 
     def _dtype_byte_width(self, dtype: ScalarType) -> int:
         widths = {

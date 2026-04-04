@@ -48,6 +48,9 @@ The current v1 lowering contract supports:
 
 Current lowering shape:
 - emits stable `func.func + arith/scf + pto.*` authoring-form VPTO modules
+- defaults to memref-first function/tile authoring when the target VPTO family supports memref operands
+- keeps `copy_*` family on typed `!pto.ptr`
+- lowers `pto.strict_vecscope` buffer captures through ptr-form region ABI so the current emission-boundary ptr rewrite stays legal
 - requires explicit `pto.strict_vecscope`
 - rejects support-matrix-external surface in the frontend
 

@@ -942,7 +942,7 @@ private:
         return failure();
       }
       llvm::Value *offsetBytes =
-          convertElementOffsetToBytes(rawOperands[2],
+          convertElementOffsetToBytes(rawOperands[3],
                                       cast<pto::VRegType>(vsts.getValue().getType())
                                           .getElementType());
       auto distImm = parseStoreDistImmediate(
@@ -956,7 +956,7 @@ private:
       appendArg(offsetBytes);
       appendArg(llvm::ConstantInt::get(getIntegerType(32), *distImm));
       appendArg(llvm::ConstantInt::get(getIntegerType(32), 0));
-      appendArg(rawOperands[3]);
+      appendArg(rawOperands[2]);
     } else if (auto vstsPost = dyn_cast<pto::VstsPostOp>(op)) {
       if (rawOperands.size() != 4) {
         diagOS << "VPTO emission failed: expected four operands for vsts_post\n";

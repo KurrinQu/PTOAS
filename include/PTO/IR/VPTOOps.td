@@ -143,17 +143,20 @@ def PTO_VldsOp : PTO_Op<"vlds", [
   ]> {
   let arguments = (ins
     PTO_BufferLikeType:$source,
-    Index:$offset,
+    Variadic<Index>:$indices,
     OptionalAttr<StrAttr>:$dist
   );
 
   let results = (outs PTO_VectorType:$result);
 
   let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    $source `[` $offset `]` attr-dict `:` type($source) `->` type($result)
-  }];
+  let hasCustomAssemblyFormat = 1;
+  let builders = [
+    OpBuilder<(ins "Type":$result, "Value":$source, "Value":$offset,
+                   CArg<"::mlir::StringAttr", "{}">:$dist), [{
+      build($_builder, $_state, result, source, ValueRange{offset}, dist);
+    }]>
+  ];
 }
 
 def PTO_VldsPostOp : PTO_Op<"vlds_post", [
@@ -905,18 +908,38 @@ def PTO_VstsOp : PTO_Op<"vsts", [
   let arguments = (ins
     PTO_VectorType:$value,
     PTO_BufferLikeType:$destination,
-    Index:$offset,
-    OptionalAttr<StrAttr>:$dist,
-    PTO_MaskTypeConstraint:$mask
+    PTO_MaskTypeConstraint:$mask,
+    Variadic<Index>:$indices,
+    OptionalAttr<StrAttr>:$dist
   );
 
   let results = (outs);
 
   let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    $value `,` $destination `[` $offset `]` `,` $mask attr-dict `:` type($value) `,` type($destination) `,` type($mask)
-  }];
+  let hasCustomAssemblyFormat = 1;
+  let builders = [
+    OpBuilder<(ins "Value":$value, "Value":$destination, "Value":$offset,
+                   "Value":$mask), [{
+      build($_builder, $_state, value, destination, ValueRange{offset}, ::mlir::StringAttr{}, mask);
+    }]>,
+    OpBuilder<(ins "Value":$value, "Value":$destination, "Value":$offset,
+                   "::mlir::StringAttr":$dist, "Value":$mask), [{
+      build($_builder, $_state, value, destination, ValueRange{offset}, dist, mask);
+    }]>,
+    OpBuilder<(ins "Value":$value, "Value":$destination, "ValueRange":$indices,
+                   "Value":$mask), [{
+      build($_builder, $_state, value, destination, indices, ::mlir::StringAttr{}, mask);
+    }]>,
+    OpBuilder<(ins "Value":$value, "Value":$destination, "ValueRange":$indices,
+                   "::mlir::StringAttr":$dist, "Value":$mask), [{
+      $_state.addOperands(value);
+      $_state.addOperands(destination);
+      $_state.addOperands(mask);
+      $_state.addOperands(indices);
+      if (dist)
+        $_state.addAttribute("dist", dist);
+    }]>
+  ];
 }
 
 def PTO_VstsPostOp : PTO_Op<"vsts_post", [

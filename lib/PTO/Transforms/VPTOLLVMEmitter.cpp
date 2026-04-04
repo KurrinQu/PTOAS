@@ -1851,7 +1851,7 @@ static LogicalResult rewriteVPTOOp(Operation *op, ModuleOp module,
   } else if (auto vsts = dyn_cast<pto::VstsOp>(op)) {
     Type elementType = getElementTypeFromVectorLike(vsts.getValue().getType());
     auto offsetBytes = convertElementOffsetToBytes(
-        op, op->getOperand(2), elementType);
+        op, op->getOperand(3), elementType);
     auto basePtr = requirePointerABIAddress(op, op->getOperand(1), diagOS);
     auto dist = parseStoreDistImmediate(vsts.getValue().getType(),
                                         vsts.getDist().value_or(""));
@@ -1865,7 +1865,7 @@ static LogicalResult rewriteVPTOOp(Operation *op, ModuleOp module,
     callArgs.push_back(*offsetBytes);
     callArgs.push_back(getI32Constant(builder, loc, *dist));
     callArgs.push_back(getI32Constant(builder, loc, 0));
-    callArgs.push_back(op->getOperand(3));
+    callArgs.push_back(op->getOperand(2));
   } else if (auto vstsPost = dyn_cast<pto::VstsPostOp>(op)) {
     Type elementType = getElementTypeFromVectorLike(vstsPost.getValue().getType());
     auto offsetBytes = convertElementOffsetToBytes(op, vstsPost.getOffset(), elementType);

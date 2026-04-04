@@ -24,6 +24,71 @@
 using namespace mlir;
 using namespace mlir::pto;
 
+namespace {
+
+static ParseResult parseBracketedIndices(OpAsmParser &parser,
+                                        SmallVectorImpl<OpAsmParser::UnresolvedOperand> &indices) {
+  if (parser.parseLSquare())
+    return failure();
+  do {
+    OpAsmParser::UnresolvedOperand index;
+    if (parser.parseOperand(index))
+      return failure();
+    indices.push_back(index);
+  } while (succeeded(parser.parseOptionalComma()));
+  if (indices.empty())
+    return parser.emitError(parser.getCurrentLocation(),
+                            "expected at least one index operand");
+  return parser.parseRSquare();
+}
+
+static void printBracketedIndices(OpAsmPrinter &printer, OperandRange indices) {
+  printer << "[";
+  printer.printOperands(indices);
+  printer << "]";
+}
+
+static LogicalResult verifyBufferLikeIndexArity(Operation *op, Type bufferType,
+                                                ValueRange indices,
+                                                StringRef bufferRole) {
+  if (indices.empty())
+    return op->emitOpError() << "requires at least one index for "
+                             << bufferRole;
+
+  for (Value index : indices) {
+    if (!index.getType().isIndex())
+      return op->emitOpError() << "requires index-typed operands for "
+                               << bufferRole;
+  }
+
+  if (isa<pto::PtrType>(bufferType)) {
+    if (indices.size() != 1)
+      return op->emitOpError()
+             << "requires exactly one linearized index when " << bufferRole
+             << " is !pto.ptr";
+    return success();
+  }
+
+  auto memrefType = dyn_cast<BaseMemRefType>(bufferType);
+  if (!memrefType)
+    return op->emitOpError() << "requires " << bufferRole
+                             << " to be memref or !pto.ptr";
+
+  if (indices.size() == 1)
+    return success();
+
+  if (indices.size() != static_cast<size_t>(memrefType.getRank()))
+    return op->emitOpError()
+           << "requires either one linearized index or one index per memref "
+              "dimension for "
+           << bufferRole << "; got " << indices.size() << " indices for rank "
+           << memrefType.getRank();
+
+  return success();
+}
+
+} // namespace
+
 static std::string formatVRegType(int64_t elementCount, Type elementType) {
   std::string storage;
   llvm::raw_string_ostream os(storage);
@@ -577,8 +642,40 @@ void VldsOp::getEffects(
   effects.emplace_back(MemoryEffects::Read::get(), &getSourceMutable());
 }
 
+ParseResult VldsOp::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand source;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> indices;
+  Type sourceType;
+  SmallVector<Type, 1> resultTypes;
+
+  if (parser.parseOperand(source) || parseBracketedIndices(parser, indices) ||
+      parser.parseOptionalAttrDict(result.attributes) ||
+      parser.parseColonType(sourceType) ||
+      parser.parseArrowTypeList(resultTypes))
+    return failure();
+
+  if (resultTypes.size() != 1)
+    return parser.emitError(parser.getCurrentLocation(),
+                            "expected exactly one result type");
+  result.addTypes(resultTypes);
+
+  if (parser.resolveOperand(source, sourceType, result.operands) ||
+      parser.resolveOperands(indices, parser.getBuilder().getIndexType(),
+                             result.operands))
+    return failure();
+
+  return success();
+}
+
+void VldsOp::print(OpAsmPrinter &printer) {
+  printer << " " << getSource();
+  printBracketedIndices(printer, getIndices());
+  printer.printOptionalAttrDict((*this)->getAttrs());
+  printer << " : " << getSource().getType() << " -> " << getResult().getType();
+}
+
 template <typename LoadOp>
-static LogicalResult verifyVldsCommon(LoadOp op) {
+static LogicalResult verifyVldsCommon(LoadOp op, ValueRange indices) {
   if (!isBufferLike(op.getSource().getType()))
     return op.emitOpError("requires a buffer-like source (memref or !pto.ptr)");
 
@@ -588,6 +685,11 @@ static LogicalResult verifyVldsCommon(LoadOp op) {
   MemoryRole sourceRole = classifyMemoryRole(op.getSource().getType());
   if (sourceRole == MemoryRole::GM)
     return op.emitOpError("requires a UB-backed source");
+
+  if (failed(verifyBufferLikeIndexArity(op.getOperation(),
+                                        op.getSource().getType(), indices,
+                                        "source")))
+    return failure();
 
   if (op.getDistAttr()) {
     StringRef dist = *op.getDist();
@@ -601,7 +703,7 @@ static LogicalResult verifyVldsCommon(LoadOp op) {
 }
 
 LogicalResult VldsOp::verify() {
-  if (failed(verifyVldsCommon(*this)))
+  if (failed(verifyVldsCommon(*this, getIndices())))
     return failure();
   if (std::optional<StringRef> mode = getOptionalPostModeAttr(getOperation());
       mode && !isSupportedPostMode(*mode))
@@ -615,7 +717,7 @@ void VldsPostOp::getEffects(
 }
 
 LogicalResult VldsPostOp::verify() {
-  if (failed(verifyVldsCommon(*this)))
+  if (failed(verifyVldsCommon(*this, ValueRange{getOffset()})))
     return failure();
   if (!isPointerBuffer(getSource().getType()))
     return emitOpError("requires a pointer-like source");
@@ -1273,8 +1375,41 @@ void VstsOp::getEffects(
   effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
 }
 
+ParseResult VstsOp::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand value, destination, mask;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> indices;
+  Type valueType, destinationType, maskType;
+
+  if (parser.parseOperand(value) || parser.parseComma() ||
+      parser.parseOperand(destination) ||
+      parseBracketedIndices(parser, indices) || parser.parseComma() ||
+      parser.parseOperand(mask) || parser.parseOptionalAttrDict(result.attributes) ||
+      parser.parseColonType(valueType) || parser.parseComma() ||
+      parser.parseType(destinationType) || parser.parseComma() ||
+      parser.parseType(maskType))
+    return failure();
+
+  if (parser.resolveOperand(value, valueType, result.operands) ||
+      parser.resolveOperand(destination, destinationType, result.operands) ||
+      parser.resolveOperand(mask, maskType, result.operands) ||
+      parser.resolveOperands(indices, parser.getBuilder().getIndexType(),
+                             result.operands))
+    return failure();
+  return success();
+}
+
+void VstsOp::print(OpAsmPrinter &printer) {
+  printer << " " << getValue() << ", " << getDestination();
+  printBracketedIndices(printer, getIndices());
+  printer << ", " << getMask();
+  printer.printOptionalAttrDict((*this)->getAttrs(),
+                                /*elidedAttrs=*/{"operandSegmentSizes"});
+  printer << " : " << getValue().getType() << ", " << getDestination().getType()
+          << ", " << getMask().getType();
+}
+
 template <typename StoreOp>
-static LogicalResult verifyVstsCommon(StoreOp op) {
+static LogicalResult verifyVstsCommon(StoreOp op, ValueRange indices) {
   if (failed(verifyVRegTypeLike(op, op.getValue().getType(), "value type")))
     return failure();
   if (failed(verifyMaskTypeLike(op, op.getMask().getType(), "mask type")))
@@ -1288,11 +1423,16 @@ static LogicalResult verifyVstsCommon(StoreOp op) {
   if (destinationRole == MemoryRole::GM)
     return op.emitOpError("requires a UB-backed destination");
 
+  if (failed(verifyBufferLikeIndexArity(op.getOperation(),
+                                        op.getDestination().getType(), indices,
+                                        "destination")))
+    return failure();
+
   return success();
 }
 
 LogicalResult VstsOp::verify() {
-  if (failed(verifyVstsCommon(*this)))
+  if (failed(verifyVstsCommon(*this, getIndices())))
     return failure();
   if (std::optional<StringRef> mode = getOptionalPostModeAttr(getOperation());
       mode && !isSupportedPostMode(*mode))
@@ -1307,7 +1447,7 @@ void VstsPostOp::getEffects(
 }
 
 LogicalResult VstsPostOp::verify() {
-  if (failed(verifyVstsCommon(*this)))
+  if (failed(verifyVstsCommon(*this, ValueRange{getOffset()})))
     return failure();
   if (!isPointerBuffer(getDestination().getType()))
     return emitOpError("requires a pointer-like destination");

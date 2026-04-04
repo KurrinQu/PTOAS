@@ -247,7 +247,7 @@ class SemanticDmaStoreStmt(SemanticStmt):
 class SemanticVectorStoreStmt(SemanticStmt):
     value: SemanticExpr
     destination: SemanticExpr
-    offset: SemanticExpr
+    indices: tuple[SemanticExpr, ...]
     mask: SemanticExpr
 
 
@@ -767,7 +767,7 @@ class _SemanticAnalyzer:
     ) -> tuple[SemanticStmt, dict[str, SemanticBinding]]:
         if len(expr.args) == 3:
             value = self._analyze_expr(expr.args[0], env, allow_outer_lookup=allow_outer_lookup)
-            destination, offset = self._analyze_tile_vector_access(
+            destination, indices = self._analyze_tile_vector_access(
                 expr.args[1],
                 env,
                 allow_outer_lookup=allow_outer_lookup,
@@ -782,16 +782,18 @@ class _SemanticAnalyzer:
             if len(args) != 4:
                 raise TypeError("pto.vsts expects 3 or 4 positional arguments in TileLang DSL v1")
             value, destination, offset, mask = args
+            indices = (offset,)
         self._require_vreg_expr(value, "pto.vsts value")
         self._require_tile_expr(destination, "pto.vsts destination")
-        self._require_index_typed_expr(offset)
+        for index in indices:
+            self._require_index_typed_expr(index)
         self._require_mask_for_vreg(mask, value.type, "pto.vsts")
         self._require_matching_vector_pointer(value.type, destination.type, "pto.vsts")
         return (
             SemanticVectorStoreStmt(
                 value=value,
                 destination=destination,
-                offset=offset,
+                indices=indices,
                 mask=mask,
             ),
             dict(env),
@@ -1148,13 +1150,13 @@ class _SemanticAnalyzer:
             return SemanticBinaryExpr(lhs=lhs, op=expr.op, rhs=rhs, type=result_type)
         if isinstance(expr, FrontendCallExpr):
             if expr.namespace == "pto" and expr.name == "vlds" and len(expr.args) == 1:
-                base, offset = self._analyze_tile_vector_access(
+                base, indices = self._analyze_tile_vector_access(
                     expr.args[0],
                     env,
                     allow_outer_lookup=allow_outer_lookup,
                     context="pto.vlds source",
                 )
-                return self._analyze_vlds((base, offset))
+                return self._analyze_vlds((base, *indices))
             args = tuple(
                 self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
                 for arg in expr.args
@@ -1280,7 +1282,7 @@ class _SemanticAnalyzer:
         *,
         allow_outer_lookup: bool,
         context: str,
-    ) -> tuple[SemanticExpr, SemanticExpr]:
+    ) -> tuple[SemanticExpr, tuple[SemanticExpr, ...]]:
         if not self.node.advanced_enabled:
             raise TypeError(unsupported_feature_message(f"{context} tile indexing sugar"))
         if not isinstance(expr, FrontendSubscriptExpr):
@@ -1289,16 +1291,16 @@ class _SemanticAnalyzer:
             )
         base = self._analyze_expr(expr.base, env, allow_outer_lookup=allow_outer_lookup)
         tile = self._require_tile_expr(base, context)
-        offset = self._tile_vector_offset_expr(
+        indices = self._tile_vector_indices(
             expr.index,
             tile.type,
             env,
             allow_outer_lookup=allow_outer_lookup,
             context=context,
         )
-        return base, offset
+        return base, indices
 
-    def _tile_vector_offset_expr(
+    def _tile_vector_indices(
         self,
         index_expr: FrontendExprNode,
         tile_type: SemanticTileType,
@@ -1306,7 +1308,7 @@ class _SemanticAnalyzer:
         *,
         allow_outer_lookup: bool,
         context: str,
-    ) -> SemanticExpr:
+    ) -> tuple[SemanticExpr, ...]:
         if tile_type.rank == 1:
             if not isinstance(index_expr, FrontendSliceExpr):
                 raise TypeError(f"{context} expects Tile[start:] syntax for rank-1 Tile values")
@@ -1315,10 +1317,10 @@ class _SemanticAnalyzer:
             if index_expr.step is not None:
                 raise TypeError(f"{context} does not support stepped Tile vector slices in TileLang DSL advanced mode")
             if index_expr.start is None:
-                return SemanticLiteralExpr(value=0, type=SemanticIndexType())
+                return (SemanticLiteralExpr(value=0, type=SemanticIndexType()),)
             start = self._analyze_expr(index_expr.start, env, allow_outer_lookup=allow_outer_lookup)
             self._require_index_typed_expr(start)
-            return start
+            return (start,)
 
         if tile_type.rank != 2 or tile_type.shape is None:
             raise TypeError(f"{context} currently only supports statically specialized rank-1 or rank-2 Tiles")
@@ -1340,12 +1342,7 @@ class _SemanticAnalyzer:
         else:
             col = self._analyze_expr(col_expr.start, env, allow_outer_lookup=allow_outer_lookup)
             self._require_index_typed_expr(col)
-
-        stride = SemanticLiteralExpr(value=tile_type.shape[1], type=SemanticIndexType())
-        row_offset = SemanticBinaryExpr(lhs=row, op="mul", rhs=stride, type=SemanticIndexType())
-        if isinstance(col, SemanticLiteralExpr) and col.value == 0:
-            return row_offset
-        return SemanticBinaryExpr(lhs=row_offset, op="add", rhs=col, type=SemanticIndexType())
+        return (row, col)
 
     def _tensor_slice_type(
         self,
@@ -1478,15 +1475,16 @@ class _SemanticAnalyzer:
         return SemanticLiteralExpr(value=self._vreg_type_for_dtype(dtype).lanes, type=SemanticIndexType())
 
     def _analyze_vlds(self, args: tuple[SemanticExpr, ...]) -> SemanticExpr:
-        if len(args) != 2:
-            raise TypeError("pto.vlds expects exactly 2 positional arguments in TileLang DSL v1")
-        source, offset = args
+        if len(args) < 2:
+            raise TypeError("pto.vlds expects at least 2 positional arguments in TileLang DSL v1")
+        source, *indices = args
         tile = self._require_tile_expr(source, "pto.vlds source")
-        self._require_index_typed_expr(offset)
+        for index in indices:
+            self._require_index_typed_expr(index)
         return SemanticCallExpr(
             namespace="pto",
             name="vlds",
-            args=args,
+            args=(source, *indices),
             type=self._vreg_type_for_dtype(tile.type.element_dtype),
         )
 

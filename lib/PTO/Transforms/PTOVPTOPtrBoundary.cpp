@@ -2,6 +2,7 @@
 #include "PTO/Transforms/VPTOLowering.h"
 #include "PTO/Transforms/Passes.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/PatternMatch.h"
@@ -112,6 +113,77 @@ static bool isSupportedVPTOBufferLikeBoundaryOp(Operation *op) {
              pto::VsstbOp, pto::VstaOp, pto::VstasOp, pto::VstarOp>(op);
 }
 
+static FailureOr<Value> linearizeMemRefIndices(PatternRewriter &rewriter,
+                                               Location loc, Value buffer,
+                                               ValueRange indices,
+                                               llvm::raw_ostream *diagOS,
+                                               StringRef opName) {
+  if (indices.empty()) {
+    if (diagOS)
+      *diagOS << "VPTO emission-boundary ptr rewrite failed: missing indices for "
+              << opName << "\n";
+    return failure();
+  }
+
+  if (indices.size() == 1)
+    return indices.front();
+
+  auto memrefType = dyn_cast<MemRefType>(buffer.getType());
+  if (!memrefType) {
+    if (diagOS) {
+      *diagOS << "VPTO emission-boundary ptr rewrite failed: " << opName
+              << " requires ranked memref source/destination for multi-index form, got "
+              << buffer.getType() << "\n";
+    }
+    return failure();
+  }
+
+  if (indices.size() != static_cast<size_t>(memrefType.getRank())) {
+    if (diagOS) {
+      *diagOS << "VPTO emission-boundary ptr rewrite failed: " << opName
+              << " got " << indices.size() << " indices for rank "
+              << memrefType.getRank() << " memref\n";
+    }
+    return failure();
+  }
+
+  SmallVector<int64_t> strides;
+  int64_t offset = ShapedType::kDynamic;
+  if (failed(getStridesAndOffset(memrefType, strides, offset))) {
+    if (diagOS) {
+      *diagOS << "VPTO emission-boundary ptr rewrite failed: " << opName
+              << " requires strided memref layout for multi-index form\n";
+    }
+    return failure();
+  }
+  if (offset == ShapedType::kDynamic) {
+    if (diagOS) {
+      *diagOS << "VPTO emission-boundary ptr rewrite failed: " << opName
+              << " does not support dynamic memref layout offsets\n";
+    }
+    return failure();
+  }
+
+  Value linearized;
+  for (auto [index, stride] : llvm::zip(indices, strides)) {
+    Value term = index;
+    if (stride != 1) {
+      Value strideValue = rewriter.create<arith::ConstantIndexOp>(loc, stride);
+      term = rewriter.create<arith::MulIOp>(loc, index, strideValue);
+    }
+    linearized = linearized
+                     ? rewriter.create<arith::AddIOp>(loc, linearized, term)
+                     : term;
+  }
+  if (offset != 0) {
+    Value offsetValue = rewriter.create<arith::ConstantIndexOp>(loc, offset);
+    linearized = linearized
+                     ? rewriter.create<arith::AddIOp>(loc, linearized, offsetValue)
+                     : offsetValue;
+  }
+  return linearized ? linearized : FailureOr<Value>(failure());
+}
+
 static LogicalResult canonicalizeBoundaryCastPtrOps(ModuleOp module,
                                                     llvm::raw_ostream *diagOS) {
   SmallVector<pto::CastPtrOp> castsToRewrite;
@@ -163,6 +235,65 @@ static LogicalResult canonicalizeSupportedVPTOBufferLikeOps(
 
   PatternRewriter rewriter(module.getContext());
   for (Operation *op : opsToRewrite) {
+    if (auto vlds = dyn_cast<pto::VldsOp>(op)) {
+      rewriter.setInsertionPoint(vlds);
+      Value source = vlds.getSource();
+      Type elementType = getVPTOBufferElementType(source);
+      Attribute memorySpace = getVPTOBufferMemorySpace(source);
+      if (!elementType || !memorySpace)
+        return failure();
+      Value ptrValue = pto::materializeBufferPointer(source, elementType,
+                                                     memorySpace, rewriter,
+                                                     vlds.getLoc());
+      if (!ptrValue)
+        return failure();
+      auto linearized = linearizeMemRefIndices(
+          rewriter, vlds.getLoc(), source, vlds.getIndices(), diagOS, "pto.vlds");
+      if (failed(linearized))
+        return failure();
+
+      bool changed = ptrValue != source || vlds.getIndices().size() != 1 ||
+                     *linearized != vlds.getIndices().front();
+      if (!changed)
+        continue;
+
+      auto newOp = rewriter.create<pto::VldsOp>(
+          vlds.getLoc(), vlds.getResult().getType(), ptrValue, *linearized,
+          vlds.getDistAttr());
+      rewriter.replaceOp(vlds, newOp.getResult());
+      continue;
+    }
+
+    if (auto vsts = dyn_cast<pto::VstsOp>(op)) {
+      rewriter.setInsertionPoint(vsts);
+      Value destination = vsts.getDestination();
+      Type elementType = getVPTOBufferElementType(destination);
+      Attribute memorySpace = getVPTOBufferMemorySpace(destination);
+      if (!elementType || !memorySpace)
+        return failure();
+      Value ptrValue = pto::materializeBufferPointer(destination, elementType,
+                                                     memorySpace, rewriter,
+                                                     vsts.getLoc());
+      if (!ptrValue)
+        return failure();
+      auto linearized = linearizeMemRefIndices(rewriter, vsts.getLoc(),
+                                               destination, vsts.getIndices(),
+                                               diagOS, "pto.vsts");
+      if (failed(linearized))
+        return failure();
+
+      bool changed = ptrValue != destination || vsts.getIndices().size() != 1 ||
+                     *linearized != vsts.getIndices().front();
+      if (!changed)
+        continue;
+
+      rewriter.create<pto::VstsOp>(vsts.getLoc(), vsts.getValue(), ptrValue,
+                                   *linearized, vsts.getDistAttr(),
+                                   vsts.getMask());
+      rewriter.eraseOp(vsts);
+      continue;
+    }
+
     rewriter.setInsertionPoint(op);
 
     SmallVector<Value> newOperands;
@@ -240,6 +371,12 @@ LogicalResult mlir::pto::convertVPTOEmissionBoundaryToPtr(
   // state remains in SSA. Body-level op canonicalization is added on top of
   // this entry rewrite in follow-up tasks.
   if (failed(eraseDeadVPTOMemRefScaffold(module)))
+    return failure();
+
+  if (failed(canonicalizeBoundaryCastPtrOps(module, diagOS)))
+    return failure();
+
+  if (failed(canonicalizeSupportedVPTOBufferLikeOps(module, diagOS)))
     return failure();
 
   bool sawFailure = false;
@@ -322,12 +459,6 @@ LogicalResult mlir::pto::convertVPTOEmissionBoundaryToPtr(
   }
 
   if (sawFailure)
-    return failure();
-
-  if (failed(canonicalizeBoundaryCastPtrOps(module, diagOS)))
-    return failure();
-
-  if (failed(canonicalizeSupportedVPTOBufferLikeOps(module, diagOS)))
     return failure();
 
   return eraseDeadVPTOMemRefScaffold(module);

@@ -521,8 +521,8 @@ static bool elideLoadStoreRoundTripsInLeafBody(
       }
 
       Value base = load.getSource();
-      Value offset = load.getOffset();
-      SmallVector<Value, 4> loadIndices{offset};
+      SmallVector<Value, 4> loadIndices(load.getIndices().begin(),
+                                        load.getIndices().end());
       int matchIndex =
           findTrackedStoreIndex(trackedStores, base, loadIndices, inferredMask);
       if (matchIndex >= 0) {
@@ -537,9 +537,9 @@ static bool elideLoadStoreRoundTripsInLeafBody(
 
     if (auto store = dyn_cast<pto::VstsOp>(op)) {
       Value base = store.getDestination();
-      Value offset = store.getOffset();
       Value mask = store.getMask();
-      SmallVector<Value, 4> storeIndices{offset};
+      SmallVector<Value, 4> storeIndices(store.getIndices().begin(),
+                                         store.getIndices().end());
       int matchIndex =
           findTrackedStoreIndex(trackedStores, base, storeIndices, mask);
       if (matchIndex >= 0) {
@@ -551,7 +551,8 @@ static bool elideLoadStoreRoundTripsInLeafBody(
       trackedStores.push_back(TrackedStore{
           store.getOperation(),
           base,
-          SmallVector<Value, 2>{offset},
+          SmallVector<Value, 2>(store.getIndices().begin(),
+                                store.getIndices().end()),
           mask,
           store.getValue(),
       });
