@@ -1,9 +1,11 @@
 import tempfile
 import unittest
+from unittest import mock
 from importlib import util
 from pathlib import Path
 
 import tilelang_dsl as pto
+import tilelang_dsl.kernel as kernel_impl
 from tilelang_dsl.frontend_ast import build_frontend_kernel_node
 from tilelang_dsl.lowering import AuthoringModule, lower_semantic_kernel
 from tilelang_dsl.semantic import (
@@ -21,6 +23,7 @@ from tilelang_dsl.semantic import (
     SemanticStrictVecscopeStmt,
     SemanticTensorViewType,
     SemanticTileType,
+    SemanticVecscopeStmt,
     SemanticVectorStoreStmt,
     SemanticWaitFlagStmt,
     analyze_frontend_kernel,
@@ -34,6 +37,7 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertTrue(hasattr(pto, "TensorView"))
         self.assertTrue(hasattr(pto, "Tile"))
         self.assertTrue(hasattr(pto, "TileSpecialization"))
+        self.assertTrue(hasattr(pto, "get_lanes"))
         self.assertTrue(hasattr(pto, "PAT"))
         self.assertTrue(hasattr(pto, "PIPE"))
         self.assertTrue(hasattr(pto, "EVENT"))
@@ -49,7 +53,9 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertEqual(kernel.op, "eltwise")
         self.assertEqual(kernel.name, "kernel")
         self.assertFalse(kernel.verify_enabled)
+        self.assertFalse(kernel.advanced_enabled)
         self.assertEqual(kernel.metadata["verify"], False)
+        self.assertEqual(kernel.metadata["advanced"], False)
         self.assertEqual(kernel.dtype_signature, (pto.f32, pto.f16, pto.i32))
         self.assertEqual(
             [(param.name, param.kind, param.dtype) for param in kernel.parameters],
@@ -80,13 +86,43 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("func.func @kernel(%arg0: !pto.ptr<f32, gm>, %arg1: !pto.ptr<f16, ub>) {", text)
         module = specialized.mlir_module()
         self.assertEqual(type(module).__name__, "MaterializedMLIRModule")
-        self.assertTrue(module.verify())
-        self.assertTrue(specialized.verify())
+        mocked_result = kernel_impl.VerificationResult(
+            status="passed",
+            available=True,
+            passed=True,
+            message="ok",
+            command=("ptoas",),
+            returncode=0,
+        )
+        with mock.patch("tilelang_dsl.kernel._run_ptoas_verifier", return_value=mocked_result):
+            self.assertTrue(module.verify())
+            self.assertTrue(specialized.verify())
+            self.assertEqual(module.verify().status, "passed")
+            self.assertEqual(specialized.verify().status, "passed")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             out = Path(tmpdir) / "kernel.mlir"
             specialized.emit(out)
             self.assertEqual(out.read_text(encoding="utf-8"), text)
+
+    def test_verify_reports_structured_unavailable_when_ptoas_is_missing(self) -> None:
+        @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f16)])
+        def kernel(inp: pto.TensorView, tile: pto.Tile):
+            return None
+
+        specialized = kernel.specialize(
+            tile=pto.TileSpecialization(
+                shape=(16, 32),
+                memory_space=pto.MemorySpace.UB,
+            )
+        )
+
+        result = specialized.verify(ptoas_bin="/definitely-missing/ptoas")
+        self.assertFalse(result)
+        self.assertEqual(result.status, "unavailable")
+        self.assertFalse(result.available)
+        self.assertFalse(result.passed)
+        self.assertIn("verifier unavailable", result.message)
 
     def test_descriptor_materialization_flows_through_pipeline(self) -> None:
         @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f16, pto.i32)])
@@ -218,6 +254,51 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             text,
         )
 
+    def test_dynamic_tensorview_shape_profile_supports_runtime_bound_and_slice(self) -> None:
+        @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f32)])
+        def kernel(inp: pto.TensorView, tile: pto.Tile):
+            rows = inp.shape[0]
+            pto.dma_load(inp[0:rows, 0:16], tile)
+            for lane in range(0, rows, 1):
+                current = lane
+            return None
+
+        specialized = kernel.specialize(
+            tile=pto.TileSpecialization(
+                shape=(16, 16),
+                memory_space=pto.MemorySpace.UB,
+            )
+        )
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        self.assertEqual(
+            [(param.name, param.kind) for param in semantic_kernel.parameters],
+            [("inp", "tensorview"), ("tile", "tile"), ("__shape_inp_0", "tensorview_shape")],
+        )
+
+        rows_assign = semantic_kernel.body[0]
+        self.assertIsInstance(rows_assign, SemanticAssignStmt)
+        self.assertIsInstance(rows_assign.targets[0].type, SemanticIndexType)
+
+        dma_stmt = semantic_kernel.body[1]
+        self.assertIsInstance(dma_stmt, SemanticDmaLoadStmt)
+        self.assertEqual(dma_stmt.src.type.extents, (None, 16))
+
+        loop_stmt = semantic_kernel.body[2]
+        self.assertIsInstance(loop_stmt, SemanticForStmt)
+
+        text = specialized.mlir_text()
+        self.assertIn(
+            "func.func @kernel(%arg0: !pto.ptr<f32, gm>, %arg1: !pto.ptr<f32, ub>, %arg2: index) {",
+            text,
+        )
+        self.assertIn(
+            "pto.copy_gm_to_ubuf %arg0, %arg1, %c0_i64, %c16_i64, %c64_i64, %c0_i64, %c0_i64, %false, %c0_i64, %c64_i64, %c64_i64",
+            text,
+        )
+        self.assertIn("scf.for %lane_", text)
+        self.assertIn("to %arg2 step %c1 {", text)
+
     def test_make_mask_vlds_vsts_and_vector_families_lower_inside_strict_vecscope(self) -> None:
         @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f32, pto.f32)])
         def kernel(inp: pto.TensorView, tile: pto.Tile, scale: pto.f32):
@@ -275,6 +356,253 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         )
         self.assertIn(
             "pto.vsts %activated_11, %dst_1[%lane_6], %mask_7 : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>",
+            text,
+        )
+
+    def test_tail_make_mask_lowers_to_typed_plt_and_updates_remaining(self) -> None:
+        @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f32, pto.i32)])
+        def kernel(inp: pto.TensorView, tile: pto.Tile, remaining: pto.i32):
+            pto.dma_load(inp[0:16, 0:16], tile)
+            with pto.strict_vecscope(tile, tile, remaining, 0, 64, 64) as (src, dst, rem_in, lb, ub, step):
+                mask, next_remaining = pto.make_mask(pto.f32, rem_in)
+                vec = pto.vlds(src, lb)
+                pto.vsts(vec, dst, lb, mask)
+            return None
+
+        specialized = kernel.specialize(
+            tile=pto.TileSpecialization(
+                shape=(16, 16),
+                memory_space=pto.MemorySpace.UB,
+            )
+        )
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        vecscope = semantic_kernel.body[1]
+        self.assertIsInstance(vecscope, SemanticStrictVecscopeStmt)
+        mask_assign = vecscope.body[0]
+        self.assertIsInstance(mask_assign, SemanticAssignStmt)
+        self.assertEqual(mask_assign.value.name, "make_mask")
+        self.assertEqual(len(mask_assign.targets), 2)
+        self.assertIsInstance(mask_assign.targets[0].type, SemanticMaskType)
+        self.assertIsInstance(mask_assign.targets[1].type, SemanticScalarType)
+        self.assertEqual(mask_assign.targets[1].type.dtype, pto.i32)
+
+        text = specialized.mlir_text()
+        self.assertRegex(
+            text,
+            r"%mask_\d+, %next_remaining_\d+ = pto\.plt_b32 %rem_in_\d+ : i32 -> !pto\.mask<b32>, i32",
+        )
+        self.assertIn(
+            "pto.vsts %vec_",
+            text,
+        )
+
+    def test_nested_index_arithmetic_lowers_before_vector_accesses(self) -> None:
+        @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f32, pto.f32, pto.f32, pto.f32, pto.f32)])
+        def kernel(
+            lhs_gm: pto.TensorView,
+            rhs_gm: pto.TensorView,
+            out_gm: pto.TensorView,
+            lhs_tile: pto.Tile,
+            rhs_tile: pto.Tile,
+            dst_tile: pto.Tile,
+        ):
+            rows = lhs_gm.shape[0]
+            cols = lhs_gm.shape[1]
+            row_stride = lhs_tile.shape[1]
+
+            pto.dma_load(lhs_gm[0:rows, 0:cols], lhs_tile)
+            pto.dma_load(rhs_gm[0:rows, 0:cols], rhs_tile)
+            with pto.strict_vecscope(
+                lhs_tile,
+                rhs_tile,
+                dst_tile,
+                rows,
+                cols,
+                row_stride,
+                0,
+                rows,
+                1,
+            ) as (lhs, rhs, dst, valid_rows, valid_cols, stride, row_lb, row_ub, row_step):
+                for row in range(row_lb, row_ub, row_step):
+                    for lane in range(0, valid_cols, 64):
+                        offset = row * stride + lane
+                        mask, next_remaining = pto.make_mask(pto.f32, valid_cols - lane)
+                        summed = pto.vadd(pto.vlds(lhs, offset), pto.vlds(rhs, offset), mask)
+                        pto.vsts(summed, dst, offset, mask)
+            pto.dma_store(dst_tile, out_gm[0:rows, 0:cols])
+            return None
+
+        specialized = kernel.specialize(
+            lhs_tile=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            rhs_tile=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            dst_tile=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertRegex(text, r"%tmp_\d+ = arith\.muli %row_\d+, %stride_\d+ : index")
+        self.assertRegex(text, r"%offset_\d+ = arith\.addi %tmp_\d+, %lane_\d+ : index")
+        self.assertRegex(text, r"%tmp_\d+ = arith\.subi %valid_cols_\d+, %lane_\d+ : index")
+        self.assertRegex(text, r"%tmp_\d+ = arith\.index_cast %tmp_\d+ : index to i32")
+        self.assertIn("pto.plt_b32", text)
+        self.assertIn("pto.vadd", text)
+
+    def test_advanced_mode_infers_vecscope_and_lowers_tile_vector_sugar(self) -> None:
+        @pto.vkernel(op="tadd", dtypes=[(pto.f32, pto.f32, pto.f32)], advanced=True)
+        def kernel(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
+            dtype = dst.element_type
+            rows, cols = dst.valid_shape
+            all_mask = pto.make_mask(dtype, pto.PAT.ALL)
+            for row in range(0, rows, 1):
+                for col in range(0, cols, pto.get_lanes(dtype)):
+                    lhs = pto.vlds(src0[row, col:])
+                    rhs = pto.vlds(src1[row, col:])
+                    summed = pto.vadd(lhs, rhs, all_mask)
+                    pto.vsts(summed, dst[row, col:], all_mask)
+            return None
+
+        self.assertTrue(kernel.advanced_enabled)
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            src0=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            src1=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        self.assertEqual(len(semantic_kernel.body), 2)
+        self.assertIsInstance(semantic_kernel.body[0], SemanticVecscopeStmt)
+        vecscope = semantic_kernel.body[0]
+        self.assertIsInstance(vecscope, SemanticVecscopeStmt)
+        outer_loop = next(stmt for stmt in vecscope.body if isinstance(stmt, SemanticForStmt))
+        self.assertIsInstance(outer_loop, SemanticForStmt)
+        inner_loop = outer_loop.body[0]
+        self.assertIsInstance(inner_loop, SemanticForStmt)
+        self.assertTrue(inner_loop.body)
+
+        text = specialized.mlir_text()
+        self.assertIn("// tilelang.advanced = True", text)
+        self.assertIn("pto.vecscope {", text)
+        self.assertNotIn("pto.strict_vecscope(", text)
+        self.assertRegex(text, r"pto\.vecscope \{\n(?:.|\n)*scf\.for %row_")
+        self.assertEqual(text.count("pto.vecscope {"), 1)
+        self.assertRegex(text, r"%tmp_\d+ = arith\.muli %row_\d+, %c64 : index")
+        self.assertRegex(text, r"%tmp_\d+ = arith\.addi %tmp_\d+, %col_\d+ : index")
+        self.assertIn("pto.vlds %arg1[", text)
+        self.assertIn("pto.vlds %arg2[", text)
+        self.assertIn("pto.vsts %summed_", text)
+
+    def test_element_type_valid_shape_and_get_lanes_surface_lower_in_advanced_mode(self) -> None:
+        @pto.vkernel(op="tadd", dtypes=[(pto.f32, pto.f32, pto.f32)], advanced=True)
+        def kernel(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
+            dtype = dst.element_type
+            valid_rows, valid_cols = dst.valid_shape
+            remained = valid_cols
+            for row in range(0, valid_rows, 1):
+                for col in range(0, valid_cols, pto.get_lanes(dtype)):
+                    mask, remained = pto.make_mask(dtype, remained)
+                    summed = pto.vadd(pto.vlds(src0[row, col:]), pto.vlds(src1[row, col:]), mask)
+                    pto.vsts(summed, dst[row, col:], mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            src0=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            src1=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("step %c64", text)
+        self.assertRegex(text, r"%mask_\d+, %remained_\d+ = pto\.plt_b32 %remained_iter_\d+ : i32 -> !pto\.mask<b32>, i32")
+        self.assertIn("pto.vadd", text)
+        self.assertIn("pto.vsts", text)
+
+    def test_advanced_mode_keeps_strict_vecscope_as_hard_boundary(self) -> None:
+        @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f32)], advanced=True)
+        def kernel(src: pto.Tile, dst: pto.Tile):
+            all_mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+            rows = src.shape[0]
+            for row in range(0, rows, 1):
+                vec = pto.vlds(src[row, 0:])
+                pto.vsts(vec, dst[row, 0:], all_mask)
+            with pto.strict_vecscope(src, dst, all_mask, 0, 64, 64) as (vin, vout, mask, lb, ub, step):
+                for lane in range(lb, ub, step):
+                    scoped = pto.vlds(vin, lane)
+                    pto.vsts(scoped, vout, lane, mask)
+            return None
+
+        specialized = kernel.specialize(
+            src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertEqual(text.count("pto.vecscope {"), 1)
+        self.assertEqual(text.count("pto.strict_vecscope("), 1)
+
+    def test_elementwise_kernel_positive_regression_covers_dma_vecscope_tail_mask_and_dynamic_loop_bound(self) -> None:
+        @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f32, pto.f32, pto.i32)])
+        def kernel(inp: pto.TensorView, out: pto.TensorView, tile: pto.Tile, remaining: pto.i32):
+            rows = inp.shape[0]
+            pto.dma_load(inp[0:rows, 0:16], tile)
+            with pto.strict_vecscope(tile, tile, remaining, 0, rows, 64) as (
+                src,
+                dst,
+                rem,
+                lb,
+                ub,
+                step,
+            ):
+                for lane in range(lb, ub, step):
+                    mask, rem = pto.make_mask(pto.f32, rem)
+                    vec = pto.vlds(src, lane)
+                    pto.vsts(vec, dst, lane, mask)
+            pto.dma_store(tile, out[0:rows, 0:16])
+            return None
+
+        specialized = kernel.specialize(
+            tile=pto.TileSpecialization(
+                shape=(16, 16),
+                memory_space=pto.MemorySpace.UB,
+            )
+        )
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        self.assertEqual(len(semantic_kernel.body), 5)
+        self.assertIsInstance(semantic_kernel.body[1], SemanticDmaLoadStmt)
+        self.assertIsInstance(semantic_kernel.body[2], SemanticStrictVecscopeStmt)
+        self.assertIsInstance(semantic_kernel.body[3], SemanticDmaStoreStmt)
+
+        vecscope = semantic_kernel.body[2]
+        self.assertIsInstance(vecscope, SemanticStrictVecscopeStmt)
+        loop_stmt = vecscope.body[0]
+        self.assertIsInstance(loop_stmt, SemanticForStmt)
+        self.assertEqual(len(loop_stmt.loop_carried), 1)
+        self.assertEqual(loop_stmt.loop_carried[0].name, "rem")
+
+        text = specialized.mlir_text()
+        self.assertIn(
+            "func.func @kernel(%arg0: !pto.ptr<f32, gm>, %arg1: !pto.ptr<f32, gm>, %arg2: !pto.ptr<f32, ub>, %arg3: i32, %arg4: index) {",
+            text,
+        )
+        self.assertIn(
+            "pto.copy_gm_to_ubuf %arg0, %arg2, %c0_i64, %c16_i64, %c64_i64",
+            text,
+        )
+        self.assertIn(
+            "pto.strict_vecscope(%arg2, %arg2, %arg3, %c0, %arg4, %c64)",
+            text,
+        )
+        self.assertRegex(
+            text,
+            r"scf\.for %lane_\d+ = %lb_\d+ to %ub_\d+ step %step_\d+ iter_args\(%rem_iter_\d+ = %rem_\d+\) -> \(i32\) \{",
+        )
+        self.assertRegex(
+            text,
+            r"%mask_\d+, %rem_\d+ = pto\.plt_b32 %rem_iter_\d+ : i32 -> !pto\.mask<b32>, i32",
+        )
+        self.assertIn(
+            "pto.copy_ubuf_to_gm %arg2, %arg1, %c0_i64, %c16_i64, %c64_i64",
             text,
         )
 
@@ -395,6 +723,23 @@ class TileLangDSLDiagnosticsTests(unittest.TestCase):
                 return None
 
         self.assertIn("vector op surface `pto.vadd` requires explicit pto.strict_vecscope", str(ctx.exception))
+        self.assertIn(f"{__file__}:", str(ctx.exception))
+
+    def test_unsupported_advanced_family_points_to_follow_up_change(self) -> None:
+        with self.assertRaises(pto.TileLangFrontendError) as ctx:
+
+            @pto.vkernel(op="x", dtypes=[(pto.f32, pto.f32)])
+            def kernel(x: pto.TensorView, tile: pto.Tile):
+                with pto.strict_vecscope(tile, tile, 0, 256, 64) as (lhs, rhs, lb, ub, step):
+                    mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+                    pto.vcmp(lhs, rhs, mask, "lt")
+                return None
+
+        self.assertIn("advanced family surface `pto.vcmp`", str(ctx.exception))
+        self.assertIn(
+            "extend-tilelang-dsl-matcher-and-advanced-surface",
+            str(ctx.exception),
+        )
         self.assertIn(f"{__file__}:", str(ctx.exception))
 
     def test_missing_specialization_reports_source_location(self) -> None:

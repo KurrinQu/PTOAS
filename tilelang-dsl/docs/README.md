@@ -3,6 +3,8 @@ TileLang DSL local documentation lives here.
 Current docs:
 - `v1-surface.md`: the TileLang DSL v1 contract implemented by
   `add-tilelang-dsl-core-foundation`
+- `v1-lowering.md`: the TileLang DSL v1 authoring-form VPTO lowering contract
+  implemented by `add-tilelang-dsl-authoring-vpto-lowering`
 
 Documentation boundary:
 - `tilelang-dsl/docs/` is the local documentation source of truth for the new

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import inspect
-import textwrap
 import ast
+import subprocess
+import tempfile
+import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -22,66 +25,33 @@ from .types import (
 from .frontend_ast import build_frontend_kernel_node
 from .lowering import lower_semantic_kernel
 from .semantic import analyze_frontend_kernel
+from .support_matrix import (
+    DEFERRED_PTO_SURFACES,
+    SUPPORTED_TOPLEVEL_PTO_CALLS,
+    SUPPORTED_VECSCOPE_PTO_CALLS,
+    unsupported_feature_message,
+    deferred_surface_message,
+)
 
 
 _UNSET = object()
-_MATCHER_FOLLOW_UP_CHANGE = "extend-tilelang-dsl-matcher-and-advanced-surface"
-_V1_ALLOWED_TOPLEVEL_PTO_CALLS = {
-    "strict_vecscope",
-    "dma_load",
-    "dma_store",
-    "set_flag",
-    "wait_flag",
-    "pipe_barrier",
-    "barrier",
-}
-_V1_ALLOWED_VECSCOPE_PTO_CALLS = {
-    "make_mask",
-    "vlds",
-    "vsts",
-    "vabs",
-    "vrelu",
-    "vexp",
-    "vnot",
-    "vadd",
-    "vsub",
-    "vmul",
-    "vdiv",
-    "vmax",
-    "vmin",
-    "vand",
-    "vor",
-    "vxor",
-    "vadds",
-    "vsubs",
-    "vmuls",
-    "vdivs",
-    "vmaxs",
-    "vmins",
-}
-
-
-def _unsupported_feature_message(feature: str) -> str:
-    return (
-        f"{feature} is not supported in TileLang DSL v1; "
-        f"see follow-up change `{_MATCHER_FOLLOW_UP_CHANGE}`"
-    )
+_PTOAS_BIN_ENV = "PTOAS_BIN"
 
 
 def _reject_unsupported_decorator_feature(name: str, value: Any) -> None:
     if value is _UNSET:
         return
-    raise ValueError(_unsupported_feature_message(f"decorator feature `{name}`"))
+    raise ValueError(unsupported_feature_message(f"decorator feature `{name}`"))
 
 
 def _reject_unsupported_dtype_feature(dtype: Any) -> None:
     if isinstance(dtype, WildcardType):
         raise ValueError(
-            _unsupported_feature_message(f"dtype wildcard `{dtype.name}`")
+            unsupported_feature_message(f"dtype wildcard `{dtype.name}`")
         )
     if isinstance(dtype, TypeVariable):
         raise ValueError(
-            _unsupported_feature_message(f"dtype type variable `{dtype.name}`")
+            unsupported_feature_message(f"dtype type variable `{dtype.name}`")
         )
 
 
@@ -119,8 +89,9 @@ class _FunctionSourceInfo:
 
 
 class _KernelBodyValidator(ast.NodeVisitor):
-    def __init__(self, source_info: _FunctionSourceInfo):
+    def __init__(self, source_info: _FunctionSourceInfo, *, advanced_enabled: bool):
         self.source_info = source_info
+        self.advanced_enabled = advanced_enabled
         self._vecscope_depth = 0
 
     def validate(self) -> None:
@@ -200,15 +171,22 @@ class _KernelBodyValidator(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
-            if node.func.value.id == "pto" and node.func.attr in _V1_ALLOWED_TOPLEVEL_PTO_CALLS:
+            if node.func.value.id == "pto" and node.func.attr in SUPPORTED_TOPLEVEL_PTO_CALLS:
                 return
-            if node.func.value.id == "pto" and node.func.attr in _V1_ALLOWED_VECSCOPE_PTO_CALLS:
+            if node.func.value.id == "pto" and node.func.attr in SUPPORTED_VECSCOPE_PTO_CALLS:
+                if self.advanced_enabled:
+                    return
                 if self._vecscope_depth <= 0:
                     raise self.source_info.error(
                         node,
                         f"vector op surface `pto.{node.func.attr}` requires explicit pto.strict_vecscope in TileLang DSL v1",
                     )
                 return
+            if node.func.value.id == "pto" and node.func.attr in DEFERRED_PTO_SURFACES:
+                raise self.source_info.error(
+                    node,
+                    deferred_surface_message(node.func.attr),
+                )
             if node.func.value.id == "pto":
                 raise self.source_info.error(
                     node,
@@ -249,10 +227,17 @@ def _load_function_source_info(py_fn: Callable[..., Any]) -> _FunctionSourceInfo
     return None
 
 
-def _validate_function_body(source_info: _FunctionSourceInfo | None) -> None:
+def _validate_function_body(
+    source_info: _FunctionSourceInfo | None,
+    *,
+    advanced_enabled: bool,
+) -> None:
     if source_info is None:
         return
-    _KernelBodyValidator(source_info).validate()
+    _KernelBodyValidator(
+        source_info,
+        advanced_enabled=advanced_enabled,
+    ).validate()
 
 
 def _raise_tile_param_error(
@@ -286,7 +271,7 @@ def _freeze_dtypes(dtypes: Any) -> tuple[tuple[Any, ...], ...]:
 
     if len(frozen_signatures) != 1:
         raise ValueError(
-            _unsupported_feature_message("multiple dtypes signatures")
+            unsupported_feature_message("multiple dtypes signatures")
         )
 
     return tuple(frozen_signatures)
@@ -317,6 +302,7 @@ class VKernelDescriptor:
     dtypes: tuple[tuple[Any, ...], ...]
     name: str
     verify_enabled: bool
+    advanced_enabled: bool
     parameters: tuple[BoundKernelParameter, ...]
     _py_fn: Callable[..., Any] = field(repr=False)
     _source_info: _FunctionSourceInfo | None = field(repr=False, compare=False, default=None)
@@ -338,6 +324,7 @@ class VKernelDescriptor:
             "dtypes": self.dtypes,
             "name": self.name,
             "verify": self.verify_enabled,
+            "advanced": self.advanced_enabled,
         }
 
     @property
@@ -375,6 +362,7 @@ class VKernelDescriptor:
             dtypes=self.dtypes,
             name=self.name,
             verify_enabled=self.verify_enabled,
+            advanced_enabled=self.advanced_enabled,
             parameters=self.parameters,
             _source_info=self._source_info,
             specializations=tuple(sorted(updated.items())),
@@ -408,12 +396,11 @@ class VKernelDescriptor:
 
     def mlir_module(self) -> "MaterializedMLIRModule":
         self._require_specialized_tiles("mlir_module")
-        return MaterializedMLIRModule(self.mlir_text())
+        return MaterializedMLIRModule(text=self.mlir_text(), target=self.target)
 
-    def verify(self) -> bool:
+    def verify(self, *, ptoas_bin: str | Path | None = None) -> "VerificationResult":
         self._require_specialized_tiles("verify")
-        self.mlir_module()
-        return True
+        return self.mlir_module().verify(ptoas_bin=ptoas_bin)
 
     def emit(self, path: str | Path) -> None:
         self._require_specialized_tiles("emit")
@@ -424,12 +411,175 @@ class VKernelDescriptor:
 @dataclass(frozen=True)
 class MaterializedMLIRModule:
     text: str
+    target: str = "a5"
 
     def __str__(self) -> str:
         return self.text
 
-    def verify(self) -> bool:
-        return True
+    def verify(self, *, ptoas_bin: str | Path | None = None) -> "VerificationResult":
+        return _run_ptoas_verifier(self.text, target=self.target, ptoas_bin=ptoas_bin)
+
+
+@dataclass(frozen=True)
+class VerificationResult:
+    status: str
+    available: bool
+    passed: bool
+    message: str
+    command: tuple[str, ...] | None = None
+    returncode: int | None = None
+    stdout: str = ""
+    stderr: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.available and self.passed
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def _resolve_ptoas_bin(ptoas_bin: str | Path | None) -> Path:
+    if ptoas_bin is not None:
+        return Path(ptoas_bin)
+    env_path = os.environ.get(_PTOAS_BIN_ENV)
+    if env_path:
+        return Path(env_path)
+    return _repo_root() / "build/tools/ptoas/ptoas"
+
+
+def _unavailable_result(
+    message: str,
+    *,
+    command: tuple[str, ...] | None = None,
+    stderr: str = "",
+) -> VerificationResult:
+    return VerificationResult(
+        status="unavailable",
+        available=False,
+        passed=False,
+        message=message,
+        command=command,
+        stderr=stderr,
+    )
+
+
+def _failed_result(
+    message: str,
+    *,
+    command: tuple[str, ...],
+    returncode: int,
+    stdout: str,
+    stderr: str,
+) -> VerificationResult:
+    return VerificationResult(
+        status="failed",
+        available=True,
+        passed=False,
+        message=message,
+        command=command,
+        returncode=returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
+def _passed_result(
+    *,
+    command: tuple[str, ...],
+    stdout: str,
+    stderr: str,
+) -> VerificationResult:
+    return VerificationResult(
+        status="passed",
+        available=True,
+        passed=True,
+        message="generated IR passed the repo VPTO authoring-stage legality verifier",
+        command=command,
+        returncode=0,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
+def _is_verifier_unavailable_process_failure(stderr: str) -> bool:
+    lowered = stderr.lower()
+    return (
+        "error while loading shared libraries" in lowered
+        or "cannot open shared object file" in lowered
+        or "image not found" in lowered
+        or "dll load failed" in lowered
+    )
+
+
+def _run_ptoas_verifier(
+    mlir_text: str,
+    *,
+    target: str,
+    ptoas_bin: str | Path | None,
+) -> VerificationResult:
+    binary = _resolve_ptoas_bin(ptoas_bin)
+    command = (
+        str(binary),
+        "--pto-arch",
+        target,
+        "--pto-backend=vpto",
+        "--emit-vpto",
+    )
+    if not binary.exists():
+        return _unavailable_result(
+            f"verifier unavailable: missing ptoas binary at {binary}",
+            command=command,
+        )
+    if not os.access(binary, os.X_OK):
+        return _unavailable_result(
+            f"verifier unavailable: ptoas binary is not executable: {binary}",
+            command=command,
+        )
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="tilelang_dsl_verify_") as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            input_path = tmpdir_path / "kernel.mlir"
+            output_path = tmpdir_path / "verified.mlir"
+            input_path.write_text(mlir_text, encoding="utf-8")
+            full_command = command + (str(input_path), "-o", str(output_path))
+            completed = subprocess.run(
+                full_command,
+                cwd=_repo_root(),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+    except OSError as exc:
+        return _unavailable_result(
+            f"verifier unavailable: failed to execute ptoas: {exc}",
+            command=command,
+            stderr=str(exc),
+        )
+
+    stderr = completed.stderr.strip()
+    stdout = completed.stdout.strip()
+    if completed.returncode == 0:
+        return _passed_result(command=full_command, stdout=stdout, stderr=stderr)
+    if _is_verifier_unavailable_process_failure(stderr):
+        return _unavailable_result(
+            "verifier unavailable: failed to launch repo ptoas legality path",
+            command=full_command,
+            stderr=stderr,
+        )
+    message = stderr or stdout or "generated IR failed the repo VPTO authoring-stage legality verifier"
+    return _failed_result(
+        message,
+        command=full_command,
+        returncode=completed.returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
 
 
 def _validate_target(target: str) -> str:
@@ -458,6 +608,12 @@ def _validate_verify(verify: Any) -> bool:
     if not isinstance(verify, bool):
         raise TypeError("verify must be a bool")
     return verify
+
+
+def _validate_advanced(advanced: Any) -> bool:
+    if not isinstance(advanced, bool):
+        raise TypeError("advanced must be a bool")
+    return advanced
 
 
 def _coerce_memory_space(value: Any, param_name: str) -> MemorySpace:
@@ -651,12 +807,14 @@ def _build_descriptor(
     dtypes: Any,
     name: Any,
     verify: Any,
+    advanced: Any,
 ) -> VKernelDescriptor:
     if not callable(py_fn):
         raise TypeError("@vkernel can only decorate callables")
 
     source_info = _load_function_source_info(py_fn)
-    _validate_function_body(source_info)
+    advanced_enabled = _validate_advanced(advanced)
+    _validate_function_body(source_info, advanced_enabled=advanced_enabled)
     frozen_dtypes = _freeze_dtypes(dtypes)
 
     return VKernelDescriptor(
@@ -665,6 +823,7 @@ def _build_descriptor(
         dtypes=frozen_dtypes,
         name=_validate_name(py_fn, name),
         verify_enabled=_validate_verify(verify),
+        advanced_enabled=advanced_enabled,
         parameters=_bind_parameters(py_fn, frozen_dtypes),
         _py_fn=py_fn,
         _source_info=source_info,
@@ -679,13 +838,14 @@ def vkernel(
     dtypes: Any = None,
     name: str | None = None,
     verify: bool = True,
+    advanced: bool = False,
     constraints: Any = _UNSET,
     priority: Any = _UNSET,
 ) -> VKernelDescriptor | Callable[[Callable[..., Any]], VKernelDescriptor]:
     """Create a TileLang DSL v1 kernel descriptor.
 
     v1 keeps only the minimal descriptor metadata surface:
-    `target`, `op`, `dtypes`, `name`, and `verify`.
+    `target`, `op`, `dtypes`, `name`, `verify`, and opt-in `advanced`.
     """
     _reject_unsupported_decorator_feature("constraints", constraints)
     _reject_unsupported_decorator_feature("priority", priority)
@@ -698,6 +858,7 @@ def vkernel(
             dtypes=dtypes,
             name=name,
             verify=verify,
+            advanced=advanced,
         )
 
     if py_fn is None:
