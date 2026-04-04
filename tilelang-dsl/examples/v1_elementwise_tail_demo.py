@@ -1,4 +1,4 @@
-"""Minimal TileLang DSL v1 demo that materializes a kernel into MLIR."""
+"""Guide-aligned TileLang DSL v1 elementwise authoring demo."""
 
 import sys
 from pathlib import Path
@@ -22,25 +22,39 @@ pto = _import_tilelang_dsl()
 
 
 @pto.vkernel(
-    op="eltwise_with_tile",
-    dtypes=[(pto.f32, pto.f16, pto.i32)],
-    name="tilelang_v1_demo_kernel",
+    op="eltwise",
+    dtypes=[(pto.f32, pto.f32, pto.f32, pto.i32)],
+    name="tilelang_v1_elementwise_tail_demo",
 )
-def kernel(inp: pto.TensorView, tile: pto.Tile, scale: pto.i32):
+def kernel(inp: pto.TensorView, out: pto.TensorView, tile: pto.Tile, remaining: pto.i32):
+    rows = inp.shape[0]
+    pto.dma_load(inp[0:rows, 0:16], tile)
+    with pto.strict_vecscope(tile, tile, remaining, 0, rows, 64) as (
+        src,
+        dst,
+        rem,
+        lb,
+        ub,
+        step,
+    ):
+        for lane in range(lb, ub, step):
+            mask, rem = pto.make_mask(pto.f32, rem)
+            vec = pto.vlds(src, lane)
+            pto.vsts(vec, dst, lane, mask)
+    pto.dma_store(tile, out[0:rows, 0:16])
     return None
 
 
 def build_specialized_kernel():
     return kernel.specialize(
         tile=pto.TileSpecialization(
-            shape=(16, 32),
+            shape=(16, 16),
             memory_space=pto.MemorySpace.UB,
-            config=pto.TileConfig.from_mapping({"layout": "row_major"}),
         )
     )
 
 
-def main(argv: list[str]) -> int:
+def main(argv) -> int:
     specialized = build_specialized_kernel()
 
     if len(argv) > 2:

@@ -29,6 +29,11 @@ from .frontend_ast import (
     FrontendTupleExpr,
     FrontendTupleTarget,
 )
+from .support_matrix import (
+    DEFERRED_PTO_SURFACES,
+    deferred_surface_message,
+    unsupported_feature_message,
+)
 from .types import Event, MaskPattern, Pipe, ScalarType, bf16, f16, f32, i1, i8, i16, i32
 
 
@@ -63,7 +68,7 @@ class SemanticTensorViewType(SemanticType):
 class SemanticTensorSliceType(SemanticType):
     element_dtype: ScalarType
     rank: int
-    extents: tuple[int, ...]
+    extents: tuple[int | None, ...]
 
 
 @dataclass(frozen=True)
@@ -115,12 +120,16 @@ class SemanticVRegType(SemanticType):
     lanes: int
 
 
+_I32_TYPE = SemanticScalarType(dtype=i32)
+
+
 @dataclass(frozen=True)
 class SemanticBinding:
     name: str
     ssa_name: str
     type: SemanticType
     origin: str
+    value: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -243,6 +252,11 @@ class SemanticVectorStoreStmt(SemanticStmt):
 
 
 @dataclass(frozen=True)
+class SemanticVecscopeStmt(SemanticStmt):
+    body: tuple[SemanticStmt, ...]
+
+
+@dataclass(frozen=True)
 class SemanticSetFlagStmt(SemanticStmt):
     src_pipe: str
     dst_pipe: str
@@ -325,6 +339,7 @@ class SemanticKernel:
     op: str
     symbol_name: str
     verify_enabled: bool
+    advanced_enabled: bool
     dtype_signature: tuple[Any, ...]
     parameters: tuple[SemanticParameter, ...]
     tile_bindings: tuple[SemanticTileBinding, ...]
@@ -335,9 +350,11 @@ class _SemanticAnalyzer:
     def __init__(self, node: FrontendKernelNode):
         self.node = node
         self._counter = 0
+        self._disable_inference_depth = 0
         self._tile_specializations = {
             spec.name: spec for spec in node.tile_specializations
         }
+        self._tensor_shape_parameters: list[SemanticParameter] = []
 
     def analyze(self) -> SemanticKernel:
         env: dict[str, SemanticBinding] = {}
@@ -351,7 +368,8 @@ class _SemanticAnalyzer:
             )
             env[param.name] = binding
             parameters.append(SemanticParameter(binding=binding))
-        body, _ = self._analyze_block(self.node.body, env, allow_outer_lookup=True)
+        body, _ = self._analyze_kernel_body(env)
+        parameters.extend(self._tensor_shape_parameters)
         tile_bindings = tuple(
             SemanticTileBinding(
                 name=spec.name,
@@ -366,11 +384,51 @@ class _SemanticAnalyzer:
             op=self.node.op,
             symbol_name=self.node.name,
             verify_enabled=self.node.verify_enabled,
+            advanced_enabled=self.node.advanced_enabled,
             dtype_signature=self.node.dtype_signature,
             parameters=tuple(parameters),
             tile_bindings=tile_bindings,
             body=body,
         )
+
+    def _analyze_kernel_body(
+        self,
+        env: dict[str, SemanticBinding],
+    ) -> tuple[tuple[SemanticStmt, ...], dict[str, SemanticBinding]]:
+        if not self.node.advanced_enabled:
+            return self._analyze_block(self.node.body, env, allow_outer_lookup=True)
+
+        body_without_return = self.node.body
+        trailing_return: FrontendReturnStmt | None = None
+        if body_without_return and isinstance(body_without_return[-1], FrontendReturnStmt):
+            trailing_return = body_without_return[-1]
+            body_without_return = body_without_return[:-1]
+
+        if body_without_return and self._can_wrap_whole_kernel_vecscope(body_without_return):
+            self._disable_inference_depth += 1
+            try:
+                scoped_body, scoped_env = self._analyze_block_without_inference(
+                    body_without_return,
+                    env,
+                    allow_outer_lookup=True,
+                )
+            finally:
+                self._disable_inference_depth -= 1
+            semantic_body: list[SemanticStmt] = []
+            if self._semantic_block_contains_vector_activity(scoped_body):
+                semantic_body.append(SemanticVecscopeStmt(body=scoped_body))
+            else:
+                semantic_body.extend(scoped_body)
+            if trailing_return is not None:
+                return_stmt, scoped_env = self._analyze_stmt(
+                    trailing_return,
+                    scoped_env,
+                    allow_outer_lookup=True,
+                )
+                semantic_body.append(return_stmt)
+            return tuple(semantic_body), scoped_env
+
+        return self._analyze_block(self.node.body, env, allow_outer_lookup=True)
 
     def _parameter_type(self, param: Any) -> SemanticType:
         if param.kind == "tensorview":
@@ -395,16 +453,140 @@ class _SemanticAnalyzer:
         self._counter += 1
         return name
 
-    def _make_binding(self, name: str, ty: SemanticType, origin: str) -> SemanticBinding:
+    def _tensor_shape_binding_name(self, tensor_name: str, axis: int) -> str:
+        return f"__shape_{tensor_name}_{axis}"
+
+    def _ensure_tensor_shape_parameter(
+        self,
+        tensor_binding: SemanticBinding,
+        axis: int,
+    ) -> SemanticBinding:
+        hidden_name = self._tensor_shape_binding_name(tensor_binding.name, axis)
+        for parameter in self._tensor_shape_parameters:
+            if parameter.name == hidden_name:
+                return parameter.binding
+        binding = SemanticBinding(
+            name=hidden_name,
+            ssa_name=f"%arg{len(self.node.parameters) + len(self._tensor_shape_parameters)}",
+            type=SemanticIndexType(),
+            origin="tensorview_shape",
+        )
+        self._tensor_shape_parameters.append(SemanticParameter(binding=binding))
+        return binding
+
+    def _make_binding(
+        self,
+        name: str,
+        ty: SemanticType,
+        origin: str,
+        *,
+        value: Any | None = None,
+    ) -> SemanticBinding:
         stem = name if name.isidentifier() else "v"
         return SemanticBinding(
             name=name,
             ssa_name=self._new_ssa_name(stem),
             type=ty,
             origin=origin,
+            value=value,
         )
 
     def _analyze_block(
+        self,
+        statements: tuple[FrontendStmtNode, ...],
+        env: dict[str, SemanticBinding],
+        *,
+        allow_outer_lookup: bool,
+    ) -> tuple[tuple[SemanticStmt, ...], dict[str, SemanticBinding]]:
+        current_env = dict(env)
+        semantic_statements = []
+        index = 0
+        while index < len(statements):
+            if self._should_infer_vecscope(statements[index], allow_outer_lookup=allow_outer_lookup):
+                end = index + 1
+                while end < len(statements) and self._should_infer_vecscope(
+                    statements[end],
+                    allow_outer_lookup=allow_outer_lookup,
+                ):
+                    end += 1
+                run = statements[index:end]
+                if self._run_contains_vector_op(run):
+                    semantic_statements.append(
+                        self._analyze_inferred_vecscope(
+                            run,
+                            current_env,
+                            allow_outer_lookup=allow_outer_lookup,
+                        )
+                    )
+                else:
+                    for stmt in run:
+                        semantic_stmt, current_env = self._analyze_stmt(
+                            stmt,
+                            current_env,
+                            allow_outer_lookup=allow_outer_lookup,
+                        )
+                        semantic_statements.append(semantic_stmt)
+                index = end
+                continue
+
+            semantic_stmt, current_env = self._analyze_stmt(
+                statements[index],
+                current_env,
+                allow_outer_lookup=allow_outer_lookup,
+            )
+            semantic_statements.append(semantic_stmt)
+            index += 1
+        return tuple(semantic_statements), current_env
+
+    def _should_infer_vecscope(
+        self,
+        stmt: FrontendStmtNode,
+        *,
+        allow_outer_lookup: bool,
+    ) -> bool:
+        if self._disable_inference_depth > 0:
+            return False
+        if not self.node.advanced_enabled or not allow_outer_lookup:
+            return False
+        name = self._frontend_vector_call_name(stmt)
+        return name in {"make_mask", "vlds", "vsts"} | _UNARY_VECTOR_OPS | _BINARY_VECTOR_OPS | _VECTOR_SCALAR_OPS
+
+    def _run_contains_vector_op(self, statements: tuple[FrontendStmtNode, ...]) -> bool:
+        for stmt in statements:
+            name = self._frontend_vector_call_name(stmt)
+            if name is None or name == "make_mask":
+                continue
+            return True
+        return False
+
+    def _frontend_vector_call_name(self, stmt: FrontendStmtNode) -> str | None:
+        expr: FrontendExprNode | None = None
+        if isinstance(stmt, FrontendAssignStmt):
+            expr = stmt.value
+        elif isinstance(stmt, FrontendExprStmt):
+            expr = stmt.expr
+        if (
+            isinstance(expr, FrontendCallExpr)
+            and expr.namespace == "pto"
+        ):
+            return expr.name
+        return None
+
+    def _analyze_inferred_vecscope(
+        self,
+        statements: tuple[FrontendStmtNode, ...],
+        env: dict[str, SemanticBinding],
+        *,
+        allow_outer_lookup: bool,
+    ) -> SemanticVecscopeStmt:
+        body, _ = self._analyze_block_without_inference(
+            statements,
+            env,
+            allow_outer_lookup=allow_outer_lookup,
+        )
+        return SemanticVecscopeStmt(body=body)
+
+    def _analyze_block_without_inference(
         self,
         statements: tuple[FrontendStmtNode, ...],
         env: dict[str, SemanticBinding],
@@ -421,6 +603,70 @@ class _SemanticAnalyzer:
             )
             semantic_statements.append(semantic_stmt)
         return tuple(semantic_statements), current_env
+
+    def _can_wrap_whole_kernel_vecscope(
+        self,
+        statements: tuple[FrontendStmtNode, ...],
+    ) -> bool:
+        for stmt in statements:
+            if isinstance(stmt, FrontendStrictVecscopeStmt):
+                return False
+            if isinstance(stmt, FrontendExprStmt) and (
+                self._is_dma_call(stmt.expr) or self._is_sync_call(stmt.expr)
+            ):
+                return False
+            nested_blocks: tuple[tuple[FrontendStmtNode, ...], ...] = ()
+            if isinstance(stmt, FrontendForStmt):
+                nested_blocks = (stmt.body,)
+            elif isinstance(stmt, FrontendIfStmt):
+                nested_blocks = (stmt.then_body, stmt.else_body)
+            for block in nested_blocks:
+                if not self._can_wrap_whole_kernel_vecscope(block):
+                    return False
+        return True
+
+    def _semantic_block_contains_vector_activity(
+        self,
+        statements: tuple[SemanticStmt, ...],
+    ) -> bool:
+        for stmt in statements:
+            if isinstance(stmt, SemanticVecscopeStmt):
+                return True
+            if isinstance(stmt, SemanticStrictVecscopeStmt):
+                return True
+            if isinstance(stmt, SemanticVectorStoreStmt):
+                return True
+            if isinstance(stmt, SemanticAssignStmt) and self._expr_contains_vector_activity(stmt.value):
+                return True
+            if isinstance(stmt, SemanticExprStmt) and self._expr_contains_vector_activity(stmt.expr):
+                return True
+            if isinstance(stmt, SemanticForStmt) and self._semantic_block_contains_vector_activity(stmt.body):
+                return True
+            if isinstance(stmt, SemanticIfStmt) and (
+                self._semantic_block_contains_vector_activity(stmt.then_body)
+                or self._semantic_block_contains_vector_activity(stmt.else_body)
+            ):
+                return True
+        return False
+
+    def _expr_contains_vector_activity(self, expr: SemanticExpr) -> bool:
+        if isinstance(expr, SemanticCallExpr):
+            if expr.namespace == "pto" and expr.name in (
+                {"make_mask", "vlds"} | _UNARY_VECTOR_OPS | _BINARY_VECTOR_OPS | _VECTOR_SCALAR_OPS
+            ):
+                return True
+            return any(self._expr_contains_vector_activity(arg) for arg in expr.args)
+        if isinstance(expr, SemanticBinaryExpr):
+            return self._expr_contains_vector_activity(expr.lhs) or self._expr_contains_vector_activity(expr.rhs)
+        if isinstance(expr, SemanticTupleExpr):
+            return any(self._expr_contains_vector_activity(element) for element in expr.elements)
+        if isinstance(expr, SemanticAttributeAccess):
+            return self._expr_contains_vector_activity(expr.base)
+        if isinstance(expr, SemanticSubscriptAccess):
+            return self._expr_contains_vector_activity(expr.base) or self._expr_contains_vector_activity(expr.index)
+        if isinstance(expr, SemanticTensorSliceExpr):
+            return self._expr_contains_vector_activity(expr.base)
+        return False
 
     def _analyze_stmt(
         self,
@@ -519,13 +765,23 @@ class _SemanticAnalyzer:
         *,
         allow_outer_lookup: bool,
     ) -> tuple[SemanticStmt, dict[str, SemanticBinding]]:
-        args = tuple(
-            self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
-            for arg in expr.args
-        )
-        if len(args) != 4:
-            raise TypeError("pto.vsts expects exactly 4 positional arguments in TileLang DSL v1")
-        value, destination, offset, mask = args
+        if len(expr.args) == 3:
+            value = self._analyze_expr(expr.args[0], env, allow_outer_lookup=allow_outer_lookup)
+            destination, offset = self._analyze_tile_vector_access(
+                expr.args[1],
+                env,
+                allow_outer_lookup=allow_outer_lookup,
+                context="pto.vsts destination",
+            )
+            mask = self._analyze_expr(expr.args[2], env, allow_outer_lookup=allow_outer_lookup)
+        else:
+            args = tuple(
+                self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
+                for arg in expr.args
+            )
+            if len(args) != 4:
+                raise TypeError("pto.vsts expects 3 or 4 positional arguments in TileLang DSL v1")
+            value, destination, offset, mask = args
         self._require_vreg_expr(value, "pto.vsts value")
         self._require_tile_expr(destination, "pto.vsts destination")
         self._require_index_typed_expr(offset)
@@ -600,11 +856,12 @@ class _SemanticAnalyzer:
             raise TypeError(f"{op_name} requires a statically specialized rank-2 Tile in TileLang DSL v1")
         if tensor_slice_type.element_dtype != tile_type.element_dtype:
             raise TypeError(f"{op_name} requires matching TensorView/Tile element dtypes in TileLang DSL v1")
-        if tensor_slice_type.extents != tile_type.shape:
-            raise TypeError(
-                f"{op_name} requires TensorView slice extents {tensor_slice_type.extents!r} "
-                f"to match Tile shape {tile_type.shape!r}"
-            )
+        for axis, (extent, tile_dim) in enumerate(zip(tensor_slice_type.extents, tile_type.shape)):
+            if extent is not None and extent != tile_dim:
+                raise TypeError(
+                    f"{op_name} requires TensorView slice extent axis {axis}={extent!r} "
+                    f"to match Tile shape axis {axis}={tile_dim!r}"
+                )
 
     def _bind_assignment_target(
         self,
@@ -614,19 +871,52 @@ class _SemanticAnalyzer:
         annotation: Any | None,
     ) -> tuple[SemanticBinding, ...]:
         if isinstance(target, FrontendNameTarget):
+            if isinstance(value.type, SemanticTupleType):
+                raise ValueError("multi-result call assignment requires tuple binding in TileLang DSL v1")
             annotated_type = self._annotation_type(annotation, value.type)
             binding = self._make_binding(
                 target.name,
                 annotated_type if annotated_type is not None else value.type,
                 "ssa",
+                value=self._binding_value_for_expr(value),
             )
             env[target.name] = binding
             return (binding,)
         if isinstance(target, FrontendTupleTarget):
-            if not isinstance(value, SemanticCallExpr) or value.type is not None:
-                raise ValueError("tuple assignment expects a multi-result call")
-            raise ValueError("tuple assignment is not supported in TileLang DSL v1 yet")
+            if not isinstance(value.type, SemanticTupleType):
+                raise ValueError("tuple assignment expects a tuple-typed value")
+            if annotation is not None:
+                raise TypeError("annotated tuple assignment is not supported in TileLang DSL v1")
+            if len(target.elements) != len(value.type.elements):
+                raise ValueError("tuple assignment arity must match the tuple value")
+            tuple_values: tuple[SemanticExpr, ...]
+            if isinstance(value, SemanticTupleExpr):
+                tuple_values = value.elements
+            elif isinstance(value, SemanticCallExpr):
+                tuple_values = value.args
+            else:
+                tuple_values = tuple(SemanticLiteralExpr(value=None, type=element_type) for element_type in value.type.elements)
+            bindings = []
+            for element, element_type, element_value in zip(target.elements, value.type.elements, tuple_values):
+                binding = self._make_binding(
+                    element.name,
+                    element_type,
+                    "ssa",
+                    value=self._binding_value_for_expr(element_value),
+                )
+                env[element.name] = binding
+                bindings.append(binding)
+            return tuple(bindings)
         raise ValueError(f"unsupported frontend assignment target {type(target).__name__}")
+
+    def _binding_value_for_expr(self, expr: SemanticExpr) -> Any | None:
+        if isinstance(expr, SemanticSymbolExpr):
+            return expr.value
+        if isinstance(expr, SemanticLiteralExpr):
+            return expr.value
+        if isinstance(expr, SemanticBindingRef):
+            return expr.binding.value
+        return None
 
     def _annotation_type(
         self,
@@ -672,11 +962,12 @@ class _SemanticAnalyzer:
             final_binding = final_body_env.get(name)
             if final_binding is None or final_binding is outer_binding:
                 continue
-            if final_binding.type != outer_binding.type:
+            merged_type = self._merge_loop_carried_types(outer_binding.type, final_binding.type)
+            if merged_type is None:
                 raise TypeError(
                     f"loop-carried binding '{name}' changes type from {outer_binding.type!r} to {final_binding.type!r}"
                 )
-            merged = self._make_binding(name, outer_binding.type, "loop_result")
+            merged = self._make_binding(name, merged_type, "loop_result")
             updated_env[name] = merged
             loop_carried.append(merged)
 
@@ -836,6 +1127,10 @@ class _SemanticAnalyzer:
             )
         if isinstance(expr, FrontendAttributeExpr):
             base = self._analyze_expr(expr.base, env, allow_outer_lookup=allow_outer_lookup)
+            if expr.attr == "element_type":
+                return self._element_type_expr(base)
+            if expr.attr == "valid_shape":
+                return self._valid_shape_expr(base)
             attr_type = self._attribute_type(base, expr.attr)
             return SemanticAttributeAccess(base=base, attr=expr.attr, type=attr_type)
         if isinstance(expr, FrontendSubscriptExpr):
@@ -852,6 +1147,14 @@ class _SemanticAnalyzer:
             result_type = self._binary_type(lhs, rhs, expr.op)
             return SemanticBinaryExpr(lhs=lhs, op=expr.op, rhs=rhs, type=result_type)
         if isinstance(expr, FrontendCallExpr):
+            if expr.namespace == "pto" and expr.name == "vlds" and len(expr.args) == 1:
+                base, offset = self._analyze_tile_vector_access(
+                    expr.args[0],
+                    env,
+                    allow_outer_lookup=allow_outer_lookup,
+                    context="pto.vlds source",
+                )
+                return self._analyze_vlds((base, offset))
             args = tuple(
                 self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
                 for arg in expr.args
@@ -911,16 +1214,138 @@ class _SemanticAnalyzer:
             return SemanticShapeType(rank=base_type.rank)
         raise TypeError(f"unsupported attribute access '{attr}' in TileLang DSL v1")
 
+    def _element_type_expr(self, base: SemanticExpr) -> SemanticExpr:
+        base_type = base.type
+        if isinstance(base_type, (SemanticTensorViewType, SemanticTileType)):
+            return SemanticSymbolExpr(
+                namespace="pto",
+                name=base_type.element_dtype.name,
+                value=base_type.element_dtype,
+                type=SemanticMetaType(kind="dtype"),
+            )
+        raise TypeError("unsupported attribute access 'element_type' in TileLang DSL v1")
+
+    def _valid_shape_expr(self, base: SemanticExpr) -> SemanticExpr:
+        base_type = base.type
+        if not isinstance(base_type, (SemanticTensorViewType, SemanticTileType)):
+            raise TypeError("unsupported attribute access 'valid_shape' in TileLang DSL v1")
+        shape_access = SemanticAttributeAccess(
+            base=base,
+            attr="shape",
+            type=SemanticShapeType(rank=base_type.rank),
+        )
+        elements = []
+        for axis in range(base_type.rank):
+            if isinstance(base, SemanticBindingRef) and isinstance(base.type, SemanticTensorViewType):
+                self._ensure_tensor_shape_parameter(base.binding, axis)
+            elements.append(
+                SemanticSubscriptAccess(
+                    base=shape_access,
+                    index=SemanticLiteralExpr(value=axis, type=SemanticIndexType()),
+                    type=SemanticIndexType(),
+                )
+            )
+        return SemanticTupleExpr(
+            elements=tuple(elements),
+            type=SemanticTupleType(elements=tuple(SemanticIndexType() for _ in elements)),
+        )
+
     def _subscript_type(self, base: SemanticExpr, index: SemanticExpr) -> SemanticType:
         if isinstance(base.type, SemanticShapeType):
             if not isinstance(index.type, SemanticIndexType):
                 raise TypeError("shape subscript index must be an index value in TileLang DSL v1")
+            if (
+                isinstance(base, SemanticAttributeAccess)
+                and isinstance(base.base, SemanticBindingRef)
+                and isinstance(index, SemanticLiteralExpr)
+                and isinstance(index.value, int)
+            ):
+                if index.value < 0 or index.value >= base.type.rank:
+                    raise TypeError(
+                        f"shape subscript index {index.value} is out of bounds for rank {base.type.rank}"
+                    )
+                if isinstance(base.base.type, SemanticTensorViewType):
+                    self._ensure_tensor_shape_parameter(base.base.binding, index.value)
             return SemanticIndexType()
         if isinstance(base.type, SemanticTensorViewType):
             if not isinstance(index, SemanticTupleExpr):
                 raise TypeError("TensorView slicing expects a tuple of slices in TileLang DSL v1")
             return self._tensor_slice_type(base.type, index)
         raise TypeError("unsupported subscript base in TileLang DSL v1")
+
+    def _analyze_tile_vector_access(
+        self,
+        expr: FrontendExprNode,
+        env: dict[str, SemanticBinding],
+        *,
+        allow_outer_lookup: bool,
+        context: str,
+    ) -> tuple[SemanticExpr, SemanticExpr]:
+        if not self.node.advanced_enabled:
+            raise TypeError(unsupported_feature_message(f"{context} tile indexing sugar"))
+        if not isinstance(expr, FrontendSubscriptExpr):
+            raise TypeError(
+                f"{context} expects Tile element-indexing syntax in advanced TileLang DSL mode"
+            )
+        base = self._analyze_expr(expr.base, env, allow_outer_lookup=allow_outer_lookup)
+        tile = self._require_tile_expr(base, context)
+        offset = self._tile_vector_offset_expr(
+            expr.index,
+            tile.type,
+            env,
+            allow_outer_lookup=allow_outer_lookup,
+            context=context,
+        )
+        return base, offset
+
+    def _tile_vector_offset_expr(
+        self,
+        index_expr: FrontendExprNode,
+        tile_type: SemanticTileType,
+        env: dict[str, SemanticBinding],
+        *,
+        allow_outer_lookup: bool,
+        context: str,
+    ) -> SemanticExpr:
+        if tile_type.rank == 1:
+            if not isinstance(index_expr, FrontendSliceExpr):
+                raise TypeError(f"{context} expects Tile[start:] syntax for rank-1 Tile values")
+            if index_expr.stop is not None:
+                raise TypeError(f"{context} does not support explicit slice stop in TileLang DSL advanced mode")
+            if index_expr.step is not None:
+                raise TypeError(f"{context} does not support stepped Tile vector slices in TileLang DSL advanced mode")
+            if index_expr.start is None:
+                return SemanticLiteralExpr(value=0, type=SemanticIndexType())
+            start = self._analyze_expr(index_expr.start, env, allow_outer_lookup=allow_outer_lookup)
+            self._require_index_typed_expr(start)
+            return start
+
+        if tile_type.rank != 2 or tile_type.shape is None:
+            raise TypeError(f"{context} currently only supports statically specialized rank-1 or rank-2 Tiles")
+        if not isinstance(index_expr, FrontendTupleExpr) or len(index_expr.elements) != 2:
+            raise TypeError(f"{context} expects Tile[row, col:] syntax for rank-2 Tile values")
+
+        row_expr, col_expr = index_expr.elements
+        if not isinstance(col_expr, FrontendSliceExpr):
+            raise TypeError(f"{context} expects Tile[row, col:] syntax for rank-2 Tile values")
+        if col_expr.stop is not None:
+            raise TypeError(f"{context} does not support explicit slice stop in TileLang DSL advanced mode")
+        if col_expr.step is not None:
+            raise TypeError(f"{context} does not support stepped Tile vector slices in TileLang DSL advanced mode")
+
+        row = self._analyze_expr(row_expr, env, allow_outer_lookup=allow_outer_lookup)
+        self._require_index_typed_expr(row)
+        if col_expr.start is None:
+            col = SemanticLiteralExpr(value=0, type=SemanticIndexType())
+        else:
+            col = self._analyze_expr(col_expr.start, env, allow_outer_lookup=allow_outer_lookup)
+            self._require_index_typed_expr(col)
+
+        stride = SemanticLiteralExpr(value=tile_type.shape[1], type=SemanticIndexType())
+        row_offset = SemanticBinaryExpr(lhs=row, op="mul", rhs=stride, type=SemanticIndexType())
+        if isinstance(col, SemanticLiteralExpr) and col.value == 0:
+            return row_offset
+        return SemanticBinaryExpr(lhs=row_offset, op="add", rhs=col, type=SemanticIndexType())
 
     def _tensor_slice_type(
         self,
@@ -937,18 +1362,27 @@ class _SemanticAnalyzer:
                 raise TypeError(
                     f"TensorView slicing axis {axis} must use a Python slice in TileLang DSL v1"
                 )
+            self._require_optional_index_typed_expr(element.start)
+            self._require_optional_index_typed_expr(element.stop)
+            self._require_optional_index_typed_expr(element.step)
+
             start = self._static_index_value(element.start, default=0)
             stop = self._static_index_value(element.stop, default=None)
             step = self._static_index_value(element.step, default=1)
-            if stop is None:
+            if element.stop is None:
                 raise TypeError("TensorView slicing requires explicit stop bounds in TileLang DSL v1")
             if start != 0:
                 raise TypeError("TensorView slicing currently only supports zero-based starts in TileLang DSL v1")
+            if element.step is not None and step is None:
+                raise TypeError("TensorView slicing currently only supports unit stride in TileLang DSL v1")
             if step != 1:
                 raise TypeError("TensorView slicing currently only supports unit stride in TileLang DSL v1")
-            extent = stop - start
-            if extent <= 0:
-                raise TypeError("TensorView slicing requires positive static extents in TileLang DSL v1")
+            if stop is None:
+                extent = None
+            else:
+                extent = stop - start
+                if extent <= 0:
+                    raise TypeError("TensorView slicing requires positive extents in TileLang DSL v1")
             extents.append(extent)
         return SemanticTensorSliceType(
             element_dtype=tensor_type.element_dtype,
@@ -996,6 +1430,10 @@ class _SemanticAnalyzer:
             raise TypeError(
                 f"call surface `{namespace + '.' if namespace else ''}{name}` is not supported in TileLang DSL v1 yet"
             )
+        if name in DEFERRED_PTO_SURFACES:
+            raise TypeError(deferred_surface_message(name))
+        if name == "get_lanes":
+            return self._analyze_get_lanes(args)
         if name == "make_mask":
             return self._analyze_make_mask(args)
         if name == "vlds":
@@ -1013,19 +1451,31 @@ class _SemanticAnalyzer:
             raise TypeError("pto.make_mask expects exactly 2 positional arguments in TileLang DSL v1")
         dtype_expr, value_expr = args
         dtype = self._require_dtype_symbol(dtype_expr, "pto.make_mask element type")
-        if not (
-            isinstance(value_expr, SemanticSymbolExpr)
-            and value_expr.type.kind == "mask_pattern"
-        ):
-            raise TypeError(
-                "pto.make_mask currently only supports PAT.* pattern lowering in TileLang DSL v1"
+        if isinstance(value_expr, SemanticSymbolExpr) and value_expr.type.kind == "mask_pattern":
+            return SemanticCallExpr(
+                namespace="pto",
+                name="make_mask",
+                args=args,
+                type=SemanticMaskType(granularity=self._mask_granularity_for_dtype(dtype)),
             )
+        self._require_tail_remaining_expr(value_expr, "pto.make_mask tail remaining")
         return SemanticCallExpr(
             namespace="pto",
             name="make_mask",
             args=args,
-            type=SemanticMaskType(granularity=self._mask_granularity_for_dtype(dtype)),
+            type=SemanticTupleType(
+                elements=(
+                    SemanticMaskType(granularity=self._mask_granularity_for_dtype(dtype)),
+                    _I32_TYPE,
+                )
+            ),
         )
+
+    def _analyze_get_lanes(self, args: tuple[SemanticExpr, ...]) -> SemanticExpr:
+        if len(args) != 1:
+            raise TypeError("pto.get_lanes expects exactly 1 positional argument in TileLang DSL v1")
+        dtype = self._require_dtype_symbol(args[0], "pto.get_lanes dtype")
+        return SemanticLiteralExpr(value=self._vreg_type_for_dtype(dtype).lanes, type=SemanticIndexType())
 
     def _analyze_vlds(self, args: tuple[SemanticExpr, ...]) -> SemanticExpr:
         if len(args) != 2:
@@ -1091,6 +1541,13 @@ class _SemanticAnalyzer:
             and expr.type.kind == "dtype"
             and isinstance(expr.value, ScalarType)
         ):
+            if (
+                isinstance(expr, SemanticBindingRef)
+                and isinstance(expr.type, SemanticMetaType)
+                and expr.type.kind == "dtype"
+                and isinstance(expr.binding.value, ScalarType)
+            ):
+                return expr.binding.value
             raise TypeError(f"{context} must be a TileLang scalar dtype symbol in TileLang DSL v1")
         return expr.value
 
@@ -1103,6 +1560,13 @@ class _SemanticAnalyzer:
         if not isinstance(expr.type, SemanticScalarType):
             raise TypeError(f"{context} must be a scalar value in TileLang DSL v1")
         return expr.type
+
+    def _require_tail_remaining_expr(self, expr: SemanticExpr, context: str) -> None:
+        if isinstance(expr.type, SemanticIndexType):
+            return
+        if isinstance(expr.type, SemanticScalarType) and expr.type.dtype.name == "i32":
+            return
+        raise TypeError(f"{context} must be an i32 or index value in TileLang DSL v1")
 
     def _require_mask_for_vreg(
         self,
@@ -1202,6 +1666,27 @@ class _SemanticAnalyzer:
             return
         raise TypeError(f"if condition must be scalar/index typed, got {ty!r}")
 
+    def _merge_loop_carried_types(
+        self,
+        outer_type: SemanticType,
+        final_type: SemanticType,
+    ) -> SemanticType | None:
+        if final_type == outer_type:
+            return outer_type
+        if (
+            isinstance(outer_type, SemanticIndexType)
+            and isinstance(final_type, SemanticScalarType)
+            and final_type.dtype == i32
+        ):
+            return final_type
+        if (
+            isinstance(final_type, SemanticIndexType)
+            and isinstance(outer_type, SemanticScalarType)
+            and outer_type.dtype == i32
+        ):
+            return outer_type
+        return None
+
     def _require_index_typed_expr(self, expr: SemanticExpr) -> None:
         if not isinstance(expr.type, SemanticIndexType):
             raise TypeError("slice bounds and vector offsets must be index-typed in TileLang DSL v1")
@@ -1210,8 +1695,13 @@ class _SemanticAnalyzer:
         if expr is None:
             return default
         if not isinstance(expr, SemanticLiteralExpr) or not isinstance(expr.value, int):
-            raise TypeError("TensorView slice bounds must be static integer literals in TileLang DSL v1")
+            return None
         return expr.value
+
+    def _require_optional_index_typed_expr(self, expr: SemanticExpr | None) -> None:
+        if expr is None:
+            return
+        self._require_index_typed_expr(expr)
 
 
 def analyze_frontend_kernel(node: FrontendKernelNode) -> SemanticKernel:
@@ -1247,6 +1737,7 @@ __all__ = [
     "SemanticSliceExpr",
     "SemanticSliceType",
     "SemanticStmt",
+    "SemanticVecscopeStmt",
     "SemanticStrictVecscopeStmt",
     "SemanticSubscriptAccess",
     "SemanticSymbolExpr",
