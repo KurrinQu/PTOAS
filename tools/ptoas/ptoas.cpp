@@ -7,48 +7,47 @@
 //===----------------------------------------------------------------------===//
 
 #include "PTO/IR/PTO.h"
-#include "PTO/IR/PTO.h"
+#include "PTO/Transforms/Passes.h"
+#include "PTO/Transforms/BufferizableOpInterfaceImpl.h"
 #include "PTO/Transforms/VPTOLowering.h"
 #include "PTO/Transforms/VPTOLLVMEmitter.h"
 #include "PTO/Transforms/VPTOTextEmitter.h"
-#include "PTO/Transforms/BufferizableOpInterfaceImpl.h"
-#include "PTO/Transforms/CppEmitter.h"
-#include "PTO/Transforms/Passes.h"
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
-#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
-#include "mlir/Dialect/EmitC/IR/EmitC.h"
-#include "mlir/Dialect/EmitC/Transforms/Passes.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/Math/IR/Math.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "mlir/Dialect/Vector/IR/VectorOps.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/InitAllDialects.h"
 #include "mlir/InitAllPasses.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include <cctype>
+#include <cstring>
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/Target/Cpp/CppEmitter.h"
+#include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/ToolOutputFile.h"
+#include "llvm/Support/FileSystem.h" // [Fix] Required for OF_None
 #include "ptobc/ptobc_decode.h"
+#include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/EmitC/IR/EmitC.h"
+#include "mlir/Dialect/EmitC/Transforms/Passes.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
-#include "llvm/Support/CommandLine.h"
-#include "llvm/Support/FileSystem.h" // [Fix] Required for OF_None
-#include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/Path.h"
-#include "llvm/Support/SourceMgr.h"
-#include "llvm/Support/ToolOutputFile.h"
-#include "llvm/Support/raw_ostream.h"
-#include <cctype>
-#include <cstring>
 #include <memory>
 #include <optional>
 #include <string>
@@ -64,9 +63,6 @@ using namespace pto;
 static void printPTOASVersion(llvm::raw_ostream &os) {
   os << "ptoas " << PTOAS_RELEASE_VERSION << "\n";
 }
-
-namespace {
-} // namespace
 
 static LogicalResult reorderEmitCFunctions(ModuleOp module) {
   SmallVector<emitc::FuncOp> declarations;
@@ -136,8 +132,8 @@ static LogicalResult reorderEmitCFunctions(ModuleOp module) {
   }
 
   if (sortedDefinitions.size() != definitions.size()) {
-    return module.emitError() << "cyclic function call graph is not supported "
-                                 "for EmitC C++ emission";
+    return module.emitError()
+           << "cyclic function call graph is not supported for EmitC C++ emission";
   }
 
   if (declarations.empty() && definitions.size() <= 1)
@@ -228,14 +224,14 @@ static llvm::cl::opt<std::string> inputFilename(llvm::cl::Positional,
                                                 llvm::cl::desc("<input file>"),
                                                 llvm::cl::init("-"));
 
-static llvm::cl::opt<std::string>
-    outputFilename("o", llvm::cl::desc("Output filename"),
-                   llvm::cl::value_desc("filename"), llvm::cl::init("-"));
+static llvm::cl::opt<std::string> outputFilename("o",
+                                                 llvm::cl::desc("Output filename"),
+                                                 llvm::cl::value_desc("filename"),
+                                                 llvm::cl::init("-"));
 
-static llvm::cl::opt<bool> enableInsertSync(
-    "enable-insert-sync",
-    llvm::cl::desc("Enable automatic synchronization insertion pass"),
-    llvm::cl::init(false));
+static llvm::cl::opt<bool> enableInsertSync("enable-insert-sync",
+                                            llvm::cl::desc("Enable automatic synchronization insertion pass"),
+                                            llvm::cl::init(false));
 
 static llvm::cl::opt<bool> enableOpFusion(
     "enable-op-fusion",
@@ -308,16 +304,15 @@ static llvm::cl::opt<bool> emitAddPtrTrace(
 
 static llvm::cl::opt<std::string> ptoTargetArch(
     "pto-arch",
-    llvm::cl::desc(
-        "Target Ascend architecture for codegen: a3 or a5 (default: a3)"),
-    llvm::cl::value_desc("a3|a5"), llvm::cl::init("a3"));
+    llvm::cl::desc("Target Ascend architecture for codegen: a3 or a5 (default: a3)"),
+    llvm::cl::value_desc("a3|a5"),
+    llvm::cl::init("a3"));
 
-static llvm::cl::opt<std::string>
-    ptoBuildLevel("pto-level",
-                  llvm::cl::desc("Build level for pass pipeline: level1, "
-                                 "level2, or level3 (default: level2)"),
-                  llvm::cl::value_desc("level1|level2|level3"),
-                  llvm::cl::init("level2"));
+static llvm::cl::opt<std::string> ptoBuildLevel(
+    "pto-level",
+    llvm::cl::desc("Build level for pass pipeline: level1, level2, or level3 (default: level2)"),
+    llvm::cl::value_desc("level1|level2|level3"),
+    llvm::cl::init("level2"));
 
 static llvm::cl::opt<std::string> ptoBackend(
     "pto-backend",
@@ -417,7 +412,9 @@ static std::string asciiLowercaseCopy(llvm::StringRef text) {
   return lowered;
 }
 
-static PTOBuildLevel defaultBuildLevel() { return PTOBuildLevel::Level2; }
+static PTOBuildLevel defaultBuildLevel() {
+  return PTOBuildLevel::Level2;
+}
 
 static bool parseBuildLevel(llvm::StringRef levelStr, PTOBuildLevel &out) {
   std::string s = asciiLowercaseCopy(levelStr);
@@ -441,8 +438,7 @@ static constexpr llvm::StringLiteral kAutoSyncTailPolicyBarrierAll =
 static constexpr llvm::StringLiteral kAutoSyncTailPolicyMte3ToSEvent0 =
     "setwait_mte3_to_s_event0";
 
-static bool parseAutoSyncTailHint(llvm::StringRef hintStr,
-                                  std::string &normalized) {
+static bool parseAutoSyncTailHint(llvm::StringRef hintStr, std::string &normalized) {
   std::string s = hintStr.str();
   for (char &c : s)
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -451,7 +447,8 @@ static bool parseAutoSyncTailHint(llvm::StringRef hintStr,
     return true;
   }
   if (s == "mte3-to-s-event0" || s == "mte3_to_s_event0" ||
-      s == "setwait-mte3-to-s-event0" || s == "setwait_mte3_to_s_event0") {
+      s == "setwait-mte3-to-s-event0" ||
+      s == "setwait_mte3_to_s_event0") {
     normalized = kAutoSyncTailPolicyMte3ToSEvent0.str();
     return true;
   }
@@ -858,135 +855,94 @@ static bool containsVPTOIR(llvm::StringRef input) {
 // first-class op for member-function invocation. After translation, we rewrite:
 //   PTOAS__TILE_SET_VALUE(dst, offset, val) -> dst.SetValue(offset, val)
 //   PTOAS__TILE_GET_VALUE(src, offset)      -> src.GetValue(offset)
-//   PTOAS__TILE_DATA(obj)                  -> obj.data()
-//   PTOAS__TILE_SET_VALIDSHAPE(obj, r, c)  -> obj.SetValidShape(r, c)
-//   PTOAS__TILE_GET_VALID_ROW(obj)         -> obj.GetValidRow()
-//   PTOAS__TILE_GET_VALID_COL(obj)         -> obj.GetValidCol()
-//   PTOAS__PTR_LOAD(ptr, offset)           -> ptr[offset]
-//   PTOAS__PTR_STORE(ptr, offset, val)     -> ptr[offset] = val
+//   PTOAS__TILE_DATA(obj)                   -> obj.data()
+//   PTOAS__TILE_SET_VALIDSHAPE(obj, r, c)   -> obj.SetValidShape(r, c)
+//   PTOAS__PTR_LOAD(ptr, offset)            -> ptr[offset]
+//   PTOAS__PTR_STORE(ptr, offset, val)      -> ptr[offset] = val
 // --------------------------------------------------------------------------
-struct MarkerCallMatch {
-  size_t markerPos = std::string::npos;
-  size_t rparenPos = std::string::npos;
-  llvm::SmallVector<llvm::StringRef, 4> args;
-};
-
-static llvm::SmallVector<llvm::StringRef, 4>
-splitTopLevelCallArgs(llvm::StringRef argsRef) {
-  llvm::SmallVector<llvm::StringRef, 4> args;
-  size_t partBegin = 0;
-  int parenDepth = 0;
-  for (size_t i = 0; i < argsRef.size(); ++i) {
-    char c = argsRef[i];
-    if (c == '(') {
-      ++parenDepth;
-    } else if (c == ')') {
-      if (parenDepth > 0)
-        --parenDepth;
-    } else if (c == ',' && parenDepth == 0) {
-      args.push_back(argsRef.slice(partBegin, i).trim());
-      partBegin = i + 1;
-    }
-  }
-  if (partBegin <= argsRef.size())
-    args.push_back(argsRef.drop_front(partBegin).trim());
-  return args;
-}
-
-static bool parseMarkerCallAt(llvm::StringRef cpp, llvm::StringRef marker,
-                              size_t markerPos, MarkerCallMatch &match,
-                              bool &stopScanning) {
-  stopScanning = false;
-
-  size_t lparenPos = markerPos + marker.size();
-  if (lparenPos >= cpp.size() || cpp[lparenPos] != '(')
-    return false;
-
-  size_t argsBegin = lparenPos + 1;
-  int parenDepth = 0;
-  size_t rparenPos = std::string::npos;
-  for (size_t i = argsBegin; i < cpp.size(); ++i) {
-    char c = cpp[i];
-    if (c == '(') {
-      ++parenDepth;
-    } else if (c == ')') {
-      if (parenDepth == 0) {
-        rparenPos = i;
-        break;
-      }
-      --parenDepth;
-    }
-  }
-  if (rparenPos == std::string::npos) {
-    stopScanning = true;
-    return false;
-  }
-
-  match.markerPos = markerPos;
-  match.rparenPos = rparenPos;
-  match.args = splitTopLevelCallArgs(cpp.slice(argsBegin, rparenPos));
-  return true;
-}
-
-template <typename RewriteFn>
-static bool rewriteMarkerCalls(std::string &cpp, llvm::StringRef marker,
-                               RewriteFn &&buildReplacement) {
+static bool rewriteMarkerCallToMember(std::string &cpp, llvm::StringRef marker,
+                                      llvm::StringRef memberName,
+                                      unsigned expectedNumArgs) {
   size_t searchPos = 0;
   bool changed = false;
   while (true) {
-    llvm::StringRef cppRef(cpp);
-    size_t markerPos = cppRef.find(marker, searchPos);
-    if (markerPos == llvm::StringRef::npos)
+    size_t markerPos = cpp.find(marker.str(), searchPos);
+    if (markerPos == std::string::npos)
       break;
 
-    MarkerCallMatch match;
-    bool stopScanning = false;
-    if (!parseMarkerCallAt(cppRef, marker, markerPos, match, stopScanning)) {
-      if (stopScanning)
-        break;
+    size_t lparenPos = markerPos + marker.size();
+    if (lparenPos >= cpp.size() || cpp[lparenPos] != '(') {
       searchPos = markerPos + marker.size();
       continue;
     }
 
-    size_t replaceEnd = match.rparenPos;
-    std::string replacement;
-    if (!buildReplacement(match, replacement, replaceEnd)) {
-      searchPos = match.rparenPos + 1;
+    // Find the matching ')' for this call, tracking nested parentheses.
+    size_t argsBegin = lparenPos + 1;
+    int parenDepth = 0;
+    size_t rparenPos = std::string::npos;
+    for (size_t i = argsBegin; i < cpp.size(); ++i) {
+      char c = cpp[i];
+      if (c == '(') {
+        ++parenDepth;
+      } else if (c == ')') {
+        if (parenDepth == 0) {
+          rparenPos = i;
+          break;
+        }
+        --parenDepth;
+      }
+    }
+    if (rparenPos == std::string::npos) {
+      // Unbalanced parentheses; stop trying to rewrite.
+      break;
+    }
+
+    llvm::StringRef argsRef(cpp.data() + argsBegin, rparenPos - argsBegin);
+    llvm::SmallVector<llvm::StringRef, 4> args;
+    size_t partBegin = 0;
+    parenDepth = 0;
+    for (size_t i = 0; i < argsRef.size(); ++i) {
+      char c = argsRef[i];
+      if (c == '(') {
+        ++parenDepth;
+      } else if (c == ')') {
+        if (parenDepth > 0)
+          --parenDepth;
+      } else if (c == ',' && parenDepth == 0) {
+        args.push_back(argsRef.slice(partBegin, i).trim());
+        partBegin = i + 1;
+      }
+    }
+    if (partBegin <= argsRef.size())
+      args.push_back(argsRef.drop_front(partBegin).trim());
+
+    if (args.size() != expectedNumArgs) {
+      searchPos = rparenPos + 1;
       continue;
     }
 
-    cpp.replace(match.markerPos, (replaceEnd - match.markerPos) + 1,
-                replacement);
+    std::string replacement;
+    replacement.reserve(marker.size() + argsRef.size() + 16);
+    replacement.append(args[0].str());
+    replacement.push_back('.');
+    replacement.append(memberName.str());
+    replacement.push_back('(');
+    if (expectedNumArgs == 1) {
+      // no args
+    } else if (expectedNumArgs == 2) {
+      replacement.append(args[1].str());
+    } else if (expectedNumArgs == 3) {
+      replacement.append(args[1].str());
+      replacement.append(", ");
+      replacement.append(args[2].str());
+    }
+    replacement.push_back(')');
+
+    cpp.replace(markerPos, (rparenPos - markerPos) + 1, replacement);
     changed = true;
-    searchPos = match.markerPos + replacement.size();
+    searchPos = markerPos + replacement.size();
   }
   return changed;
-}
-
-static bool rewriteMarkerCallToMember(std::string &cpp, llvm::StringRef marker,
-                                      llvm::StringRef memberName,
-                                      unsigned expectedNumArgs) {
-  return rewriteMarkerCalls(cpp, marker,
-                            [&](const MarkerCallMatch &match,
-                                std::string &replacement, size_t &) -> bool {
-                              if (match.args.size() != expectedNumArgs)
-                                return false;
-
-                              replacement.clear();
-                              replacement.append(match.args[0].str());
-                              replacement.push_back('.');
-                              replacement.append(memberName.str());
-                              replacement.push_back('(');
-                              if (expectedNumArgs == 2) {
-                                replacement.append(match.args[1].str());
-                              } else if (expectedNumArgs == 3) {
-                                replacement.append(match.args[1].str());
-                                replacement.append(", ");
-                                replacement.append(match.args[2].str());
-                              }
-                              replacement.push_back(')');
-                              return true;
-                            });
 }
 
 static void rewriteTileGetSetValueMarkers(std::string &cpp) {
@@ -994,19 +950,15 @@ static void rewriteTileGetSetValueMarkers(std::string &cpp) {
   bool changed = true;
   while (changed) {
     changed = false;
-    changed |= rewriteMarkerCallToMember(cpp, "PTOAS__TILE_SET_VALUE",
-                                         "SetValue", /*expectedNumArgs=*/3);
-    changed |= rewriteMarkerCallToMember(cpp, "PTOAS__TILE_GET_VALUE",
-                                         "GetValue", /*expectedNumArgs=*/2);
-    changed |= rewriteMarkerCallToMember(cpp, "PTOAS__TILE_DATA", "data",
-                                         /*expectedNumArgs=*/1);
-    changed |= rewriteMarkerCallToMember(cpp, "PTOAS__TILE_SET_VALIDSHAPE",
-                                         "SetValidShape",
-                                         /*expectedNumArgs=*/3);
-    changed |= rewriteMarkerCallToMember(cpp, "PTOAS__TILE_GET_VALID_ROW",
-                                         "GetValidRow", /*expectedNumArgs=*/1);
-    changed |= rewriteMarkerCallToMember(cpp, "PTOAS__TILE_GET_VALID_COL",
-                                         "GetValidCol", /*expectedNumArgs=*/1);
+    changed |= rewriteMarkerCallToMember(
+        cpp, "PTOAS__TILE_SET_VALUE", "SetValue", /*expectedNumArgs=*/3);
+    changed |= rewriteMarkerCallToMember(
+        cpp, "PTOAS__TILE_GET_VALUE", "GetValue", /*expectedNumArgs=*/2);
+    changed |= rewriteMarkerCallToMember(
+        cpp, "PTOAS__TILE_DATA", "data", /*expectedNumArgs=*/1);
+    changed |= rewriteMarkerCallToMember(
+        cpp, "PTOAS__TILE_SET_VALIDSHAPE", "SetValidShape",
+        /*expectedNumArgs=*/3);
   }
 }
 
@@ -1037,8 +989,7 @@ static void dropEmptyEmitCExpressions(Operation *rootOp) {
     expr.erase();
 }
 
-static Attribute getDefaultEmitCVariableInitAttr(OpBuilder &builder,
-                                                 Type type) {
+static Attribute getDefaultEmitCVariableInitAttr(OpBuilder &builder, Type type) {
   if (auto intTy = dyn_cast<IntegerType>(type))
     return builder.getIntegerAttr(intTy, 0);
   if (isa<IndexType>(type))
@@ -1075,36 +1026,87 @@ static void materializeControlFlowOperands(Operation *rootOp) {
       if (!initAttr)
         continue;
 
-      Value tmp = builder
-                      .create<emitc::VariableOp>(op->getLoc(), value.getType(),
-                                                 initAttr)
-                      .getResult();
+      Value tmp =
+          builder.create<emitc::VariableOp>(op->getLoc(), value.getType(),
+                                            initAttr)
+              .getResult();
       builder.create<emitc::AssignOp>(op->getLoc(), tmp, value);
       operand.set(tmp);
     }
   }
 }
 
-static bool rewriteMarkerCallToSubscript(std::string &cpp,
-                                         llvm::StringRef marker,
+static bool rewriteMarkerCallToSubscript(std::string &cpp, llvm::StringRef marker,
                                          unsigned expectedNumArgs,
                                          bool isStore) {
-  return rewriteMarkerCalls(
-      cpp, marker,
-      [&](const MarkerCallMatch &match, std::string &replacement,
-          size_t &) -> bool {
-        if (match.args.size() != expectedNumArgs)
-          return false;
+  size_t searchPos = 0;
+  bool changed = false;
+  while (true) {
+    size_t markerPos = cpp.find(marker.str(), searchPos);
+    if (markerPos == std::string::npos)
+      break;
 
-        if (isStore) {
-          replacement =
-              (match.args[0] + "[" + match.args[1] + "] = " + match.args[2])
-                  .str();
-        } else {
-          replacement = (match.args[0] + "[" + match.args[1] + "]").str();
+    size_t lparenPos = markerPos + marker.size();
+    if (lparenPos >= cpp.size() || cpp[lparenPos] != '(') {
+      searchPos = markerPos + marker.size();
+      continue;
+    }
+
+    size_t argsBegin = lparenPos + 1;
+    int parenDepth = 0;
+    size_t rparenPos = std::string::npos;
+    for (size_t i = argsBegin; i < cpp.size(); ++i) {
+      char c = cpp[i];
+      if (c == '(') {
+        ++parenDepth;
+      } else if (c == ')') {
+        if (parenDepth == 0) {
+          rparenPos = i;
+          break;
         }
-        return true;
-      });
+        --parenDepth;
+      }
+    }
+    if (rparenPos == std::string::npos) {
+      break;
+    }
+
+    llvm::StringRef argsRef(cpp.data() + argsBegin, rparenPos - argsBegin);
+    llvm::SmallVector<llvm::StringRef, 4> args;
+    size_t partBegin = 0;
+    parenDepth = 0;
+    for (size_t i = 0; i < argsRef.size(); ++i) {
+      char c = argsRef[i];
+      if (c == '(') {
+        ++parenDepth;
+      } else if (c == ')') {
+        if (parenDepth > 0)
+          --parenDepth;
+      } else if (c == ',' && parenDepth == 0) {
+        args.push_back(argsRef.slice(partBegin, i).trim());
+        partBegin = i + 1;
+      }
+    }
+    if (partBegin <= argsRef.size())
+      args.push_back(argsRef.drop_front(partBegin).trim());
+
+    if (args.size() != expectedNumArgs) {
+      searchPos = rparenPos + 1;
+      continue;
+    }
+
+    std::string replacement;
+    if (isStore) {
+      replacement = (args[0] + "[" + args[1] + "] = " + args[2]).str();
+    } else {
+      replacement = (args[0] + "[" + args[1] + "]").str();
+    }
+
+    cpp.replace(markerPos, (rparenPos - markerPos) + 1, replacement);
+    changed = true;
+    searchPos = markerPos + replacement.size();
+  }
+  return changed;
 }
 
 static void rewritePtrScalarMarkers(std::string &cpp) {
@@ -1119,34 +1121,88 @@ static void rewritePtrScalarMarkers(std::string &cpp) {
 }
 
 static bool rewriteAddPtrTraceMarkers(std::string &cpp, bool showTrace) {
-  return rewriteMarkerCalls(
-      cpp, "PTOAS__ADDPTR_TRACE",
-      [&](const MarkerCallMatch &match, std::string &replacement,
-          size_t &replaceEnd) -> bool {
-        if (match.args.size() != 3)
-          return false;
+  size_t searchPos = 0;
+  bool changed = false;
+  while (true) {
+    size_t markerPos = cpp.find("PTOAS__ADDPTR_TRACE", searchPos);
+    if (markerPos == std::string::npos)
+      break;
 
-        replacement.clear();
-        if (showTrace) {
-          replacement.reserve(64);
-          replacement.append("/* ADDPTR_TRACE: ");
-          replacement.append(match.args[0].str());
-          replacement.append(" = ");
-          replacement.append(match.args[1].str());
-          replacement.append(" + ");
-          replacement.append(match.args[2].str());
-          replacement.append(" */");
-        } else {
-          size_t i = match.rparenPos + 1;
-          while (i < cpp.size() &&
-                 std::isspace(static_cast<unsigned char>(cpp[i]))) {
-            ++i;
-          }
-          if (i < cpp.size() && cpp[i] == ';')
-            replaceEnd = i;
+    size_t lparenPos = markerPos + (sizeof("PTOAS__ADDPTR_TRACE") - 1);
+    if (lparenPos >= cpp.size() || cpp[lparenPos] != '(') {
+      searchPos = markerPos + 1;
+      continue;
+    }
+
+    size_t argsBegin = lparenPos + 1;
+    int parenDepth = 0;
+    size_t rparenPos = std::string::npos;
+    for (size_t i = argsBegin; i < cpp.size(); ++i) {
+      char c = cpp[i];
+      if (c == '(') {
+        ++parenDepth;
+      } else if (c == ')') {
+        if (parenDepth == 0) {
+          rparenPos = i;
+          break;
         }
-        return true;
-      });
+        --parenDepth;
+      }
+    }
+    if (rparenPos == std::string::npos) {
+      break;
+    }
+
+    llvm::StringRef argsRef(cpp.data() + argsBegin, rparenPos - argsBegin);
+    llvm::SmallVector<llvm::StringRef, 4> args;
+    size_t partBegin = 0;
+    parenDepth = 0;
+    for (size_t i = 0; i < argsRef.size(); ++i) {
+      char c = argsRef[i];
+      if (c == '(') {
+        ++parenDepth;
+      } else if (c == ')') {
+        if (parenDepth > 0)
+          --parenDepth;
+      } else if (c == ',' && parenDepth == 0) {
+        args.push_back(argsRef.slice(partBegin, i).trim());
+        partBegin = i + 1;
+      }
+    }
+    if (partBegin <= argsRef.size())
+      args.push_back(argsRef.drop_front(partBegin).trim());
+
+    if (args.size() != 3) {
+      searchPos = rparenPos + 1;
+      continue;
+    }
+
+    std::string replacement;
+    if (showTrace) {
+      replacement.reserve(64 + argsRef.size());
+      replacement.append("/* ADDPTR_TRACE: ");
+      replacement.append(args[0].str());
+      replacement.append(" = ");
+      replacement.append(args[1].str());
+      replacement.append(" + ");
+      replacement.append(args[2].str());
+      replacement.append(" */");
+    }
+
+    size_t replaceEnd = rparenPos;
+    if (!showTrace) {
+      size_t i = rparenPos + 1;
+      while (i < cpp.size() && std::isspace(static_cast<unsigned char>(cpp[i])))
+        ++i;
+      if (i < cpp.size() && cpp[i] == ';')
+        replaceEnd = i;
+    }
+
+    cpp.replace(markerPos, (replaceEnd - markerPos) + 1, replacement);
+    changed = true;
+    searchPos = markerPos + replacement.size();
+  }
+  return changed;
 }
 
 static void rewriteHoistedGlobalTensorDecls(std::string &cpp) {
@@ -1225,11 +1281,11 @@ int main(int argc, char **argv) {
   registry.insert<mlir::scf::SCFDialect>();
   registry.insert<mlir::vector::VectorDialect>();
 
-    registry.insert<mlir::pto::PTODialect>();
-  // mlir::registerAllDialects(registry);
+  registry.insert<mlir::pto::PTODialect>();
+  //mlir::registerAllDialects(registry);
   arith::registerBufferizableOpInterfaceExternalModels(registry);
   tensor::registerBufferizableOpInterfaceExternalModels(registry);
-  // func::registerBufferizableOpInterfaceExternalModels(registry);
+  //func::registerBufferizableOpInterfaceExternalModels(registry);
   pto::registerBufferizableOpInterfaceExternalModels(registry);
 
   registry.insert<emitc::EmitCDialect>();
@@ -1291,7 +1347,7 @@ int main(int argc, char **argv) {
     context.disableMultithreading();
 
   context.getOrLoadDialect<emitc::EmitCDialect>();
-    context.getOrLoadDialect<mlir::pto::PTODialect>();
+  context.getOrLoadDialect<mlir::pto::PTODialect>();
   context.getOrLoadDialect<func::FuncDialect>();
   context.getOrLoadDialect<arith::ArithDialect>();
   context.getOrLoadDialect<math::MathDialect>();
@@ -1311,14 +1367,12 @@ int main(int argc, char **argv) {
 
   OwningOpRef<ModuleOp> module;
   llvm::StringRef buf = (*fileOrErr)->getBuffer();
-  const bool isPTOBC =
-      (buf.size() >= 6 && std::memcmp(buf.data(), "PTOBC\0", 6) == 0);
+  const bool isPTOBC = (buf.size() >= 6 && std::memcmp(buf.data(), "PTOBC\0", 6) == 0);
   const bool inputIsVPTOIR = containsVPTOIR(buf);
 
   if (isPTOBC) {
     // Decode PTO bytecode directly into an MLIR module.
-    llvm::ArrayRef<uint8_t> bytes(reinterpret_cast<const uint8_t *>(buf.data()),
-                                  buf.size());
+    llvm::ArrayRef<uint8_t> bytes(reinterpret_cast<const uint8_t *>(buf.data()), buf.size());
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
     try {
       module = ptobc::decodePTOBCToModule(bytes, context);
@@ -1414,8 +1468,8 @@ int main(int argc, char **argv) {
     bool hasAddr = false;
     module->walk([&](pto::AllocTileOp op) {
       if (op.getAddr()) {
-        op.emitError("unexpected 'addr' operand: only supported when "
-                     "--pto-level=level3");
+        op.emitError(
+            "unexpected 'addr' operand: only supported when --pto-level=level3");
         hasAddr = true;
       }
     });
@@ -1667,29 +1721,19 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  PassManager preCodegenPm(&context);
-  maybeEnablePrintIRAfterAll(preCodegenPm, inputFuncNames);
-
-  preCodegenPm.addNestedPass<mlir::func::FuncOp>(
-      pto::createLoweringSyncToPipePass());
-  preCodegenPm.addPass(pto::createPTOViewToMemrefPass());
-
-  if (failed(preCodegenPm.run(*module))) {
-    llvm::errs() << "Error: Pass execution failed.\n";
-    return 1;
-  }
-
-  // EmitC path: lower PTO ops directly to PTO-ISA/EmitC without any OP-Lib
-  // compatibility stages.
+  // Main PassManager
   PassManager pm(&context);
-  maybeEnablePrintIRAfterAll(pm, inputFuncNames);
+  
+  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertCVMovPass());
+  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOConvertToDPSPass());
+  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertLoadStoreForMixCVPass());
+  pm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
+  
   if (!disableInferLayout)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
-  // Stage 1 has already lowered tile/view values into memref world.
-  // Running PTOViewToMemref again here is not idempotent and can fail on IR
-  // that already contains lowered bind_tile/partition_view structure.
+  pm.addPass(pto::createPTOViewToMemrefPass());
   // bufferizationPipeline(pm);
-  // pm.addPass(createInferPTOMemScopePass());
+  //pm.addPass(createInferPTOMemScopePass());
 
   if (effectiveLevel != PTOBuildLevel::Level3) {
     PlanMemoryOptions planMemoryOption;
@@ -1702,30 +1746,23 @@ int main(int argc, char **argv) {
   // Conditionally add Sync pass based on flag.
   if (enableInsertSync)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
-  pm.addPass(createCanonicalizerPass());
-  pm.addPass(createCSEPass());
-
-  if (failed(pm.run(*module))) {
-    llvm::errs() << "Error: Pass execution failed.\n";
-    return 1;
-  }
 
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTORemoveRedundantBarrierPass());
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOHighDimLoweringPass());
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVFloopGatherPass());
 
-  PassManager codegenPm(&context);
-  maybeEnablePrintIRAfterAll(codegenPm, inputFuncNames);
-  codegenPm.addPass(createCSEPass());
-  if (effectiveArch == PTOTargetArch::A3) {
-    codegenPm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));
+  pm.addPass(createCSEPass());
+  module->getOperation()->setAttr("pto.target_arch",
+                                  mlir::StringAttr::get(&context, arch));
+  if (arch == "a3") {
+    pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));
   } else {
-    codegenPm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A5));
+    pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A5));
   }
-  codegenPm.addPass(emitc::createFormExpressionsPass());
-  codegenPm.addPass(mlir::createCSEPass());
+  pm.addPass(emitc::createFormExpressionsPass());
+  pm.addPass(mlir::createCSEPass());
 
-  if (failed(codegenPm.run(*module))) {
+  if (failed(pm.run(*module))) {
     llvm::errs() << "Error: Pass execution failed.\n";
     return 1;
   }
@@ -1733,8 +1770,7 @@ int main(int argc, char **argv) {
   dropEmptyEmitCExpressions(module.get());
   materializeControlFlowOperands(module.get());
   if (failed(reorderEmitCFunctions(module.get()))) {
-    llvm::errs()
-        << "Error: Failed to order emitted functions for C++ emission.\n";
+    llvm::errs() << "Error: Failed to order emitted functions for C++ emission.\n";
     return 1;
   }
 
@@ -1759,9 +1795,8 @@ int main(int argc, char **argv) {
       }
     }
   }
-  if (failed(pto::translateToCpp(
-          *module, cppOS,
-          /*declareVariablesAtTop=*/declareVariablesAtTop))) {
+  if (failed(emitc::translateToCpp(*module, cppOS,
+                                  /*declareVariablesAtTop=*/declareVariablesAtTop))) {
     llvm::errs() << "Error: Failed to emit C++.\n";
     return 1;
   }
