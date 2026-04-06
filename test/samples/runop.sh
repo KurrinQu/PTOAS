@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
 set -uo pipefail   # 注意：去掉 -e，避免失败直接退出整个脚本
 
 BASE_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
@@ -105,6 +113,30 @@ resolve_ptobc_bin() {
   return 1
 }
 
+copy_validation_assets() {
+  local sample_dir="$1"
+  local out_root="$2"
+  local out_sample_dir="$3"
+  local asset rel
+
+  if [[ -f "${BASE_DIR}/validation_runtime.py" ]]; then
+    cp -f "${BASE_DIR}/validation_runtime.py" "${out_root}/validation_runtime.py"
+  fi
+
+  for asset in "${sample_dir}"/*_golden.py "${sample_dir}"/*_compare.py; do
+    [[ -f "$asset" ]] || continue
+    cp -f "$asset" "${out_sample_dir}/"
+  done
+
+  if [[ -d "${sample_dir}/npu_validation" ]]; then
+    while IFS= read -r -d '' asset; do
+      rel="${asset#${sample_dir}/}"
+      mkdir -p "${out_sample_dir}/$(dirname "${rel}")"
+      cp -f "$asset" "${out_sample_dir}/${rel}"
+    done < <(find "${sample_dir}/npu_validation" -type f \( -name 'golden.py' -o -name 'compare.py' \) -print0)
+  fi
+}
+
 process_one_dir() {
   local A="$1" # folder name (e.g. Abs)
   local out_dir="$2"
@@ -112,6 +144,7 @@ process_one_dir() {
   dir="${BASE_DIR}/${A}"
   out_subdir="${out_dir}/${A}"
   mkdir -p "${out_subdir}"
+  copy_validation_assets "${dir}" "${out_dir}" "${out_subdir}"
 
   ptoas="$(resolve_ptoas_bin)"
   ptobc="$(resolve_ptobc_bin)"
@@ -139,24 +172,16 @@ process_one_dir() {
   fi
 
   local target_arch="a3"
-  local target_backend="emitc"
   if ((${#ptoas_flags[@]})); then
     for ((idx=0; idx<${#ptoas_flags[@]}; ++idx)); do
       if [[ "${ptoas_flags[idx]}" == "--pto-arch" && $((idx + 1)) -lt ${#ptoas_flags[@]} ]]; then
         target_arch="${ptoas_flags[idx + 1]}"
       elif [[ "${ptoas_flags[idx]}" == --pto-arch=* ]]; then
         target_arch="${ptoas_flags[idx]#--pto-arch=}"
-      elif [[ "${ptoas_flags[idx]}" == "--pto-backend" && $((idx + 1)) -lt ${#ptoas_flags[@]} ]]; then
-        target_backend="${ptoas_flags[idx + 1]}"
-      elif [[ "${ptoas_flags[idx]}" == --pto-backend=* ]]; then
-        target_backend="${ptoas_flags[idx]#--pto-backend=}"
       fi
     done
   fi
   local expected_vec_barrier="pipe_barrier(PIPE_V)"
-  local expected_vec_barrier_vpto="pto.pipe_barrier \"PIPE_V\""
-  local expected_mte2_barrier_vpto="pto.pipe_barrier \"PIPE_MTE2\""
-  local expected_mte3_barrier_vpto="pto.pipe_barrier \"PIPE_MTE3\""
   local skip_vec_barrier=0
   if [[ "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" == "a5" ]]; then
     skip_vec_barrier=1
@@ -188,6 +213,11 @@ process_one_dir() {
   local f mlir ptobc_file decoded_pto cpp base overall=0
   for f in "$dir"/*.py; do
     [[ -f "$f" ]] || continue
+    case "$(basename "$f")" in
+      *_golden.py|*_compare.py)
+        continue
+        ;;
+    esac
     base="$(basename "$f" .py)"
     local expect_fail=0
     case "$base" in
@@ -206,18 +236,38 @@ process_one_dir() {
       fi
     fi
 
-    if [[ "$target_backend" == "vpto" && "$base" == "test_inject_sync_intra_pipe_barrier" ]]; then
-      echo -e "${A}(${base}.py)\tSKIP\trequires structured tile_buf operands for VPTO lowering"
+    # Inter-core sync regression samples are arch-specific.
+    if [[ "$base" == "test_intercore_sync_a5" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a5" ]]; then
+      echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a5"
       continue
     fi
-
-    if [[ "$target_backend" == "vpto" ]]; then
-      case "$base" in
-        matmul|tmatmulk_autosync|tmatmulk_autosync_a5|matMul|tmatmulk|Matmul_transpose|gemv|gemvacc|gemvbias|paged_attention_example_kernel_pv_matmul|paged_attention_example_kernel_qk_matmul)
-          echo -e "${A}(${base}.py)\tSKIP\tmatrix-multiply family is out of current VPTO scope"
-          continue
-          ;;
-      esac
+    if [[ "$base" == "test_intercore_sync_a5_dyn" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a5" ]]; then
+      echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a5"
+      continue
+    fi
+    if [[ "$base" == "test_intercore_sync_a5_functional" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a5" ]]; then
+      echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a5"
+      continue
+    fi
+    if [[ "$base" == "test_intercore_sync_a5_ptoisa_vec" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a5" ]]; then
+      echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a5"
+      continue
+    fi
+    if [[ "$base" == "test_intercore_sync_a3" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a3" ]]; then
+      echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a3"
+      continue
+    fi
+    if [[ "$base" == "test_intercore_sync_a3_dyn" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a3" ]]; then
+      echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a3"
+      continue
+    fi
+    if [[ "$base" == "test_intercore_sync_a3_modes" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a3" ]]; then
+      echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a3"
+      continue
+    fi
+    if [[ "$base" == "test_intercore_sync_a3_missing_setffts" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a3" ]]; then
+      echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a3"
+      continue
     fi
 
     # Some samples are expected to fail depending on the selected ptoas flags.
@@ -241,6 +291,9 @@ process_one_dir() {
         done
       fi
       [[ $has_level3 -eq 1 ]] || expect_fail=1
+    fi
+    if [[ "$base" == "test_intercore_sync_a3_missing_setffts" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" == "a3" ]]; then
+      expect_fail=1
     fi
     mlir="${out_subdir}/${base}-pto-ir.pto"
     cpp="${out_subdir}/${base}-pto.cpp"
@@ -283,8 +336,16 @@ process_one_dir() {
 
     # Write output via -o to avoid mixing debug prints with generated C++.
     local -a ptoas_cmd=("${ptoas_cmd_base[@]}" "$pto_input" -o "$cpp")
-    if ! "${ptoas_cmd[@]}" >/dev/null 2>&1; then
+    local ptoas_log="${out_subdir}/${base}-ptoas.log"
+    if ! "${ptoas_cmd[@]}" >"${ptoas_log}" 2>&1; then
       if [[ $expect_fail -eq 1 ]]; then
+        if [[ "$base" == "test_intercore_sync_a3_missing_setffts" ]]; then
+          if ! grep -Eq "A3 inter-core sync requires explicit .*pto.set_ffts" "${ptoas_log}"; then
+            echo -e "${A}(${base}.py)\tFAIL\texpected missing-set_ffts diagnostic not found"
+            overall=1
+            continue
+          fi
+        fi
         echo -e "${A}(${base}.py)\tXFAIL\tptoas failed as expected"
         continue
       fi
@@ -321,23 +382,76 @@ process_one_dir() {
       fi
     fi
 
+    # Regression guard for per-function auto tail hint:
+    # function attr `pto.auto_sync_tail_hint = "mte3-to-s-event0"` should
+    # select the lightweight tail sequence instead of PIPE_ALL barrier.
+    if [[ "$base" == "test_auto_sync_tail_hint" ]]; then
+      if ! grep -Fq "set_flag(PIPE_MTE3, PIPE_S, EVENT_ID0);" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing MTE3->S set_flag in tail helper"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "wait_flag(PIPE_MTE3, PIPE_S, EVENT_ID0);" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing MTE3->S wait_flag in tail helper"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "ptoas_auto_sync_tail(PTOAutoSyncTailMode::kSetWaitMte3ToSEvent0);" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\ttail call did not select kSetWaitMte3ToSEvent0"
+        overall=1
+        continue
+      fi
+
+      tail_line=$(grep -n "ptoas_auto_sync_tail(PTOAutoSyncTailMode::kSetWaitMte3ToSEvent0);" "$cpp" | tail -n1 | cut -d: -f1)
+      next_return_line=$(awk -v l="$tail_line" 'NR>l && /^[[:space:]]*return;[[:space:]]*$/ {print NR; exit}' "$cpp")
+      if [[ -z "${tail_line}" || -z "${next_return_line}" || $((next_return_line - tail_line)) -gt 6 ]]; then
+        echo -e "${A}(${base}.py)\tFAIL\ttail call is not placed at function tail (before return)"
+        overall=1
+        continue
+      fi
+    fi
+
+    # Regression guard: Python unified low-level sync API should dispatch to
+    # both static and dynamic event-id forms.
+    if [[ "$base" == "test_set_wait_unified_api" ]]; then
+      if ! grep -Eq "set_flag\\(PIPE_MTE2,[[:space:]]*PIPE_MTE3,[[:space:]]*EVENT_ID2\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing static set_flag(..., EVENT_ID2) from unified API"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "wait_flag\\(PIPE_MTE2,[[:space:]]*PIPE_MTE3,[[:space:]]*EVENT_ID2\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing static wait_flag(..., EVENT_ID2) from unified API"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "static_cast<event_t>" "$cpp" && ! grep -Fq "(event_t)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing dynamic event-id cast from unified API"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "set_flag\\(PIPE_MTE2,[[:space:]]*PIPE_MTE3,[[:space:]]*v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing dynamic set_flag(..., <var>) from unified API"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "wait_flag\\(PIPE_MTE2,[[:space:]]*PIPE_MTE3,[[:space:]]*v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing dynamic wait_flag(..., <var>) from unified API"
+        overall=1
+        continue
+      fi
+    fi
+
     # Regression guard: intra-pipe dependencies must be serialized by a
     # per-pipe barrier (PyPTO expects `bar_v` / `bar_m` behavior).
     if [[ "$base" == "test_inject_sync_intra_pipe_barrier" ]]; then
       if [[ "${skip_vec_barrier}" == "1" ]]; then
-        if grep -Fq "pipe_barrier(PIPE_V)" "$cpp" || grep -Fq "${expected_vec_barrier_vpto}" "$cpp"; then
+        if grep -Fq "pipe_barrier(PIPE_V)" "$cpp"; then
           echo -e "${A}(${base}.py)\tFAIL\tunexpected pipe_barrier(PIPE_V) on A5"
           overall=1
           continue
         fi
       else
-        if [[ "$target_backend" == "vpto" ]]; then
-          if ! grep -Fq "${expected_vec_barrier_vpto}" "$cpp"; then
-            echo -e "${A}(${base}.py)\tFAIL\tmissing ${expected_vec_barrier_vpto} for intra-pipe dependency"
-            overall=1
-            continue
-          fi
-        elif ! grep -Fq "${expected_vec_barrier}" "$cpp"; then
+        if ! grep -Fq "${expected_vec_barrier}" "$cpp"; then
           echo -e "${A}(${base}.py)\tFAIL\tmissing ${expected_vec_barrier} for intra-pipe dependency"
           overall=1
           continue
@@ -345,46 +459,195 @@ process_one_dir() {
       fi
     fi
 
+    # Inter-core sync regression: A3/A5 must lower pto.sync.set/wait to
+    # architecture-specific ISA interfaces.
+    if [[ "$base" == "test_intercore_sync_a3" ]]; then
+      if ! grep -Fq "set_ffts_base_addr(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing set_ffts_base_addr() lowering"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "ffts_cross_core_sync(PIPE_MTE3" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A3 sync.set lowering to ffts_cross_core_sync"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "getFFTSMsg(FFTS_MODE_VAL," "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A3 getFFTSMsg(FFTS_MODE_VAL, ...) encoding"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "wait_flag_dev(3)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A3 sync.wait lowering to wait_flag_dev(event_id)"
+        overall=1
+        continue
+      fi
+      if grep -Fq "wait_flag_dev(PIPE_" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tunexpected wait_flag_dev(pipe, event_id) lowering on A3"
+        overall=1
+        continue
+      fi
+    fi
+    if [[ "$base" == "test_intercore_sync_a5" ]]; then
+      if ! grep -Fq "#if defined(__DAV_CUBE__)" "$cpp" || ! grep -Fq "#if defined(__DAV_VEC__)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing mixed __DAV_CUBE__/__DAV_VEC__ section guards"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "set_intra_block(PIPE_FIX, 0)" "$cpp" || ! grep -Fq "set_intra_block(PIPE_FIX, 16)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 cube-side mirrored set_intra_block(PIPE_FIX, id/id+16)"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "wait_intra_block(PIPE_MTE3, 0)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 vec-side wait_intra_block(PIPE_MTE3, 0)"
+        overall=1
+        continue
+      fi
+      if grep -Fq "ffts_cross_core_sync(" "$cpp" || grep -Fq "wait_flag_dev(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tunexpected A3-style inter-core sync call in A5 output"
+        overall=1
+        continue
+      fi
+    fi
+    if [[ "$base" == "test_intercore_sync_a5_functional" ]]; then
+      if ! grep -Fq "#if defined(__DAV_CUBE__)" "$cpp" || ! grep -Fq "#if defined(__DAV_VEC__)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing mixed __DAV_CUBE__/__DAV_VEC__ section guards"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "set_intra_block(PIPE_FIX, 0)" "$cpp" || ! grep -Fq "set_intra_block(PIPE_FIX, 16)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 cube-side mirrored set_intra_block(PIPE_FIX, id/id+16)"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "wait_intra_block(PIPE_MTE3, 0)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 vec-side wait_intra_block(PIPE_MTE3, 0)"
+        overall=1
+        continue
+      fi
+      if grep -Fq "ffts_cross_core_sync(" "$cpp" || grep -Fq "wait_flag_dev(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tunexpected A3-style inter-core sync call in A5 output"
+        overall=1
+        continue
+      fi
+    fi
+    if [[ "$base" == "test_intercore_sync_a5_ptoisa_vec" ]]; then
+      if ! grep -Fq "#if defined(__DAV_CUBE__)" "$cpp" || ! grep -Fq "#if defined(__DAV_VEC__)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing mixed __DAV_CUBE__/__DAV_VEC__ section guards"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "set_intra_block(PIPE_FIX, 0)" "$cpp" || ! grep -Fq "set_intra_block(PIPE_FIX, 16)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing PTO-ISA-style cube-side mirrored set_intra_block(PIPE_FIX, id/id+16)"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "wait_intra_block(PIPE_MTE3, 0)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing PTO-ISA-style vec-side wait_intra_block(PIPE_MTE3, 0)"
+        overall=1
+        continue
+      fi
+      if grep -Fq "ffts_cross_core_sync(" "$cpp" || grep -Fq "wait_flag_dev(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tunexpected A3-style inter-core sync call in A5 output"
+        overall=1
+        continue
+      fi
+    fi
+    if [[ "$base" == "test_intercore_sync_a3_dyn" ]]; then
+      if ! grep -Fq "set_ffts_base_addr(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing set_ffts_base_addr() lowering"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "ffts_cross_core_sync(PIPE_MTE3" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A3 dynamic sync.set lowering to ffts_cross_core_sync"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "getFFTSMsg(FFTS_MODE_VAL," "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A3 dynamic getFFTSMsg(FFTS_MODE_VAL, ...)"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "wait_flag_dev\\([[:space:]]*v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A3 dynamic sync.wait lowering to wait_flag_dev(<var>)"
+        overall=1
+        continue
+      fi
+      if grep -Fq "wait_flag_dev(3)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tunexpected static wait_flag_dev(3) in dynamic test"
+        overall=1
+        continue
+      fi
+    fi
+    if [[ "$base" == "test_intercore_sync_a3_modes" ]]; then
+      if ! grep -Fq "set_ffts_base_addr(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing set_ffts_base_addr() lowering"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "getFFTSMsg(0," "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A3 getFFTSMsg(0, ...) lowering"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "getFFTSMsg(1," "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A3 getFFTSMsg(1, ...) lowering"
+        overall=1
+        continue
+      fi
+    fi
+    if [[ "$base" == "test_intercore_sync_a5_dyn" ]]; then
+      set_count=$(grep -Ec "set_intra_block\\(PIPE_FIX,[[:space:]]*v[0-9]+\\)" "$cpp" || true)
+      if ! grep -Eq "set_intra_block\\(PIPE_FIX,[[:space:]]*v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 dynamic sync.set lowering to set_intra_block(PIPE_FIX, <var>)"
+        overall=1
+        continue
+      fi
+      if [[ "$set_count" -ne 2 ]]; then
+        echo -e "${A}(${base}.py)\tFAIL\tunexpected number of PIPE_FIX dynamic sync.set calls (expect 2: id and id+16)"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "wait_intra_block\\(PIPE_MTE3,[[:space:]]*v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 dynamic sync.wait lowering to wait_intra_block(PIPE_MTE3, <var>)"
+        overall=1
+        continue
+      fi
+      if grep -Fq "set_intra_block(PIPE_FIX, 0)" "$cpp" || grep -Fq "set_intra_block(PIPE_FIX, 16)" "$cpp" || grep -Fq "wait_intra_block(PIPE_MTE3, 0)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tunexpected static literal event-id in dynamic A5 test"
+        overall=1
+        continue
+      fi
+      if grep -Fq "ffts_cross_core_sync(" "$cpp" || grep -Fq "wait_flag_dev(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tunexpected A3-style inter-core sync call in A5 dynamic output"
+        overall=1
+        continue
+      fi
+    fi
+
     # Regression guard for issue #185: barrier_sync must support op types
     # beyond TMATMUL/TVEC and lower to the expected per-pipe barrier.
     if [[ "$base" == "test_barrier_sync" ]]; then
-      if [[ "$target_backend" == "vpto" ]]; then
-        if ! grep -Fq "${expected_mte2_barrier_vpto}" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tmissing ${expected_mte2_barrier_vpto} lowering for barrier_sync[TLOAD]"
-          overall=1
-          continue
-        fi
-        if ! grep -Fq "${expected_mte3_barrier_vpto}" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tmissing ${expected_mte3_barrier_vpto} lowering for barrier_sync[TSTORE_VEC]"
-          overall=1
-          continue
-        fi
-      else
-        if ! grep -Fq "pipe_barrier(PIPE_MTE2)" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tmissing pipe_barrier(PIPE_MTE2) lowering for barrier_sync[TLOAD]"
-          overall=1
-          continue
-        fi
-        if ! grep -Fq "pipe_barrier(PIPE_MTE3)" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tmissing pipe_barrier(PIPE_MTE3) lowering for barrier_sync[TSTORE_VEC]"
-          overall=1
-          continue
-        fi
+      if ! grep -Fq "pipe_barrier(PIPE_MTE2)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing pipe_barrier(PIPE_MTE2) lowering for barrier_sync[TLOAD]"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "pipe_barrier(PIPE_MTE3)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing pipe_barrier(PIPE_MTE3) lowering for barrier_sync[TSTORE_VEC]"
+        overall=1
+        continue
       fi
       if [[ "${skip_vec_barrier}" == "1" ]]; then
-        if grep -Fq "pipe_barrier(PIPE_V)" "$cpp" || grep -Fq "${expected_vec_barrier_vpto}" "$cpp"; then
+        if grep -Fq "pipe_barrier(PIPE_V)" "$cpp"; then
           echo -e "${A}(${base}.py)\tFAIL\tunexpected pipe_barrier(PIPE_V) lowering for barrier_sync[TVEC] on A5"
           overall=1
           continue
         fi
       else
-        if [[ "$target_backend" == "vpto" ]]; then
-          if ! grep -Fq "${expected_vec_barrier_vpto}" "$cpp"; then
-            echo -e "${A}(${base}.py)\tFAIL\tmissing ${expected_vec_barrier_vpto} lowering for barrier_sync[TVEC]"
-            overall=1
-            continue
-          fi
-        elif ! grep -Fq "${expected_vec_barrier}" "$cpp"; then
+        if ! grep -Fq "${expected_vec_barrier}" "$cpp"; then
           echo -e "${A}(${base}.py)\tFAIL\tmissing ${expected_vec_barrier} lowering for barrier_sync[TVEC]"
           overall=1
           continue
@@ -396,38 +659,20 @@ process_one_dir() {
     # `pto.section.vector` region to avoid cross-kernel state leakage.
     # Use an existing sample (Complex/cv_region.py) that contains a vector section.
     if [[ "$base" == "cv_region" ]]; then
-      if [[ "$target_backend" == "vpto" ]]; then
-        if ! grep -Fq "pto.section.vector" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tmissing pto.section.vector region in VPTO output"
-          overall=1
-          continue
-        fi
-        if ! grep -Fq "pto.vecscope" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tmissing pto.vecscope region in vector section lowering"
-          overall=1
-          continue
-        fi
-        if ! grep -Fq "pto.plt_b32" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tmissing predicate materialization in vector section"
-          overall=1
-          continue
-        fi
-      else
-        if ! grep -Fq "#if defined(__DAV_VEC__)" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tmissing __DAV_VEC__ guard"
-          overall=1
-          continue
-        fi
-        if ! grep -Fq "set_mask_norm();" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tmissing set_mask_norm() reset"
-          overall=1
-          continue
-        fi
-        if ! grep -Fq "set_vector_mask(-1, -1);" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tmissing set_vector_mask(-1, -1) reset"
-          overall=1
-          continue
-        fi
+      if ! grep -Fq "#if defined(__DAV_VEC__)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing __DAV_VEC__ guard"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "set_mask_norm();" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing set_mask_norm() reset"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "set_vector_mask(-1, -1);" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing set_vector_mask(-1, -1) reset"
+        overall=1
+        continue
       fi
     fi
 
@@ -449,12 +694,10 @@ process_one_dir() {
     # Explicit layout on make_tensor_view must be preserved and reflected in the
     # emitted GlobalTensor layout parameter.
     if [[ "$base" == "tensor_view_layout_dn" ]]; then
-      if [[ "$target_backend" != "vpto" ]]; then
-        if ! grep -Fq "pto::Layout::DN" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tmissing pto::Layout::DN in emitted GlobalTensor"
-          overall=1
-          continue
-        fi
+      if ! grep -Fq "pto::Layout::DN" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing pto::Layout::DN in emitted GlobalTensor"
+        overall=1
+        continue
       fi
     fi
 
@@ -462,23 +705,10 @@ process_one_dir() {
     # SSA `pto.treshape` (lowered into `pto.bind_tile`) must lower to a single
     # `TRESHAPE(dst, src)` instead of an invalid Tile-to-pointer cast sequence.
     if [[ "$base" == "reshape" ]]; then
-      if [[ "$target_backend" == "vpto" ]]; then
-        if grep -Fq "pto.treshape" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tpto.treshape should not remain at VPTO backend output"
-          overall=1
-          continue
-        fi
-        if ! grep -Eq 'pto\.copy_ubuf_to_gm.*"dn"' "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tmissing DN TSTORE lowering for SSA treshape result"
-          overall=1
-          continue
-        fi
-      else
-        if ! grep -Fq "TRESHAPE(" "$cpp"; then
-          echo -e "${A}(${base}.py)	FAIL	missing TRESHAPE() lowering for SSA treshape"
-          overall=1
-          continue
-        fi
+      if ! grep -Fq "TRESHAPE(" "$cpp"; then
+        echo -e "${A}(${base}.py)	FAIL	missing TRESHAPE() lowering for SSA treshape"
+        overall=1
+        continue
       fi
       if grep -Eq "= \(__ubuf__ [^)]+\*\) v[0-9]+;" "$cpp"; then
         echo -e "${A}(${base}.py)	FAIL	found invalid Tile-to-__ubuf__ pointer cast (issue #207)"
@@ -488,39 +718,25 @@ process_one_dir() {
     fi
 
     if [[ "$base" == "bitcast_dtype_alias" ]]; then
-      if [[ "$target_backend" == "vpto" ]]; then
-        if grep -Fq "pto.bitcast" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tpto.bitcast should not remain at VPTO backend output"
-          overall=1
-          continue
-        fi
-        if ! grep -Fq "pto.copy_gm_to_ubuf" "$cpp" || \
-           ! grep -Fq "pto.copy_ubuf_to_gm" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tmissing VPTO copy-family lowering for pto.bitcast alias path"
-          overall=1
-          continue
-        fi
-      else
-        if ! grep -Eq "Tile<[^>]*, int32_t," "$cpp"; then
-          echo -e "${A}(${base}.py)	FAIL	missing int32_t Tile declaration for pto.bitcast"
-          overall=1
-          continue
-        fi
-        if [[ $(grep -c "TASSIGN(" "$cpp") -lt 3 ]]; then
-          echo -e "${A}(${base}.py)	FAIL	expected TASSIGN()-based alias lowering for pto.bitcast"
-          overall=1
-          continue
-        fi
-        if [[ $(grep -c "TRESHAPE(" "$cpp") -ne 0 ]]; then
-          echo -e "${A}(${base}.py)	FAIL	pto.bitcast should not lower via TRESHAPE()"
-          overall=1
-          continue
-        fi
-        if ! grep -Eq "(PTOAS__TILE_DATA|\.data\(\))" "$cpp"; then
-          echo -e "${A}(${base}.py)	FAIL	missing tile-address alias lowering for pto.bitcast"
-          overall=1
-          continue
-        fi
+      if ! grep -Eq "Tile<[^>]*, int32_t," "$cpp"; then
+        echo -e "${A}(${base}.py)	FAIL	missing int32_t Tile declaration for pto.bitcast"
+        overall=1
+        continue
+      fi
+      if [[ $(grep -c "TASSIGN(" "$cpp") -lt 3 ]]; then
+        echo -e "${A}(${base}.py)	FAIL	expected TASSIGN()-based alias lowering for pto.bitcast"
+        overall=1
+        continue
+      fi
+      if [[ $(grep -c "TRESHAPE(" "$cpp") -ne 0 ]]; then
+        echo -e "${A}(${base}.py)	FAIL	pto.bitcast should not lower via TRESHAPE()"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "(PTOAS__TILE_DATA|\.data\(\))" "$cpp"; then
+        echo -e "${A}(${base}.py)	FAIL	missing tile-address alias lowering for pto.bitcast"
+        overall=1
+        continue
       fi
     fi
 
@@ -528,16 +744,7 @@ process_one_dir() {
     # `pto.bitcast` must alias the original tile storage via
     # `TASSIGN(dst, reinterpret_cast<uint64_t>(src.data()))`.
     if [[ "$base" == "bitcast_inplace_cvt" ]]; then
-      if [[ "$target_backend" == "vpto" ]]; then
-        if grep -Fq "pto.bitcast" "$cpp" || \
-           ! grep -Fq "pto.copy_gm_to_ubuf" "$cpp" || \
-           ! grep -Fq "pto.vcvt" "$cpp" || \
-           ! grep -Fq "pto.copy_ubuf_to_gm" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tmissing VPTO bitcast+tcvt lowering sequence"
-          overall=1
-          continue
-        fi
-      elif ! "$python" - "$cpp" <<'PY'
+      if ! "$python" - "$cpp" <<'PY'
 import re
 import sys
 
@@ -566,96 +773,86 @@ PY
       fi
     fi
 
+    if [[ "$base" == "tinsert" ]]; then
+      local golden_file="${dir}/tinsert.golden"
+      local tinsert_ok=1
+      if [[ ! -f "${golden_file}" ]]; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing golden ref: ${golden_file}"
+        overall=1
+        continue
+      fi
+      while IFS= read -r pat || [[ -n "$pat" ]]; do
+        [[ -n "$pat" ]] || continue
+        [[ "$pat" =~ ^# ]] && continue
+        if ! grep -Eq "$pat" "$cpp"; then
+          echo -e "${A}(${base}.py)\tFAIL\tgolden mismatch: missing pattern '$pat'"
+          overall=1
+          tinsert_ok=0
+          break
+        fi
+      done < "${golden_file}"
+      if [[ ${tinsert_ok} -eq 0 ]]; then
+        continue
+      fi
+    fi
+
     if [[ "$base" == "fillpad" ]]; then
-      if [[ "$target_backend" == "vpto" ]]; then
-        if grep -Eq "pto\\.tfillpad(_expand)?" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tresidual pto.tfillpad op remained in VPTO output"
-          overall=1
-          continue
-        fi
-        if ! grep -Fq "pto.vsts" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tmissing VPTO fillpad predicated store lowering"
-          overall=1
-          continue
-        fi
-      else
-        if ! grep -Fq "TFILLPAD(" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tmissing TFILLPAD() lowering for pto.tfillpad"
-          overall=1
-          continue
-        fi
-        if grep -Fq "TFILLPAD_EXPAND(" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tpto.tfillpad should not lower via TFILLPAD_EXPAND()"
-          overall=1
-          continue
-        fi
+      if ! grep -Fq "TFILLPAD(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TFILLPAD() lowering for pto.tfillpad"
+        overall=1
+        continue
+      fi
+      if grep -Fq "TFILLPAD_EXPAND(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tpto.tfillpad should not lower via TFILLPAD_EXPAND()"
+        overall=1
+        continue
       fi
     fi
 
     if [[ "$base" == "fillpad_expand" ]]; then
-      if [[ "$target_backend" == "vpto" ]]; then
-        if grep -Eq "pto\\.tfillpad(_expand)?" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tresidual pto.tfillpad_expand op remained in VPTO output"
-          overall=1
-          continue
-        fi
-        if ! grep -Fq "pto.vdup" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tmissing VPTO fillpad pad-vector materialization"
-          overall=1
-          continue
-        fi
-        if ! grep -Fq "pto.vsts" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tmissing VPTO fillpad predicated store lowering"
-          overall=1
-          continue
-        fi
-      else
-        if ! grep -Fq "TFILLPAD_EXPAND(" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tmissing TFILLPAD_EXPAND() lowering for pto.tfillpad_expand"
-          overall=1
-          continue
-        fi
-        if grep -Fq "TFILLPAD(" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tpto.tfillpad_expand should not lower via TFILLPAD()"
-          overall=1
-          continue
-        fi
+      if ! grep -Fq "TFILLPAD_EXPAND(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TFILLPAD_EXPAND() lowering for pto.tfillpad_expand"
+        overall=1
+        continue
+      fi
+      if grep -Fq "TFILLPAD(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tpto.tfillpad_expand should not lower via TFILLPAD()"
+        overall=1
+        continue
+      fi
+    fi
+
+    if [[ "$base" == "tcvt" ]]; then
+      if ! grep -Fq "TCVT(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TCVT() lowering for pto.tcvt"
+        overall=1
+        continue
       fi
     fi
 
 	    # Regression guard for Issue #190:
 	    # Infer layout for a 2D column-vector view (16 x 1) should prefer DN.
 	    if [[ "$base" == "tensor_view_infer_layout_dn" ]]; then
-        if [[ "$target_backend" != "vpto" ]]; then
-	        if ! grep -Eq "pto::Shape<1, 1, 1, 16, 1>.*pto::Layout::DN" "$cpp"; then
-	          echo -e "${A}(${base}.py)\tFAIL\texpected pto::Layout::DN for shape (16 x 1) GlobalTensor"
-	          overall=1
-	          continue
-	        fi
-        fi
+	      if ! grep -Eq "pto::Shape<1, 1, 1, 16, 1>.*pto::Layout::DN" "$cpp"; then
+	        echo -e "${A}(${base}.py)\tFAIL\texpected pto::Layout::DN for shape (16 x 1) GlobalTensor"
+	        overall=1
+	        continue
+	      fi
 	    fi
 
     # Regression guard for row-reduction kernels:
     # (32 x 1) row-major outputs are minor-2D ambiguous; layout must align with
     # row-major tiles (ND), otherwise pto-isa can hit layout/tile static_assert.
     if [[ "$base" == "rowmin" || "$base" == "rowsum" || "$base" == "rowmax" ]]; then
-      if [[ "$target_backend" == "vpto" ]]; then
-        if ! grep -Fq "pto.vbr" "$cpp" && ! grep -Fq "llvm.hivm.vbr" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tmissing VPTO row-reduce lowering"
-          overall=1
-          continue
-        fi
-      else
-        if ! grep -Eq "pto::Shape<1, 1, 1, 32, 1>.*pto::Layout::ND" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\texpected pto::Layout::ND for shape (32 x 1) GlobalTensor"
-          overall=1
-          continue
-        fi
-        if grep -Eq "pto::Shape<1, 1, 1, 32, 1>.*pto::Layout::DN" "$cpp"; then
-          echo -e "${A}(${base}.py)\tFAIL\tunexpected pto::Layout::DN for shape (32 x 1) GlobalTensor"
-          overall=1
-          continue
-        fi
+      if ! grep -Eq "pto::Shape<1, 1, 1, 32, 1>.*pto::Layout::ND" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\texpected pto::Layout::ND for shape (32 x 1) GlobalTensor"
+        overall=1
+        continue
+      fi
+      if grep -Eq "pto::Shape<1, 1, 1, 32, 1>.*pto::Layout::DN" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tunexpected pto::Layout::DN for shape (32 x 1) GlobalTensor"
+        overall=1
+        continue
       fi
     fi
 
@@ -707,20 +904,6 @@ PY
         sample_use_ptobc_roundtrip=0
       fi
 
-      if [[ "$target_backend" == "vpto" && "$base" == "test_inject_sync_intra_pipe_barrier" ]]; then
-        echo -e "${A}(${base}.pto)\tSKIP\trequires structured tile_buf operands for VPTO lowering"
-        continue
-      fi
-
-      if [[ "$target_backend" == "vpto" ]]; then
-        case "$base" in
-          matmul|tmatmulk_autosync|tmatmulk_autosync_a5|matMul|tmatmulk|Matmul_transpose|gemv|gemvacc|gemvbias|paged_attention_example_kernel_pv_matmul|paged_attention_example_kernel_qk_matmul)
-            echo -e "${A}(${base}.pto)\tSKIP\tmatrix-multiply family is out of current VPTO scope"
-            continue
-            ;;
-        esac
-      fi
-
       if [[ $sample_use_ptobc_roundtrip -eq 1 ]]; then
         # Allow generic escape for ops that are not yet in the compact v0 opcode table.
         if ! PTOBC_ALLOW_GENERIC=1 "$ptobc" encode "$f" -o "$ptobc_file" >/dev/null 2>&1; then
@@ -747,18 +930,10 @@ PY
       # If `valid_col` is dynamic, PTOToEmitC must construct the Tile with a
       # runtime argument (i.e. emit `= Tile<...>(...)` instead of `Tile<...>;`).
       if [[ "$base" == "test_dynamic_valid_shape" ]]; then
-        if [[ "$target_backend" == "vpto" ]]; then
-          if ! grep -Fq "pto.vrelu" "$cpp"; then
-            echo -e "${A}(${base}.pto)\tFAIL\tmissing pto.vrelu lowering for dynamic valid_shape case"
-            overall=1
-            continue
-          fi
-        else
-          if ! grep -Fq "= Tile<TileType::Vec, float" "$cpp"; then
-            echo -e "${A}(${base}.pto)\tFAIL\tmissing dynamic Tile constructor (valid_col likely dropped)"
-            overall=1
-            continue
-          fi
+        if ! grep -Fq "= Tile<TileType::Vec, float" "$cpp"; then
+          echo -e "${A}(${base}.pto)\tFAIL\tmissing dynamic Tile constructor (valid_col likely dropped)"
+          overall=1
+          continue
         fi
       fi
 
@@ -766,19 +941,13 @@ PY
       # per-pipe barrier (PyPTO expects `bar_v` / `bar_m` behavior).
       if [[ "$base" == "test_inject_sync_intra_pipe_barrier" ]]; then
         if [[ "${skip_vec_barrier}" == "1" ]]; then
-          if grep -Fq "pipe_barrier(PIPE_V)" "$cpp" || grep -Fq "${expected_vec_barrier_vpto}" "$cpp"; then
+          if grep -Fq "pipe_barrier(PIPE_V)" "$cpp"; then
             echo -e "${A}(${base}.pto)\tFAIL\tunexpected pipe_barrier(PIPE_V) on A5"
             overall=1
             continue
           fi
         else
-          if [[ "$target_backend" == "vpto" ]]; then
-            if ! grep -Fq "${expected_vec_barrier_vpto}" "$cpp"; then
-              echo -e "${A}(${base}.pto)\tFAIL\tmissing ${expected_vec_barrier_vpto} for intra-pipe dependency"
-              overall=1
-              continue
-            fi
-          elif ! grep -Fq "${expected_vec_barrier}" "$cpp"; then
+          if ! grep -Fq "${expected_vec_barrier}" "$cpp"; then
             echo -e "${A}(${base}.pto)\tFAIL\tmissing ${expected_vec_barrier} for intra-pipe dependency"
             overall=1
             continue
@@ -786,10 +955,10 @@ PY
         fi
       fi
 
-      # Smoke guard: A5 buffer-id sync ops must lower to raw VPTO get_buf/rls_buf ops.
+      # Smoke guard: A5 buffer-id sync ops must lower to get_buf/rls_buf calls.
       if [[ "$base" == "test_a5_buf_sync" ]]; then
-        if ! grep -Fq "pto.get_buf" "$cpp" || ! grep -Fq "pto.rls_buf" "$cpp"; then
-          echo -e "${A}(${base}.pto)\tFAIL\tmissing pto.get_buf/pto.rls_buf lowering"
+        if ! grep -Fq "get_buf(" "$cpp" || ! grep -Fq "rls_buf(" "$cpp"; then
+          echo -e "${A}(${base}.pto)\tFAIL\tmissing get_buf/rls_buf lowering"
           overall=1
           continue
         fi
@@ -798,14 +967,7 @@ PY
       # Regression guard: scf.if yielding tile result in loop should lower
       # through memref + EmitC without type-mismatch failures.
       if [[ "$base" == "test_if_else_tile_result" ]]; then
-        if [[ "$target_backend" == "vpto" ]]; then
-          if ! grep -Fq "scf.if" "$cpp" || ! grep -Fq "pto.vadd" "$cpp" || \
-             ! grep -Fq "pto.vmul" "$cpp" || ! grep -Fq "pto.copy_ubuf_to_gm" "$cpp"; then
-            echo -e "${A}(${base}.pto)\tFAIL\tmissing expected VPTO if-else tile result lowering"
-            overall=1
-            continue
-          fi
-        elif ! grep -Fq "TADD(" "$cpp" || ! grep -Fq "TMUL(" "$cpp" || ! grep -Fq "TSTORE(" "$cpp"; then
+        if ! grep -Fq "TADD(" "$cpp" || ! grep -Fq "TMUL(" "$cpp" || ! grep -Fq "TSTORE(" "$cpp"; then
           echo -e "${A}(${base}.pto)\tFAIL\tmissing expected if-else tile result lowering"
           overall=1
           continue
