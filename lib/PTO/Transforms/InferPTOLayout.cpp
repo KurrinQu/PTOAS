@@ -1,5 +1,4 @@
-//===- InferPTOLayout.cpp - Infer layout for global tensor views
-//-----------===//
+//===- InferPTOLayout.cpp - Infer layout for global tensor views -----------===//
 //
 // The pto-isa GlobalTensor ABI expects shape/stride to be represented in a 5D
 // right-aligned form (pad leading dims with 1). We infer ND/DN/NZ with the same
@@ -100,11 +99,12 @@ static std::optional<ShapeStride5D> rightAlignTo5D(ArrayRef<int64_t> shape,
   return out;
 }
 
-static std::optional<Layout>
-inferLayout5D(ArrayRef<int64_t> shape, ArrayRef<int64_t> strides,
-              unsigned elemBytes,
-              std::optional<Layout> preferredMinor2D = std::nullopt,
-              bool *isMinor2DAmbiguous = nullptr) {
+static std::optional<Layout> inferLayout5D(ArrayRef<int64_t> shape,
+                                           ArrayRef<int64_t> strides,
+                                           unsigned elemBytes,
+                                           std::optional<Layout> preferredMinor2D =
+                                               std::nullopt,
+                                           bool *isMinor2DAmbiguous = nullptr) {
   if (shape.size() != strides.size() || elemBytes == 0)
     return std::nullopt;
   if (isMinor2DAmbiguous)
@@ -356,7 +356,8 @@ static ResolvedLayoutInfo resolveLayoutFromViewValue(Value v) {
     if (auto layoutAttr = def->getAttrOfType<LayoutAttr>(kLayoutAttrName)) {
       info.owner = def;
       info.layout = layoutAttr.getLayout();
-      if (auto inferred = def->getAttrOfType<BoolAttr>(kInferredLayoutAttrName))
+      if (auto inferred =
+              def->getAttrOfType<BoolAttr>(kInferredLayoutAttrName))
         info.inferred = inferred.getValue();
       return info;
     }
@@ -416,14 +417,14 @@ struct InferPTOLayoutPass
       // "column-vector-like" outputs (cols == 1). This is the row-reduction
       // case we need to repair; applying it more broadly can violate pto-isa
       // static layout constraints (e.g. some GEMV/GEMM outputs).
-      auto preferredForAmbiguous = (!pref.conflict && isMinorColsOne(shape))
-                                       ? pref.preferred
-                                       : std::nullopt;
+      auto preferredForAmbiguous =
+          (!pref.conflict && isMinorColsOne(shape)) ? pref.preferred
+                                                    : std::nullopt;
       bool isAmbiguous = false;
       auto inferred = inferLayout5D(
           shape, strides,
-          elemByteSize(
-              cast<TensorViewType>(op.getResult().getType()).getElementType()),
+          elemByteSize(cast<TensorViewType>(op.getResult().getType())
+                           .getElementType()),
           preferredForAmbiguous, &isAmbiguous);
       verifyOrSetLayout(op.getOperation(), inferred);
 
@@ -528,8 +529,7 @@ struct InferPTOLayoutPass
     // 4) pto.tload / pto.tstore: attach layout for static GM memrefs so EmitC
     //    doesn't need to infer again in buildGlobalTensorFromMemref().
     // ------------------------------------------------------------------
-    auto inferFromStaticMemRefTy =
-        [&](MemRefType mrTy) -> std::optional<Layout> {
+    auto inferFromStaticMemRefTy = [&](MemRefType mrTy) -> std::optional<Layout> {
       if (!mrTy.hasStaticShape() || mrTy.getRank() == 0 || mrTy.getRank() > 5)
         return std::nullopt;
       SmallVector<int64_t> strideInts;
