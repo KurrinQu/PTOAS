@@ -201,15 +201,24 @@ static llvm::cl::opt<bool> enableTileOpExpand(
         "Enable Tile-to-Vector lowering path (memref->tile_buf recovery)"),
     llvm::cl::init(false));
 
+#ifndef PTOAS_DEFAULT_TILELANG_PATH
+#define PTOAS_DEFAULT_TILELANG_PATH ""
+#endif
+#ifndef PTOAS_DEFAULT_TILELANG_PKG_PATH
+#define PTOAS_DEFAULT_TILELANG_PKG_PATH ""
+#endif
+
 static llvm::cl::opt<std::string> tilelangPath(
     "tilelang-path",
-    llvm::cl::desc("Path to directory of .py tilelang DSL template files"),
-    llvm::cl::init(""));
+    llvm::cl::desc("Path to directory of .py tilelang DSL template files "
+                   "(default: <source>/lib/TileOps, baked in at build time)"),
+    llvm::cl::init(PTOAS_DEFAULT_TILELANG_PATH));
 
 static llvm::cl::opt<std::string> tilelangPkgPath(
     "tilelang-pkg-path",
-    llvm::cl::desc("PYTHONPATH for tilelang_dsl package"),
-    llvm::cl::init(""));
+    llvm::cl::desc("PYTHONPATH for tilelang_dsl package "
+                   "(default: <source>/tilelang-dsl/python, baked in at build time)"),
+    llvm::cl::init(PTOAS_DEFAULT_TILELANG_PKG_PATH));
 
 static llvm::cl::opt<bool> enableOpFusion(
     "enable-op-fusion",
