@@ -4,88 +4,103 @@ The TileLang Python DSL provides a high-level, Pythonic interface for authoring 
 
 The DSL is designed to generate MLIR function libraries rather than direct binary executables. These MLIR libraries are intended to be consumed by other compilation frameworks that transform high-level tile semantics into low-level vector operations. This enables library developers to focus on hardware-aware kernel authoring while relying on upstream compilers for tile-level optimizations and code generation.
 
+## Language Tier
+
+The DSL surface is organized into multiple maturity tiers, reflecting the stability and intended use of different language features. As the design evolves, the stable authoring path is being explicitly separated from more advanced surfaces. Refer to the following table when reading this guide:
+
+| Surface Family | Tier | Usage Guidance |
+|----------------|------|----------------|
+| `TensorView` | `stable` | Default GM-facing data model for starter kernels. |
+| `Tile` | `stable` | Default UB-facing compute tile for starter kernels. |
+| `dma_load` / `dma_store` | `stable` | Preferred GM ↔ UB data‑movement path. |
+| Base vector ops (`make_mask`, `vlds`, `vsts`, `vadd`, `vmuls`, etc.) | `stable` | Default compute skeleton for starter kernels. |
+| `strict_vecscope` | `advanced` | Explicit vector-scope management for expert authoring. |
+| Raw pointer family (`ptr(...)`, `castptr`, `addptr`, `GMPtr`, `UBPtr`, `UBRef`) | `advanced` | For expert authoring and migration; not required for Quick Start. |
+| Low‑level DMA family (`copy_*`, `set_loop*_stride_*`, `set_loop_size_*`) | `advanced` | Use only when the high‑level DMA interface is insufficient. |
+| Tile helper family (`tile.slice(...)`, `tile.reshape(...)`, `tile.to_ubref()`, `tile.as_ptr()`, `tile.to_memref()`, `tile_from_ptr(...)`, `tile_from_memref(...)`, `tile_with_strides(...)`, `tile_config(...)`) | `advanced` | Partial or evolving surface; not the default entry point. |
+
+For the authoritative tier classification, consult `tilelang-dsl/python/tilelang_dsl/support_matrix.py`. For known implementation gaps, refer to `tilelang-dsl/docs/unsupported-features.md`.
+
 ## Quick Start
 
 **Note on mask pattern enums**: For brevity, examples in this guide use `PAT` as an alias for `pto.MaskPattern` (e.g., `PAT.ALL` instead of `pto.MaskPattern.PAT_ALL`). You can create this alias with `from pto import MaskPattern as PAT` or `PAT = pto.MaskPattern`.
 
-Here's a minimal example of a tile scaling kernel using the new Tile type:
+TileLang DSL provides the following core constructs for kernel authoring:
+
+- `TensorView` – Access global memory (GM) tensors
+- `Tile` – Local computation buffers in unified buffer (UB)
+- `dma_load` / `dma_store` – Move data between GM and UB
+- Base vector operations (`make_mask`, `vlds`, `vmuls`, `vadd`, `vsts`) – Perform vector computations
+
+A typical kernel follows the GM → UB → vector compute → GM pattern:
 
 ```python
-import pto
+import tilelang_dsl as pto
 
-@pto.vkernel(target="a5", op="scale", dtypes=[(pto.AnyFloat, pto.AnyFloat)], priority=10)
-def tile_scale(input_tensor: pto.TensorView,   # Input tensor view (shape: 256x128, f32, GM)
-               output_tensor: pto.TensorView,  # Output tensor view (same shape and type)
-               scale_factor: pto.f32): # Scaling factor
-    # Access tensor properties
-    rows, cols = input_tensor.shape      # (256, 128)
-    dtype = input_tensor.element_type    # pto.f32
-    
-    # Create a temporary tile in UB for computation
-    ub_tile = pto.tile((rows, cols), dtype, pto.MemorySpace.UB)
-    
-    # Load input tensor from GM to UB using high-level DMA operation
-    pto.dma_load(input_tensor, ub_tile)
-    
-    # Vector computation: scale all elements in the tile
-    all_mask = pto.make_mask(dtype, PAT.ALL)
-    
-    # Process tile in row-major order
+@pto.vkernel(target="a5", op="scale", dtypes=[(pto.f32, pto.f32, pto.f32, pto.f32)])
+def tile_scale(
+    input_tensor: pto.TensorView,
+    output_tensor: pto.TensorView,
+    work_tile: pto.Tile,
+    scale_factor: pto.f32,
+):
+    rows = 4
+    cols = 16
+
+    # Stage one GM tile into UB.
+    pto.dma_load(input_tensor[0:rows, 0:cols], work_tile)
+
+    # Run vector compute over the UB tile using tile indexing sugar.
     for row in range(0, rows):
-        # Process each row in vector chunks
-        # Vector width is hardware-defined: 256 bytes / element size
-        # For f32: 256/4 = 64 lanes, for f16: 256/2 = 128 lanes
-        vector_lanes = pto.get_lanes(dtype)  # Compute vector lanes based on element type (e.g., 64 for f32, 128 for f16)
-        for col_start in range(0, cols, vector_lanes):
-            # Load vector using element-indexing syntax (no manual byte calculation)
-            vec = pto.vlds(ub_tile[row, col_start:])
-            
-            # Scale vector
-            scaled = pto.vmuls(vec, scale_factor, all_mask)
-            
-            # Store result back using element-indexing syntax
-            pto.vsts(scaled, ub_tile[row, col_start:], all_mask)
-    
-    # Store result from UB back to GM output tensor using high-level DMA operation
-    pto.dma_store(ub_tile, output_tensor)
+        mask = pto.make_mask(pto.f32, PAT.ALL)
+        vec = pto.vlds(work_tile[row, 0:])
+        scaled = pto.vmuls(vec, scale_factor, mask)
+        pto.vsts(scaled, work_tile[row, 0:], mask)
+
+    # Write the UB result back to GM.
+    pto.dma_store(work_tile, output_tensor[0:rows, 0:cols])
 ```
 
-This example demonstrates:
-1. **TensorView parameters** in kernel declaration
-2. **TensorView property access** (shape, element_type)  
-3. **Tile creation** for temporary buffers
-4. **High-level DMA operations** (`dma_load`/`dma_store`) for data movement
-5. **Implicit tile→UBRef conversion** in vector load/store operations
-6. **Automatic DMA parameter inference** from tensor slices and tile properties
+The example illustrates the key components of a TileLang kernel:
 
-For an even more concise example showing pure computation on UB tiles (assuming data is already in UB):
+1. **`TensorView` parameters** – Access global memory tensors
+2. **`Tile` parameters** – Local computation buffers in unified buffer (UB)
+3. **`dma_load` / `dma_store`** – Move data between GM and UB
+4. **Base vector operations** (`make_mask`, `vlds`, `vmuls`, `vadd`, `vsts`) – Perform vector computations
+
+Here is a second example with two inputs and one output:
 
 ```python
-@pto.vkernel(target="a5", op="elementwise", dtypes=[(pto.AnyFloat, pto.AnyFloat, pto.AnyFloat)], priority=10)
-def ub_tile_computation(a: pto.Tile,  # UB tile
-                        b: pto.Tile,  # UB tile  
-                        c: pto.Tile): # UB tile (output)
-    dtype = a.element_type
+@pto.vkernel(
+    target="a5",
+    op="elementwise_add",
+    dtypes=[(pto.f32, pto.f32, pto.f32, pto.f32, pto.f32, pto.f32)],
+)
+def elementwise_add(
+    lhs_gm: pto.TensorView,
+    rhs_gm: pto.TensorView,
+    out_gm: pto.TensorView,
+    lhs_tile: pto.Tile,
+    rhs_tile: pto.Tile,
+    dst_tile: pto.Tile,
+):
+    rows = 4
+    cols = 16
 
-    # All tiles are in UB memory space
-    all_mask = pto.make_mask(dtype, PAT.ALL)
-    rows, cols = a.shape
-    
-    # Element-wise: c = a + b * 2.0
-    for i in range(0, rows * cols, 64):
-        # Load vectors from UB tiles using element-indexing syntax
-        vec_a = pto.vlds(a[i:])         # Implicit tile→UBRef with automatic offset calculation
-        vec_b = pto.vlds(b[i:])
-        
-        # Compute: b * 2.0
-        scaled_b = pto.vmuls(vec_b, 2.0, all_mask)
-        
-        # Compute: a + scaled_b
-        result = pto.vadd(vec_a, scaled_b, all_mask)
-        
-        # Store result to output tile using element-indexing syntax
-        pto.vsts(result, c[i:], all_mask)
+    pto.dma_load(lhs_gm[0:rows, 0:cols], lhs_tile)
+    pto.dma_load(rhs_gm[0:rows, 0:cols], rhs_tile)
+
+    for lane in range(0, 256, 64):
+        mask = pto.make_mask(pto.f32, PAT.ALL)
+        lhs_vec = pto.vlds(lhs_tile, lane)
+        rhs_vec = pto.vlds(rhs_tile, lane)
+        summed = pto.vadd(lhs_vec, rhs_vec, mask)
+        pto.vsts(summed, dst_tile, lane, mask)
+
+    pto.dma_store(dst_tile, out_gm[0:rows, 0:cols])
 ```
+
+Both examples follow the same fundamental pattern: load data from global memory into local tiles, perform vector operations, and store results back. The compiler automatically infers vector-scope boundaries for the base vector operations. The `Tile` parameters are specialized to concrete shapes during compilation. Later sections cover advanced features such as matchers, template slots, raw pointer operations, and explicit scope management with `strict_vecscope`.
 
 ## Core Concepts
 
@@ -620,7 +635,7 @@ mask16 = pto.make_mask(pto.f16, PAT.ALL)
 out = pto.vabs(vec_f32, mask16)  # Type error!
 ```
 
-### Pointer Types
+### Pointer Types [Advanced Tier]
 
 Pointers combine element type and memory space:
 
@@ -640,7 +655,7 @@ The `MemorySpace` enum provides type-safe memory space specification:
 
 This replaces string literals (`MemorySpace.GM`/`MemorySpace.UB`) with compile-time checked enums.
 
-### Pointer Type Aliases
+### Pointer Type Aliases [Advanced Tier]
 
 For clarity in API documentation, the following type aliases are used:
 
@@ -1021,7 +1036,7 @@ Variables defined in only one branch are local to that branch.
 
 The DSL provides operations grouped by functionality. All operations use the `pto.` prefix. Operations are organized by functional families following the VPTO instruction set architecture.
 
-### Pointer Construction
+### Pointer Construction [Advanced Tier]
 
 Operations for creating and manipulating typed pointers.
 
@@ -1169,7 +1184,7 @@ from pto import SyncOpType
 pto.rls_buf(SyncOpType.TLOAD, 0)
 ```
 
-### Low-level DMA Programming (Legacy)
+### Low-level DMA Programming (Legacy) [Advanced Tier]
 
 **Note**: These low-level DMA programming operations are automatically handled by `pto.dma_load` and `pto.dma_store` in most cases. They expose hardware DMA engine parameters directly and should only be used when the automatic inference provided by the high-level API is insufficient for specific optimization needs.
 
@@ -1199,7 +1214,7 @@ pto.dma_load(input_tensor[0:16, 0:16], ub_tile)
 # All loop strides and sizes automatically inferred
 ```
 
-#### `pto.set_loop2_stride_outtoub(stride0: pto.i64, stride1: pto.i64) -> None`
+#### `pto.set_loop2_stride_outtoub(stride0: pto.i64, stride1: pto.i64) -> None`  [Advanced Tier]
 
 **Description**: Configures DMA stride parameters for GM → UB transfers (loop2).
 
@@ -1211,7 +1226,7 @@ pto.dma_load(input_tensor[0:16, 0:16], ub_tile)
 
 **Returns**: None (side-effect operation)
 
-#### `pto.set_loop1_stride_outtoub(stride0: pto.i64, stride1: pto.i64) -> None`
+#### `pto.set_loop1_stride_outtoub(stride0: pto.i64, stride1: pto.i64) -> None`  [Advanced Tier]
 
 **Description**: Configures DMA stride parameters for GM → UB transfers (loop1).
 
@@ -1223,7 +1238,7 @@ pto.dma_load(input_tensor[0:16, 0:16], ub_tile)
 
 **Returns**: None (side-effect operation)
 
-#### `pto.set_loop_size_outtoub(size0: pto.i64, size1: pto.i64) -> None`
+#### `pto.set_loop_size_outtoub(size0: pto.i64, size1: pto.i64) -> None`  [Advanced Tier]
 
 **Description**: Configures DMA transfer size for GM → UB transfers.
 
@@ -1240,7 +1255,7 @@ pto.dma_load(input_tensor[0:16, 0:16], ub_tile)
 pto.set_loop_size_outtoub(1, 1)
 ```
 
-#### `pto.set_loop2_stride_ubtoout(stride0: pto.i64, stride1: pto.i64) -> None`
+#### `pto.set_loop2_stride_ubtoout(stride0: pto.i64, stride1: pto.i64) -> None`  [Advanced Tier]
 
 **Description**: Configures DMA stride parameters for UB → GM transfers (loop2).
 
@@ -1252,7 +1267,7 @@ pto.set_loop_size_outtoub(1, 1)
 
 **Returns**: None (side-effect operation)
 
-#### `pto.set_loop1_stride_ubtoout(stride0: pto.i64, stride1: pto.i64) -> None`
+#### `pto.set_loop1_stride_ubtoout(stride0: pto.i64, stride1: pto.i64) -> None`  [Advanced Tier]
 
 **Description**: Configures DMA stride parameters for UB → GM transfers (loop1).
 
@@ -1264,7 +1279,7 @@ pto.set_loop_size_outtoub(1, 1)
 
 **Returns**: None (side-effect operation)
 
-#### `pto.set_loop_size_ubtoout(size0: pto.i64, size1: pto.i64) -> None`
+#### `pto.set_loop_size_ubtoout(size0: pto.i64, size1: pto.i64) -> None`  [Advanced Tier]
 
 **Description**: Configures DMA transfer size for UB → GM transfers.
 
@@ -1282,7 +1297,7 @@ pto.set_loop_size_outtoub(1, 1)
 
 The following operations provide direct control over DMA transfers but require manual stride and size configuration. Prefer the high-level Tile Data Movement operations for most use cases.
 
-#### `pto.copy_gm_to_ubuf(src: GMPtr, dst: UBPtr, src_offset: pto.i64, src_stride0: pto.i64, src_stride1: pto.i64, dst_offset: pto.i64, dst_stride0: pto.i64, transpose: pto.i1, pad_left: pto.i64, pad_right: pto.i64, pad_value: pto.i64) -> None`
+#### `pto.copy_gm_to_ubuf(src: GMPtr, dst: UBPtr, src_offset: pto.i64, src_stride0: pto.i64, src_stride1: pto.i64, dst_offset: pto.i64, dst_stride0: pto.i64, transpose: pto.i1, pad_left: pto.i64, pad_right: pto.i64, pad_value: pto.i64) -> None`  [Advanced Tier]
 
 **Description**: Copies data from Global Memory (GM) to Unified Buffer (UB).
 
@@ -1308,7 +1323,7 @@ The following operations provide direct control over DMA transfers but require m
 pto.copy_gm_to_ubuf(gm_ptr, ub_ptr, 0, 32, 128, 0, 0, False, 0, 128, 128)
 ```
 
-#### `pto.copy_ubuf_to_ubuf(src: UBPtr, dst: UBPtr, src_offset: pto.i64, src_stride0: pto.i64, src_stride1: pto.i64, dst_offset: pto.i64, dst_stride0: pto.i64, dst_stride1: pto.i64) -> None`
+#### `pto.copy_ubuf_to_ubuf(src: UBPtr, dst: UBPtr, src_offset: pto.i64, src_stride0: pto.i64, src_stride1: pto.i64, dst_offset: pto.i64, dst_stride0: pto.i64, dst_stride1: pto.i64) -> None`  [Advanced Tier]
 
 **Description**: Copies data within Unified Buffer (UB → UB).
 
@@ -1326,7 +1341,7 @@ pto.copy_gm_to_ubuf(gm_ptr, ub_ptr, 0, 32, 128, 0, 0, False, 0, 128, 128)
 
 **Returns**: None (side-effect operation)
 
-#### `pto.copy_ubuf_to_gm(src: UBPtr, dst: GMPtr, src_offset: pto.i64, src_stride0: pto.i64, src_stride1: pto.i64, dst_offset: pto.i64, dst_stride0: pto.i64, dst_stride1: pto.i64) -> None`
+#### `pto.copy_ubuf_to_gm(src: UBPtr, dst: GMPtr, src_offset: pto.i64, src_stride0: pto.i64, src_stride1: pto.i64, dst_offset: pto.i64, dst_stride0: pto.i64, dst_stride1: pto.i64) -> None`  [Advanced Tier]
 
 **Description**: Copies data from Unified Buffer (UB) to Global Memory (GM).
 
@@ -1657,7 +1672,7 @@ The syntax sugar eliminates manual byte calculations, reduces errors, and makes 
 
 Operations for loading data from memory into vector registers.
 
-#### `pto.vlds(buf: UBRef, offset: Index) -> VRegType`  
+#### `pto.vlds(buf: UBRef, offset: Index) -> VRegType`  [Advanced Tier]
 #### `pto.vlds(tile[row, col:]) -> VRegType`
 #### `pto.vlds(tile[start:]) -> VRegType`
 
@@ -1707,7 +1722,7 @@ def generic_scale(src: pto.Tile, dst: pto.Tile, scale: pto.f32):
             pto.vsts(scaled, dst[i, j:], all_mask)
 ```
 
-#### `pto.vldas(buf: UBRef, offset: Index, align: pto.align) -> VRegType`  
+#### `pto.vldas(buf: UBRef, offset: Index, align: pto.align) -> VRegType`  [Advanced Tier]
 #### `pto.vldas(tile[row, col:], align: pto.align) -> VRegType`  
 #### `pto.vldas(tile[start:], align: pto.align) -> VRegType`
 
@@ -1742,7 +1757,7 @@ vec = pto.vldas(tile[i, j:], align)
 vec = pto.vldas(tile[k:], align)
 ```
 
-#### `pto.vldus(buf: UBRef, offset: Index) -> VRegType`  
+#### `pto.vldus(buf: UBRef, offset: Index) -> VRegType`  [Advanced Tier]
 #### `pto.vldus(tile[row, col:]) -> VRegType`  
 #### `pto.vldus(tile[start:]) -> VRegType`
 
@@ -1775,7 +1790,7 @@ vec = pto.vldus(tile[i, j:])
 vec = pto.vldus(tile[k:])
 ```
 
-#### `pto.vplds(buf: UBRef, offset: Index, pred: MaskType) -> VRegType`  
+#### `pto.vplds(buf: UBRef, offset: Index, pred: MaskType) -> VRegType`  [Advanced Tier]
 #### `pto.vplds(tile[row, col:], pred: MaskType) -> VRegType`  
 #### `pto.vplds(tile[start:], pred: MaskType) -> VRegType`
 
@@ -1810,7 +1825,7 @@ vec = pto.vplds(tile[i, j:], mask)
 vec = pto.vplds(tile[k:], mask)
 ```
 
-#### `pto.vldx2(buf1: UBRef, buf2: UBRef, offset: Index) -> (VRegType, VRegType)`  
+#### `pto.vldx2(buf1: UBRef, buf2: UBRef, offset: Index) -> (VRegType, VRegType)`  [Advanced Tier]
 #### `pto.vldx2(tile1[row, col:], tile2[row, col:]) -> (VRegType, VRegType)`  
 #### `pto.vldx2(tile1[start:], tile2[start:]) -> (VRegType, VRegType)`
 
@@ -1848,7 +1863,7 @@ vec1, vec2 = pto.vldx2(tile_a[i, j:], tile_b[i, j:])
 vec1, vec2 = pto.vldx2(tile_a[k:], tile_b[k:])
 ```
 
-#### `pto.vsld(buf: UBRef, offset: Index) -> VRegType`  
+#### `pto.vsld(buf: UBRef, offset: Index) -> VRegType`  [Advanced Tier]
 #### `pto.vsld(tile[row, col]) -> VRegType`  
 #### `pto.vsld(tile[pos]) -> VRegType`
 
@@ -2905,7 +2920,7 @@ def elementwise_kernel(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
 
 Operations for storing data from vector registers to memory (stateless).
 
-#### `pto.vsts(vec: VRegType, buf: UBRef, offset: Index, mask: MaskType) -> None`  
+#### `pto.vsts(vec: VRegType, buf: UBRef, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
 #### `pto.vsts(vec: VRegType, tile[row, col:], mask: MaskType) -> None`  
 #### `pto.vsts(vec: VRegType, tile[start:], mask: MaskType) -> None`
 
@@ -2954,7 +2969,7 @@ def generic_store(src: pto.Tile, dst: pto.Tile):
             pto.vsts(vec, dst[i, j:], all_mask)  # No manual offset calculation
 ```
 
-#### `pto.psts(mask: MaskType, buf: UBRef, offset: Index) -> None`  
+#### `pto.psts(mask: MaskType, buf: UBRef, offset: Index) -> None`  [Advanced Tier]
 #### `pto.psts(mask: MaskType, tile[row, col:]) -> None`  
 #### `pto.psts(mask: MaskType, tile[start:]) -> None`
 
@@ -2981,7 +2996,7 @@ def generic_store(src: pto.Tile, dst: pto.Tile):
 
 **Returns**: None (side-effect operation)
 
-#### `pto.vsst(scalar: ScalarType, buf: UBRef, offset: Index, mask: MaskType) -> None`  
+#### `pto.vsst(scalar: ScalarType, buf: UBRef, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
 #### `pto.vsst(scalar: ScalarType, tile[row, col:], mask: MaskType) -> None`  
 #### `pto.vsst(scalar: ScalarType, tile[start:], mask: MaskType) -> None`
 
@@ -3011,7 +3026,7 @@ def generic_store(src: pto.Tile, dst: pto.Tile):
 
 **Returns**: None (side-effect operation)
 
-#### `pto.vstx2(vec1: VRegType, vec2: VRegType, buf1: UBRef, buf2: UBRef, offset: Index, mask: MaskType) -> None`  
+#### `pto.vstx2(vec1: VRegType, vec2: VRegType, buf1: UBRef, buf2: UBRef, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
 #### `pto.vstx2(vec1: VRegType, vec2: VRegType, tile1[row, col:], tile2[row, col:], mask: MaskType) -> None`  
 #### `pto.vstx2(vec1: VRegType, vec2: VRegType, tile1[start:], tile2[start:], mask: MaskType) -> None`
 
@@ -3047,7 +3062,7 @@ def generic_store(src: pto.Tile, dst: pto.Tile):
 
 **Returns**: None (side-effect operation)
 
-#### `pto.vsta(vec: VRegType, buf: UBRef, offset: Index, align: pto.align, mask: MaskType) -> None`  
+#### `pto.vsta(vec: VRegType, buf: UBRef, offset: Index, align: pto.align, mask: MaskType) -> None`  [Advanced Tier]
 #### `pto.vsta(vec: VRegType, tile[row, col:], align: pto.align, mask: MaskType) -> None`  
 #### `pto.vsta(vec: VRegType, tile[start:], align: pto.align, mask: MaskType) -> None`
 
@@ -3084,7 +3099,7 @@ def generic_store(src: pto.Tile, dst: pto.Tile):
 
 Operations for storing data with stateful semantics.
 
-#### `pto.pstu(mask: MaskType, buf: UBRef, offset: Index) -> None`
+#### `pto.pstu(mask: MaskType, buf: UBRef, offset: Index) -> None`[Advanced Tier]
 
 **Description**: Predicate stateful store.
 
@@ -3097,7 +3112,7 @@ Operations for storing data with stateful semantics.
 
 **Returns**: None (side-effect operation)
 
-#### `pto.vstu(vec: VRegType, buf: UBRef, offset: Index, mask: MaskType) -> None`
+#### `pto.vstu(vec: VRegType, buf: UBRef, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
 
 **Description**: Vector stateful store.
 
@@ -3111,7 +3126,7 @@ Operations for storing data with stateful semantics.
 
 **Returns**: None (side-effect operation)
 
-#### `pto.vstus(vec: VRegType, buf: UBRef, offset: Index, mask: MaskType) -> None`
+#### `pto.vstus(vec: VRegType, buf: UBRef, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
 
 **Description**: Vector store update stateless.
 
@@ -3125,7 +3140,7 @@ Operations for storing data with stateful semantics.
 
 **Returns**: None (side-effect operation)
 
-#### `pto.vstur(vec: VRegType, buf: UBRef, offset: Index, mask: MaskType) -> None`
+#### `pto.vstur(vec: VRegType, buf: UBRef, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
 
 **Description**: Vector store update register.
 
