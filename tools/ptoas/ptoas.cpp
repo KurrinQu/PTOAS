@@ -780,6 +780,132 @@ static LogicalResult emitSharedPreBackendSeamIR(ModuleOp module,
   return success();
 }
 
+static int runVPTOBackendPipeline(MLIRContext &context, ModuleOp module,
+                                  const llvm::StringSet<> &inputFuncNames,
+                                  llvm::StringRef arch,
+                                  PTOBuildLevel effectiveLevel,
+                                  bool enableA5FusionMainline,
+                                  bool inputIsVPTOIR,
+                                  llvm::StringRef outputFilename) {
+  const bool skipPreBackendPasses = inputIsVPTOIR;
+
+  if (!skipPreBackendPasses) {
+    PassManager preBackendPM(&context);
+    maybeEnablePrintIRAfterAll(preBackendPM, inputFuncNames);
+    if (enableA5FusionMainline)
+      addA5FusionRegionMainlinePreBackendPasses(preBackendPM);
+    addSharedPreBackendPasses(preBackendPM, effectiveLevel);
+    module->setAttr("pto.target_arch", mlir::StringAttr::get(&context, arch));
+    if (failed(preBackendPM.run(module))) {
+      llvm::errs() << "Error: shared pre-backend pass execution failed.\n";
+      return 1;
+    }
+  }
+
+  if (ptoPrintSeamIR || !ptoSeamIRFile.empty()) {
+    if (skipPreBackendPasses) {
+      llvm::errs() << "Error: shared pre-backend seam IR is unavailable when "
+                      "the input is already VPTO IR.\n";
+      return 1;
+    }
+    if (ptoPrintSeamIR) {
+      module->print(llvm::errs());
+      llvm::errs() << "\n";
+    }
+    if (failed(emitSharedPreBackendSeamIR(module, ptoSeamIRFile)))
+      return 1;
+  }
+
+  if (!skipPreBackendPasses) {
+    PassManager backendPM(&context);
+    maybeEnablePrintIRAfterAll(backendPM, inputFuncNames);
+    addVPTOBackendMainlinePasses(backendPM, enableA5FusionMainline,
+                                 postFusionLoopUnrollFactor);
+    backendPM.addNestedPass<mlir::func::FuncOp>(
+        pto::createPTOVPTOExpandBridgeOpsPass());
+    if (enableA5FusionMainline)
+      backendPM.addPass(createCSEPass());
+    if (failed(backendPM.run(module))) {
+      llvm::errs() << "Error: VPTO backend lowering pass execution failed.\n";
+      return 1;
+    }
+  } else if (failed(runVPTOAuthoringValidation(context, module,
+                                               inputFuncNames))) {
+    llvm::errs() << "Error: VPTO authoring-stage legality verification "
+                    "failed.\n";
+    return 1;
+  }
+
+  std::error_code ec;
+  llvm::ToolOutputFile outputFile(outputFilename, ec, llvm::sys::fs::OF_None);
+  if (ec) {
+    llvm::errs() << ec.message() << "\n";
+    return 1;
+  }
+
+  if (vptoPrintIR || dumpVPTOIR) {
+    printVPTOIROpSummary(module, llvm::errs());
+    module->print(llvm::errs());
+    llvm::errs() << "\n";
+  }
+
+  pto::VPTOEmissionOptions options;
+  options.dumpVPTOIR = vptoPrintIR || dumpVPTOIR;
+  options.printIntrinsicSelections = vptoPrintIntrinsics;
+  options.allowUnresolved = vptoAllowUnresolved;
+  options.unresolvedReportPath =
+      !hivmUnresolvedReport.empty() ? hivmUnresolvedReport : vptoUnresolvedReport;
+  if (arch == "a5") {
+    options.targetTriple = "hiipu64-hisilicon-cce";
+    options.march = "dav-c310-vec";
+    options.aicoreArch = "dav-c310-vec";
+    options.defaultTargetCPU = "dav-c310-vec";
+    options.defaultTargetFeatures =
+        "+ATOMIC,+ArchV130,+AregRedefinable,+ArithmeticBf16,+AtomicForB8 ,"
+        "+F8e4m3,+F8e5m2,+F8e8m0,+FFTSBlk,+Fp4e1m2x2,+Fp4e2m1x2,+LDExtRefine,"
+        "+MOVX8,+SPR7bits,+SyncV,+dav-c310-vec";
+  }
+
+  if (emitVPTO || vptoEmitHIVMText ||
+      (!vptoEmitHIVMOfficialLLVM && !vptoEmitHIVMOfficialBitcode)) {
+    FailureOr<OwningOpRef<ModuleOp>> emissionModule =
+        pto::prepareVPTOEmissionModule(module, &llvm::errs());
+    if (failed(emissionModule)) {
+      llvm::errs() << "Error: VPTO emission preparation failed.\n";
+      return 1;
+    }
+
+    if (emitVPTO || (!vptoEmitHIVMText && !vptoEmitHIVMOfficialLLVM &&
+                     !vptoEmitHIVMOfficialBitcode)) {
+      (*emissionModule)->print(outputFile.os());
+      outputFile.os() << "\n";
+      outputFile.keep();
+      return 0;
+    }
+
+    if (failed(pto::translateVPTOModuleToText(**emissionModule, outputFile.os(),
+                                              options, llvm::errs()))) {
+      llvm::errs() << "Error: Failed to emit VPTO text.\n";
+      return 1;
+    }
+    outputFile.keep();
+    return 0;
+  }
+
+  LogicalResult emissionStatus =
+      vptoEmitHIVMOfficialBitcode
+          ? pto::translateVPTOModuleToLLVMBitcode(module, outputFile.os(),
+                                                  options, llvm::errs())
+          : pto::translateVPTOModuleToLLVMText(module, outputFile.os(), options,
+                                               llvm::errs());
+  if (failed(emissionStatus)) {
+    llvm::errs() << "Error: Failed to emit VPTO text.\n";
+    return 1;
+  }
+  outputFile.keep();
+  return 0;
+}
+
 static bool containsVPTOOpPrefix(llvm::StringRef line,
                                  llvm::StringRef opPrefix) {
   size_t searchFrom = 0;
@@ -1823,133 +1949,6 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  // A5 backend mainline: lower through PTOToVPTO and never wire the legacy
-  // OP-Lib passes into this backend branch.
-  if (useVPTOBackendPipeline) {
-    const bool skipPreBackendPasses = inputIsVPTOIR;
-
-    if (!skipPreBackendPasses) {
-      PassManager preBackendPM(&context);
-      maybeEnablePrintIRAfterAll(preBackendPM, inputFuncNames);
-      if (enableA5FusionMainline)
-        addA5FusionRegionMainlinePreBackendPasses(preBackendPM);
-      addSharedPreBackendPasses(preBackendPM, effectiveLevel);
-      module->getOperation()->setAttr("pto.target_arch",
-                                      mlir::StringAttr::get(&context, arch));
-      if (failed(preBackendPM.run(*module))) {
-        llvm::errs() << "Error: shared pre-backend pass execution failed.\n";
-        return 1;
-      }
-    }
-
-    if (ptoPrintSeamIR || !ptoSeamIRFile.empty()) {
-      if (skipPreBackendPasses) {
-        llvm::errs() << "Error: shared pre-backend seam IR is unavailable when "
-                        "the input is already VPTO IR.\n";
-        return 1;
-      }
-      if (ptoPrintSeamIR) {
-        module->print(llvm::errs());
-        llvm::errs() << "\n";
-      }
-      if (failed(emitSharedPreBackendSeamIR(*module, ptoSeamIRFile)))
-        return 1;
-    }
-
-    if (!skipPreBackendPasses) {
-      PassManager backendPM(&context);
-      maybeEnablePrintIRAfterAll(backendPM, inputFuncNames);
-      addVPTOBackendMainlinePasses(backendPM, enableA5FusionMainline,
-                                   postFusionLoopUnrollFactor);
-      backendPM.addNestedPass<mlir::func::FuncOp>(
-          pto::createPTOVPTOExpandBridgeOpsPass());
-      if (enableA5FusionMainline) {
-        backendPM.addPass(createCSEPass());
-      }
-      if (failed(backendPM.run(*module))) {
-        llvm::errs() << "Error: VPTO backend lowering pass execution failed.\n";
-        return 1;
-      }
-    } else if (failed(runVPTOAuthoringValidation(context, *module,
-                                                 inputFuncNames))) {
-      llvm::errs() << "Error: VPTO authoring-stage legality verification "
-                      "failed.\n";
-      return 1;
-    }
-
-    std::error_code ec;
-    llvm::ToolOutputFile outputFile(outputFilename, ec, llvm::sys::fs::OF_None);
-    if (ec) {
-      llvm::errs() << ec.message() << "\n";
-      return 1;
-    }
-
-    if (vptoPrintIR || dumpVPTOIR) {
-      printVPTOIROpSummary(*module, llvm::errs());
-      module->print(llvm::errs());
-      llvm::errs() << "\n";
-    }
-
-    pto::VPTOEmissionOptions options;
-    options.dumpVPTOIR = vptoPrintIR || dumpVPTOIR;
-    options.printIntrinsicSelections = vptoPrintIntrinsics;
-    options.allowUnresolved = vptoAllowUnresolved;
-    options.unresolvedReportPath = !hivmUnresolvedReport.empty()
-                                       ? hivmUnresolvedReport
-                                       : vptoUnresolvedReport;
-    if (arch == "a5") {
-      options.targetTriple = "hiipu64-hisilicon-cce";
-      options.march = "dav-c310-vec";
-      options.aicoreArch = "dav-c310-vec";
-      options.defaultTargetCPU = "dav-c310-vec";
-      options.defaultTargetFeatures =
-          "+ATOMIC,+ArchV130,+AregRedefinable,+ArithmeticBf16,+AtomicForB8 ,"
-          "+F8e4m3,+F8e5m2,+F8e8m0,+FFTSBlk,+Fp4e1m2x2,+Fp4e2m1x2,+LDExtRefine,"
-          "+MOVX8,+SPR7bits,+SyncV,+dav-c310-vec";
-    }
-
-    if (emitVPTO || vptoEmitHIVMText ||
-        (!vptoEmitHIVMOfficialLLVM && !vptoEmitHIVMOfficialBitcode)) {
-      FailureOr<OwningOpRef<ModuleOp>> emissionModule =
-          pto::prepareVPTOEmissionModule(*module, &llvm::errs());
-      if (failed(emissionModule)) {
-        llvm::errs() << "Error: VPTO emission preparation failed.\n";
-        return 1;
-      }
-
-      if (emitVPTO || (!vptoEmitHIVMText && !vptoEmitHIVMOfficialLLVM &&
-                       !vptoEmitHIVMOfficialBitcode)) {
-        (*emissionModule)->print(outputFile.os());
-        outputFile.os() << "\n";
-        outputFile.keep();
-        return 0;
-      }
-
-      if (failed(pto::translateVPTOModuleToText(**emissionModule,
-                                                outputFile.os(), options,
-                                                llvm::errs()))) {
-        llvm::errs() << "Error: Failed to emit VPTO text.\n";
-        return 1;
-      }
-      outputFile.keep();
-      return 0;
-    }
-
-    LogicalResult emissionStatus =
-        vptoEmitHIVMOfficialBitcode
-            ? pto::translateVPTOModuleToLLVMBitcode(*module,
-                                                    outputFile.os(),
-                                                    options, llvm::errs())
-            : pto::translateVPTOModuleToLLVMText(*module, outputFile.os(),
-                                                 options, llvm::errs());
-    if (failed(emissionStatus)) {
-      llvm::errs() << "Error: Failed to emit VPTO text.\n";
-      return 1;
-    }
-    outputFile.keep();
-    return 0;
-  }
-
   // [Fix] ToolOutputFile Usage
   std::error_code ec;
   llvm::ToolOutputFile outputFile(outputFilename, ec, llvm::sys::fs::OF_None);
@@ -2024,6 +2023,14 @@ int main(int argc, char **argv) {
     outputFile.os() << "\n";
     outputFile.keep();
     return 0;
+  }
+
+  // A5 backend mainline: lower through PTOToVPTO and never wire the legacy
+  // OP-Lib passes into this backend branch.
+  if (useVPTOBackendPipeline) {
+    return runVPTOBackendPipeline(context, *module, inputFuncNames, arch,
+                                  effectiveLevel, enableA5FusionMainline,
+                                  inputIsVPTOIR, outputFilename);
   }
 
   dropEmptyEmitCExpressions(module.get());
