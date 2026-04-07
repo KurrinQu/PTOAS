@@ -16,13 +16,7 @@ module attributes {pto.target_arch = "a5"} {
   %c128 = arith.constant 128 : index
   %cst_1 = arith.constant 1.953125e-04 : f32
   %cst_2 = arith.constant 1.000000e-06 : f32
-  %cdbg_110 = arith.constant 110 : i32
-  %cdbg_120 = arith.constant 120 : i32
-  %cdbg_130 = arith.constant 130 : i32
-  %cdbg_140 = arith.constant 140 : i32
-  %cdbg_200 = arith.constant 200 : i32
-  %cdbg_210 = arith.constant 210 : i32
-  %cdbg_220 = arith.constant 220 : i32
+  %cdbg_tail = arith.constant 999 : i32
   %hidden_states__ssa_v0_view = pto.make_tensor_view %arg0, shape = [%c16, %c5120], strides = [%c5120, %c1] {layout = #pto.layout<nd>}: !pto.tensor_view<?x?xbf16>
   %input_rms_weight__ssa_v0_view = pto.make_tensor_view %arg1, shape = [%c1, %c5120], strides = [%c5120, %c1] {layout = #pto.layout<nd>}: !pto.tensor_view<?x?xf32>
   %normed_out__iter_v1_view = pto.make_tensor_view %arg2, shape = [%c16, %c5120], strides = [%c5120, %c1] {layout = #pto.layout<nd>}: !pto.tensor_view<?x?xbf16>
@@ -34,10 +28,8 @@ module attributes {pto.target_arch = "a5"} {
     %8 = arith.muli %kb__idx_v0, %c128 : index
     %t__tile = pto.alloc_tile addr = %c64 : !pto.tile_buf<loc=vec, dtype=bf16, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %hidden_states__ssa_v0_pview = pto.partition_view %hidden_states__ssa_v0_view, offsets = [%arg3, %8], sizes = [%c16, %c128] : !pto.tensor_view<?x?xbf16> -> !pto.partition_tensor_view<16x128xbf16>
-    pto.print ins("dbg stage=%d", %cdbg_110 : i32)
     pto.tload ins(%hidden_states__ssa_v0_pview : !pto.partition_tensor_view<16x128xbf16>) outs(%t__tile : !pto.tile_buf<loc=vec, dtype=bf16, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     pto.barrier <PIPE_ALL>
-    pto.print ins("dbg stage=%d", %cdbg_120 : i32)
     %x_chunk__tile = pto.alloc_tile addr = %c4160 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     pto.tcvt ins(%t__tile{rmode = #pto<round_mode ROUND>} : !pto.tile_buf<loc=vec, dtype=bf16, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%x_chunk__tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     pto.barrier <PIPE_ALL>
@@ -55,12 +47,9 @@ module attributes {pto.target_arch = "a5"} {
     pto.barrier <PIPE_ALL>
     %2 = pto.alloc_tile addr = %c20608 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1, v_row=16, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>
     %partial_sq__tile_mv = pto.alloc_tile addr = %c0i : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1, v_row=16, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>
-    pto.print ins("dbg stage=%d", %cdbg_130 : i32)
     pto.tmov ins(%2 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1, v_row=16, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>) outs(%partial_sq__tile_mv : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1, v_row=16, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>)
     pto.barrier <PIPE_ALL>
-    pto.print ins("dbg stage=%d", %cdbg_140 : i32)
   }
-  pto.print ins("dbg stage=%d", %cdbg_200 : i32)
   %t__rm_a0_tmp_v3 = pto.alloc_tile addr = %c20608 : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
   %t__row_major_tmp_v4 = pto.alloc_tile addr = %c0i : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
   pto.tmuls ins(%t__rm_a0_tmp_v3, %cst_1 : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>, f32) outs(%t__row_major_tmp_v4 : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
@@ -75,10 +64,8 @@ module attributes {pto.target_arch = "a5"} {
     %10 = arith.muli %9, %c128 : index
     %4 = pto.alloc_tile addr = %c64 : !pto.tile_buf<loc=vec, dtype=bf16, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %11 = pto.partition_view %hidden_states__ssa_v0_view, offsets = [%arg3, %10], sizes = [%c16, %c128] : !pto.tensor_view<?x?xbf16> -> !pto.partition_tensor_view<16x128xbf16>
-    pto.print ins("dbg stage=%d", %cdbg_210 : i32)
     pto.tload ins(%11 : !pto.partition_tensor_view<16x128xbf16>) outs(%4 : !pto.tile_buf<loc=vec, dtype=bf16, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     pto.barrier <PIPE_ALL>
-    pto.print ins("dbg stage=%d", %cdbg_220 : i32)
     %5 = pto.alloc_tile addr = %c4160 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     pto.tcvt ins(%4{rmode = #pto<round_mode ROUND>} : !pto.tile_buf<loc=vec, dtype=bf16, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%5 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     pto.barrier <PIPE_ALL>
@@ -99,6 +86,7 @@ module attributes {pto.target_arch = "a5"} {
     pto.tstore ins(%7 : !pto.tile_buf<loc=vec, dtype=bf16, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%normed_out__iter_v3_pview : !pto.partition_tensor_view<16x128xbf16>)
     pto.barrier <PIPE_ALL>
   }
+  pto.print ins("dbg tail=%d", %cdbg_tail : i32)
   return
   }
 }
