@@ -142,11 +142,14 @@ def matmul_fallback(a: pto.Tile, b: pto.Tile, c: pto.Tile) -> None:
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `target` | `str` | Yes | Target hardware architecture (e.g., `"a5"` for Ascend 950). |
-| `op` | `str` | Yes | Name of the PTO operation to match (e.g., `"matmul"`, `"conv2d"`, `"add"`). |
+| `op` | `str` | No* | Name of the PTO operation to match (e.g., `"matmul"`, `"conv2d"`, `"add"`). **Mutually exclusive with `ops`**. |
+| `ops` | `List[str]` | No* | List of PTO operation names to match. **Mutually exclusive with `op`**. Required for template-based kernels. |
 | `dtypes` | `List[Tuple[Type, ...]]` | Yes | List of type signatures. Each tuple specifies the expected data types for the operation's operands (inputs and outputs) in order. |
+| `templates` | `Dict[str, Dict[str, str]]` | No | Template definitions for multi-operation kernels. Required when using `ops`. |
 | `constraints` | `List[Constraint]` | No | Additional constraints that must be satisfied for the kernel to be selected. Can include logical combinations (`AnyOf`, `AllOf`, `Not`). Default: empty list. |
 | `priority` | `int` | No | Selection priority when multiple kernels match. Higher values have higher priority. Default: `0`. |
 | `name` | `str` | No | Kernel name (used for debugging and profiling). Defaults to the decorated function's name. |
+| `advanced` | `bool` | No | Enable implicit vecscope inference. When `True`, vector operations inside loops automatically infer their vecscope. Default: `False`. |
 
 #### Type Matching Rules
 
@@ -335,6 +338,209 @@ def polymorphic_add(a: pto.Tile, b: pto.Tile, out: pto.Tile) -> None:
 def conv2d_nhwc_f16_f32(input: pto.Tile, filter: pto.Tile, output: pto.Tile) -> None:
     # Optimized for NHWC layout with static shapes
     pass
+```
+
+### Template-based Kernel Authoring
+
+For operations that share similar computation patterns but differ in their core vector operations, the DSL supports template-based kernel authoring. This allows a single kernel implementation to serve multiple related operations through parameterized templates.
+
+#### Multi-operation Kernels with `ops` Parameter
+
+Instead of specifying a single `op` parameter, you can provide an `ops` list to match multiple operations:
+
+```python
+@pto.vkernel(
+    target="a5",
+    ops=["tadd", "tsub", "tmul", "tdiv"],  # List of operations
+    dtypes=[(T, T, T)],                    # Type signature using type variable
+    advanced=True,
+    templates={
+        "core": {
+            "tadd": "vadd",
+            "tsub": "vsub", 
+            "tmul": "vmul",
+            "tdiv": "vdiv",
+        }
+    }
+)
+def elementwise_arithmetic(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
+    dtype = dst.element_type
+    rows, cols = dst.valid_shape
+    for row in range(0, rows, 1):
+        remained = cols
+        for col in range(0, cols, pto.get_lanes(dtype)):
+            mask, remained = pto.make_mask(dtype, remained)
+            lhs = pto.vlds(src0[row, col:])
+            rhs = pto.vlds(src1[row, col:])
+            out = pto.tpl("core", lhs, rhs, mask)  # Template dispatch
+            pto.vsts(out, dst[row, col:], mask)
+```
+
+#### Template System
+
+The template system consists of three components:
+
+1. **`templates` parameter**: A dictionary mapping template names to operation-specific implementations
+2. **`pto.tpl()` function**: Dispatches to the appropriate implementation based on the current operation
+3. **`ops` parameter**: Replaces the singular `op` parameter for multi-operation kernels
+
+##### Template Definition
+
+Templates are defined in the `templates` parameter of `@pto.vkernel`. Each template is a dictionary mapping operation names to implementation strings:
+
+```python
+templates={
+    "template_name": {
+        "op1": "implementation_for_op1",
+        "op2": "implementation_for_op2",
+        # ...
+    },
+    "another_template": {
+        "op1": "different_implementation_for_op1",
+        # ...
+    }
+}
+```
+
+The implementation strings are typically vector operation names (e.g., `"vadd"`, `"vsub"`, `"vmul"`, `"vdiv"`) that will be resolved during kernel expansion.
+
+##### Template Usage with `pto.tpl()`
+
+Inside a kernel function, use `pto.tpl()` to invoke a template:
+
+```python
+result = pto.tpl(template_name, *args, **kwargs)
+```
+
+During kernel expansion for a specific operation (e.g., `"tadd"`), the system replaces `pto.tpl("core", lhs, rhs, mask)` with the appropriate implementation (e.g., `pto.vadd(lhs, rhs, mask)`).
+
+#### Decorator Parameters Update
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `target` | `str` | Yes | Target hardware architecture (e.g., `"a5"` for Ascend 950). |
+| `op` | `str` | No* | Name of the PTO operation to match. **Mutually exclusive with `ops`**. |
+| `ops` | `List[str]` | No* | List of PTO operation names to match. **Mutually exclusive with `op`**. |
+| `dtypes` | `List[Tuple[Type, ...]]` | Yes | List of type signatures. Each tuple specifies the expected data types for the operation's operands. |
+| `templates` | `Dict[str, Dict[str, str]]` | No | Template definitions for multi-operation kernels. Required when using `ops`. |
+| `constraints` | `List[Constraint]` | No | Additional constraints that must be satisfied for kernel selection. |
+| `priority` | `int` | No | Selection priority when multiple kernels match. Default: `0`. |
+| `name` | `str` | No | Kernel name (used for debugging and profiling). Defaults to the decorated function's name. |
+| `advanced` | `bool` | No | Enable implicit vecscope inference. Default: `False`. |
+
+**Note**: Either `op` or `ops` must be provided, but not both. When using `ops`, the `templates` parameter is required.
+
+#### Advanced Template Patterns
+
+##### Multiple Templates per Kernel
+
+A kernel can define multiple templates for different aspects of the computation:
+
+```python
+@pto.vkernel(
+    target="a5",
+    ops=["tadd_relu", "tsub_relu"],
+    dtypes=[(T, T, T)],
+    templates={
+        "arithmetic": {
+            "tadd_relu": "vadd",
+            "tsub_relu": "vsub",
+        },
+        "activation": {
+            "tadd_relu": "vrelu",
+            "tsub_relu": "vrelu",  # Same activation for both
+        }
+    }
+)
+def elementwise_with_activation(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
+    # ... load vectors
+    arith_result = pto.tpl("arithmetic", lhs, rhs, mask)
+    activated = pto.tpl("activation", arith_result, mask)
+    # ... store result
+```
+
+##### Template with Additional Arguments
+
+Templates can accept additional arguments beyond the base operation:
+
+```python
+# In kernel using the template:
+result = pto.tpl("scale_add", lhs, rhs, scale_factor, mask)
+
+# Template definition:
+templates={
+    "scale_add": {
+        "tadd": "vmadd",  # Multiply-add operation
+        "tsub": "vmsub",  # Multiply-subtract operation
+    }
+}
+```
+
+#### Type Variables in Template Kernels
+
+Template kernels often use type variables to enforce type consistency:
+
+```python
+T = pto.TypeVar('T')
+
+@pto.vkernel(
+    target="a5",
+    ops=["tadd", "tsub"],
+    dtypes=[(T, T, T)],  # All three operands share type T
+    templates={
+        "core": {
+            "tadd": "vadd",
+            "tsub": "vsub",
+        }
+    }
+)
+def typed_elementwise(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
+    # Type variable T ensures all tiles have same element type
+    dtype = dst.element_type  # This is type T
+    # ... implementation
+```
+
+#### Selection Mechanism for Template Kernels
+
+When a PTO operation matches a template kernel:
+1. The system selects the kernel based on `ops` list inclusion
+2. During expansion, `pto.tpl()` calls are resolved using the template dictionary
+3. For operation `"op_name"`, template `"template_name"` resolves to `templates["template_name"]["op_name"]`
+4. The resolved string (e.g., `"vadd"`) is replaced with the corresponding DSL operation
+
+#### Example: Unified Arithmetic Kernel
+
+```python
+T = pto.TypeVar('T')
+
+@pto.vkernel(
+    ops=["tadd", "tsub", "tmul", "tdiv", "tmax", "tmin"],
+    dtypes=[(T, T, T)],
+    advanced=True,
+    templates={
+        "arithmetic": {
+            "tadd": "vadd",
+            "tsub": "vsub", 
+            "tmul": "vmul",
+            "tdiv": "vdiv",
+            "tmax": "vmax",
+            "tmin": "vmin",
+        }
+    }
+)
+def unified_arithmetic(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
+    """Single implementation for six arithmetic operations."""
+    dtype = dst.element_type
+    rows, cols = dst.valid_shape
+    
+    for row in range(0, rows, 1):
+        remained = cols
+        for col in range(0, cols, pto.get_lanes(dtype)):
+            mask, remained = pto.make_mask(dtype, remained)
+            lhs = pto.vlds(src0[row, col:])
+            rhs = pto.vlds(src1[row, col:])
+            out = pto.tpl("arithmetic", lhs, rhs, mask)
+            pto.vsts(out, dst[row, col:], mask)
 ```
 
 ### Value Model
@@ -2643,6 +2849,55 @@ Type conversion and specialized operations.
 |--------------|------|-------------|
 | `result` | `VRegType` | Merged and sorted vector |
 
+### Template Operations
+
+Operations for template-based kernel authoring, enabling code reuse across multiple related operations.
+
+#### `pto.tpl(template_name: str, *args, **kwargs) -> Any`
+
+**Description**: Template dispatch operation for multi-operation kernels. Resolves to different implementations based on the current operation being expanded.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `template_name` | `str` | Name of the template to dispatch |
+| `*args` | `Any` | Arguments passed to the template implementation |
+| `**kwargs` | `Any` | Keyword arguments passed to the template implementation |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `Any` | Result of the template implementation |
+
+**Behavior**:
+- Only valid inside kernels decorated with `@pto.vkernel` that have a `templates` parameter
+- During kernel expansion for a specific operation `op_name`, `pto.tpl("template_name", ...)` is replaced with the implementation specified in `templates["template_name"]["op_name"]`
+- The replacement is a direct substitution; arguments are passed unchanged
+- Template implementations are typically string names of vector operations (e.g., `"vadd"`, `"vsub"`)
+
+**Example**:
+```python
+@pto.vkernel(
+    ops=["tadd", "tsub"],
+    dtypes=[(T, T, T)],
+    templates={
+        "core": {
+            "tadd": "vadd",
+            "tsub": "vsub",
+        }
+    }
+)
+def elementwise_kernel(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
+    # ... load vectors
+    result = pto.tpl("core", lhs, rhs, mask)  # Expands to vadd for tadd, vsub for tsub
+    # ... store result
+```
+
+**Constraints**:
+- Template names must be defined in the `templates` parameter of the `@pto.vkernel` decorator
+- For each operation in the `ops` list, every template must have a corresponding implementation
+- Template implementations must be valid operation names in the DSL
+
 ### Stateless Store Operations
 
 Operations for storing data from vector registers to memory (stateless).
@@ -2882,6 +3137,130 @@ Operations for storing data with stateful semantics.
 **Returns**: None (side-effect operation)
 
 ## Examples
+
+### Template-based Kernel Examples
+
+#### Unified Arithmetic Operations
+
+A single kernel implementing multiple arithmetic operations using templates:
+
+```python
+T = pto.TypeVar('T')
+
+@pto.vkernel(
+    target="a5",
+    ops=["tadd", "tsub", "tmul", "tdiv"],
+    dtypes=[(T, T, T)],
+    advanced=True,
+    templates={
+        "core": {
+            "tadd": "vadd",
+            "tsub": "vsub", 
+            "tmul": "vmul",
+            "tdiv": "vdiv",
+        }
+    }
+)
+def elementwise_arithmetic(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
+    """Single implementation for four arithmetic operations."""
+    dtype = dst.element_type
+    rows, cols = dst.valid_shape
+    
+    for row in range(0, rows, 1):
+        remained = cols
+        for col in range(0, cols, pto.get_lanes(dtype)):
+            mask, remained = pto.make_mask(dtype, remained)
+            lhs = pto.vlds(src0[row, col:])
+            rhs = pto.vlds(src1[row, col:])
+            out = pto.tpl("core", lhs, rhs, mask)
+            pto.vsts(out, dst[row, col:], mask)
+```
+
+#### Multiple Templates with Activation
+
+Kernel using separate templates for arithmetic and activation operations:
+
+```python
+@pto.vkernel(
+    target="a5",
+    ops=["add_relu", "sub_relu", "add_sigmoid", "sub_sigmoid"],
+    dtypes=[(T, T, T)],
+    templates={
+        "arithmetic": {
+            "add_relu": "vadd",
+            "sub_relu": "vsub",
+            "add_sigmoid": "vadd",
+            "sub_sigmoid": "vsub",
+        },
+        "activation": {
+            "add_relu": "vrelu",
+            "sub_relu": "vrelu",
+            "add_sigmoid": "vsigmoid",
+            "sub_sigmoid": "vsigmoid",
+        }
+    }
+)
+def elementwise_with_activation(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
+    dtype = dst.element_type
+    rows, cols = dst.valid_shape
+    
+    for row in range(0, rows, 1):
+        remained = cols
+        for col in range(0, cols, pto.get_lanes(dtype)):
+            mask, remained = pto.make_mask(dtype, remained)
+            lhs = pto.vlds(src0[row, col:])
+            rhs = pto.vlds(src1[row, col:])
+            
+            # Use arithmetic template
+            arith_result = pto.tpl("arithmetic", lhs, rhs, mask)
+            
+            # Apply activation template
+            activated = pto.tpl("activation", arith_result, mask)
+            
+            pto.vsts(activated, dst[row, col:], mask)
+```
+
+#### Template with Additional Arguments
+
+Template that accepts extra arguments beyond the base operation:
+
+```python
+@pto.vkernel(
+    target="a5",
+    ops=["scale_add", "scale_sub"],
+    dtypes=[(T, T, T, T)],  # dst, src0, src1, scale
+    templates={
+        "scaled_op": {
+            "scale_add": "vmadd",  # Multiply-add: src0 * scale + src1
+            "scale_sub": "vmsub",  # Multiply-sub: src0 * scale - src1
+        }
+    }
+)
+def scaled_elementwise(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, scale: pto.Tile):
+    """Elementwise operations with scaling factor."""
+    dtype = dst.element_type
+    rows, cols = dst.valid_shape
+    
+    for row in range(0, rows, 1):
+        remained = cols
+        for col in range(0, cols, pto.get_lanes(dtype)):
+            mask, remained = pto.make_mask(dtype, remained)
+            lhs = pto.vlds(src0[row, col:])
+            rhs = pto.vlds(src1[row, col:])
+            scale_vec = pto.vlds(scale[row, col:])
+            
+            # Template with three arguments
+            out = pto.tpl("scaled_op", lhs, scale_vec, rhs, mask)
+            pto.vsts(out, dst[row, col:], mask)
+```
+
+#### Benefits of Template-based Authoring
+
+1. **Code Reuse**: Single implementation serves multiple operations
+2. **Maintenance**: Bug fixes and optimizations apply to all related operations
+3. **Consistency**: Ensures uniform behavior across operation families
+4. **Reduced Boilerplate**: Eliminates duplicate control flow and data movement code
+5. **Type Safety**: Type variables ensure consistent operand types
 
 ### Simple Vector Copy
 
