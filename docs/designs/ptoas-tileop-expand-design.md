@@ -803,6 +803,120 @@ def template_xxx(dst: pto.Tile, src0: pto.Tile, ...):
 ### 4.4 测试与文档
 
 - Python DSL 模板编写和实例化的单元测试
+  以当前 `lib/TileOps/tadd_template.py` 为例，新增/维护
+  `test/basic/expand_tile_op_tilelang.pto`
+  作为 `pto.tadd` TileLang 模板实例化的基础回归。该用例覆盖：
+  1. `ExpandTileOp` 是否能匹配 `pto.tadd` 并调用 Python DSL helper；
+  2. 模板实例化后的 `func.call` 是否能被 inline；
+  3. `FoldTileBufIntrinsics` 之后是否得到 `pto.vlds` / `pto.vadd` / `pto.vsts` 形式的 Vector IR。
+
+  当前 `pto.tadd` 的向量库模板实现如下：
+
+  ```python
+  """TileLang DSL template for pto.tadd — used by ExpandTileOp tests."""
+
+  import sys
+  from pathlib import Path
+  import tilelang_dsl as pto
+
+
+  @pto.vkernel(
+      target="a5",
+      op="pto.tadd",
+      dtypes=[(pto.f32, pto.f32, pto.f32)]
+  )
+  def template_tadd(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
+      dtype = dst.element_type
+      valid_rows, valid_cols = dst.valid_shape
+
+      for row in range(0, valid_rows, 1):
+          remained = valid_cols
+          for col in range(0, valid_cols, pto.get_lanes(dtype)):
+              mask, remained = pto.make_mask(dtype, remained)
+              lhs = pto.vlds(src0[row, col:])
+              rhs = pto.vlds(src1[row, col:])
+              summed = pto.vadd(lhs, rhs, mask)
+              pto.vsts(summed, dst[row, col:], mask)
+      return
+  ```
+
+  对应的单元测试用例如下：
+
+  ```mlir
+  // Test that ExpandTileOp + InlineLibCall + FoldTileBufIntrinsics pipeline
+  // expands pto.tadd via the default TileLang Python DSL template
+  // lib/TileOps/tadd_template.py.
+  //
+  // Pipeline: MemrefToTileBuf -> ExpandTileOp -> InlineLibCall -> FoldTileBufIntrinsics
+  //
+  // RUN: ptoas --pto-arch=a5 --pto-backend=vpto --enable-tile-op-expand %s -o - 2>/dev/null | FileCheck %s
+
+  // After the full tile-op-expand path on the VPTO backend, the original
+  // pto.tadd should be lowered to vector-style VPTO IR.
+  // CHECK: func.func @TADD
+  // CHECK-NOT: pto.tadd ins
+  // CHECK: pto.vecscope
+  // CHECK: pto.castptr
+  // CHECK: pto.vlds
+  // CHECK: pto.vadd
+  // CHECK: pto.vsts
+
+  module {
+    func.func @TADD() {
+      %a = pto.alloc_tile
+        : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
+                        blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      %b = pto.alloc_tile
+        : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
+                        blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      %tile_buf = pto.alloc_tile
+        : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
+                        blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+      pto.tadd ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
+                                blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+                            !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
+                                blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+               outs(%tile_buf : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
+                                     blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+      return
+    }
+  }
+  ```
 - Expand TileOp pass 的端到端测试（`pto.tadd` → Vector IR）
+  使用以下命令同时观察中间 IR 和最终 LLVM IR：
+
+  ```bash
+  ./build/tools/ptoas/ptoas test/basic/expand_tile_op_tilelang.pto \
+    --pto-arch=a5 \
+    --print-ir-after-all \
+    --pto-backend=vpto \
+    --enable-tile-op-expand \
+    --vpto-emit-hivm-llvm \
+    -o - \
+    > add.ll \
+    2> /tmp/expand_tile_op_tilelang.mlir
+  ```
+
+  说明：
+  - `stderr` 中的 `/tmp/expand_tile_op_tilelang.mlir` 保存 `--print-ir-after-all` 打印的各阶段 MLIR/VPTO IR，可用于检查模板是否已经从 `pto.tadd` 展开为向量 IR。
+  - `stdout` 中的最终产物是 textual LLVM IR，因此这里使用 `-o - > add.ll` 显式落盘，而不是依赖 `-o <file>` 与 `--print-ir-after-all` 混用时的输出行为。
+
+  随后将生成的 `add.ll` 交给 Bisheng：
+
+  ```bash
+  bisheng \
+    --target=hiipu64-hisilicon-cce \
+    -march=dav-c310-vec \
+    --cce-aicore-arch=dav-c310-vec \
+    --cce-aicore-only \
+    -c -x ir add.ll \
+    -o add.o
+  ```
+
+  若上述命令成功生成 `add.o`，则说明当前 `pto.tadd` 的向量库模板已经完成：
+  - TileLang 模板实例化；
+  - `pto.tadd -> Vector IR -> LLVM IR` 的端到端 lowering；
+  - Bisheng 设备侧编译校验。
 - 融合场景测试（多个 Tile op 连续使用后的 VF Fusion）
 - 更新 `PTO_IR_manual.md` 和 TileLang DSL Guide
