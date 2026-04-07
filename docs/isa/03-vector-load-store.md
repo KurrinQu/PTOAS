@@ -126,10 +126,16 @@ DMA **`TLOAD` / `TSTORE`** (global memory ↔ UB) use **MTE** pipes, not `RV_VLD
 ### `pto.vlds`
 
 - **syntax:** `%result = pto.vlds %source[%offset] {dist = "DIST"} : !pto.ptr<T, ub> -> !pto.vreg<NxT>`
+- **authoring-form extension:** `%result = pto.vlds %source[%i0, %i1, ...] {dist = "DIST"} : memref<...> -> !pto.vreg<NxT>`
 - **semantics:** Vector load with distribution mode.
 - **inputs:**
   `%source` is the UB base address, `%offset` is the load displacement, and
   `DIST` selects the distribution mode.
+- **authoring-form indexing contract:**
+  For `!pto.ptr`, only one linearized index is legal.
+  For `memref`, the authoring IR may provide either one linearized index or one
+  index per memref dimension; the compiler linearizes the latter before final
+  emission.
 - **outputs:**
   `%result` is the loaded vector register value.
 - **constraints and limitations:**
@@ -348,11 +354,17 @@ for (int i = 0; i < active_lanes; i++)
 ### `pto.vsts`
 
 - **syntax:** `pto.vsts %value, %dest[%offset], %mask {dist = "DIST"} : !pto.vreg<NxT>, !pto.ptr<T, ub>, !pto.mask`
+- **authoring-form extension:** `pto.vsts %value, %dest[%i0, %i1, ...], %mask {dist = "DIST"} : !pto.vreg<NxT>, memref<...>, !pto.mask`
 - **semantics:** Vector store with distribution mode.
 - **inputs:**
   `%value` is the source vector, `%dest` is the UB base pointer, `%offset` is
   the displacement, `%mask` selects the active lanes or sub-elements, and
   `DIST` selects the store distribution.
+- **authoring-form indexing contract:**
+  For `!pto.ptr`, only one linearized index is legal.
+  For `memref`, the authoring IR may provide either one linearized index or one
+  index per memref dimension; the compiler linearizes the latter before final
+  emission.
 - **outputs:**
   This op has no SSA result; it writes to UB memory.
 - **constraints and limitations:**

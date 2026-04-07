@@ -721,8 +721,14 @@ Address-form policy for this section:
 
 - syntax:
   `%result = pto.vlds %source[%offset] {dist = "DIST"} : buf_like -> !pto.vreg<NxT>`
+  `%result = pto.vlds %source[%i0, %i1, ...] {dist = "DIST"} : memref<...> -> !pto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
+- indexing contract:
+  `!pto.ptr` form requires exactly one linearized element index.
+  `memref` form accepts either one linearized element index or one index per
+  memref dimension. Multi-dimensional `memref` indices are linearized before
+  final ptr-only emission.
 - CCE correspondence:
   `vld(...)`, `vlds(...)`
   `__builtin_cce_vldsx1_*`
@@ -1502,8 +1508,14 @@ Address-form policy for this section:
 
 - syntax:
   `pto.vsts %value, %destination[%offset] {dist = "DIST"} : !pto.vreg<NxT>, buf_like`
+  `pto.vsts %value, %destination[%i0, %i1, ...], %mask {dist = "DIST"} : !pto.vreg<NxT>, memref<...>, !pto.mask`
 - semantics:
   TODO(user): add one-line semantics for external developers.
+- indexing contract:
+  `!pto.ptr` form requires exactly one linearized element index.
+  `memref` form accepts either one linearized element index or one index per
+  memref dimension. Multi-dimensional `memref` indices are linearized before
+  final ptr-only emission.
 - CCE correspondence:
   `vst(...)`, `vsts(...)`
   `__builtin_cce_vstx1_*`, `__builtin_cce_vstsx1_*`
