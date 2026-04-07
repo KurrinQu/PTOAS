@@ -195,8 +195,8 @@ static llvm::cl::opt<bool> enableInsertSync("enable-insert-sync",
                                             llvm::cl::desc("Enable automatic synchronization insertion pass"),
                                             llvm::cl::init(false));
 
-static llvm::cl::opt<bool> enableTileToVector(
-    "enable-tile-to-vector",
+static llvm::cl::opt<bool> enableTileOpExpand(
+    "enable-tile-op-expand",
     llvm::cl::desc(
         "Enable Tile-to-Vector lowering path (memref->tile_buf recovery)"),
     llvm::cl::init(false));
@@ -612,7 +612,8 @@ private:
                                       const llvm::StringSet<> &userFuncNames) {
     return userFuncNames.contains(symName) ||
            symName.starts_with("__pto_oplib_inst_") ||
-           symName.starts_with("__pto_fused_group_");
+           symName.starts_with("__pto_fused_group_") ||
+           symName.starts_with("__pto_tilelang_");
   }
 
   bool shouldPrintFunction(func::FuncOp funcOp) const {
@@ -690,12 +691,24 @@ static void addVPTOBackendMainlinePasses(OpPassManager &pm,
   //   -> PTOFusionLoadStoreElision -> PTOPostFusionLoopUnroll
   //   -> PTOFlattenFusionRegion
   //   -> backend emission.
-  if (enableFusionMainline) {
+  if (enableTileOpExpand) {
+    // TileOp Expand path:
+    //   1. MemrefToTileBuf: recover tile_buf from memref
+    //   2. ExpandTileOp: instantiate TileLang DSL templates, replace tile ops
+    //      with func.call to template functions (tile_buf params)
+    //   3. InlineLibCall: inline template function bodies
+    //   4. FoldTileBufIntrinsics: fold tile_buf_addr / tile_valid_rows /
+    //      tile_valid_cols to concrete memref/constant values
+    pm.addPass(pto::createMemrefToTileBufPass());
+
+    pto::ExpandTileOpOptions expandOpts;
+    expandOpts.tilelangPath = tilelangPath;
+    expandOpts.tilelangPkgPath = tilelangPkgPath;
+    pm.addPass(pto::createExpandTileOpPass(expandOpts));
+
+    pm.addPass(pto::createPTOInlineLibCallPass());
     pm.addNestedPass<mlir::func::FuncOp>(
-        pto::createPTOVPTOVersionSelectionPass());
-    pm.addPass(pto::createLowerPTOToVPTOPass());
-  } else {
-    pm.addPass(pto::createLowerPTOToVPTOPass(vptoLoweringStrategy));
+        pto::createFoldTileBufIntrinsicsPass());
   }
 
   pm.addPass(pto::createPTOValidateVPTOIRPass());
@@ -1959,6 +1972,7 @@ int main(int argc, char **argv) {
 
   // Main PassManager
   PassManager pm(&context);
+  maybeEnablePrintIRAfterAll(pm, inputFuncNames);
   
   pm.addNestedPass<mlir::func::FuncOp>(
       pto::createPTOLowerFrontendPipeOpsPass());
@@ -1984,6 +1998,14 @@ int main(int argc, char **argv) {
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
 
   pm.addPass(createCSEPass());
+  // A5 backend mainline: lower through PTOToVPTO and never wire the legacy
+  // OP-Lib passes into this backend branch.
+  if (useVPTOBackendPipeline) {
+    return runVPTOBackendPipeline(context, *module, inputFuncNames, arch,
+                                  effectiveLevel, enableA5FusionMainline,
+                                  inputIsVPTOIR, outputFilename);
+  }
+
   if (arch == "a3") {
     pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));
   } else {
@@ -1992,45 +2014,9 @@ int main(int argc, char **argv) {
   pm.addPass(emitc::createFormExpressionsPass());
   pm.addPass(mlir::createCSEPass());
 
-  if (enableTileToVector) {
-    // Tile→Vector path:
-    //   1. MemrefToTileBuf: recover tile_buf from memref
-    //   2. ExpandTileOp: instantiate TileLang DSL templates, replace tile ops
-    //      with func.call to template functions (tile_buf params)
-    //   3. InlineLibCall: inline template function bodies
-    //   4. FoldTileBufIntrinsics: fold tile_buf_addr / tile_valid_rows /
-    //      tile_valid_cols to concrete memref/constant values
-    pm.addPass(pto::createMemrefToTileBufPass());
-
-    pto::ExpandTileOpOptions expandOpts;
-    expandOpts.tilelangPath = tilelangPath;
-    expandOpts.tilelangPkgPath = tilelangPkgPath;
-    pm.addPass(pto::createExpandTileOpPass(expandOpts));
-
-    pm.addPass(pto::createPTOInlineLibCallPass());
-    pm.addNestedPass<mlir::func::FuncOp>(
-        pto::createFoldTileBufIntrinsicsPass());
-  }
-
   if (failed(pm.run(*module))) {
     llvm::errs() << "Error: Pass execution failed.\n";
     return 1;
-  }
-
-  // Tile→Vector path: print MLIR IR and exit (no C++ emission).
-  if (enableTileToVector) {
-    module->print(outputFile.os());
-    outputFile.os() << "\n";
-    outputFile.keep();
-    return 0;
-  }
-
-  // A5 backend mainline: lower through PTOToVPTO and never wire the legacy
-  // OP-Lib passes into this backend branch.
-  if (useVPTOBackendPipeline) {
-    return runVPTOBackendPipeline(context, *module, inputFuncNames, arch,
-                                  effectiveLevel, enableA5FusionMainline,
-                                  inputIsVPTOIR, outputFilename);
   }
 
   dropEmptyEmitCExpressions(module.get());

@@ -235,6 +235,24 @@ struct PTOInlineLibCallPass
       llvm::errs() << "[op-fusion] inline-libcall touched " << touchedFuncs
                    << " function(s), inlined " << inlinedCalls << " call(s)\n";
     }
+
+    // Drop now-dead inline-able callees (private + uncalled) so downstream
+    // backends never see leftover template/instance bodies.  This is needed
+    // for TileLang templates whose tile_buf-typed parameters cannot be
+    // legalized once their callers have been inlined.
+    SymbolTable symbolTable(module);
+    SmallVector<func::FuncOp, 8> deadFuncs;
+    for (func::FuncOp func : module.getOps<func::FuncOp>()) {
+      if (!isInlineableLibFunc(func))
+        continue;
+      if (func.isPublic())
+        continue;
+      auto uses = symbolTable.getSymbolUses(func, module);
+      if (uses && uses->empty())
+        deadFuncs.push_back(func);
+    }
+    for (func::FuncOp func : deadFuncs)
+      func.erase();
   }
 };
 

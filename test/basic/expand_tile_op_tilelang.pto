@@ -12,11 +12,7 @@
 // Pipeline: MemrefToTileBuf -> ExpandTileOp -> InlineLibCall -> FoldTileBufIntrinsics
 //
 // REQUIRES: tilelang-dsl-tile-buf-params
-// RUN: ptoas --pto-arch=a5 --enable-tile-to-vector --tilelang-path=%S/../tilelang_templates --tilelang-pkg-path=%S/../../tilelang-dsl/python %s 2>/dev/null | FileCheck %s
-//
-// NOTE: This test requires the TileLang DSL to generate functions with
-// tile_buf parameters (not memref). The test is gated by REQUIRES until
-// the DSL frontend is updated.
+// RUN: ptoas --pto-arch=a5 --enable-tile-op-expand --tilelang-path=%S/../tilelang_templates --tilelang-pkg-path=%S/../../tilelang-dsl/python %s 2>/dev/null | FileCheck %s
 
 // After the full pipeline, tile_buf_addr/tile_valid_rows/tile_valid_cols
 // should be folded away, and the vector loop body should be inlined.
@@ -29,21 +25,23 @@
 // CHECK: pto.vsts
 
 module {
-  func.func @TADD(
-      %a: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
-                        blayout=row_major, slayout=none_box, fractal=512, pad=0>,
-      %b: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
-                        blayout=row_major, slayout=none_box, fractal=512, pad=0>,
-      %c: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
-                        blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-      attributes { pto.tile_function = "pto.tadd" } {
+  func.func @TADD() {
+    %a = pto.alloc_tile
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %b = pto.alloc_tile
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %tile_buf = pto.alloc_tile
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
 
     pto.tadd ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
                               blayout=row_major, slayout=none_box, fractal=512, pad=0>,
                           !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
                               blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-             outs(%c : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
-                            blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+             outs(%tile_buf : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
+                                   blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     return
   }
 }
