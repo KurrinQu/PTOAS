@@ -881,6 +881,49 @@ struct PTOViewToMemrefPass
       }
 
       // ------------------------------------------------------------------
+      // Stage 1.3: Lower pto.get_tensor_view_stride -> strided memref metadata
+      // ------------------------------------------------------------------
+      SmallVector<mlir::pto::GetTensorViewStrideOp, 8> tvStrides;
+      func.walk([&](mlir::pto::GetTensorViewStrideOp op) { tvStrides.push_back(op); });
+
+      for (auto op : tvStrides) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+        Location loc = op.getLoc();
+
+        Value view = op.getTensorView();
+        auto mrTy = dyn_cast<MemRefType>(view.getType());
+        if (!mrTy)
+          continue; // leave it to later passes if it hasn't been lowered yet
+
+        int64_t dimIndex = 0;
+        if (!getConstIndexValue(op.getDimIndex(), dimIndex)) {
+          op.emitError("get_tensor_view_stride currently expects a constant dim index");
+          signalPassFailure();
+          return;
+        }
+        if (dimIndex < 0 || dimIndex >= mrTy.getRank()) {
+          op.emitError("get_tensor_view_stride dim index is out of bounds");
+          signalPassFailure();
+          return;
+        }
+
+        SmallVector<int64_t> staticStrides;
+        int64_t offset = ShapedType::kDynamic;
+        if (succeeded(getStridesAndOffset(mrTy, staticStrides, offset)) &&
+            dimIndex < (int64_t)staticStrides.size() &&
+            staticStrides[dimIndex] != ShapedType::kDynamic) {
+          rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(
+              op, staticStrides[dimIndex]);
+          continue;
+        }
+
+        auto metadata =
+            rewriter.create<memref::ExtractStridedMetadataOp>(loc, view);
+        rewriter.replaceOp(op, metadata.getStrides()[dimIndex]);
+      }
+
+      // ------------------------------------------------------------------
       // Stage 1.5: Fold pto.addptr chains into load/store_scalar.
       // ------------------------------------------------------------------
       SmallVector<mlir::pto::LoadScalarOp, 8> loadScalars;
@@ -2263,12 +2306,15 @@ struct PTOViewToMemrefPass
           scalarOperand = src;
         }
 
-        rewriter.replaceOpWithNewOp<pto::TDivSOp>(
-            op,
+        auto attrs = op->getAttrs();
+        auto newOp = rewriter.create<pto::TDivSOp>(
+            op.getLoc(),
             TypeRange{},
             memrefOperand,
             scalarOperand,
             dst);
+        newOp->setAttrs(attrs);
+        rewriter.replaceOp(op, newOp->getResults());
       }
 
       SmallVector<mlir::pto::TExpandsOp, 8> expandsops;
