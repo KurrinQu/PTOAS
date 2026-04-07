@@ -982,7 +982,7 @@ The compiler automatically groups these three operations into a single implicit 
 2. **Scalar operations**: Non-vector operations (e.g., scalar arithmetic, pointer arithmetic) create boundaries
 3. **Explicit strict_vecscope**: User-defined `strict_vecscope` blocks create hard boundaries
 
-#### Explicit Scope Boundaries with `strict_vecscope`
+#### Explicit Scope Boundaries with `strict_vecscope` [Advanced Tier]
 
 For precise control over scope boundaries, use explicit `strict_vecscope` blocks. These create hard boundaries that prevent the compiler from merging operations across the block boundary:
 

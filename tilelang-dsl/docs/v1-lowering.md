@@ -13,7 +13,6 @@ It covers:
 
 It does not define:
 - matcher-driven dispatch
-- implicit vecscope inference
 - raw pointer authoring surface
 - advanced vector-family lowering beyond the fixed v1 matrix
 
@@ -54,8 +53,9 @@ Current lowering shape:
 - emits stable `func.func + arith/scf + pto.*` authoring-form VPTO modules
 - defaults to memref-first function/tile authoring when the target VPTO family supports memref operands
 - keeps `copy_*` family on typed `!pto.ptr`
+- infers dedicated `pto.vecscope` for stable vector-active runs
 - lowers `pto.strict_vecscope` buffer captures through ptr-form region ABI so the current emission-boundary ptr rewrite stays legal
-- requires explicit `pto.strict_vecscope`
+- only accepts explicit `pto.strict_vecscope` in `advanced=True` kernels
 - rejects support-matrix-external surface in the frontend
 
 ## Dynamic-Bound Profile
@@ -77,7 +77,7 @@ tail-DMA semantics.
 Examples aligned with the implemented surface:
 - `tilelang-dsl/examples/v1_elementwise_tail_demo.py`
   - emits a guide-style elementwise authoring kernel
-  - covers DMA, explicit `strict_vecscope`, dynamic loop bound, and typed tail mask
+  - covers DMA, advanced-only explicit `strict_vecscope`, dynamic loop bound, and typed tail mask
 - `tilelang-dsl/examples/v1_verify_smoke.py`
   - emits a minimal module that is expected to pass the current repo
     `ptoas --pto-backend=vpto` legality path

@@ -31,6 +31,7 @@ from .frontend_ast import (
 )
 from .support_matrix import (
     DEFERRED_PTO_SURFACES,
+    advanced_mode_message,
     deferred_surface_message,
     unsupported_feature_message,
 )
@@ -459,19 +460,7 @@ class _SemanticAnalyzer:
         self,
         env: dict[str, SemanticBinding],
     ) -> tuple[tuple[SemanticStmt, ...], dict[str, SemanticBinding]]:
-        if not self.node.advanced_enabled:
-            return self._analyze_block(self.node.body, env, allow_outer_lookup=True)
-
-        self._disable_inference_depth += 1
-        try:
-            body, final_env = self._analyze_block_without_inference(
-                self.node.body,
-                env,
-                allow_outer_lookup=True,
-            )
-        finally:
-            self._disable_inference_depth -= 1
-        return self._wrap_kernel_body_in_inferred_vecscope(body), final_env
+        return self._analyze_block(self.node.body, env, allow_outer_lookup=True)
 
     def _parameter_type(self, param: Any) -> SemanticType:
         if param.kind == "tensorview":
@@ -633,7 +622,7 @@ class _SemanticAnalyzer:
     ) -> bool:
         if self._disable_inference_depth > 0:
             return False
-        if not self.node.advanced_enabled or not allow_outer_lookup:
+        if not allow_outer_lookup:
             return False
         if isinstance(stmt, FrontendForStmt):
             return self._block_can_live_in_inferred_vecscope(stmt.body)
@@ -1302,6 +1291,8 @@ class _SemanticAnalyzer:
         stmt: FrontendStrictVecscopeStmt,
         env: dict[str, SemanticBinding],
     ) -> tuple[SemanticStmt, dict[str, SemanticBinding]]:
+        if not self.node.advanced_enabled:
+            raise TypeError(advanced_mode_message("strict_vecscope"))
         if len(stmt.captures) != len(stmt.block_arguments):
             raise ValueError("strict_vecscope capture arity must match block arguments")
 
@@ -1560,11 +1551,9 @@ class _SemanticAnalyzer:
         allow_outer_lookup: bool,
         context: str,
     ) -> tuple[SemanticExpr, tuple[SemanticExpr, ...]]:
-        if not self.node.advanced_enabled:
-            raise TypeError(unsupported_feature_message(f"{context} tile indexing sugar"))
         if not isinstance(expr, FrontendSubscriptExpr):
             raise TypeError(
-                f"{context} expects Tile element-indexing syntax in advanced TileLang DSL mode"
+                f"{context} expects Tile element-indexing syntax in TileLang DSL v1"
             )
         base = self._analyze_expr(expr.base, env, allow_outer_lookup=allow_outer_lookup)
         tile = self._require_tile_expr(base, context)

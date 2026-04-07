@@ -214,13 +214,6 @@ def _validate_resolved_template_op_surface(
     if op_name in SUPPORTED_TOPLEVEL_PTO_CALLS:
         return
     if op_name in SUPPORTED_VECSCOPE_PTO_CALLS:
-        if context.advanced_enabled:
-            return
-        if context.vecscope_depth <= 0:
-            raise context.error(
-                node,
-                f"vector op surface `pto.{op_name}` requires explicit pto.strict_vecscope in TileLang DSL v1",
-            )
         return
     if op_name in ADVANCED_VECSCOPE_PTO_CALLS:
         if context.advanced_enabled:
@@ -421,6 +414,11 @@ def _build_stmt(node: ast.stmt, context: _FrontendBuildContext) -> FrontendStmtN
             and item.context_expr.func.attr == "strict_vecscope"
         ):
             raise context.error(item.context_expr, "only pto.strict_vecscope is supported in TileLang DSL v1")
+        if not context.advanced_enabled:
+            raise context.error(
+                item.context_expr,
+                advanced_mode_message("strict_vecscope"),
+            )
         if not isinstance(item.optional_vars, ast.Tuple):
             raise context.error(item, "pto.strict_vecscope requires tuple binding in 'as'")
         block_arguments = []

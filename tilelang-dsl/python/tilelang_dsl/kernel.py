@@ -157,6 +157,11 @@ class _KernelBodyValidator(ast.NodeVisitor):
                 item.context_expr,
                 "only pto.strict_vecscope is supported as a with-context in TileLang DSL v1",
             )
+        if not self.advanced_enabled:
+            raise self.source_info.error(
+                item.context_expr,
+                advanced_mode_message("strict_vecscope"),
+            )
         if not isinstance(item.optional_vars, ast.Tuple):
             raise self.source_info.error(item, "pto.strict_vecscope requires tuple binding in 'as'")
         for elt in item.optional_vars.elts:
@@ -176,13 +181,6 @@ class _KernelBodyValidator(ast.NodeVisitor):
             if node.func.value.id == "pto" and node.func.attr in SUPPORTED_TOPLEVEL_PTO_CALLS:
                 return
             if node.func.value.id == "pto" and node.func.attr in SUPPORTED_VECSCOPE_PTO_CALLS:
-                if self.advanced_enabled:
-                    return
-                if self._vecscope_depth <= 0:
-                    raise self.source_info.error(
-                        node,
-                        f"vector op surface `pto.{node.func.attr}` requires explicit pto.strict_vecscope in TileLang DSL v1",
-                    )
                 return
             if node.func.value.id == "pto" and node.func.attr in ADVANCED_VECSCOPE_PTO_CALLS:
                 if self.advanced_enabled:

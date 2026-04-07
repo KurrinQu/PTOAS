@@ -10,7 +10,9 @@ TBinOps_2D_NoPostUpdate` flow from `pto/npu/a5/TAdd.hpp`, but spells the final
   fully dynamic or partially dynamic `(valid_rows, valid_cols)` profiles
 - the kernel surface is dtype-polymorphic and can be selected for any supported
   vector dtype with `pto.select_kernel(...)`
-- `advanced=True` enables implicit `pto.vecscope` inference
+- implicit `pto.vecscope` inference and tile indexing sugar cover the base
+  vector authoring path; this demo also keeps `advanced=True` enabled because it
+  lives alongside the matcher/advanced-surface examples
 - `pto.vlds(tile[row, col:])` / `pto.vsts(vec, tile[row, col:], mask)` use
   tile indexing sugar instead of manual offset arithmetic
 """

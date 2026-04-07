@@ -6,6 +6,18 @@ from pathlib import Path
 
 import tilelang_dsl as pto
 import tilelang_dsl.kernel as kernel_impl
+from tilelang_dsl.support_matrix import (
+    ADVANCED_EXPLICIT_VECSCOPE_SURFACES,
+    ADVANCED_LOW_LEVEL_DMA_SURFACES,
+    ADVANCED_RAW_POINTER_SURFACES,
+    ADVANCED_TILE_HELPER_SURFACES,
+    ADVANCED_TIER,
+    AUTHORING_TIER_SURFACE_GROUPS,
+    STABLE_TIER,
+    STABLE_TILE_INDEXING_SURFACES,
+    get_feature_tier,
+    get_surface_group_tier,
+)
 from tilelang_dsl.frontend_ast import (
     FrontendAssignStmt,
     FrontendCallExpr,
@@ -54,6 +66,62 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertTrue(hasattr(pto, "PAT"))
         self.assertTrue(hasattr(pto, "PIPE"))
         self.assertTrue(hasattr(pto, "EVENT"))
+
+
+class TileLangDSLSupportMatrixTests(unittest.TestCase):
+    def test_stable_starter_surface_groups_map_to_stable_tier(self) -> None:
+        self.assertEqual(get_surface_group_tier("TensorView"), STABLE_TIER)
+        self.assertEqual(get_surface_group_tier("Tile"), STABLE_TIER)
+        self.assertEqual(get_surface_group_tier("dma_load/store"), STABLE_TIER)
+        self.assertEqual(get_surface_group_tier("base_vector_ops"), STABLE_TIER)
+        self.assertEqual(get_surface_group_tier("tile_indexing_sugar"), STABLE_TIER)
+
+        self.assertIn("TensorView", AUTHORING_TIER_SURFACE_GROUPS["TensorView"])
+        self.assertIn("Tile", AUTHORING_TIER_SURFACE_GROUPS["Tile"])
+        self.assertIn("pto.dma_load", AUTHORING_TIER_SURFACE_GROUPS["dma_load/store"])
+        self.assertIn("pto.dma_store", AUTHORING_TIER_SURFACE_GROUPS["dma_load/store"])
+        self.assertIn("pto.vlds", AUTHORING_TIER_SURFACE_GROUPS["base_vector_ops"])
+        self.assertIn("pto.vsts", AUTHORING_TIER_SURFACE_GROUPS["base_vector_ops"])
+        self.assertIn("pto.vadd", AUTHORING_TIER_SURFACE_GROUPS["base_vector_ops"])
+        self.assertIn("pto.vmuls", AUTHORING_TIER_SURFACE_GROUPS["base_vector_ops"])
+        self.assertIn("tile[start:]", STABLE_TILE_INDEXING_SURFACES)
+        self.assertIn("tile[row, col:]", STABLE_TILE_INDEXING_SURFACES)
+
+        self.assertEqual(get_feature_tier("TensorView"), STABLE_TIER)
+        self.assertEqual(get_feature_tier("Tile"), STABLE_TIER)
+        self.assertEqual(get_feature_tier("pto.dma_load"), STABLE_TIER)
+        self.assertEqual(get_feature_tier("pto.dma_store"), STABLE_TIER)
+        self.assertEqual(get_feature_tier("pto.vlds"), STABLE_TIER)
+        self.assertEqual(get_feature_tier("pto.vsts"), STABLE_TIER)
+        self.assertEqual(get_feature_tier("pto.vadd"), STABLE_TIER)
+        self.assertEqual(get_feature_tier("pto.vmuls"), STABLE_TIER)
+        self.assertEqual(get_feature_tier("tile[start:]"), STABLE_TIER)
+        self.assertEqual(get_feature_tier("tile[row, col:]"), STABLE_TIER)
+
+    def test_non_stable_surface_groups_keep_advanced_boundaries(self) -> None:
+        self.assertEqual(get_surface_group_tier("strict_vecscope"), ADVANCED_TIER)
+        self.assertEqual(get_surface_group_tier("raw_pointer_family"), ADVANCED_TIER)
+        self.assertEqual(get_surface_group_tier("low_level_dma_family"), ADVANCED_TIER)
+        self.assertEqual(get_surface_group_tier("tile_helper_family"), ADVANCED_TIER)
+
+        self.assertIn("pto.strict_vecscope", ADVANCED_EXPLICIT_VECSCOPE_SURFACES)
+        self.assertIn("pto.ptr", ADVANCED_RAW_POINTER_SURFACES)
+        self.assertIn("pto.castptr", ADVANCED_RAW_POINTER_SURFACES)
+        self.assertIn("pto.copy_ubuf_to_ubuf", ADVANCED_LOW_LEVEL_DMA_SURFACES)
+        self.assertIn("pto.tile_with_strides", ADVANCED_TILE_HELPER_SURFACES)
+
+        self.assertEqual(get_feature_tier("strict_vecscope"), ADVANCED_TIER)
+        self.assertEqual(get_feature_tier("pto.strict_vecscope"), ADVANCED_TIER)
+        self.assertEqual(get_feature_tier("pto.ptr"), ADVANCED_TIER)
+        self.assertEqual(get_feature_tier("pto.castptr"), ADVANCED_TIER)
+        self.assertEqual(get_feature_tier("pto.copy_ubuf_to_ubuf"), ADVANCED_TIER)
+        self.assertEqual(get_feature_tier("pto.tile_with_strides"), ADVANCED_TIER)
+
+    def test_unsupported_features_do_not_report_legacy_tiers(self) -> None:
+        with self.assertRaises(KeyError):
+            get_feature_tier("pto.vreduce")
+        with self.assertRaises(KeyError):
+            get_feature_tier("pto.mask_b32")
 
 
 class TileLangDSLMatcherEntryTests(unittest.TestCase):
@@ -687,6 +755,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         @pto.vkernel(
             ops=["template_slot_add_unique", "template_slot_sub_unique"],
             dtypes=[(pto.f32, pto.f32, pto.f32)],
+            advanced=True,
             templates={
                 "core": {
                     "template_slot_add_unique": "vadd",
@@ -770,6 +839,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
                 "template_slot_tdiv_unique",
             ],
             dtypes=[(pto.f32, pto.f32, pto.f32)],
+            advanced=True,
             templates={
                 "core": {
                     "template_slot_tadd_unique": "vadd",
@@ -836,6 +906,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         @pto.vkernel(
             op="template_slot_non_literal_unique",
             dtypes=[(pto.f32, pto.f32, pto.f32)],
+            advanced=True,
             templates={"core": {"template_slot_non_literal_unique": "vadd"}},
         )
         def kernel(dst: pto.TensorView, src0: pto.TensorView, src1: pto.TensorView):
@@ -855,6 +926,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         @pto.vkernel(
             op="template_slot_unknown_slot_unique",
             dtypes=[(pto.f32, pto.f32, pto.f32)],
+            advanced=True,
             templates={"core": {"template_slot_unknown_slot_unique": "vadd"}},
         )
         def kernel(dst: pto.TensorView, src0: pto.TensorView, src1: pto.TensorView):
@@ -874,6 +946,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         @pto.vkernel(
             ops=["template_slot_missing_map_add_unique", "template_slot_missing_map_sub_unique"],
             dtypes=[(pto.f32, pto.f32, pto.f32)],
+            advanced=True,
             templates={"core": {"template_slot_missing_map_add_unique": "vadd"}},
         )
         def kernel(dst: pto.TensorView, src0: pto.TensorView, src1: pto.TensorView):
@@ -900,6 +973,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         @pto.vkernel(
             ops=["template_slot_unbound_add_unique", "template_slot_unbound_sub_unique"],
             dtypes=[(pto.f32, pto.f32, pto.f32)],
+            advanced=True,
             templates={
                 "core": {
                     "template_slot_unbound_add_unique": "vadd",
@@ -927,10 +1001,8 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             templates={"cmp": {"template_slot_advanced_surface_unique": "vcmp"}},
         )
         def kernel(dst: pto.TensorView, src0: pto.TensorView, src1: pto.TensorView):
-            with pto.strict_vecscope(dst, src0, src1, 0, 64, 64) as (out_tile, lhs_tile, rhs_tile, lb, ub, step):
-                for lane in range(lb, ub, step):
-                    mask = pto.make_mask(pto.i32, pto.PAT.ALL)
-                    out = pto.tpl("cmp", lhs_tile, rhs_tile, mask, "lt")
+            mask = pto.make_mask(pto.i32, pto.PAT.ALL)
+            out = pto.tpl("cmp", dst, src0, mask, "lt")
             return None
 
         with self.assertRaises(pto.TileLangFrontendError) as ctx:
@@ -942,7 +1014,11 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
     def test_callable_based_runtime_template_dispatch_remains_rejected(self) -> None:
         with self.assertRaises(pto.TileLangFrontendError) as ctx:
 
-            @pto.vkernel(op="template_slot_callable_dispatch_unique", dtypes=[(pto.f32, pto.f32, pto.f32)])
+            @pto.vkernel(
+                op="template_slot_callable_dispatch_unique",
+                dtypes=[(pto.f32, pto.f32, pto.f32)],
+                advanced=True,
+            )
             def kernel(dst: pto.TensorView, src0: pto.TensorView, src1: pto.TensorView):
                 table = {"core": pto.vadd}
                 with pto.strict_vecscope(dst, src0, src1, 0, 64, 64) as (
@@ -962,7 +1038,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn(f"{__file__}:", str(ctx.exception))
 
     def test_semantic_pipeline_binds_parameter_loop_and_strict_vecscope_types(self) -> None:
-        @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f16, pto.i32)])
+        @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f16, pto.i32)], advanced=True)
         def kernel(inp: pto.TensorView, tile: pto.Tile, scale: pto.i32):
             rows = tile.shape[0]
             step = rows
@@ -1123,7 +1199,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("to %arg2 step %c1 {", text)
 
     def test_make_mask_vlds_vsts_and_vector_families_lower_inside_strict_vecscope(self) -> None:
-        @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f32, pto.f32)])
+        @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f32, pto.f32)], advanced=True)
         def kernel(inp: pto.TensorView, tile: pto.Tile, scale: pto.f32):
             pto.dma_load(inp[0:16, 0:16], tile)
             with pto.strict_vecscope(tile, tile, scale, 0, 256, 64) as (
@@ -1183,7 +1259,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         )
 
     def test_tail_make_mask_lowers_to_typed_plt_and_updates_remaining(self) -> None:
-        @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f32, pto.i32)])
+        @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f32, pto.i32)], advanced=True)
         def kernel(inp: pto.TensorView, tile: pto.Tile, remaining: pto.i32):
             pto.dma_load(inp[0:16, 0:16], tile)
             with pto.strict_vecscope(tile, tile, remaining, 0, 64, 64) as (src, dst, rem_in, lb, ub, step):
@@ -1221,7 +1297,11 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         )
 
     def test_nested_index_arithmetic_lowers_before_vector_accesses(self) -> None:
-        @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f32, pto.f32, pto.f32, pto.f32, pto.f32)])
+        @pto.vkernel(
+            op="eltwise",
+            dtypes=[(pto.f32, pto.f32, pto.f32, pto.f32, pto.f32, pto.f32)],
+            advanced=True,
+        )
         def kernel(
             lhs_gm: pto.TensorView,
             rhs_gm: pto.TensorView,
@@ -1269,6 +1349,36 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertRegex(text, r"%tmp_\d+ = arith\.index_cast %tmp_\d+ : index to i32")
         self.assertIn("pto.plt_b32", text)
         self.assertIn("pto.vadd", text)
+
+    def test_stable_mode_infers_vecscope_and_lowers_tile_vector_sugar(self) -> None:
+        @pto.vkernel(op="tadd_stable", dtypes=[(pto.f32, pto.f32, pto.f32)])
+        def kernel(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
+            dtype = dst.element_type
+            rows, cols = dst.valid_shape
+            all_mask = pto.make_mask(dtype, pto.PAT.ALL)
+            for row in range(0, rows, 1):
+                for col in range(0, cols, pto.get_lanes(dtype)):
+                    lhs = pto.vlds(src0[row, col:])
+                    rhs = pto.vlds(src1[row, col:])
+                    summed = pto.vadd(lhs, rhs, all_mask)
+                    pto.vsts(summed, dst[row, col:], all_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            src0=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            src1=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        vecscope_stmts = [stmt for stmt in semantic_kernel.body if isinstance(stmt, SemanticVecscopeStmt)]
+        self.assertEqual(len(vecscope_stmts), 1)
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.vecscope {", text)
+        self.assertNotIn("pto.strict_vecscope(", text)
+        self.assertRegex(text, r"pto\.vlds %tmp_\d+\[%row_\d+, %col_\d+\]")
+        self.assertRegex(text, r"pto\.vsts %summed_\d+, %tmp_\d+\[%row_\d+, %col_\d+\], %(?:all_mask|mask)_\d+")
 
     def test_advanced_mode_infers_vecscope_and_lowers_tile_vector_sugar(self) -> None:
         @pto.vkernel(op="tadd", dtypes=[(pto.f32, pto.f32, pto.f32)], advanced=True)
@@ -1324,9 +1434,8 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertLess(text.index("pto.tile_buf_addr %arg1"), text.index("pto.vecscope {"))
         self.assertLess(text.index("pto.tile_buf_addr %arg2"), text.index("pto.vecscope {"))
         self.assertLess(text.index("pto.tile_buf_addr %arg0"), text.index("pto.vecscope {"))
-        self.assertLess(text.index("pto.vecscope {"), text.index("pto.tile_valid_rows %arg0"))
-        self.assertLess(text.index("pto.tile_valid_rows %arg0"), text.index("scf.for %row_"))
-        self.assertLess(text.index("pto.tile_valid_cols %arg0"), text.index("scf.for %row_"))
+        self.assertLess(text.index("pto.tile_valid_rows %arg0"), text.index("pto.vecscope {"))
+        self.assertLess(text.index("pto.tile_valid_cols %arg0"), text.index("pto.vecscope {"))
         self.assertLess(text.index("pto.vecscope {"), text.index("scf.for %row_"))
         self.assertLess(text.rindex("pto.vecscope {"), text.index("return"))
 
@@ -1444,8 +1553,8 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertNotIn("pto.tile_valid_cols %arg1", text)
         self.assertNotIn("pto.tile_valid_rows %arg2", text)
         self.assertNotIn("pto.tile_valid_cols %arg2", text)
-        self.assertLess(text.index("pto.vecscope {"), text.index("pto.tile_valid_rows %arg0"))
-        self.assertLess(text.index("pto.vecscope {"), text.index("pto.tile_valid_cols %arg0"))
+        self.assertLess(text.index("pto.tile_valid_rows %arg0"), text.index("pto.vecscope {"))
+        self.assertLess(text.index("pto.tile_valid_cols %arg0"), text.index("pto.vecscope {"))
         self.assertRegex(text, r"scf\.for %row_\d+ = %c0 to %valid_rows_\d+ step %c1")
         self.assertRegex(text, r"scf\.for %col_\d+ = %c0 to %valid_cols_\d+ step %c128")
         self.assertRegex(text, r"%tmp_\d+ = arith\.index_cast %valid_cols_\d+ : index to i32")
@@ -1535,7 +1644,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertRegex(cols_dynamic_text, r"scf\.for %row_\d+ = %c0 to %valid_rows_\d+ step %c1")
         self.assertRegex(cols_dynamic_text, r"scf\.for %col_\d+ = %c0 to %valid_cols_\d+ step %c128")
 
-    def test_advanced_mode_scalar_statements_stay_inside_single_inferred_vecscope(self) -> None:
+    def test_advanced_mode_scalar_boundaries_split_inferred_vecscope_runs(self) -> None:
         @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f32)], advanced=True)
         def kernel(src: pto.Tile, dst: pto.Tile):
             dtype = src.element_type
@@ -1555,14 +1664,15 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
 
         semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
         vecscope_stmts = [stmt for stmt in semantic_kernel.body if isinstance(stmt, SemanticVecscopeStmt)]
-        self.assertEqual(len(vecscope_stmts), 1)
+        self.assertEqual(len(vecscope_stmts), 2)
 
         text = specialized.mlir_text()
-        self.assertEqual(text.count("pto.vecscope {"), 1)
+        self.assertEqual(text.count("pto.vecscope {"), 2)
         self.assertLess(text.index("pto.vecscope {"), text.index("%boundary_"))
         self.assertLess(text.index("%boundary_"), text.index("return"))
+        self.assertLess(text.index("%boundary_"), text.rindex("pto.vecscope {"))
 
-    def test_advanced_mode_control_flow_stays_inside_single_inferred_vecscope(self) -> None:
+    def test_advanced_mode_control_flow_infers_vecscope_per_branch(self) -> None:
         @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f32, pto.i32)], advanced=True)
         def kernel(src: pto.Tile, dst: pto.Tile, flag: pto.i32):
             dtype = src.element_type
@@ -1581,13 +1691,22 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         )
 
         semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
-        vecscope_stmts = [stmt for stmt in semantic_kernel.body if isinstance(stmt, SemanticVecscopeStmt)]
-        self.assertEqual(len(vecscope_stmts), 1)
+        self.assertEqual([type(stmt).__name__ for stmt in semantic_kernel.body[:-1]], [
+            "SemanticAssignStmt",
+            "SemanticAssignStmt",
+            "SemanticIfStmt",
+        ])
+        if_stmt = semantic_kernel.body[2]
+        self.assertIsInstance(if_stmt, SemanticIfStmt)
+        self.assertEqual(len(if_stmt.then_body), 1)
+        self.assertEqual(len(if_stmt.else_body), 1)
+        self.assertIsInstance(if_stmt.then_body[0], SemanticVecscopeStmt)
+        self.assertIsInstance(if_stmt.else_body[0], SemanticVecscopeStmt)
 
         text = specialized.mlir_text()
         self.assertIn("scf.if", text)
-        self.assertEqual(text.count("pto.vecscope {"), 1)
-        self.assertLess(text.index("pto.vecscope {"), text.index("scf.if"))
+        self.assertEqual(text.count("pto.vecscope {"), 2)
+        self.assertLess(text.index("scf.if"), text.index("pto.vecscope {"))
         self.assertLess(text.index("scf.if"), text.index("return"))
 
     def test_advanced_mode_keeps_strict_vecscope_as_hard_boundary(self) -> None:
@@ -1650,11 +1769,10 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertEqual(semantic_kernel.parameters[0].type.memory_space, "gm")
         self.assertIsInstance(semantic_kernel.parameters[1].type, SemanticPtrType)
         self.assertEqual(semantic_kernel.parameters[1].type.memory_space, "gm")
+        self.assertTrue(any(isinstance(stmt, SemanticDmaConfigStmt) for stmt in semantic_kernel.body))
+        self.assertTrue(any(isinstance(stmt, SemanticLowLevelCopyStmt) for stmt in semantic_kernel.body))
         vecscope_stmts = [stmt for stmt in semantic_kernel.body if isinstance(stmt, SemanticVecscopeStmt)]
         self.assertEqual(len(vecscope_stmts), 1)
-        vecscope = vecscope_stmts[0]
-        self.assertTrue(any(isinstance(stmt, SemanticDmaConfigStmt) for stmt in vecscope.body))
-        self.assertTrue(any(isinstance(stmt, SemanticLowLevelCopyStmt) for stmt in vecscope.body))
 
         text = kernel.mlir_text()
         self.assertIn(
@@ -1819,7 +1937,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("pto.vsts ", text)
 
     def test_elementwise_kernel_positive_regression_covers_dma_vecscope_tail_mask_and_dynamic_loop_bound(self) -> None:
-        @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f32, pto.f32, pto.i32)])
+        @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f32, pto.f32, pto.i32)], advanced=True)
         def kernel(inp: pto.TensorView, out: pto.TensorView, tile: pto.Tile, remaining: pto.i32):
             rows = inp.shape[0]
             pto.dma_load(inp[0:rows, 0:16], tile)
@@ -1885,7 +2003,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         )
 
     def test_if_else_and_sync_ops_lower_to_scf_if_and_authoring_sync_ops(self) -> None:
-        @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f32, pto.i32)])
+        @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f32, pto.i32)], advanced=True)
         def kernel(inp: pto.TensorView, tile: pto.Tile, flag: pto.i32):
             pto.set_flag(pto.PIPE.MTE2, pto.PIPE.V, pto.EVENT.ID0)
             pto.wait_flag(pto.PIPE.MTE2, pto.PIPE.V, pto.EVENT.ID0)
@@ -1934,7 +2052,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("pto.barrier #pto.pipe<PIPE_ALL>", text)
 
     def test_strict_vecscope_rejects_implicit_capture_during_semantic_analysis(self) -> None:
-        @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f16, pto.i32)])
+        @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f16, pto.i32)], advanced=True)
         def kernel(inp: pto.TensorView, tile: pto.Tile, scale: pto.i32):
             with pto.strict_vecscope(inp, tile) as (vin, vtmp):
                 leaked = scale
@@ -2005,10 +2123,22 @@ class TileLangDSLDiagnosticsTests(unittest.TestCase):
 
             @pto.vkernel(op="x", dtypes=[(pto.f32,)])
             def kernel(x: pto.TensorView):
-                pto.vadd(x)
+                pto.not_a_real_surface(x)
                 return None
 
-        self.assertIn("vector op surface `pto.vadd` requires explicit pto.strict_vecscope", str(ctx.exception))
+        self.assertIn("unsupported op surface `pto.not_a_real_surface`", str(ctx.exception))
+        self.assertIn(f"{__file__}:", str(ctx.exception))
+
+    def test_strict_vecscope_requires_advanced_mode(self) -> None:
+        with self.assertRaises(pto.TileLangFrontendError) as ctx:
+
+            @pto.vkernel(op="x", dtypes=[(pto.f32, pto.f32)])
+            def kernel(x: pto.TensorView, tile: pto.Tile):
+                with pto.strict_vecscope(tile, tile, 0, 256, 64) as (lhs, rhs, lb, ub, step):
+                    pass
+                return None
+
+        self.assertIn("surface `pto.strict_vecscope` requires advanced=True", str(ctx.exception))
         self.assertIn(f"{__file__}:", str(ctx.exception))
 
     def test_advanced_family_requires_advanced_mode(self) -> None:
@@ -2016,9 +2146,8 @@ class TileLangDSLDiagnosticsTests(unittest.TestCase):
 
             @pto.vkernel(op="x", dtypes=[(pto.f32, pto.f32)])
             def kernel(x: pto.TensorView, tile: pto.Tile):
-                with pto.strict_vecscope(tile, tile, 0, 256, 64) as (lhs, rhs, lb, ub, step):
-                    mask = pto.make_mask(pto.f32, pto.PAT.ALL)
-                    pto.vcmp(lhs, rhs, mask, "lt")
+                mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+                pto.vcmp(tile, tile, mask, "lt")
                 return None
 
         self.assertIn("surface `pto.vcmp` requires advanced=True", str(ctx.exception))

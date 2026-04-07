@@ -3,23 +3,29 @@
 ## Purpose
 TBD - created by archiving change add-tilelang-dsl-authoring-vpto-lowering. Update Purpose after archive.
 ## Requirements
-### Requirement: TileLang DSL v1 MUST lower vector surface through explicit `pto.strict_vecscope`
+### Requirement: TileLang DSL v1 MUST infer dedicated `pto.vecscope` for stable vector chains and reserve `pto.strict_vecscope` for advanced mode
 
-TileLang DSL v1 中所有产生或消费 `!pto.vreg` / `!pto.mask<...>` 的 surface MUST 位于显式 `with pto.strict_vecscope(...) as (...):` 内。  
-frontend MUST 将该 surface 直接 lower 为 dedicated `pto.strict_vecscope` authoring-form VPTO carrier。  
-v1 MUST NOT 对用户省略的 vector region 做 implicit `pto.vecscope` inference。
+TileLang DSL v1 中，stable vector surface 在用户省略显式 scope 时 MUST 通过 frontend 自动推断 dedicated `pto.vecscope`。  
+当用户启用 `advanced=True` 并显式书写 `with pto.strict_vecscope(...) as (...):` 时，frontend MUST 保留该 surface 并直接 lower 为 dedicated `pto.strict_vecscope` authoring-form VPTO carrier。  
+`strict_vecscope` MUST NOT 在非 advanced kernel 中出现。
 
-#### Scenario: explicit `strict_vecscope` is preserved in authoring-form VPTO
+#### Scenario: stable vector chain lowers through inferred `pto.vecscope`
 
-- **WHEN** 用户在 DSL 中显式书写 `with pto.strict_vecscope(...) as (...):`
+- **WHEN** 用户在非 advanced kernel 中连续书写 `make_mask`、`vlds`、vector ALU、`vsts` 等 stable vector chain
+- **THEN** frontend MUST 为该 chain 生成 dedicated `pto.vecscope`
+- **AND** 生成结果 MUST 满足当前 authoring-form VPTO legality contract
+
+#### Scenario: explicit `strict_vecscope` is preserved only in advanced mode
+
+- **WHEN** 用户在 `advanced=True` kernel 中显式书写 `with pto.strict_vecscope(...) as (...):`
 - **THEN** lowering 结果 MUST 生成对应的 `pto.strict_vecscope`
 - **AND** region argument、capture operand 和 block argument 类型 MUST 与 DSL surface 中的显式 capture 一一对应
 
-#### Scenario: vector op outside explicit scope is rejected before IR generation
+#### Scenario: non-advanced kernel rejects explicit `strict_vecscope`
 
-- **WHEN** 用户在 `strict_vecscope` 外直接书写 `vlds`、`vsts`、vector ALU 或 predicate-producing surface
+- **WHEN** 用户在未启用 `advanced=True` 的 kernel 中书写 `with pto.strict_vecscope(...) as (...):`
 - **THEN** frontend MUST 在生成 VPTO IR 之前报错
-- **AND** MUST NOT 试图在 v1 中自动推断隐式 vecscope
+- **AND** 诊断 MUST 明确指出 `strict_vecscope` requires `advanced=True`
 
 ### Requirement: TileLang DSL v1 MUST support the fixed elementwise lowering profile
 
@@ -97,4 +103,3 @@ TileLang DSL descriptor 的 `verify()` MUST 以 repo 当前 `ptoas` legality 路
 - **WHEN** `verify()` 无法找到或执行 `ptoas` binary
 - **THEN** implementation MUST 返回结构化 `verifier unavailable` 结果
 - **AND** MUST NOT 把“未验证”误报成“验证通过”
-

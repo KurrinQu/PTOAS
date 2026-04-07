@@ -9,6 +9,8 @@ Current docs:
   original v1 core/lowering boundary to the matcher and advanced-surface
   capability implemented by
   `extend-tilelang-dsl-matcher-and-advanced-surface`
+- `unsupported-features.md`: unsupported and partial features relative to the
+  broader `tilelang-dsl-guide.md` language surface
 
 Documentation boundary:
 - `tilelang-dsl/docs/` is the local documentation source of truth for the new

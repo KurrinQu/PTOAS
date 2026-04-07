@@ -18,6 +18,26 @@ It focuses on:
 - advanced vector-family coverage that is implemented today
 - the remaining deferred boundary
 
+## Current Tier Snapshot
+
+This migration note lives at the boundary between the stable starter path and
+the broader expert surface. The public-surface groups discussed across the
+guide, this migration note, and the support matrix currently map to tiers as
+follows:
+
+| Surface Family | Tier | Migration Meaning |
+|----------------|------|-------------------|
+| `TensorView` | `stable` | Keep as the default GM-facing operand model. |
+| `Tile` | `stable` | Keep as the default UB-facing compute tile model. |
+| `dma_load` / `dma_store` | `stable` | Keep as the preferred high-level GM <-> UB path. |
+| Base vector ops such as `make_mask`, `vlds`, `vsts`, `vadd`, `vmuls` | `stable` | Keep as the default compute skeleton before dropping to expert surfaces. |
+| Raw pointer family such as `ptr(...)`, `castptr`, `addptr`, `GMPtr`, `UBPtr`, `UBRef` | `advanced` | Use when moving from the starter path to expert pointer-form authoring. |
+| Low-level DMA family such as `copy_*` and `set_loop*_stride_*` / `set_loop_size_*` | `advanced` | Use only when the high-level DMA surface is not sufficient. |
+| Tile helper family such as `tile.slice(...)`, `tile.reshape(...)`, `tile.to_ubref()`, `tile.as_ptr()`, `tile.to_memref()`, `tile_from_ptr(...)`, `tile_from_memref(...)`, `tile_with_strides(...)`, `tile_config(...)` | `advanced` | Treat as partial or evolving surface rather than part of the stable starter path. |
+
+For the exact tier source of truth, see
+`tilelang-dsl/python/tilelang_dsl/support_matrix.py`.
+
 ## What Changed
 
 The original v1 core profile assumed:
@@ -165,7 +185,7 @@ Keep the original style when:
 Example:
 
 ```python
-@pto.vkernel(op="tadd", dtypes=[(pto.f32, pto.f32, pto.f32)])
+@pto.vkernel(op="tadd", dtypes=[(pto.f32, pto.f32, pto.f32)], advanced=True)
 def add_kernel(lhs: pto.TensorView, rhs: pto.TensorView, out: pto.Tile):
     with pto.strict_vecscope(out, lhs, 0, 256, 64) as (_, _, lb, ub, step):
         for lane in range(lb, ub, step):
@@ -190,6 +210,7 @@ Recommended pattern:
 @pto.vkernel(
     ops=["tadd", "tsub", "tmul", "tdiv"],
     dtypes=[(pto.f32, pto.f32, pto.f32)],
+    advanced=True,
     templates={
         "core": {
             "tadd": "vadd",
