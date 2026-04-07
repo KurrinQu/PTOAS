@@ -70,6 +70,11 @@ std::unique_ptr<Pass> createLowerPTOToVPTOPass(StringRef loweringStrategy);
 // Declare register function
 void registerPTOPasses();
 
+std::unique_ptr<Pass> createMemrefToTileBufPass();
+std::unique_ptr<Pass> createExpandTileOpPass();
+std::unique_ptr<Pass> createExpandTileOpPass(const ExpandTileOpOptions &options);
+std::unique_ptr<Pass> createFoldTileBufIntrinsicsPass();
+
 } // namespace pto
 } // namespace mlir
 

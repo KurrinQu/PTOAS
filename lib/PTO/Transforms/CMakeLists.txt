@@ -24,6 +24,9 @@ add_mlir_dialect_library(PTOTransforms
   InsertSync/PTOInsertSync.cpp
   InsertSync/InsertSyncDebug.cpp
   PTOViewToMemref.cpp
+  MemrefToTileBuf.cpp
+  ExpandTileOp.cpp
+  FoldTileBufIntrinsics.cpp
   PTOToEmitC.cpp
   Utils.cpp
   OptMemPlanForPipeline.cpp
@@ -72,6 +75,8 @@ add_mlir_dialect_library(PTOTransforms
   MLIRTransforms
   MLIRTensorDialect
   MLIRSCFDialect
+  MLIRVectorDialect
+  MLIRParser
   MLIRSCFToEmitC
   MLIRSCFToControlFlow
   MLIRConvertToLLVMPass
