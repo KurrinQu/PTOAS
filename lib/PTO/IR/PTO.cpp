@@ -4655,70 +4655,117 @@ mlir::LogicalResult mlir::pto::TMinSOp::verify() {
 }
 
 mlir::LogicalResult mlir::pto::TMovOp::verify() {
-  auto verifyA2A3 = [&]() -> LogicalResult {
+  auto verifyImpl = [&](bool isA5) -> LogicalResult {
     Type srcTy = getSrc().getType();
     Type dstTy = getDst().getType();
+    Value fp = getFp();
+    Value preQuantScalar = getPreQuantScalar();
+    auto accToVecModeAttr = getAccToVecModeAttr();
+    auto reluMode = getReluPreMode();
+    const bool hasFp = static_cast<bool>(fp);
+    const bool hasPreQuantScalar = static_cast<bool>(preQuantScalar);
+
     if (failed(verifyTileBufCommon(*this, srcTy, "src")) ||
         failed(verifyTileBufCommon(*this, dstTy, "dst")))
       return failure();
-    auto srcShape = getShapeVec(srcTy);
-    auto dstShape = getShapeVec(dstTy);
-    if (srcShape != dstShape)
-      return emitOpError() << "expects src and dst to have the same shape";
+    if (hasFp && failed(verifyTileBufCommon(*this, fp.getType(), "fp")))
+      return failure();
+    if (hasFp && hasPreQuantScalar)
+      return emitOpError() << "expects fp and preQuantScalar forms to be mutually exclusive";
+
     auto srcSpace = getPTOMemorySpaceEnum(srcTy);
     auto dstSpace = getPTOMemorySpaceEnum(dstTy);
     if (!srcSpace || !dstSpace)
       return emitOpError() << "expects src and dst to have explicit address spaces";
-    bool okPair =
-        (*srcSpace == pto::AddressSpace::MAT &&
-         (*dstSpace == pto::AddressSpace::LEFT ||
-          *dstSpace == pto::AddressSpace::RIGHT ||
-          *dstSpace == pto::AddressSpace::BIAS ||
-          *dstSpace == pto::AddressSpace::SCALING)) ||
-        (*srcSpace == pto::AddressSpace::VEC &&
-         *dstSpace == pto::AddressSpace::VEC) ||
-        (*srcSpace == pto::AddressSpace::ACC &&
-         *dstSpace == pto::AddressSpace::MAT);
-    if (!okPair)
-      return emitOpError() << "expects an A2/A3-supported tmov address-space pair";
-    auto srcTb = dyn_cast<pto::TileBufType>(srcTy);
-    auto dstTb = dyn_cast<pto::TileBufType>(dstTy);
-    if (srcTb && dstTb && *srcSpace == pto::AddressSpace::ACC &&
-        *dstSpace == pto::AddressSpace::MAT &&
-        dstTb.getSFractalSizeI32() != 512)
-      return emitOpError() << "expects A2/A3 acc-to-mat tmov destination fractal to be 512";
-    return mlir::success();
-  };
-  auto verifyA5 = [&]() -> LogicalResult {
-    Type srcTy = getSrc().getType();
-    Type dstTy = getDst().getType();
-    if (failed(verifyTileBufCommon(*this, srcTy, "src")) ||
-        failed(verifyTileBufCommon(*this, dstTy, "dst")))
-      return failure();
-    auto srcSpace = getPTOMemorySpaceEnum(srcTy);
-    auto dstSpace = getPTOMemorySpaceEnum(dstTy);
-    if (!srcSpace || !dstSpace)
-      return emitOpError() << "expects src and dst to have explicit address spaces";
+
     auto srcShape = getShapeVec(srcTy);
     auto dstShape = getShapeVec(dstTy);
     if (*srcSpace == pto::AddressSpace::MAT && srcShape != dstShape)
-      return emitOpError() << "expects A5 mat-source tmov to use matching src/dst shapes";
-    bool okPair =
-        (*srcSpace == pto::AddressSpace::MAT &&
-         (*dstSpace == pto::AddressSpace::LEFT ||
-          *dstSpace == pto::AddressSpace::RIGHT ||
-          *dstSpace == pto::AddressSpace::BIAS ||
-          *dstSpace == pto::AddressSpace::SCALING)) ||
-        (*srcSpace == pto::AddressSpace::VEC &&
-         (*dstSpace == pto::AddressSpace::VEC ||
-          *dstSpace == pto::AddressSpace::MAT)) ||
-        (*srcSpace == pto::AddressSpace::ACC &&
-         (*dstSpace == pto::AddressSpace::VEC ||
-          *dstSpace == pto::AddressSpace::MAT));
+      return emitOpError() << "expects mat-source tmov to use matching src/dst shapes";
+    if (!isA5 && *srcSpace != pto::AddressSpace::MAT && srcShape != dstShape)
+      return emitOpError() << "expects A2/A3 non-mat tmov to use matching src/dst shapes";
+
+    const bool isMatToTile =
+        *srcSpace == pto::AddressSpace::MAT &&
+        (*dstSpace == pto::AddressSpace::LEFT ||
+         *dstSpace == pto::AddressSpace::RIGHT ||
+         *dstSpace == pto::AddressSpace::BIAS ||
+         *dstSpace == pto::AddressSpace::SCALING);
+    const bool isVecToVec =
+        *srcSpace == pto::AddressSpace::VEC &&
+        *dstSpace == pto::AddressSpace::VEC;
+    const bool isVecToMat =
+        *srcSpace == pto::AddressSpace::VEC &&
+        *dstSpace == pto::AddressSpace::MAT;
+    const bool isAccToMat =
+        *srcSpace == pto::AddressSpace::ACC &&
+        *dstSpace == pto::AddressSpace::MAT;
+    const bool isAccToVec =
+        *srcSpace == pto::AddressSpace::ACC &&
+        *dstSpace == pto::AddressSpace::VEC;
+
+    bool okPair = isMatToTile || isVecToVec || isAccToMat || isAccToVec;
+    if (isA5)
+      okPair = okPair || isVecToMat;
     if (!okPair)
-      return emitOpError() << "expects an A5-supported tmov address-space pair";
-    return mlir::success();
+      return emitOpError()
+             << "expects a supported tmov address-space pair for this target";
+
+    if (accToVecModeAttr && !isAccToVec)
+      return emitOpError()
+             << "expects accToVecMode to be used only for acc-to-vec tmov";
+
+    if (reluMode != pto::ReluPreMode::NoRelu && !(isAccToMat || isAccToVec))
+      return emitOpError()
+             << "expects reluPreMode form to use loc=acc src";
+
+    if (hasPreQuantScalar && !(isAccToMat || isAccToVec))
+      return emitOpError()
+             << "expects preQuantScalar form to use loc=acc src";
+
+    if (hasFp) {
+      auto fpTy = fp.getType();
+      auto fpSpace = getPTOMemorySpaceEnum(fpTy);
+      if (!fpSpace || *fpSpace != pto::AddressSpace::SCALING)
+        return emitOpError() << "expects fp to be in the scaling address space";
+      auto srcElemTy = getElemTy(srcTy);
+      auto srcIntTy = dyn_cast<IntegerType>(srcElemTy);
+      if (!(srcElemTy.isF32() || (srcIntTy && srcIntTy.getWidth() == 32)))
+        return emitOpError()
+               << "expects fp form src to have element type f32, i32";
+      if (!(isAccToMat || isAccToVec))
+        return emitOpError() << "expects fp form to use loc=acc src";
+    }
+
+    if ((hasFp || hasPreQuantScalar) && accToVecModeAttr) {
+      switch (accToVecModeAttr.getValue()) {
+      case pto::AccToVecMode::SingleModeVec0:
+      case pto::AccToVecMode::SingleModeVec1:
+        break;
+      case pto::AccToVecMode::DualModeSplitM:
+      case pto::AccToVecMode::DualModeSplitN:
+        return emitOpError()
+               << "expects fp/preQuantScalar acc-to-vec forms to use single-mode accToVecMode";
+      }
+    }
+
+    auto srcTb = dyn_cast<pto::TileBufType>(srcTy);
+    auto dstTb = dyn_cast<pto::TileBufType>(dstTy);
+    if (srcTb && *srcSpace == pto::AddressSpace::ACC &&
+        (hasFp || reluMode != pto::ReluPreMode::NoRelu)) {
+      if (srcTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::ColMajor) ||
+          srcTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::RowMajor))
+        return emitOpError()
+               << "expects acc-source fp/relu tmov src to use blayout=col_major and slayout=row_major";
+    }
+    if (srcTb && dstTb && isAccToMat && !isA5 &&
+        dstTb.getSFractalSizeI32() != 512)
+      return emitOpError() << "expects A2/A3 acc-to-mat tmov destination fractal to be 512";
+
+    return success();
   };
+  auto verifyA2A3 = [&]() -> LogicalResult { return verifyImpl(/*isA5=*/false); };
+  auto verifyA5 = [&]() -> LogicalResult { return verifyImpl(/*isA5=*/true); };
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
@@ -8782,6 +8829,12 @@ void TStoreOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<MemoryEffe
 // Read: src, Write: dst
 void TMovOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   addEffect(effects, &getSrcMutable(), MemoryEffects::Read::get());
+  auto fpRange = getFpMutable();
+  if (!fpRange.empty())
+    addEffect(effects, &*fpRange.begin(), MemoryEffects::Read::get());
+  auto preQuantRange = getPreQuantScalarMutable();
+  if (!preQuantRange.empty())
+    addEffect(effects, &*preQuantRange.begin(), MemoryEffects::Read::get());
   addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
 }
 

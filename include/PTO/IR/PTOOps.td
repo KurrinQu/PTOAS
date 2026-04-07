@@ -1025,6 +1025,7 @@ def TGemvMxBiasOp : PTO_TOp<"tgemv.mx.bias", [
 }
 
 def TMovOp  : PTO_TOp<"tmov", [
+  AttrSizedOperandSegments,
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -1033,7 +1034,11 @@ def TMovOp  : PTO_TOp<"tmov", [
   
   let arguments = (ins
     PTODpsType:$src,
-    PTODpsType:$dst
+    PTODpsType:$dst,
+    Optional<PTODpsType>:$fp,
+    Optional<I64>:$preQuantScalar,
+    OptionalAttr<PTO_AccToVecModeAttr>:$accToVecMode,
+    DefaultValuedAttr<PTO_ReluPreModeAttr, "::mlir::pto::ReluPreMode::NoRelu">:$reluPreMode
   );
 
   let results = (outs
@@ -1041,7 +1046,10 @@ def TMovOp  : PTO_TOp<"tmov", [
   );
 
   let assemblyFormat = [{
-    `ins` `(` $src `:` qualified(type($src)) `)`
+    `ins` `(` $src `:` qualified(type($src))
+    (`,` $fp^ `:` qualified(type($fp)))?
+    (`,` $preQuantScalar^ `:` type($preQuantScalar))?
+    `)`
     `outs` `(` $dst `:` qualified(type($dst) ) `)`
     attr-dict
     ( `->` qualified(type($result))^ )?
@@ -1096,10 +1104,10 @@ def TMovOp  : PTO_TOp<"tmov", [
         return ::mlir::pto::PIPE::PIPE_MTE1;
       }
 
-      // ACC -> MAT uses FIX in PTO-ISA sync mapping (TMOV_A2M/TMOV_V2M class),
-      // and InsertSync relies on this pipe classification to generate the
-      // required M->FIX and FIX->MTE1 dependency edges.
-      if (s == ::mlir::pto::AddressSpace::ACC && d == ::mlir::pto::AddressSpace::MAT) {
+      // ACC -> MAT / VEC use FIX in PTO-ISA sync mapping (TMOV_A2M/TMOV_A2V).
+      if (s == ::mlir::pto::AddressSpace::ACC &&
+          (d == ::mlir::pto::AddressSpace::MAT ||
+           d == ::mlir::pto::AddressSpace::VEC)) {
         return ::mlir::pto::PIPE::PIPE_FIX;
       }
 
