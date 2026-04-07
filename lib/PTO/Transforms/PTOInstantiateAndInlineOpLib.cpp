@@ -35,6 +35,14 @@ static bool isInstanceFunc(func::FuncOp fn) {
   return fn->hasAttr(kOpLibAttrInstVariantId);
 }
 
+static bool isTilelangFunc(func::FuncOp fn) {
+  return fn->hasAttr("pto.tilelang.instance");
+}
+
+static bool isInlineableLibFunc(func::FuncOp fn) {
+  return isInstanceFunc(fn) || isTilelangFunc(fn);
+}
+
 static Value maybeUnwrapCastToExpected(Value operand, Type expectedType) {
   if (operand.getType() == expectedType)
     return operand;
@@ -148,7 +156,7 @@ struct PTOInlineLibCallPass
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
       if (func.isExternal())
         continue;
-      if (func.getSymName().starts_with("__pto_oplib_"))
+      if (isInlineableLibFunc(func))
         continue;
       if (func.empty())
         continue;
@@ -167,7 +175,7 @@ struct PTOInlineLibCallPass
 
         func::FuncOp callee =
             module.lookupSymbol<func::FuncOp>(calleeAttr.getValue());
-        if (!callee || !isInstanceFunc(callee))
+        if (!callee || !isInlineableLibFunc(callee))
           continue;
 
         if (callee.isExternal()) {

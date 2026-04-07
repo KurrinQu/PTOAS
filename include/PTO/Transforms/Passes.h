@@ -95,6 +95,11 @@ std::unique_ptr<Pass> createPTOFlattenFusionRegionPass();
 std::unique_ptr<Pass> createLowerPTOToVPTOPass();
 std::unique_ptr<Pass> createLowerPTOToVPTOPass(StringRef loweringStrategy);
 
+std::unique_ptr<Pass> createMemrefToTileBufPass();
+std::unique_ptr<Pass> createExpandTileOpPass();
+std::unique_ptr<Pass> createExpandTileOpPass(const ExpandTileOpOptions &options);
+std::unique_ptr<Pass> createFoldTileBufIntrinsicsPass();
+
 } // namespace pto
 } // namespace mlir
 
