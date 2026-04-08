@@ -7365,9 +7365,9 @@ struct PTORemToEmitC : public OpConversionPattern<pto::TRemOp> {
 
     Value src0 = peelUnrealized(adaptor.getSrc0());
     Value src1 = peelUnrealized(adaptor.getSrc1());
+    Value tmp  = peelUnrealized(adaptor.getTmp());
     Value dst  = peelUnrealized(adaptor.getDst());
-
-    SmallVector<Value, 3> operands{dst, src0, src1};
+    SmallVector<Value, 4> operands{dst, src0, src1, tmp};
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TREM",
         /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
@@ -7411,10 +7411,10 @@ struct PTORemSToEmitC : public OpConversionPattern<pto::TRemSOp> {
     auto loc = op.getLoc();
 
     Value src = peelUnrealized(adaptor.getSrc());
+    Value tmp = peelUnrealized(adaptor.getTmp());
     Value dst = peelUnrealized(adaptor.getDst());
     Value scalar = peelUnrealized(adaptor.getScalar());
-    
-    SmallVector<Value, 3> operands{dst, src, scalar};
+    SmallVector<Value, 4> operands{dst, src, scalar, tmp};
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TREMS",
         /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},

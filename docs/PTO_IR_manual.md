@@ -1801,6 +1801,7 @@ Division-by-zero behavior is target-defined.
 |------|------|-------------|
 | `src0` | `pto.tile_buf` | Dividend tile buffer |
 | `src1` | `pto.tile_buf` | Divisor tile buffer |
+| `tmp` | `pto.tile_buf` | Temporary tile buffer required by the ISA API |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -1996,7 +1997,7 @@ For each element (i, j):
 **Assembly Format:**
 
 ```
-pto.trem ins(<src0>, <src1> : <src0_type>, <src1_type>)
+pto.trem ins(<src0>, <src1>, <tmp> : <src0_type>, <src1_type>, <tmp_type>)
          outs(<dst> : <dst_type>)
 ```
 
@@ -2004,15 +2005,17 @@ pto.trem ins(<src0>, <src1> : <src0_type>, <src1_type>)
 
 - The implementation uses `dst valid row` / `dst valid column` as the iteration domain.
 - **Implementation checks (A2A3)**
-  - Tile element type must be one of: `i32`, `i16`, `f16`, `f32`.
-  - Tile must use row-major layout (`blayout=row_major`).
-  - Valid bounds: `valid row <= rows` and `valid column <= cols`.
-  - Runtime: `src0`, `src1` and `dst` tiles should have the same `validRow/validCol`.
+  - `src0/src1/dst` element type must match, and must be `i32` or `f32`.
+  - `tmp` element type must match `dst`.
+  - `src0/src1/tmp/dst` must use row-major layout (`blayout=row_major`).
+  - `src0/src1/dst` must have the same `validRow/validCol`.
+  - `tmp` must provide at least `1` valid row and `tmp.validCol >= dst.validCol`.
 - **Implementation checks (A5)**
-  - Tile element type must be one of: `i32`, `i16`, `f32`, `f16`.
-  - Tile must use row-major layout (`blayout=row_major`).
-  - Valid bounds: `valid row <= rows` and `valid column <= cols`.
-  - Runtime: `src0`, `src1` and `dst` tiles should have the same `validRow/validCol`.
+  - `src0/src1/dst` element type must match, and must be one of: `i32`, `i16`, `f16`, `f32`.
+  - `tmp` element type must match `dst`.
+  - `src0/src1/tmp/dst` must use row-major layout (`blayout=row_major`).
+  - `src0/src1/dst` must have the same `validRow/validCol`.
+  - `tmp` must provide at least `1` valid row and `tmp.validCol >= dst.validCol`.
 
 **Hardware Mapping:**
 
@@ -2022,11 +2025,14 @@ pto.trem ins(<src0>, <src1> : <src0_type>, <src1_type>)
 **Basic Example:**
 
 ```mlir
-pto.trem ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
+pto.trem ins(%a, %b, %tmp : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
              v_row=16, v_col=16, blayout=row_major, slayout=none_box,
              fractal=512, pad=0>,
              !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
              v_row=16, v_col=16, blayout=row_major, slayout=none_box,
+             fractal=512, pad=0>,
+             !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=16,
+             v_row=1, v_col=16, blayout=row_major, slayout=none_box,
              fractal=512, pad=0>)
          outs(%c : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
              v_row=16, v_col=16, blayout=row_major, slayout=none_box,
@@ -2744,6 +2750,7 @@ For each element (i, j):
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile buffer |
 | `scalar` | `ScalarType` (signless integer / float) | Scalar divisor |
+| `tmp` | `pto.tile_buf` | Temporary tile buffer required by the ISA API |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -2751,7 +2758,7 @@ For each element (i, j):
 **Assembly Format:**
 
 ```
-pto.trems ins(<src>, <scalar> : <src_type>, <scalar_type>)
+pto.trems ins(<src>, <scalar>, <tmp> : <src_type>, <scalar_type>, <tmp_type>)
           outs(<dst> : <dst_type>)
 ```
 
@@ -2759,15 +2766,19 @@ pto.trems ins(<src>, <scalar> : <src_type>, <scalar_type>)
 
 - Division-by-zero behavior is target-defined; the CPU simulator asserts in debug builds.
 - **Implementation checks (A2A3)**
-  - Tile element type must be one of: `i32`, `int`, `i16`, `f16`, `f32`.
-  - Tile must use `loc=vec`.
-  - Valid bounds: `valid row <= rows` and `valid column <= cols`.
-  - Runtime: `src0 valid row == dst valid row` and `src0 valid column == dst valid column`.
+  - `src/dst` element type must match, and must be `i32` or `f32`.
+  - `scalar` type must match the tile element type.
+  - `tmp` element type must match `dst`.
+  - `src/tmp/dst` must use row-major layout (`blayout=row_major`).
+  - `src` and `dst` must have the same `validRow/validCol`.
+  - `tmp` must provide at least `1` valid row and `tmp.validCol >= dst.validCol`.
 - **Implementation checks (A5)**
-  - Tile element type must be one of: `i8`, `i16`, `i32`, `f16`, `f32`, `bf16`.
-  - Tile must use `loc=vec`.
-  - Valid bounds: `valid row <= rows` and `valid column <= cols`.
-  - Runtime: `src0 valid row == dst valid row` and `src0 valid column == dst valid column`.
+  - `src/dst` element type must match, and must be one of: `i32`, `i16`, `f16`, `f32`.
+  - `scalar` type must match the tile element type.
+  - `tmp` element type must match `dst`.
+  - `src/tmp/dst` must use row-major layout (`blayout=row_major`).
+  - `src` and `dst` must have the same `validRow/validCol`.
+  - `tmp` must provide at least `1` valid row and `tmp.validCol >= dst.validCol`.
 
 **Hardware Mapping:**
 
@@ -2777,9 +2788,12 @@ pto.trems ins(<src>, <scalar> : <src_type>, <scalar_type>)
 **Basic Example:**
 
 ```mlir
-pto.trems ins(%a, %s : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32,
+pto.trems ins(%a, %s, %tmp : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32,
               v_row=32, v_col=32, blayout=row_major, slayout=none_box,
-              fractal=512, pad=0>, f32)
+              fractal=512, pad=0>, f32,
+              !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32,
+              v_row=1, v_col=32, blayout=row_major, slayout=none_box,
+              fractal=512, pad=0>)
           outs(%c : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32,
               v_row=32, v_col=32, blayout=row_major, slayout=none_box,
               fractal=512, pad=0>)

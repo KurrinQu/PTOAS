@@ -6136,44 +6136,45 @@ mlir::LogicalResult mlir::pto::TReluOp::verify() {
 
 
 mlir::LogicalResult mlir::pto::TRemOp::verify() {
+  if (shouldBypassDecodedMemrefVerifier(getOperation()))
+    return success();
+
+  Type src0Ty = getSrc0().getType();
+  Type src1Ty = getSrc1().getType();
+  Type tmpTy = getTmp().getType();
+  Type dstTy = getDst().getType();
+  if (failed(verifyTileBufCommon(*this, src0Ty, "src0")) ||
+      failed(verifyTileBufCommon(*this, src1Ty, "src1")) ||
+      failed(verifyTileBufCommon(*this, tmpTy, "tmp")) ||
+      failed(verifyTileBufCommon(*this, dstTy, "dst")))
+    return failure();
+  if (failed(verifyTileBufSameShapeAndElem(*this, src0Ty, src1Ty, "src0", "src1")) ||
+      failed(verifyTileBufSameShapeAndElem(*this, src0Ty, dstTy, "src0", "dst")) ||
+      failed(verifyTileBufSameValidShape(*this, src0Ty, src1Ty, "src0", "src1")) ||
+      failed(verifyTileBufSameValidShape(*this, src0Ty, dstTy, "src0", "dst")))
+    return failure();
+  if (getElemTy(tmpTy) != getElemTy(dstTy))
+    return emitOpError("expects tmp and dst to have the same element type");
+  if (!isRowMajorTileBuf(src0Ty) || !isRowMajorTileBuf(src1Ty) ||
+      !isRowMajorTileBuf(tmpTy) || !isRowMajorTileBuf(dstTy))
+    return emitOpError("expects src0, src1, tmp, and dst to use row-major layout");
+  auto dstValid = getValidShapeVec(dstTy);
+  auto tmpValid = getValidShapeVec(tmpTy);
+  if (dstValid.size() != 2 || tmpValid.size() != 2)
+    return emitOpError("expects tmp and dst to be rank-2 tiles");
+  if (tmpValid[0] != ShapedType::kDynamic && tmpValid[0] < 1)
+    return emitOpError("expects tmp to have at least 1 valid row");
+  if (dstValid[1] != ShapedType::kDynamic && tmpValid[1] != ShapedType::kDynamic &&
+      tmpValid[1] < dstValid[1])
+    return emitOpError("expects tmp valid columns to cover dst valid columns");
+
+  Type elem = getElemTy(src0Ty);
   auto verifyA2A3 = [&]() -> LogicalResult {
-    Type src0Ty = getSrc0().getType();
-    Type src1Ty = getSrc1().getType();
-    Type dstTy = getDst().getType();
-    if (failed(verifyTileBufCommon(*this, src0Ty, "src0")) ||
-        failed(verifyTileBufCommon(*this, src1Ty, "src1")) ||
-        failed(verifyTileBufCommon(*this, dstTy, "dst")))
-      return failure();
-    if (failed(verifyTileBufSameShapeAndElem(*this, src0Ty, src1Ty, "src0", "src1")) ||
-        failed(verifyTileBufSameShapeAndElem(*this, src0Ty, dstTy, "src0", "dst")) ||
-        failed(verifyTileBufSameValidShape(*this, src0Ty, src1Ty, "src0", "src1")) ||
-        failed(verifyTileBufSameValidShape(*this, src0Ty, dstTy, "src0", "dst")))
-      return failure();
-    if (!isRowMajorTileBuf(src0Ty) || !isRowMajorTileBuf(src1Ty) ||
-        !isRowMajorTileBuf(dstTy))
-      return emitOpError("expects src0, src1, and dst to use row-major layout");
-    Type elem = getElemTy(src0Ty);
-    if (!(elem.isInteger(32) || elem.isInteger(16) || elem.isF16() || elem.isF32()))
-      return emitOpError("expects A2/A3 trem element type to be i32/i16/f16/f32");
+    if (!(elem.isInteger(32) || elem.isF32()))
+      return emitOpError("expects A2/A3 trem element type to be i32/f32");
     return success();
   };
   auto verifyA5 = [&]() -> LogicalResult {
-    Type src0Ty = getSrc0().getType();
-    Type src1Ty = getSrc1().getType();
-    Type dstTy = getDst().getType();
-    if (failed(verifyTileBufCommon(*this, src0Ty, "src0")) ||
-        failed(verifyTileBufCommon(*this, src1Ty, "src1")) ||
-        failed(verifyTileBufCommon(*this, dstTy, "dst")))
-      return failure();
-    if (failed(verifyTileBufSameShapeAndElem(*this, src0Ty, src1Ty, "src0", "src1")) ||
-        failed(verifyTileBufSameShapeAndElem(*this, src0Ty, dstTy, "src0", "dst")) ||
-        failed(verifyTileBufSameValidShape(*this, src0Ty, src1Ty, "src0", "src1")) ||
-        failed(verifyTileBufSameValidShape(*this, src0Ty, dstTy, "src0", "dst")))
-      return failure();
-    if (!isRowMajorTileBuf(src0Ty) || !isRowMajorTileBuf(src1Ty) ||
-        !isRowMajorTileBuf(dstTy))
-      return emitOpError("expects src0, src1, and dst to use row-major layout");
-    Type elem = getElemTy(src0Ty);
     if (!(elem.isInteger(32) || elem.isInteger(16) || elem.isF16() || elem.isF32()))
       return emitOpError("expects A5 trem element type to be i32/i16/f16/f32");
     return success();
@@ -6231,13 +6232,43 @@ mlir::LogicalResult mlir::pto::TRemSOp::verify() {
   if (shouldBypassDecodedMemrefVerifier(getOperation()))
     return success();
   Type ts = getSrc().getType();
+  Type tt = getTmp().getType();
   Type td = getDst().getType();
+  Type scalarTy = getScalar().getType();
   if (failed(verifyTileBufCommon(*this, ts, "src")) ||
+      failed(verifyTileBufCommon(*this, tt, "tmp")) ||
       failed(verifyTileBufCommon(*this, td, "dst")))
     return failure();
-  if (failed(verifyTileBufSameShapeAndElem(*this, ts, td, "src", "dst")))
+  if (failed(verifyTileBufSameShapeAndElem(*this, ts, td, "src", "dst")) ||
+      failed(verifyTileBufSameValidShape(*this, ts, td, "src", "dst")))
     return failure();
-  return mlir::success();
+  if (getElemTy(tt) != getElemTy(td))
+    return emitOpError("expects tmp and dst to have the same element type");
+  if (!isRowMajorTileBuf(ts) || !isRowMajorTileBuf(tt) || !isRowMajorTileBuf(td))
+    return emitOpError("expects src, tmp, and dst to use row-major layout");
+  Type elem = getElemTy(ts);
+  if (scalarTy != elem)
+    return emitOpError("expects scalar type to match the tile element type");
+  auto dstValid = getValidShapeVec(td);
+  auto tmpValid = getValidShapeVec(tt);
+  if (dstValid.size() != 2 || tmpValid.size() != 2)
+    return emitOpError("expects tmp and dst to be rank-2 tiles");
+  if (tmpValid[0] != ShapedType::kDynamic && tmpValid[0] < 1)
+    return emitOpError("expects tmp to have at least 1 valid row");
+  if (dstValid[1] != ShapedType::kDynamic && tmpValid[1] != ShapedType::kDynamic &&
+      tmpValid[1] < dstValid[1])
+    return emitOpError("expects tmp valid columns to cover dst valid columns");
+  auto verifyA2A3 = [&]() -> LogicalResult {
+    if (!(elem.isInteger(32) || elem.isF32()))
+      return emitOpError("expects A2/A3 trems element type to be i32/f32");
+    return success();
+  };
+  auto verifyA5 = [&]() -> LogicalResult {
+    if (!(elem.isInteger(32) || elem.isInteger(16) || elem.isF16() || elem.isF32()))
+      return emitOpError("expects A5 trems element type to be i32/i16/f16/f32");
+    return success();
+  };
+  return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
 mlir::LogicalResult mlir::pto::TFModSOp::verify() {
@@ -9074,8 +9105,8 @@ PTO_DEFINE_UNARY_EFFECTS(TRecipOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TReluOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TFModOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TFModSOp, getSrcMutable(), getDstMutable())
-PTO_DEFINE_BINARY_EFFECTS(TRemOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
-PTO_DEFINE_UNARY_EFFECTS(TRemSOp, getSrcMutable(), getDstMutable())
+PTO_DEFINE_TERNARY_EFFECTS(TRemOp, getSrc0Mutable(), getSrc1Mutable(), getTmpMutable(), getDstMutable())
+PTO_DEFINE_BINARY_EFFECTS(TRemSOp, getSrcMutable(), getTmpMutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TRowExpandOp, getSrcMutable(), getDstMutable())
 
 void TRowExpandDivOp::getEffects(
