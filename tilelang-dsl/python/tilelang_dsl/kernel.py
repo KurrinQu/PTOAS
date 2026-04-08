@@ -23,7 +23,7 @@ from .types import (
     TypeVariable,
     WildcardType,
 )
-from .frontend_ast import build_frontend_kernel_node
+from .frontend_ast import _DMA_CALL_KEYWORDS, build_frontend_kernel_node
 from .lowering import lower_semantic_kernel
 from .semantic import analyze_frontend_kernel
 from .support_matrix import (
@@ -128,6 +128,11 @@ class _KernelBodyValidator(ast.NodeVisitor):
             raise self.source_info.error(node.iter, "only Python range(lb, ub, step) loops are supported")
         if node.iter.func.id != "range":
             raise self.source_info.error(node.iter, "only Python range(lb, ub, step) loops are supported")
+        if node.iter.keywords:
+            raise self.source_info.error(
+                node.iter,
+                "range() does not support keyword arguments in TileLang DSL v1",
+            )
         if len(node.iter.args) != 3:
             raise self.source_info.error(node.iter, "range() expects exactly 3 arguments in TileLang DSL v1")
         for stmt in node.body:
@@ -174,16 +179,66 @@ class _KernelBodyValidator(ast.NodeVisitor):
         finally:
             self._vecscope_depth -= 1
 
+    def _validate_call_keywords(self, node: ast.Call) -> None:
+        if not node.keywords:
+            return
+        for keyword in node.keywords:
+            if keyword.arg is None:
+                raise self.source_info.error(
+                    keyword.value,
+                    "keyword unpacking via `**` is not supported in TileLang DSL v1",
+                )
+
+        if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+            namespace = node.func.value.id
+            name = node.func.attr
+        elif isinstance(node.func, ast.Name):
+            namespace = None
+            name = node.func.id
+        else:
+            raise self.source_info.error(
+                node,
+                "unsupported call surface in TileLang DSL v1",
+            )
+
+        allowed_keywords = _DMA_CALL_KEYWORDS.get(name) if namespace == "pto" else None
+        if allowed_keywords is None:
+            call_name = f"{namespace + '.' if namespace else ''}{name}"
+            raise self.source_info.error(
+                node,
+                f"`{call_name}` does not support keyword arguments in TileLang DSL v1; "
+                "only `pto.dma_load` and `pto.dma_store` currently accept them",
+            )
+
+        seen: set[str] = set()
+        for keyword in node.keywords:
+            assert keyword.arg is not None
+            if keyword.arg in seen:
+                raise self.source_info.error(
+                    keyword.value,
+                    f"duplicate keyword `{keyword.arg}` for `pto.{name}` in TileLang DSL v1",
+                )
+            if keyword.arg not in allowed_keywords:
+                raise self.source_info.error(
+                    keyword.value,
+                    f"unsupported keyword `{keyword.arg}` for `pto.{name}` in TileLang DSL v1",
+                )
+            seen.add(keyword.arg)
+
     def visit_Call(self, node: ast.Call) -> None:
         if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
             if node.func.value.id == "pto" and node.func.attr == "tpl":
+                self._validate_call_keywords(node)
                 return
             if node.func.value.id == "pto" and node.func.attr in SUPPORTED_TOPLEVEL_PTO_CALLS:
+                self._validate_call_keywords(node)
                 return
             if node.func.value.id == "pto" and node.func.attr in SUPPORTED_VECSCOPE_PTO_CALLS:
+                self._validate_call_keywords(node)
                 return
             if node.func.value.id == "pto" and node.func.attr in ADVANCED_VECSCOPE_PTO_CALLS:
                 if self.advanced_enabled:
+                    self._validate_call_keywords(node)
                     return
                 raise self.source_info.error(
                     node,
@@ -194,6 +249,7 @@ class _KernelBodyValidator(ast.NodeVisitor):
                 or node.func.attr in ADVANCED_TOPLEVEL_PTO_CALLS
             ):
                 if self.advanced_enabled:
+                    self._validate_call_keywords(node)
                     return
                 raise self.source_info.error(
                     node,
@@ -217,6 +273,7 @@ class _KernelBodyValidator(ast.NodeVisitor):
 
         if isinstance(node.func, ast.Name):
             if node.func.id == "range":
+                self._validate_call_keywords(node)
                 return
             raise self.source_info.error(
                 node,

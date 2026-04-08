@@ -81,6 +81,12 @@ class MaskPattern(str, Enum):
     VL32 = "PAT_VL32"
 
 
+class PadMode(str, Enum):
+    PadNull = "PadNull"
+    PadFirstElem = "PadFirstElem"
+    PadValue = "PadValue"
+
+
 @dataclass(frozen=True)
 class TileConfig:
     fields: tuple[tuple[str, Any], ...] = ()
@@ -162,6 +168,7 @@ __all__ = [
     "EVENT",
     "MaskPattern",
     "PAT",
+    "PadMode",
     "TileConfig",
     "TileSpecialization",
     "i1",

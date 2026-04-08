@@ -239,7 +239,6 @@ UNSUPPORTED_LANGUAGE_CONSTRUCTS = frozenset(
         "pto.mask_b8",
         "pto.mask_b16",
         "pto.mask_b32",
-        "PadMode",
         "BLayout",
         "SLayout",
         "PadValue",
@@ -256,6 +255,7 @@ LANGUAGE_CONSTRUCT_TIERS = {
     "Tile": STABLE_TIER,
     "dma_load": STABLE_TIER,
     "dma_store": STABLE_TIER,
+    "PadMode": STABLE_TIER,
     "tile[start:]": STABLE_TIER,
     "tile[row, col:]": STABLE_TIER,
     # Advanced tier constructs

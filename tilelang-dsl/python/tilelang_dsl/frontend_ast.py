@@ -91,6 +91,7 @@ class FrontendCallExpr(FrontendExprNode):
     namespace: str | None
     name: str
     args: tuple[FrontendExprNode, ...]
+    keywords: tuple[tuple[str, FrontendExprNode], ...] = ()
 
 
 class FrontendTargetNode:
@@ -194,6 +195,26 @@ _BINARY_OP_NAMES = {
     ast.FloorDiv: "floordiv",
 }
 
+_DMA_CALL_KEYWORDS = {
+    "dma_load": frozenset(
+        {
+            "pad_mode",
+            "pad_value",
+            "left_padding",
+            "right_padding",
+            "init_out_buffer",
+        }
+    ),
+    "dma_store": frozenset(
+        {
+            "pad_mode",
+            "pad_value",
+            "left_padding",
+            "right_padding",
+        }
+    ),
+}
+
 
 def _attribute_path(node: ast.AST) -> tuple[str, ...] | None:
     if isinstance(node, ast.Name):
@@ -238,6 +259,51 @@ def _validate_resolved_template_op_surface(
         node,
         f"unsupported op surface `pto.{op_name}` in TileLang DSL v1",
     )
+
+
+def _build_call_keywords(
+    node: ast.Call,
+    *,
+    namespace: str | None,
+    name: str,
+    context: _FrontendBuildContext,
+) -> tuple[tuple[str, FrontendExprNode], ...]:
+    if not node.keywords:
+        return ()
+
+    for keyword in node.keywords:
+        if keyword.arg is None:
+            raise context.error(
+                keyword.value,
+                "keyword unpacking via `**` is not supported in TileLang DSL v1",
+            )
+
+    allowed_keywords = _DMA_CALL_KEYWORDS.get(name) if namespace == "pto" else None
+    if allowed_keywords is None:
+        call_name = f"{namespace + '.' if namespace else ''}{name}"
+        raise context.error(
+            node,
+            f"`{call_name}` does not support keyword arguments in TileLang DSL v1; "
+            "only `pto.dma_load` and `pto.dma_store` currently accept them",
+        )
+
+    seen: set[str] = set()
+    built_keywords: list[tuple[str, FrontendExprNode]] = []
+    for keyword in node.keywords:
+        assert keyword.arg is not None
+        if keyword.arg in seen:
+            raise context.error(
+                keyword.value,
+                f"duplicate keyword `{keyword.arg}` for `pto.{name}` in TileLang DSL v1",
+            )
+        if keyword.arg not in allowed_keywords:
+            raise context.error(
+                keyword.value,
+                f"unsupported keyword `{keyword.arg}` for `pto.{name}` in TileLang DSL v1",
+            )
+        seen.add(keyword.arg)
+        built_keywords.append((keyword.arg, _build_expr(keyword.value, context)))
+    return tuple(built_keywords)
 
 
 def _build_expr(node: ast.AST, context: _FrontendBuildContext) -> FrontendExprNode:
@@ -322,18 +388,36 @@ def _build_expr(node: ast.AST, context: _FrontendBuildContext) -> FrontendExprNo
                 namespace="pto",
                 name=resolved_op,
                 args=tuple(_build_expr(arg, context) for arg in node.args[1:]),
+                keywords=_build_call_keywords(
+                    node,
+                    namespace="pto",
+                    name=resolved_op,
+                    context=context,
+                ),
             )
         if isinstance(node.func, ast.Name):
             return FrontendCallExpr(
                 namespace=None,
                 name=node.func.id,
                 args=tuple(_build_expr(arg, context) for arg in node.args),
+                keywords=_build_call_keywords(
+                    node,
+                    namespace=None,
+                    name=node.func.id,
+                    context=context,
+                ),
             )
         if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
             return FrontendCallExpr(
                 namespace=node.func.value.id,
                 name=node.func.attr,
                 args=tuple(_build_expr(arg, context) for arg in node.args),
+                keywords=_build_call_keywords(
+                    node,
+                    namespace=node.func.value.id,
+                    name=node.func.attr,
+                    context=context,
+                ),
             )
     raise context.error(
         node,

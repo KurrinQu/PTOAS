@@ -45,7 +45,7 @@ from .semantic import (
     SemanticVectorStoreStmt,
     SemanticWaitFlagStmt,
 )
-from .types import MaskPattern, ScalarType
+from .types import MaskPattern, ScalarType, get_lanes
 
 
 _I1_TYPE = SemanticScalarType(dtype=ScalarType("i1"))
@@ -79,6 +79,31 @@ class _RenderedValue:
 @dataclass(frozen=True)
 class _RenderedTextualType(SemanticType):
     text: str
+
+
+@dataclass(frozen=True)
+class _DmaTransferConfig:
+    n_burst: _RenderedValue
+    len_burst: _RenderedValue
+    copy_src_stride: _RenderedValue
+    copy_dst_stride: _RenderedValue
+    loop_src_stride: _RenderedValue
+    loop_dst_stride: _RenderedValue
+
+
+@dataclass(frozen=True)
+class _DmaLoadPaddingProfile:
+    pad_mode_name: str
+    left_padding: int
+    right_padding: int
+    init_out_buffer: bool
+    pad_value: SemanticExpr | None
+
+
+@dataclass(frozen=True)
+class _DmaStoreTrimProfile:
+    left_padding: int
+    right_padding: int
 
 
 class _AuthoringRenderer:
@@ -515,32 +540,48 @@ class _AuthoringRenderer:
         indent: int,
     ) -> list[str]:
         lines: list[str] = []
+        profile = self._resolve_dma_load_padding_profile(stmt.options)
         src = self._lower_expr(stmt.src.base, env, indent=indent, into=lines)
         dst = self._lower_expr(stmt.dst, env, indent=indent, into=lines)
-        src_name, src_type = self._materialize_copy_buffer_ptr(src, indent=indent, into=lines)
-        dst_name, dst_type = self._materialize_copy_buffer_ptr(dst, indent=indent, into=lines)
-        row_count, col_count = self._dma_transfer_extents(stmt.src, stmt.dst.type)
-        element_bytes = self._dtype_byte_width(stmt.src.type.element_dtype)
-        burst_bytes = col_count * element_bytes
-
-        c0_i64 = self._materialize_constant(0, _I64_TYPE)
-        c1_i64 = self._materialize_constant(1, _I64_TYPE)
-        n_burst = self._materialize_constant(row_count, _I64_TYPE)
-        len_burst = self._materialize_constant(burst_bytes, _I64_TYPE)
-        false_bit = self._materialize_constant(False, _I1_TYPE)
-
-        lines.extend(
-            [
-                self._indent(indent)
-                + f"pto.set_loop_size_outtoub {c1_i64}, {c1_i64} : i64, i64",
-                self._indent(indent)
-                + "pto.copy_gm_to_ubuf "
-                + f"{src_name}, {dst_name}, {c0_i64}, {n_burst}, {len_burst}, {c0_i64}, {c0_i64}, "
-                + f"{false_bit}, {c0_i64}, {len_burst}, {len_burst} : "
-                + f"{src_type}, {dst_type}, "
-                + "i64, i64, i64, i64, i64, i1, i64, i64, i64",
-            ]
+        src_name, src_type = self._materialize_tensor_slice_ptr(
+            stmt.src,
+            src,
+            env,
+            indent=indent,
+            into=lines,
         )
+        dst_name, dst_type = self._materialize_tile_window_ptr(
+            dst,
+            col_offset=profile.left_padding,
+            indent=indent,
+            into=lines,
+        )
+        transfer = self._infer_dma_load_transfer(stmt.src, stmt.dst.type, src, env, indent=indent, into=lines)
+
+        copy_lines = self._render_dma_load_copy_ops(
+            src_name,
+            src_type,
+            dst_name,
+            dst_type,
+            transfer,
+            indent=indent,
+        )
+        prefill_lines = self._render_dma_load_prefill(
+            stmt.dst,
+            dst,
+            env,
+            profile,
+            indent=indent,
+        )
+        if profile.pad_mode_name == "PadFirstElem":
+            lines.extend(copy_lines)
+            lines.extend(prefill_lines)
+            if profile.init_out_buffer:
+                lines.extend(copy_lines)
+            return lines
+
+        lines.extend(prefill_lines)
+        lines.extend(copy_lines)
         return lines
 
     def _render_dma_store(
@@ -551,27 +592,39 @@ class _AuthoringRenderer:
         indent: int,
     ) -> list[str]:
         lines: list[str] = []
+        profile = self._resolve_dma_store_trim_profile(stmt.options)
         src = self._lower_expr(stmt.src, env, indent=indent, into=lines)
         dst = self._lower_expr(stmt.dst.base, env, indent=indent, into=lines)
-        src_name, src_type = self._materialize_copy_buffer_ptr(src, indent=indent, into=lines)
-        dst_name, dst_type = self._materialize_copy_buffer_ptr(dst, indent=indent, into=lines)
-        row_count, col_count = self._dma_transfer_extents(stmt.dst, stmt.src.type)
-        element_bytes = self._dtype_byte_width(stmt.dst.type.element_dtype)
-        burst_bytes = col_count * element_bytes
+        src_name, src_type = self._materialize_tile_window_ptr(
+            src,
+            col_offset=profile.left_padding,
+            indent=indent,
+            into=lines,
+        )
+        dst_name, dst_type = self._materialize_tensor_slice_ptr(
+            stmt.dst,
+            dst,
+            env,
+            indent=indent,
+            into=lines,
+        )
+        transfer = self._infer_dma_store_transfer(stmt.dst, stmt.src.type, dst, env, indent=indent, into=lines)
 
         c0_i64 = self._materialize_constant(0, _I64_TYPE)
         c1_i64 = self._materialize_constant(1, _I64_TYPE)
-        n_burst = self._materialize_constant(row_count, _I64_TYPE)
-        len_burst = self._materialize_constant(burst_bytes, _I64_TYPE)
 
         lines.extend(
             [
                 self._indent(indent)
                 + f"pto.set_loop_size_ubtoout {c1_i64}, {c1_i64} : i64, i64",
                 self._indent(indent)
+                + f"pto.set_loop1_stride_ubtoout {transfer.loop_src_stride.name}, {transfer.loop_dst_stride.name} : i64, i64",
+                self._indent(indent)
+                + f"pto.set_loop2_stride_ubtoout {transfer.loop_src_stride.name}, {transfer.loop_dst_stride.name} : i64, i64",
+                self._indent(indent)
                 + "pto.copy_ubuf_to_gm "
-                + f"{src_name}, {dst_name}, {c0_i64}, {n_burst}, {len_burst}, {c0_i64}, "
-                + f"{len_burst}, {len_burst} : {src_type}, {dst_type}, "
+                + f"{src_name}, {dst_name}, {c0_i64}, {transfer.n_burst.name}, {transfer.len_burst.name}, {c0_i64}, "
+                + f"{transfer.copy_dst_stride.name}, {transfer.copy_src_stride.name} : {src_type}, {dst_type}, "
                 + "i64, i64, i64, i64, i64, i64",
             ]
         )
@@ -617,6 +670,780 @@ class _AuthoringRenderer:
             raise NotImplementedError("TileLang DSL v1 DMA lowering currently only supports rank-2 TensorView slices")
         return expr.type.extents
 
+    def _resolve_dma_load_padding_profile(self, options: object) -> _DmaLoadPaddingProfile:
+        pad_mode_name = self._static_pad_mode_name(getattr(options, "pad_mode", None)) or "PadNull"
+        left_padding = self._static_expr_value(getattr(options, "left_padding", None), default=0)
+        right_padding = self._static_expr_value(getattr(options, "right_padding", None), default=0)
+        init_out_buffer = self._static_expr_value(getattr(options, "init_out_buffer", None), default=False)
+        if not isinstance(left_padding, int) or left_padding < 0:
+            raise NotImplementedError(
+                "pto.dma_load lowering currently expects `left_padding` to be a static non-negative index"
+            )
+        if not isinstance(right_padding, int) or right_padding < 0:
+            raise NotImplementedError(
+                "pto.dma_load lowering currently expects `right_padding` to be a static non-negative index"
+            )
+        if not isinstance(init_out_buffer, bool):
+            raise NotImplementedError(
+                "pto.dma_load lowering currently expects `init_out_buffer` to be a compile-time bool"
+            )
+        if pad_mode_name not in {"PadNull", "PadFirstElem", "PadValue"}:
+            raise NotImplementedError(
+                f"pto.dma_load lowering does not recognize pad_mode `{pad_mode_name}` in TileLang DSL v1"
+            )
+        if pad_mode_name == "PadNull" and init_out_buffer:
+            raise NotImplementedError(
+                "pto.dma_load lowering does not support `init_out_buffer=True` with `pad_mode=PadMode.PadNull`; "
+                "the stable frontend-only path has no explicit fill value for that combination"
+            )
+        return _DmaLoadPaddingProfile(
+            pad_mode_name=pad_mode_name,
+            left_padding=left_padding,
+            right_padding=right_padding,
+            init_out_buffer=init_out_buffer,
+            pad_value=getattr(options, "pad_value", None),
+        )
+
+    def _resolve_dma_store_trim_profile(self, options: object) -> _DmaStoreTrimProfile:
+        pad_mode_name = self._static_pad_mode_name(getattr(options, "pad_mode", None)) or "PadNull"
+        left_padding = self._static_expr_value(getattr(options, "left_padding", None), default=0)
+        right_padding = self._static_expr_value(getattr(options, "right_padding", None), default=0)
+        if pad_mode_name != "PadNull":
+            raise NotImplementedError(
+                "pto.dma_store lowering only supports `pad_mode=PadMode.PadNull`; "
+                "non-PadNull store padding would require GM-side fill in the stable frontend-only path"
+            )
+        if self._static_expr_value(getattr(options, "pad_value", None)) is not None:
+            raise NotImplementedError(
+                "pto.dma_store lowering does not support `pad_value`; GM-side fill is unsupported"
+            )
+        if not isinstance(left_padding, int) or left_padding < 0:
+            raise NotImplementedError(
+                "pto.dma_store lowering currently expects `left_padding` to be a static non-negative index"
+            )
+        if not isinstance(right_padding, int) or right_padding < 0:
+            raise NotImplementedError(
+                "pto.dma_store lowering currently expects `right_padding` to be a static non-negative index"
+            )
+        return _DmaStoreTrimProfile(
+            left_padding=left_padding,
+            right_padding=right_padding,
+        )
+
+    def _require_default_dma_lowering_profile(self, options: object, op_name: str) -> None:
+        if not self._is_default_dma_lowering_profile(options):
+            raise NotImplementedError(
+                f"{op_name} lowering for padding/trim/init options is not implemented yet in TileLang DSL v1; "
+                "this stable frontend-only DMA path only lowers the default no-padding profile today"
+            )
+
+    def _is_default_dma_lowering_profile(self, options: object) -> bool:
+        return (
+            self._static_pad_mode_name(getattr(options, "pad_mode", None)) in {None, "PadNull"}
+            and self._static_expr_value(getattr(options, "pad_value", None)) is None
+            and self._static_expr_value(getattr(options, "left_padding", None), default=0) == 0
+            and self._static_expr_value(getattr(options, "right_padding", None), default=0) == 0
+            and self._static_expr_value(getattr(options, "init_out_buffer", None), default=False) is False
+        )
+
+    def _static_pad_mode_name(self, expr: SemanticExpr | None) -> str | None:
+        value = self._static_expr_value(expr)
+        return None if value is None else getattr(value, "name", None)
+
+    def _static_expr_value(self, expr: SemanticExpr | None, *, default: object = None) -> object:
+        if expr is None:
+            return default
+        if isinstance(expr, SemanticLiteralExpr):
+            return expr.value
+        if isinstance(expr, SemanticSymbolExpr):
+            return expr.value
+        if isinstance(expr, SemanticBindingRef):
+            return expr.binding.value
+        return None
+
+    def _infer_dma_load_transfer(
+        self,
+        slice_expr: SemanticTensorSliceExpr,
+        tile_type: SemanticTileType,
+        tensor_base: _RenderedValue,
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+        into: list[str],
+    ) -> _DmaTransferConfig:
+        element_bytes = self._dtype_byte_width(slice_expr.type.element_dtype)
+        row_count = self._materialize_dma_axis_extent(slice_expr, 0, env, indent=indent, into=into)
+        col_count = self._materialize_dma_axis_extent(slice_expr, 1, env, indent=indent, into=into)
+        gm_row_stride = self._materialize_tensor_row_stride_bytes(
+            tensor_base,
+            element_bytes,
+            indent=indent,
+            into=into,
+        )
+        row_step = self._materialize_dma_row_step(slice_expr, env, indent=indent, into=into)
+        copy_src_stride = self._emit_binary_value(
+            "mul",
+            gm_row_stride,
+            row_step,
+            _I64_TYPE,
+            indent=indent,
+            into=into,
+        )
+        copy_dst_stride = self._materialize_tile_row_stride_bytes(
+            tile_type,
+            element_bytes,
+            indent=indent,
+            into=into,
+        )
+        len_burst = self._materialize_dma_len_burst(
+            col_count,
+            element_bytes,
+            indent=indent,
+            into=into,
+        )
+        loop_src_stride = self._emit_binary_value(
+            "mul",
+            row_count,
+            copy_src_stride,
+            _I64_TYPE,
+            indent=indent,
+            into=into,
+        )
+        loop_dst_stride = self._emit_binary_value(
+            "mul",
+            row_count,
+            copy_dst_stride,
+            _I64_TYPE,
+            indent=indent,
+            into=into,
+        )
+        return _DmaTransferConfig(
+            n_burst=row_count,
+            len_burst=len_burst,
+            copy_src_stride=copy_src_stride,
+            copy_dst_stride=copy_dst_stride,
+            loop_src_stride=loop_src_stride,
+            loop_dst_stride=loop_dst_stride,
+        )
+
+    def _infer_dma_store_transfer(
+        self,
+        slice_expr: SemanticTensorSliceExpr,
+        tile_type: SemanticTileType,
+        tensor_base: _RenderedValue,
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+        into: list[str],
+    ) -> _DmaTransferConfig:
+        element_bytes = self._dtype_byte_width(slice_expr.type.element_dtype)
+        row_count = self._materialize_dma_axis_extent(slice_expr, 0, env, indent=indent, into=into)
+        col_count = self._materialize_dma_axis_extent(slice_expr, 1, env, indent=indent, into=into)
+        copy_src_stride = self._materialize_tile_row_stride_bytes(
+            tile_type,
+            element_bytes,
+            indent=indent,
+            into=into,
+        )
+        gm_row_stride = self._materialize_tensor_row_stride_bytes(
+            tensor_base,
+            element_bytes,
+            indent=indent,
+            into=into,
+        )
+        row_step = self._materialize_dma_row_step(slice_expr, env, indent=indent, into=into)
+        copy_dst_stride = self._emit_binary_value(
+            "mul",
+            gm_row_stride,
+            row_step,
+            _I64_TYPE,
+            indent=indent,
+            into=into,
+        )
+        len_burst = self._materialize_dma_len_burst(
+            col_count,
+            element_bytes,
+            indent=indent,
+            into=into,
+        )
+        loop_src_stride = self._emit_binary_value(
+            "mul",
+            row_count,
+            copy_src_stride,
+            _I64_TYPE,
+            indent=indent,
+            into=into,
+        )
+        loop_dst_stride = self._emit_binary_value(
+            "mul",
+            row_count,
+            copy_dst_stride,
+            _I64_TYPE,
+            indent=indent,
+            into=into,
+        )
+        return _DmaTransferConfig(
+            n_burst=row_count,
+            len_burst=len_burst,
+            copy_src_stride=copy_src_stride,
+            copy_dst_stride=copy_dst_stride,
+            loop_src_stride=loop_src_stride,
+            loop_dst_stride=loop_dst_stride,
+        )
+
+    def _render_dma_load_copy_ops(
+        self,
+        src_name: str,
+        src_type: str,
+        dst_name: str,
+        dst_type: str,
+        transfer: _DmaTransferConfig,
+        *,
+        indent: int,
+    ) -> list[str]:
+        c0_i64 = self._materialize_constant(0, _I64_TYPE)
+        c1_i64 = self._materialize_constant(1, _I64_TYPE)
+        false_bit = self._materialize_constant(False, _I1_TYPE)
+        return [
+            self._indent(indent)
+            + f"pto.set_loop2_stride_outtoub {transfer.loop_src_stride.name}, {transfer.loop_dst_stride.name} : i64, i64",
+            self._indent(indent)
+            + f"pto.set_loop1_stride_outtoub {transfer.loop_src_stride.name}, {transfer.loop_dst_stride.name} : i64, i64",
+            self._indent(indent)
+            + f"pto.set_loop_size_outtoub {c1_i64}, {c1_i64} : i64, i64",
+            self._indent(indent)
+            + "pto.copy_gm_to_ubuf "
+            + f"{src_name}, {dst_name}, {c0_i64}, {transfer.n_burst.name}, {transfer.len_burst.name}, {c0_i64}, {c0_i64}, "
+            + f"{false_bit}, {c0_i64}, {transfer.copy_src_stride.name}, {transfer.copy_dst_stride.name} : "
+            + f"{src_type}, {dst_type}, "
+            + "i64, i64, i64, i64, i64, i1, i64, i64, i64",
+        ]
+
+    def _render_dma_load_prefill(
+        self,
+        tile_expr: SemanticExpr,
+        tile_value: _RenderedValue,
+        env: dict[str, _RenderedValue],
+        profile: _DmaLoadPaddingProfile,
+        *,
+        indent: int,
+    ) -> list[str]:
+        fill_bands = profile.left_padding > 0 or profile.right_padding > 0
+        if profile.pad_mode_name == "PadNull" and not profile.init_out_buffer:
+            return []
+        if profile.pad_mode_name in {"PadValue", "PadFirstElem"} and not (profile.init_out_buffer or fill_bands):
+            return []
+
+        lines: list[str] = []
+        tile_memref = self._materialize_tile_memref(tile_value, indent=indent, into=lines)
+        rows_upper = self._materialize_tile_window_extent(
+            tile_expr,
+            tile_value,
+            axis=0,
+            indent=indent,
+            into=lines,
+        )
+        cols_upper = self._materialize_tile_window_extent(
+            tile_expr,
+            tile_value,
+            axis=1,
+            indent=indent,
+            into=lines,
+        )
+        fill_vec = self._materialize_dma_load_prefill_vector(
+            tile_memref,
+            tile_value.type.element_dtype,
+            env,
+            profile,
+            indent=indent,
+            into=lines,
+        )
+
+        windows: list[tuple[_RenderedValue, _RenderedValue]] = []
+        c0_index = _RenderedValue(
+            name=self._materialize_constant(0, SemanticIndexType()),
+            type=SemanticIndexType(),
+        )
+        if profile.init_out_buffer:
+            windows.append((c0_index, cols_upper))
+        else:
+            if profile.left_padding > 0:
+                windows.append(
+                    (
+                        c0_index,
+                        _RenderedValue(
+                            name=self._materialize_constant(profile.left_padding, SemanticIndexType()),
+                            type=SemanticIndexType(),
+                        ),
+                    )
+                )
+            if profile.right_padding > 0:
+                right_width = _RenderedValue(
+                    name=self._materialize_constant(profile.right_padding, SemanticIndexType()),
+                    type=SemanticIndexType(),
+                )
+                right_start = self._emit_binary_value(
+                    "sub",
+                    cols_upper,
+                    right_width,
+                    SemanticIndexType(),
+                    indent=indent,
+                    into=lines,
+                )
+                windows.append((right_start, cols_upper))
+
+        if not windows:
+            return []
+        lines.extend(
+            self._render_tile_fill_windows(
+                tile_memref,
+                tile_value.type.element_dtype,
+                fill_vec,
+                rows_upper,
+                windows,
+                indent=indent,
+            )
+        )
+        return lines
+
+    def _render_tile_fill_windows(
+        self,
+        tile_memref: _RenderedValue,
+        element_dtype: ScalarType,
+        fill_vec: _RenderedValue,
+        rows_upper: _RenderedValue,
+        windows: list[tuple[_RenderedValue, _RenderedValue]],
+        *,
+        indent: int,
+    ) -> list[str]:
+        lines: list[str] = []
+        c0 = self._materialize_constant(0, SemanticIndexType())
+        c1 = self._materialize_constant(1, SemanticIndexType())
+        vector_step = self._materialize_constant(get_lanes(element_dtype), SemanticIndexType())
+        mask_type = SemanticMaskType(granularity=self._mask_granularity_for_dtype(element_dtype))
+        lines.append(self._indent(indent) + "pto.vecscope {")
+        for start, stop in windows:
+            row_iv = self._new_temp()
+            lines.append(
+                self._indent(indent + 2)
+                + f"scf.for {row_iv} = {c0} to {rows_upper.name} step {c1} {{"
+            )
+            col_iv = self._new_temp()
+            lines.append(
+                self._indent(indent + 4)
+                + f"scf.for {col_iv} = {start.name} to {stop.name} step {vector_step} {{"
+            )
+            remaining = self._emit_binary_value(
+                "sub",
+                stop,
+                _RenderedValue(name=col_iv, type=SemanticIndexType()),
+                SemanticIndexType(),
+                indent=indent + 6,
+                into=lines,
+            )
+            remaining_i32 = self._coerce_rendered_value(
+                remaining,
+                _I32_TYPE,
+                indent=indent + 6,
+                into=lines,
+            )
+            mask_name = self._new_temp()
+            next_name = self._new_temp()
+            lines.append(
+                self._indent(indent + 6)
+                + f"{mask_name}, {next_name} = pto.plt_{mask_type.granularity} {remaining_i32.name} : "
+                + f"i32 -> {self._render_type(mask_type)}, i32"
+            )
+            lines.append(
+                self._indent(indent + 6)
+                + f"pto.vsts {fill_vec.name}, {tile_memref.name}[{row_iv}, {col_iv}], {mask_name} : "
+                + f"{self._render_type(fill_vec.type)}, {self._render_type(tile_memref.type)}, {self._render_type(mask_type)}"
+            )
+            lines.append(self._indent(indent + 4) + "}")
+            lines.append(self._indent(indent + 2) + "}")
+        lines.append(self._indent(indent) + "}")
+        return lines
+
+    def _materialize_dma_load_prefill_vector(
+        self,
+        tile_memref: _RenderedValue,
+        element_dtype: ScalarType,
+        env: dict[str, _RenderedValue],
+        profile: _DmaLoadPaddingProfile,
+        *,
+        indent: int,
+        into: list[str],
+    ) -> _RenderedValue:
+        vec_type = SemanticVRegType(element_dtype=element_dtype, lanes=get_lanes(element_dtype))
+        result_name = self._new_temp()
+        if profile.pad_mode_name == "PadValue":
+            scalar = self._materialize_dma_pad_value_scalar(
+                profile.pad_value,
+                element_dtype,
+                env,
+                indent=indent,
+                into=into,
+            )
+            into.append(
+                self._indent(indent)
+                + f"{result_name} = pto.vbr {scalar.name} : {self._render_type(scalar.type)} -> {self._render_type(vec_type)}"
+            )
+            return _RenderedValue(name=result_name, type=vec_type)
+        if profile.pad_mode_name == "PadFirstElem":
+            c0 = self._materialize_constant(0, SemanticIndexType())
+            first_col = self._materialize_constant(profile.left_padding, SemanticIndexType())
+            into.append(
+                self._indent(indent)
+                + f'{result_name} = pto.vlds {tile_memref.name}[{c0}, {first_col}] {{dist = "{self._broadcast_dist_for_dtype(element_dtype)}"}} : '
+                + f"{self._render_type(tile_memref.type)} -> {self._render_type(vec_type)}"
+            )
+            return _RenderedValue(name=result_name, type=vec_type)
+        raise NotImplementedError(
+            f"pto.dma_load lowering does not produce a prefill vector for pad_mode `{profile.pad_mode_name}`"
+        )
+
+    def _materialize_dma_pad_value_scalar(
+        self,
+        expr: SemanticExpr | None,
+        element_dtype: ScalarType,
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+        into: list[str],
+    ) -> _RenderedValue:
+        scalar_type = SemanticScalarType(dtype=element_dtype)
+        static_value = self._static_expr_value(expr)
+        if isinstance(static_value, (int, float)):
+            return _RenderedValue(
+                name=self._materialize_constant(static_value, scalar_type),
+                type=scalar_type,
+            )
+        if expr is None:
+            raise NotImplementedError("pto.dma_load PadValue lowering requires a concrete `pad_value` expression")
+        value = self._lower_expr(expr, env, indent=indent, into=into)
+        if isinstance(value.type, SemanticScalarType) and value.type.dtype == element_dtype:
+            return value
+        raise NotImplementedError(
+            "pto.dma_load PadValue lowering currently expects `pad_value` to be a compile-time numeric literal "
+            "or a scalar value whose dtype matches the destination Tile element dtype"
+        )
+
+    def _materialize_tile_window_extent(
+        self,
+        tile_expr: SemanticExpr,
+        tile_value: _RenderedValue,
+        *,
+        axis: int,
+        indent: int,
+        into: list[str],
+    ) -> _RenderedValue:
+        if (
+            isinstance(tile_expr, SemanticBindingRef)
+            and isinstance(tile_expr.type, SemanticTileType)
+            and tile_expr.type.valid_shape is not None
+            and tile_expr.type.valid_shape[axis] is None
+        ):
+            return self._materialize_tile_valid_dim(
+                tile_expr.binding,
+                axis,
+                indent=indent,
+                into=into,
+            )
+        if not isinstance(tile_value.type, SemanticTileType):
+            raise NotImplementedError("DMA load prefill expects a Tile destination")
+        valid_shape = tile_value.type.valid_shape or tile_value.type.shape
+        if valid_shape is None:
+            raise NotImplementedError("DMA load prefill expects a statically known Tile shape or valid_shape")
+        extent = valid_shape[axis]
+        if extent is None:
+            raise NotImplementedError("DMA load prefill does not support dynamic Tile valid_shape on non-binding values")
+        return _RenderedValue(
+            name=self._materialize_constant(extent, SemanticIndexType()),
+            type=SemanticIndexType(),
+        )
+
+    def _mask_granularity_for_dtype(self, dtype: ScalarType) -> str:
+        if dtype.name in {"f32", "i32"}:
+            return "b32"
+        if dtype.name in {"f16", "bf16", "i16"}:
+            return "b16"
+        if dtype.name == "i8":
+            return "b8"
+        raise NotImplementedError(f"dtype `{dtype.name}` is not supported by DMA load prefill lowering")
+
+    def _broadcast_dist_for_dtype(self, dtype: ScalarType) -> str:
+        if dtype.name in {"f32", "i32"}:
+            return "BRC_B32"
+        if dtype.name in {"f16", "bf16", "i16"}:
+            return "BRC_B16"
+        if dtype.name == "i8":
+            return "BRC_B8"
+        raise NotImplementedError(f"dtype `{dtype.name}` is not supported by DMA load broadcast lowering")
+
+    def _materialize_tile_window_ptr(
+        self,
+        tile_value: _RenderedValue,
+        *,
+        col_offset: int,
+        indent: int,
+        into: list[str],
+    ) -> tuple[str, str]:
+        base_ptr_name, base_ptr_type = self._materialize_copy_buffer_ptr(
+            tile_value,
+            indent=indent,
+            into=into,
+        )
+        if col_offset == 0:
+            return base_ptr_name, base_ptr_type
+        byte_ptr_type = "!pto.ptr<i8, ub>"
+        byte_ptr_name = self._new_temp()
+        into.append(
+            self._indent(indent)
+            + f"{byte_ptr_name} = pto.castptr {base_ptr_name} : {base_ptr_type} -> {byte_ptr_type}"
+        )
+        offset_bytes = self._materialize_constant(
+            col_offset * self._dtype_byte_width(tile_value.type.element_dtype),
+            SemanticIndexType(),
+        )
+        offset_ptr_name = self._new_temp()
+        into.append(
+            self._indent(indent)
+            + f"{offset_ptr_name} = pto.addptr {byte_ptr_name}, {offset_bytes} : {byte_ptr_type} -> {byte_ptr_type}"
+        )
+        typed_ptr_name = self._new_temp()
+        into.append(
+            self._indent(indent)
+            + f"{typed_ptr_name} = pto.castptr {offset_ptr_name} : {byte_ptr_type} -> {base_ptr_type}"
+        )
+        return typed_ptr_name, base_ptr_type
+
+    def _materialize_tensor_slice_ptr(
+        self,
+        slice_expr: SemanticTensorSliceExpr,
+        tensor_base: _RenderedValue,
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+        into: list[str],
+    ) -> tuple[str, str]:
+        base_ptr_name, base_ptr_type = self._materialize_copy_buffer_ptr(
+            tensor_base,
+            indent=indent,
+            into=into,
+        )
+        if self._is_zero_index_expr(slice_expr.slices[0].start) and self._is_zero_index_expr(slice_expr.slices[1].start):
+            return base_ptr_name, base_ptr_type
+
+        byte_ptr_type = "!pto.ptr<i8, gm>"
+        byte_ptr_name = self._new_temp()
+        into.append(
+            self._indent(indent)
+            + f"{byte_ptr_name} = pto.castptr {base_ptr_name} : {base_ptr_type} -> {byte_ptr_type}"
+        )
+        offset = self._materialize_tensor_slice_offset_bytes(
+            slice_expr,
+            tensor_base,
+            env,
+            indent=indent,
+            into=into,
+        )
+        offset_ptr_name = self._new_temp()
+        into.append(
+            self._indent(indent)
+            + f"{offset_ptr_name} = pto.addptr {byte_ptr_name}, {offset.name} : "
+            + f"{byte_ptr_type} -> {byte_ptr_type}"
+        )
+        typed_ptr_name = self._new_temp()
+        into.append(
+            self._indent(indent)
+            + f"{typed_ptr_name} = pto.castptr {offset_ptr_name} : {byte_ptr_type} -> {base_ptr_type}"
+        )
+        return typed_ptr_name, base_ptr_type
+
+    def _materialize_tensor_slice_offset_bytes(
+        self,
+        slice_expr: SemanticTensorSliceExpr,
+        tensor_base: _RenderedValue,
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+        into: list[str],
+    ) -> _RenderedValue:
+        row_start = self._lower_expr(slice_expr.slices[0].start, env, indent=indent, into=into)
+        col_start = self._lower_expr(slice_expr.slices[1].start, env, indent=indent, into=into)
+        row_stride_elems = self._materialize_tensor_dim(
+            tensor_base,
+            axis=1,
+            indent=indent,
+            into=into,
+        )
+        row_offset_elems = self._emit_binary_value(
+            "mul",
+            row_start,
+            row_stride_elems,
+            SemanticIndexType(),
+            indent=indent,
+            into=into,
+        )
+        offset_elems = self._emit_binary_value(
+            "add",
+            row_offset_elems,
+            col_start,
+            SemanticIndexType(),
+            indent=indent,
+            into=into,
+        )
+        return self._emit_binary_value(
+            "mul",
+            offset_elems,
+            _RenderedValue(
+                name=self._materialize_constant(
+                    self._dtype_byte_width(slice_expr.type.element_dtype),
+                    SemanticIndexType(),
+                ),
+                type=SemanticIndexType(),
+            ),
+            SemanticIndexType(),
+            indent=indent,
+            into=into,
+        )
+
+    def _is_zero_index_expr(self, expr: SemanticExpr) -> bool:
+        if isinstance(expr, SemanticLiteralExpr):
+            return isinstance(expr.value, int) and expr.value == 0
+        if isinstance(expr, SemanticBindingRef):
+            return isinstance(expr.binding.value, int) and expr.binding.value == 0
+        return False
+
+    def _materialize_tensor_dim(
+        self,
+        tensor_base: _RenderedValue,
+        *,
+        axis: int,
+        indent: int,
+        into: list[str],
+    ) -> _RenderedValue:
+        dim_index = self._new_temp()
+        axis_value = self._materialize_constant(axis, SemanticIndexType())
+        into.append(
+            self._indent(indent)
+            + f"{dim_index} = memref.dim {tensor_base.name}, {axis_value} : {self._render_type(tensor_base.type)}"
+        )
+        return _RenderedValue(name=dim_index, type=SemanticIndexType())
+
+    def _materialize_dma_axis_extent(
+        self,
+        slice_expr: SemanticTensorSliceExpr,
+        axis: int,
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+        into: list[str],
+    ) -> _RenderedValue:
+        axis_slice = slice_expr.slices[axis]
+        if axis_slice.extent is not None:
+            return _RenderedValue(
+                name=self._materialize_constant(axis_slice.extent, _I64_TYPE),
+                type=_I64_TYPE,
+            )
+
+        distance_expr = SemanticBinaryExpr(
+            lhs=axis_slice.stop,
+            op="sub",
+            rhs=axis_slice.start,
+            type=SemanticIndexType(),
+        )
+        extent_expr: SemanticExpr = distance_expr
+        step_value = self._static_expr_value(axis_slice.step)
+        if not isinstance(step_value, int):
+            raise NotImplementedError("DMA lowering currently expects a static slice step")
+        if step_value != 1:
+            extent_expr = SemanticBinaryExpr(
+                lhs=SemanticBinaryExpr(
+                    lhs=distance_expr,
+                    op="add",
+                    rhs=SemanticLiteralExpr(value=step_value - 1, type=SemanticIndexType()),
+                    type=SemanticIndexType(),
+                ),
+                op="floordiv",
+                rhs=SemanticLiteralExpr(value=step_value, type=SemanticIndexType()),
+                type=SemanticIndexType(),
+            )
+        return self._lower_to_i64(extent_expr, env, indent=indent, into=into)
+
+    def _materialize_dma_row_step(
+        self,
+        slice_expr: SemanticTensorSliceExpr,
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+        into: list[str],
+    ) -> _RenderedValue:
+        return self._lower_to_i64(slice_expr.slices[0].step, env, indent=indent, into=into)
+
+    def _materialize_tensor_row_stride_bytes(
+        self,
+        tensor_base: _RenderedValue,
+        element_bytes: int,
+        *,
+        indent: int,
+        into: list[str],
+    ) -> _RenderedValue:
+        dim_value = self._materialize_tensor_dim(
+            tensor_base,
+            axis=1,
+            indent=indent,
+            into=into,
+        )
+        dim_bytes = self._emit_binary_value(
+            "mul",
+            dim_value,
+            _RenderedValue(
+                name=self._materialize_constant(element_bytes, SemanticIndexType()),
+                type=SemanticIndexType(),
+            ),
+            SemanticIndexType(),
+            indent=indent,
+            into=into,
+        )
+        return self._coerce_rendered_to_i64(dim_bytes, indent=indent, into=into)
+
+    def _materialize_tile_row_stride_bytes(
+        self,
+        tile_type: SemanticTileType,
+        element_bytes: int,
+        *,
+        indent: int,
+        into: list[str],
+    ) -> _RenderedValue:
+        if tile_type.shape is None or len(tile_type.shape) != 2:
+            raise NotImplementedError("DMA lowering requires a statically specialized rank-2 Tile shape")
+        row_bytes = tile_type.shape[1] * element_bytes
+        return _RenderedValue(
+            name=self._materialize_constant(row_bytes, _I64_TYPE),
+            type=_I64_TYPE,
+        )
+
+    def _materialize_dma_len_burst(
+        self,
+        col_count: _RenderedValue,
+        element_bytes: int,
+        *,
+        indent: int,
+        into: list[str],
+    ) -> _RenderedValue:
+        return self._emit_binary_value(
+            "mul",
+            col_count,
+            _RenderedValue(
+                name=self._materialize_constant(element_bytes, _I64_TYPE),
+                type=_I64_TYPE,
+            ),
+            _I64_TYPE,
+            indent=indent,
+            into=into,
+        )
+
     def _dma_transfer_extents(
         self,
         slice_expr: SemanticTensorSliceExpr,
@@ -628,6 +1455,24 @@ class _AuthoringRenderer:
         if tile_type.shape is None or len(tile_type.shape) != 2:
             raise NotImplementedError("DMA lowering requires a statically specialized rank-2 Tile shape")
         return tile_type.shape
+
+    def _emit_binary_value(
+        self,
+        op: str,
+        lhs: _RenderedValue,
+        rhs: _RenderedValue,
+        result_type: SemanticType,
+        *,
+        indent: int,
+        into: list[str],
+    ) -> _RenderedValue:
+        result_name = self._new_temp()
+        into.append(
+            self._indent(indent)
+            + f"{result_name} = {self._render_binary_op(op, result_type)} "
+            f"{lhs.name}, {rhs.name} : {self._render_type(result_type)}"
+        )
+        return _RenderedValue(name=result_name, type=result_type)
 
     def _render_strict_vecscope(
         self,

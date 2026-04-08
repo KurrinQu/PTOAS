@@ -39,6 +39,7 @@ from .types import (
     Event,
     MaskPattern,
     MemorySpace,
+    PadMode,
     Pipe,
     PointerType,
     ScalarType,
@@ -67,6 +68,7 @@ _PATTERN_SYMBOLS = {pattern.name: pattern for pattern in MaskPattern}
 _PIPE_SYMBOLS = {pipe.name: pipe for pipe in Pipe}
 _EVENT_SYMBOLS = {event.name: event for event in Event}
 _MEMORY_SPACE_SYMBOLS = {memory_space.name: memory_space for memory_space in MemorySpace}
+_PAD_MODE_SYMBOLS = {pad_mode.name: pad_mode for pad_mode in PadMode}
 _UNARY_VECTOR_OPS = {"vabs", "vrelu", "vexp", "vnot"}
 _BINARY_VECTOR_OPS = {"vadd", "vsub", "vmul", "vdiv", "vmax", "vmin", "vand", "vor", "vxor"}
 _VECTOR_SCALAR_OPS = {"vadds", "vsubs", "vmuls", "vdivs", "vmaxs", "vmins"}
@@ -222,6 +224,14 @@ class SemanticSliceExpr(SemanticExpr):
 
 
 @dataclass(frozen=True)
+class SemanticTensorSliceAxis:
+    start: SemanticExpr
+    stop: SemanticExpr
+    step: SemanticExpr
+    extent: int | None
+
+
+@dataclass(frozen=True)
 class SemanticTupleExpr(SemanticExpr):
     elements: tuple[SemanticExpr, ...]
     type: SemanticTupleType
@@ -244,7 +254,7 @@ class SemanticSubscriptAccess(SemanticExpr):
 @dataclass(frozen=True)
 class SemanticTensorSliceExpr(SemanticExpr):
     base: SemanticExpr
-    slices: tuple[SemanticSliceExpr, ...]
+    slices: tuple[SemanticTensorSliceAxis, ...]
     type: SemanticTensorSliceType
 
 
@@ -281,15 +291,26 @@ class SemanticExprStmt(SemanticStmt):
 
 
 @dataclass(frozen=True)
+class SemanticDmaOptions:
+    pad_mode: SemanticExpr | None = None
+    pad_value: SemanticExpr | None = None
+    left_padding: SemanticExpr | None = None
+    right_padding: SemanticExpr | None = None
+    init_out_buffer: SemanticExpr | None = None
+
+
+@dataclass(frozen=True)
 class SemanticDmaLoadStmt(SemanticStmt):
     src: SemanticTensorSliceExpr
     dst: SemanticExpr
+    options: SemanticDmaOptions = SemanticDmaOptions()
 
 
 @dataclass(frozen=True)
 class SemanticDmaStoreStmt(SemanticStmt):
     src: SemanticExpr
     dst: SemanticTensorSliceExpr
+    options: SemanticDmaOptions = SemanticDmaOptions()
 
 
 @dataclass(frozen=True)
@@ -877,16 +898,68 @@ class _SemanticAnalyzer:
                 raise TypeError("pto.dma_load expects exactly 2 positional arguments in TileLang DSL v1")
             src = self._require_tensor_slice(args[0], "pto.dma_load source")
             dst = self._require_tile_expr(args[1], "pto.dma_load destination")
-            self._validate_dma_shape_match(src.type, dst.type, "pto.dma_load")
-            return SemanticDmaLoadStmt(src=src, dst=dst), dict(env)
+            options = self._analyze_dma_options(
+                expr.keywords,
+                env,
+                allow_outer_lookup=allow_outer_lookup,
+                context="pto.dma_load",
+            )
+            self._validate_dma_load_profile(src, dst, options)
+            return SemanticDmaLoadStmt(src=src, dst=dst, options=options), dict(env)
         if expr.name == "dma_store":
             if len(args) != 2:
                 raise TypeError("pto.dma_store expects exactly 2 positional arguments in TileLang DSL v1")
             src = self._require_tile_expr(args[0], "pto.dma_store source")
             dst = self._require_tensor_slice(args[1], "pto.dma_store destination")
-            self._validate_dma_shape_match(dst.type, src.type, "pto.dma_store")
-            return SemanticDmaStoreStmt(src=src, dst=dst), dict(env)
+            options = self._analyze_dma_options(
+                expr.keywords,
+                env,
+                allow_outer_lookup=allow_outer_lookup,
+                context="pto.dma_store",
+            )
+            self._validate_dma_store_profile(src, dst, options)
+            return SemanticDmaStoreStmt(src=src, dst=dst, options=options), dict(env)
         raise ValueError(f"unsupported DMA stmt pto.{expr.name}")
+
+    def _analyze_dma_options(
+        self,
+        keywords: tuple[tuple[str, FrontendExprNode], ...],
+        env: dict[str, SemanticBinding],
+        *,
+        allow_outer_lookup: bool,
+        context: str,
+    ) -> SemanticDmaOptions:
+        analyzed: dict[str, SemanticExpr] = {}
+        for name, keyword_expr in keywords:
+            analyzed[name] = self._analyze_expr(
+                keyword_expr,
+                env,
+                allow_outer_lookup=allow_outer_lookup,
+            )
+
+        pad_mode = analyzed.get("pad_mode")
+        if pad_mode is not None:
+            self._pad_mode_value(pad_mode, default=PadMode.PadNull)
+
+        left_padding = analyzed.get("left_padding")
+        if left_padding is not None:
+            self._require_index_typed_expr(left_padding)
+
+        right_padding = analyzed.get("right_padding")
+        if right_padding is not None:
+            self._require_index_typed_expr(right_padding)
+
+        init_out_buffer = analyzed.get("init_out_buffer")
+        if init_out_buffer is not None:
+            self._require_i1_expr(init_out_buffer, f"{context} init_out_buffer")
+
+        return SemanticDmaOptions(
+            pad_mode=pad_mode,
+            pad_value=analyzed.get("pad_value"),
+            left_padding=left_padding,
+            right_padding=right_padding,
+            init_out_buffer=init_out_buffer,
+        )
 
     def _analyze_vector_store_stmt(
         self,
@@ -1094,7 +1167,7 @@ class _SemanticAnalyzer:
             return self._require_tile_expr(expr, context)
         return self._require_pointer_expr(expr, context, memory_space="ub")
 
-    def _validate_dma_shape_match(
+    def _validate_dma_common_types(
         self,
         tensor_slice_type: SemanticTensorSliceType,
         tile_type: SemanticTileType,
@@ -1106,11 +1179,209 @@ class _SemanticAnalyzer:
             raise TypeError(f"{op_name} requires a statically specialized rank-2 Tile in TileLang DSL v1")
         if tensor_slice_type.element_dtype != tile_type.element_dtype:
             raise TypeError(f"{op_name} requires matching TensorView/Tile element dtypes in TileLang DSL v1")
-        for axis, (extent, tile_dim) in enumerate(zip(tensor_slice_type.extents, tile_type.shape)):
-            if extent is not None and extent != tile_dim:
+
+    def _validate_dma_load_profile(
+        self,
+        src: SemanticTensorSliceExpr,
+        dst: SemanticExpr,
+        options: SemanticDmaOptions,
+    ) -> None:
+        assert isinstance(dst.type, SemanticTileType)
+        self._validate_dma_common_types(src.type, dst.type, "pto.dma_load")
+        self._validate_dma_slice_profile(src, "pto.dma_load")
+
+        pad_mode = self._pad_mode_value(options.pad_mode, default=PadMode.PadNull)
+        left_padding = self._require_static_non_negative_index_value(
+            options.left_padding,
+            context="pto.dma_load left_padding",
+            default=0,
+        )
+        right_padding = self._require_static_non_negative_index_value(
+            options.right_padding,
+            context="pto.dma_load right_padding",
+            default=0,
+        )
+        self._require_static_bool_value(
+            options.init_out_buffer,
+            context="pto.dma_load init_out_buffer",
+            default=False,
+        )
+        self._validate_dma_load_option_profile(options, pad_mode)
+
+        valid_shape = self._resolved_tile_valid_shape(dst.type)
+        expected_extents = (
+            valid_shape[0],
+            self._trimmed_tile_axis_extent(
+                valid_shape[1],
+                left_padding,
+                right_padding,
+                op_name="pto.dma_load",
+                axis=1,
+                window_label="destination Tile valid window",
+            ),
+        )
+        self._validate_dma_extent_match(
+            actual_extents=src.type.extents,
+            expected_extents=expected_extents,
+            op_name="pto.dma_load",
+            actual_label="source slice",
+            expected_label="destination Tile valid window",
+            left_padding=left_padding,
+            right_padding=right_padding,
+        )
+
+    def _validate_dma_store_profile(
+        self,
+        src: SemanticExpr,
+        dst: SemanticTensorSliceExpr,
+        options: SemanticDmaOptions,
+    ) -> None:
+        assert isinstance(src.type, SemanticTileType)
+        self._validate_dma_common_types(dst.type, src.type, "pto.dma_store")
+        self._validate_dma_slice_profile(dst, "pto.dma_store")
+
+        pad_mode = self._pad_mode_value(options.pad_mode, default=PadMode.PadNull)
+        left_padding = self._require_static_non_negative_index_value(
+            options.left_padding,
+            context="pto.dma_store left_padding",
+            default=0,
+        )
+        right_padding = self._require_static_non_negative_index_value(
+            options.right_padding,
+            context="pto.dma_store right_padding",
+            default=0,
+        )
+        self._validate_dma_store_option_profile(options, pad_mode)
+
+        valid_shape = self._resolved_tile_valid_shape(src.type)
+        expected_extents = (
+            valid_shape[0],
+            self._trimmed_tile_axis_extent(
+                valid_shape[1],
+                left_padding,
+                right_padding,
+                op_name="pto.dma_store",
+                axis=1,
+                window_label="source Tile interior window",
+            ),
+        )
+        self._validate_dma_extent_match(
+            actual_extents=dst.type.extents,
+            expected_extents=expected_extents,
+            op_name="pto.dma_store",
+            actual_label="destination slice",
+            expected_label="source Tile interior window",
+            left_padding=left_padding,
+            right_padding=right_padding,
+        )
+
+    def _validate_dma_slice_profile(
+        self,
+        tensor_slice: SemanticTensorSliceExpr,
+        op_name: str,
+    ) -> None:
+        for axis, slice_axis in enumerate(tensor_slice.slices):
+            step = self._static_index_value(slice_axis.step, default=1)
+            if step is None:
                 raise TypeError(
-                    f"{op_name} requires TensorView slice extent axis {axis}={extent!r} "
-                    f"to match Tile shape axis {axis}={tile_dim!r}"
+                    f"{op_name} stable frontend-only DMA profile requires a static positive "
+                    f"slice step on axis {axis}"
+                )
+            if step <= 0:
+                raise TypeError(
+                    f"{op_name} stable frontend-only DMA profile requires a positive "
+                    f"slice step on axis {axis}, got {step!r}"
+                )
+            if axis == 1 and step != 1:
+                raise TypeError(
+                    f"{op_name} stable frontend-only DMA profile only supports step == 1 "
+                    "on TensorView slice axis 1"
+                )
+
+    def _validate_dma_load_option_profile(
+        self,
+        options: SemanticDmaOptions,
+        pad_mode: PadMode,
+    ) -> None:
+        if pad_mode == PadMode.PadValue and options.pad_value is None:
+            raise TypeError(
+                "pto.dma_load stable frontend-only DMA profile requires `pad_value` when "
+                "`pad_mode=PadMode.PadValue`"
+            )
+        if pad_mode != PadMode.PadValue and options.pad_value is not None:
+            raise TypeError(
+                "pto.dma_load stable frontend-only DMA profile only accepts `pad_value` "
+                "when `pad_mode=PadMode.PadValue`"
+            )
+
+    def _validate_dma_store_option_profile(
+        self,
+        options: SemanticDmaOptions,
+        pad_mode: PadMode,
+    ) -> None:
+        if options.pad_value is not None:
+            raise TypeError(
+                "pto.dma_store stable frontend-only DMA profile does not support `pad_value`; "
+                "GM-side fill is unsupported"
+            )
+        if pad_mode != PadMode.PadNull:
+            raise TypeError(
+                "pto.dma_store stable frontend-only DMA profile only supports "
+                "`pad_mode=PadMode.PadNull`; non-PadNull store padding would require GM-side fill"
+            )
+
+    def _resolved_tile_valid_shape(
+        self,
+        tile_type: SemanticTileType,
+    ) -> tuple[int | None, ...]:
+        assert tile_type.shape is not None
+        return tile_type.shape if tile_type.valid_shape is None else tile_type.valid_shape
+
+    def _trimmed_tile_axis_extent(
+        self,
+        base_extent: int | None,
+        left_padding: int,
+        right_padding: int,
+        *,
+        op_name: str,
+        axis: int,
+        window_label: str,
+    ) -> int | None:
+        if base_extent is None:
+            return None
+        trimmed_extent = base_extent - left_padding - right_padding
+        if trimmed_extent <= 0:
+            raise TypeError(
+                f"{op_name} stable frontend-only DMA profile requires {window_label} axis {axis}="
+                f"{base_extent!r} to remain positive after left_padding={left_padding} "
+                f"and right_padding={right_padding}"
+            )
+        return trimmed_extent
+
+    def _validate_dma_extent_match(
+        self,
+        *,
+        actual_extents: tuple[int | None, ...],
+        expected_extents: tuple[int | None, ...],
+        op_name: str,
+        actual_label: str,
+        expected_label: str,
+        left_padding: int,
+        right_padding: int,
+    ) -> None:
+        for axis, (actual_extent, expected_extent) in enumerate(zip(actual_extents, expected_extents)):
+            if actual_extent is None or expected_extent is None:
+                continue
+            if actual_extent != expected_extent:
+                padding_suffix = ""
+                if axis == 1 and (left_padding != 0 or right_padding != 0):
+                    padding_suffix = (
+                        f" after left_padding={left_padding} and right_padding={right_padding}"
+                    )
+                raise TypeError(
+                    f"{op_name} stable frontend-only DMA profile requires {actual_label} extent "
+                    f"axis {axis}={actual_extent!r} to match {expected_label} axis {axis}="
+                    f"{expected_extent!r}{padding_suffix}"
                 )
 
     def _bind_assignment_target(
@@ -1407,6 +1678,12 @@ class _SemanticAnalyzer:
                     context="pto.vlds source",
                 )
                 return self._analyze_vlds((base, *indices))
+            if expr.keywords:
+                raise TypeError(
+                    f"call surface `{expr.namespace + '.' if expr.namespace else ''}{expr.name}` "
+                    "carries keyword arguments, but semantic keyword handling is not implemented "
+                    "in TileLang DSL v1 yet"
+                )
             args = tuple(
                 self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
                 for arg in expr.args
@@ -1462,6 +1739,15 @@ class _SemanticAnalyzer:
                     name=expr.name,
                     value=memory_space,
                     type=SemanticMetaType(kind="memory_space"),
+                )
+        if expr.namespace in {"pto.PadMode"}:
+            pad_mode = _PAD_MODE_SYMBOLS.get(expr.name)
+            if pad_mode is not None:
+                return SemanticSymbolExpr(
+                    namespace=expr.namespace,
+                    name=expr.name,
+                    value=pad_mode,
+                    type=SemanticMetaType(kind="pad_mode"),
                 )
         raise TypeError(
             f"symbol `{expr.namespace}.{expr.name}` is not supported in TileLang DSL v1"
@@ -1629,24 +1915,9 @@ class _SemanticAnalyzer:
             self._require_optional_index_typed_expr(element.stop)
             self._require_optional_index_typed_expr(element.step)
 
-            start = self._static_index_value(element.start, default=0)
-            stop = self._static_index_value(element.stop, default=None)
-            step = self._static_index_value(element.step, default=1)
             if element.stop is None:
                 raise TypeError("TensorView slicing requires explicit stop bounds in TileLang DSL v1")
-            if start != 0:
-                raise TypeError("TensorView slicing currently only supports zero-based starts in TileLang DSL v1")
-            if element.step is not None and step is None:
-                raise TypeError("TensorView slicing currently only supports unit stride in TileLang DSL v1")
-            if step != 1:
-                raise TypeError("TensorView slicing currently only supports unit stride in TileLang DSL v1")
-            if stop is None:
-                extent = None
-            else:
-                extent = stop - start
-                if extent <= 0:
-                    raise TypeError("TensorView slicing requires positive extents in TileLang DSL v1")
-            extents.append(extent)
+            extents.append(self._normalized_tensor_slice_extent(element))
         return SemanticTensorSliceType(
             element_dtype=tensor_type.element_dtype,
             rank=tensor_type.rank,
@@ -1657,7 +1928,7 @@ class _SemanticAnalyzer:
         self,
         index: SemanticExpr,
         rank: int,
-    ) -> tuple[SemanticSliceExpr, ...]:
+    ) -> tuple[SemanticTensorSliceAxis, ...]:
         if not isinstance(index, SemanticTupleExpr):
             raise TypeError("TensorView slicing expects a tuple index in TileLang DSL v1")
         if len(index.elements) != rank:
@@ -1666,7 +1937,19 @@ class _SemanticAnalyzer:
         for element in index.elements:
             if not isinstance(element, SemanticSliceExpr):
                 raise TypeError("TensorView slicing only supports slice syntax in TileLang DSL v1")
-            slices.append(element)
+            if element.stop is None:
+                raise TypeError("TensorView slicing requires explicit stop bounds in TileLang DSL v1")
+            start = self._normalize_optional_index_expr(element.start, default=0)
+            stop = element.stop
+            step = self._normalize_optional_index_expr(element.step, default=1)
+            slices.append(
+                SemanticTensorSliceAxis(
+                    start=start,
+                    stop=stop,
+                    step=step,
+                    extent=self._normalized_tensor_slice_extent(element),
+                )
+            )
         return tuple(slices)
 
     def _binary_type(
@@ -2248,6 +2531,25 @@ class _SemanticAnalyzer:
             return expr.value
         raise TypeError(f"{context} must be an EVENT symbol or event string in TileLang DSL v1")
 
+    def _pad_mode_value(
+        self,
+        expr: SemanticExpr | None,
+        *,
+        default: PadMode,
+    ) -> PadMode:
+        if expr is None:
+            return default
+        if isinstance(expr, SemanticSymbolExpr) and expr.type.kind == "pad_mode":
+            return expr.value
+        if (
+            isinstance(expr, SemanticBindingRef)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "pad_mode"
+            and isinstance(expr.binding.value, PadMode)
+        ):
+            return expr.binding.value
+        raise TypeError("DMA pad_mode must be a PadMode symbol in TileLang DSL v1")
+
     def _require_loop_bound_type(self, ty: SemanticType) -> None:
         if isinstance(ty, (SemanticIndexType, SemanticScalarType)):
             return
@@ -2288,14 +2590,97 @@ class _SemanticAnalyzer:
     def _static_index_value(self, expr: SemanticExpr | None, *, default: int | None) -> int | None:
         if expr is None:
             return default
-        if not isinstance(expr, SemanticLiteralExpr) or not isinstance(expr.value, int):
+        if isinstance(expr, SemanticLiteralExpr):
+            if isinstance(expr.type, SemanticIndexType) and isinstance(expr.value, int):
+                return expr.value
             return None
-        return expr.value
+        if (
+            isinstance(expr, SemanticBindingRef)
+            and isinstance(expr.type, SemanticIndexType)
+            and isinstance(expr.binding.value, int)
+        ):
+            return expr.binding.value
+        return None
 
     def _require_optional_index_typed_expr(self, expr: SemanticExpr | None) -> None:
         if expr is None:
             return
         self._require_index_typed_expr(expr)
+
+    def _static_bool_value(self, expr: SemanticExpr | None, *, default: bool | None) -> bool | None:
+        if expr is None:
+            return default
+        if isinstance(expr, SemanticLiteralExpr):
+            if (
+                isinstance(expr.type, SemanticScalarType)
+                and expr.type.dtype == i1
+                and isinstance(expr.value, bool)
+            ):
+                return expr.value
+            return None
+        if (
+            isinstance(expr, SemanticBindingRef)
+            and isinstance(expr.type, SemanticScalarType)
+            and expr.type.dtype == i1
+            and isinstance(expr.binding.value, bool)
+        ):
+            return expr.binding.value
+        return None
+
+    def _require_static_bool_value(
+        self,
+        expr: SemanticExpr | None,
+        *,
+        context: str,
+        default: bool,
+    ) -> bool:
+        value = self._static_bool_value(expr, default=default)
+        if value is None:
+            raise TypeError(
+                f"{context} must be a compile-time bool in the stable frontend-only DMA profile"
+            )
+        return value
+
+    def _require_static_non_negative_index_value(
+        self,
+        expr: SemanticExpr | None,
+        *,
+        context: str,
+        default: int,
+    ) -> int:
+        value = self._static_index_value(expr, default=default)
+        if value is None:
+            raise TypeError(
+                f"{context} must be a static non-negative index in the stable frontend-only DMA profile"
+            )
+        if value < 0:
+            raise TypeError(
+                f"{context} must be a non-negative index in the stable frontend-only DMA profile"
+            )
+        return value
+
+    def _normalize_optional_index_expr(
+        self,
+        expr: SemanticExpr | None,
+        *,
+        default: int,
+    ) -> SemanticExpr:
+        if expr is not None:
+            return expr
+        return SemanticLiteralExpr(value=default, type=SemanticIndexType())
+
+    def _normalized_tensor_slice_extent(self, expr: SemanticSliceExpr) -> int | None:
+        start = self._static_index_value(expr.start, default=0)
+        stop = self._static_index_value(expr.stop, default=None)
+        step = self._static_index_value(expr.step, default=1)
+        if stop is None or start is None or step is None:
+            return None
+        if step <= 0:
+            raise TypeError("TensorView slicing requires a positive static step in TileLang DSL v1")
+        distance = stop - start
+        if distance <= 0:
+            raise TypeError("TensorView slicing requires positive extents in TileLang DSL v1")
+        return (distance + step - 1) // step
 
 
 def analyze_frontend_kernel(node: FrontendKernelNode) -> SemanticKernel:
@@ -2311,6 +2696,7 @@ __all__ = [
     "SemanticBinding",
     "SemanticBindingRef",
     "SemanticCallExpr",
+    "SemanticDmaOptions",
     "SemanticDmaLoadStmt",
     "SemanticDmaStoreStmt",
     "SemanticExpr",
@@ -2335,6 +2721,7 @@ __all__ = [
     "SemanticStrictVecscopeStmt",
     "SemanticSubscriptAccess",
     "SemanticSymbolExpr",
+    "SemanticTensorSliceAxis",
     "SemanticTensorSliceExpr",
     "SemanticTensorSliceType",
     "SemanticTensorViewType",

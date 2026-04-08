@@ -35,12 +35,13 @@ the current package:
 - `pto.vreg(...)`
 - `pto.mask_b8`, `pto.mask_b16`, `pto.mask_b32`
 - `GMPtr`, `UBPtr`, `UBRef`
-- `PadMode`
 - `BLayout`, `SLayout`, `PadValue`
 - `SyncOpType`
 
-Today, the public package primarily exports annotation markers (`TensorView`,
-`Tile`), scalar dtypes, `ptr(...)`, matcher APIs, and a small set of enums.
+Today, the public package exports annotation markers (`TensorView`, `Tile`),
+scalar dtypes, `ptr(...)`, `PadMode`, `TileConfig`, matcher APIs, and a small
+set of enums. The list above covers the remaining missing public constructors
+and aliases from the guide.
 
 ### Missing Tile/Tensor Utility Methods
 
@@ -207,35 +208,45 @@ So this is currently metadata storage rather than full behavioral support.
 ### TensorView Slicing
 
 The guide presents general Python slicing with dynamic starts and strides. The
-current implementation is much narrower:
+current stable DMA-oriented implementation is still a narrower 2D profile:
 
 - only rank-2 TensorView slicing is supported
 - slice `stop` must be explicit
-- slice `start` must be zero-based
-- slice `step` must be omitted or equal to `1`
+- slice `start` may be a compile-time constant or runtime index expression
+- slice `step` must be a static positive integer
+- axis 0 may use `step > 1`
+- axis 1 must keep `step == 1`
 
-Dynamic bounds are supported only within those constraints.
+Dynamic bounds are supported within those constraints.
 
 ### High-Level DMA Ops
 
-`pto.dma_load(...)` and `pto.dma_store(...)` exist, but only the minimal
-2-argument form is implemented:
+`pto.dma_load(...)` and `pto.dma_store(...)` now accept the documented keyword
+surface on the stable path, but the implemented contract is still a narrowed
+frontend-only subset.
 
-- `pto.dma_load(src_slice, dst_tile)`
-- `pto.dma_store(src_tile, dst_slice)`
+Implemented today:
 
-The following documented parameters are not currently supported:
+- non-zero/dynamic slice starts and dynamic stops
+- static positive outer-axis slice steps with inferred DMA strides
+- `dma_load` keywords: `pad_mode`, `pad_value`, `left_padding`,
+  `right_padding`, `init_out_buffer`
+- `dma_store` trim keywords: `left_padding`, `right_padding`
+- padded `dma_load` lowering for `PadNull`, `PadFirstElem`, and `PadValue`
+- trimmed `dma_store` lowering for `pad_mode=PadMode.PadNull`
 
-- `pad_mode`
-- `pad_value`
-- `left_padding`
-- `right_padding`
-- `init_out_buffer`
-
-There are also shape/profile restrictions:
+Still unsupported or intentionally deferred:
 
 - only rank-2 TensorView slices are accepted
 - the destination/source Tile must be a statically specialized rank-2 UB Tile
+- dynamic slice `step`
+- stepped DMA on TensorView slice axis 1
+- `dma_load(..., pad_mode=PadMode.PadNull, init_out_buffer=True)`
+- `dma_store(..., pad_mode != PadMode.PadNull, ...)`
+- `dma_store(..., pad_value=..., ...)`
+- store-side GM fill / backend-init semantics
+- any shape profile where slice extent does not match the Tile window after
+  applying padding or trim
 
 ### Tile Indexing Sugar
 

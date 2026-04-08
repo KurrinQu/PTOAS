@@ -728,20 +728,30 @@ Padding mode controls how out-of-bounds accesses are handled during DMA load/sto
 | `PadMode.PadFirstElem` | Pad using the first element of the source |
 | `PadMode.PadValue` | Pad using a specified value (requires `pad_value` parameter) |
 
+In the current stable frontend-only DMA profile:
+
+- `pto.dma_load(...)` lowers `PadNull`, `PadFirstElem`, and `PadValue`.
+- `pto.dma_store(...)` currently only lowers `PadNull`; store-side GM fill remains unsupported.
+
 **Usage:**
 ```python
-from pto import PadMode
+import tilelang_dsl as pto
 
-# Load with zero padding
-pto.dma_load(src_partition, dst_tile, 
-          pad_mode=PadMode.PadValue, 
-          pad_value=pto.f32(0.0))
+# Load with an explicit fill value
+pto.dma_load(
+    src_partition[0:16, 0:14],
+    dst_tile,
+    pad_mode=pto.PadMode.PadValue,
+    pad_value=0.0,
+    left_padding=1,
+    right_padding=1,
+)
 
 # Load with first-element padding
-pto.dma_load(src_partition, dst_tile, pad_mode=PadMode.PadFirstElem)
+pto.dma_load(src_partition[0:16, 0:14], dst_tile, pad_mode=pto.PadMode.PadFirstElem)
 
 # Load without padding (default)
-pto.dma_load(src_partition, dst_tile)  # pad_mode=PadMode.PadNull
+pto.dma_load(src_partition[0:16, 0:16], dst_tile)  # pad_mode=pto.PadMode.PadNull
 ```
 
 ### Slicing Syntax
@@ -756,15 +766,22 @@ partition = tensor_view[row_start:row_end, col_start:col_end]
 tile_view = large_tensor[0:16, 0:16]
 
 # Dynamic offsets and sizes
-start_row = pto.i32(0)
-start_col = pto.i32(0)
-dynamic_partition = tensor_view[start_row:start_row+16, start_col:start_col+16]
+row_start = tensor_view.shape[0] // 2
+dynamic_partition = tensor_view[row_start:tensor_view.shape[0], 4:20]
+
+# Static positive step on the outer axis
+stepped_partition = tensor_view[0:32:2, 0:16]
 ```
 
 **Constraints:**
 - Slicing returns a new TensorView representing the logical partition
 - The partition must be within the original tensor bounds
-- Slices can be static (constant bounds) or dynamic (runtime values)
+- The current stable DMA-oriented profile is rank-2 only
+- `stop` must be explicit on both axes
+- `start` may be static or dynamic
+- `step` must be a static positive integer
+- axis 0 may use `step > 1`
+- axis 1 must keep `step == 1`
 
 ### Alignment Type
 
@@ -1381,14 +1398,18 @@ The `pto.dma_load` and `pto.dma_store` operations automatically infer DMA transf
    pto.dma_load(input_tensor[0:64:2, 0:32], ub_tile)
    ```
 
-2. **Tile properties** - Layout and memory space determine destination patterns:
-   ```python
-   # Row-major vs column-major layouts affect stride computation
-   row_major_tile = pto.tile((16, 16), pto.f32, pto.MemorySpace.UB, b_layout=pto.BLayout.ROW_MAJOR)
-   col_major_tile = pto.tile((16, 16), pto.f32, pto.MemorySpace.UB, b_layout=pto.BLayout.COL_MAJOR)
-   ```
+2. **Tile shape / valid shape** - The statically specialized rank-2 UB Tile shape determines the UB-side row stride and visible window.
 
-3. **Transpose and padding requirements** - Specified via operation parameters.
+3. **Padding / trim requirements** - Specified via operation parameters.
+
+The current stable frontend-only inference profile covers:
+
+- rank-2 TensorView slices only
+- explicit `stop` on both axes
+- constant or runtime `start`
+- static positive `step`
+- stepped slices only on axis 0
+- statically specialized rank-2 UB Tile operands
 
 #### Benefits of Automatic Inference
 
@@ -1418,20 +1439,29 @@ For advanced use cases requiring manual DMA parameter control, see the [Low-leve
 
 **Constraints**:
 - Destination tile must have `memory_space = MemorySpace.UB`
-- Element types of source and destination must have same bitwidth
-- Source partition shape must match destination tile valid shape (after accounting for padding)
+- Element dtypes of source and destination must match
+- Source partition shape must match destination tile valid shape after accounting for `left_padding` / `right_padding`
+- `PadValue` requires `pad_value`
+- `PadNull` with `init_out_buffer=True` is not supported in the current stable frontend-only path
 
 **Example**:
 ```python
 # Load a 16x16 partition into a UB tile
 pto.dma_load(input_tensor[0:16, 0:16], ub_tile)
 
-# Load with zero padding
-pto.dma_load(input_tensor[0:16, 0:16], ub_tile, 
-          pad_mode=PadMode.PadValue, 
-          pad_value=pto.f32(0.0),
-          left_padding=2, 
-          right_padding=2)
+# Load a 14-column slice into a 16-column tile with 1-element padding bands
+pto.dma_load(
+    input_tensor[0:16, 0:14],
+    ub_tile,
+    pad_mode=pto.PadMode.PadValue,
+    pad_value=0.0,
+    left_padding=1,
+    right_padding=1,
+)
+
+# Load from a dynamic, non-zero row start
+row_start = input_tensor.shape[0] // 2
+pto.dma_load(input_tensor[row_start:input_tensor.shape[0], 4:20], ub_tile)
 ```
 
 #### `pto.dma_store(src: Tile, dst: TensorView, pad_mode: PadMode = PadMode.PadNull, pad_value: ScalarType = None, left_padding: Index = 0, right_padding: Index = 0) -> None`
@@ -1443,29 +1473,32 @@ pto.dma_load(input_tensor[0:16, 0:16], ub_tile,
 |-----------|------|-------------|
 | `src` | `Tile` | Source tile buffer (must be in UB memory space) |
 | `dst` | `TensorView` | Destination tensor view partition (must be in GM) |
-| `pad_mode` | `PadMode` | Padding mode (PadNull, PadFirstElem, PadValue) |
-| `pad_value` | `ScalarType` | Padding value (required if `pad_mode == PadValue`) |
-| `left_padding` | `Index` | Left padding element count |
-| `right_padding` | `Index` | Right padding element count |
+| `pad_mode` | `PadMode` | Public DMA surface keyword; current stable lowering only accepts `PadNull` |
+| `pad_value` | `ScalarType` | Reserved for future GM-side fill support; currently rejected |
+| `left_padding` | `Index` | Trim count removed from the left side of the source Tile interior window |
+| `right_padding` | `Index` | Trim count removed from the right side of the source Tile interior window |
 
 **Returns**: None (side-effect operation)
 
 **Constraints**:
 - Source tile must have `memory_space = MemorySpace.UB`
-- Element types of source and destination must have same bitwidth
-- Source tile valid shape must match destination partition shape (after accounting for padding)
+- Element dtypes of source and destination must match
+- Destination partition shape must match the source Tile valid shape after applying `left_padding` / `right_padding`
+- The current stable frontend-only path only lowers `pad_mode=PadMode.PadNull`
+- `pad_value` and GM-side fill are unsupported today
 
 **Example**:
 ```python
 # Store a UB tile to a GM partition
 pto.dma_store(ub_tile, output_tensor[0:16, 0:16])
 
-# Store with padding
-pto.dma_store(ub_tile, output_tensor[0:16, 0:16],
-           pad_mode=PadMode.PadValue,
-           pad_value=pto.f32(0.0),
-           left_padding=1,
-           right_padding=1)
+# Trim one element from both sides of a 16-column Tile and write back 14 columns
+pto.dma_store(
+    ub_tile,
+    output_tensor[0:16, 0:14],
+    left_padding=1,
+    right_padding=1,
+)
 ```
 
 #### `pto.dma_copy(src: Tile, dst: Tile, src_offset: tuple[Index, Index] = (0, 0), dst_offset: tuple[Index, Index] = (0, 0), copy_shape: tuple[Index, Index] = None) -> None`
