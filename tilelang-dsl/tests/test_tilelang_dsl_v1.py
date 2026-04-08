@@ -1961,6 +1961,40 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertRegex(text, r"pto\.vlds %tmp_\d+\[%row_\d+, %col_\d+\]")
         self.assertRegex(text, r"pto\.vsts %summed_\d+, %tmp_\d+\[%row_\d+, %col_\d+\], %mask_\d+")
 
+    def test_scalar_loop_prologue_does_not_force_vecscope_into_inner_loop(self) -> None:
+        @pto.vkernel(op="tadd_outer_scope_unique", dtypes=[(pto.f32, pto.f32, pto.f32)])
+        def kernel(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
+            dtype = dst.element_type
+            valid_rows, valid_cols = dst.valid_shape
+            for row in range(0, valid_rows, 1):
+                remained = valid_cols
+                for col in range(0, valid_cols, pto.get_lanes(dtype)):
+                    mask, remained = pto.make_mask(dtype, remained)
+                    lhs = pto.vlds(src0[row, col:])
+                    rhs = pto.vlds(src1[row, col:])
+                    summed = pto.vadd(lhs, rhs, mask)
+                    pto.vsts(summed, dst[row, col:], mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            src0=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            src1=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        vecscope_stmts = [stmt for stmt in semantic_kernel.body if isinstance(stmt, SemanticVecscopeStmt)]
+        self.assertEqual(len(vecscope_stmts), 1)
+        outer_loop = vecscope_stmts[0].body[0]
+        self.assertIsInstance(outer_loop, SemanticForStmt)
+        self.assertIsInstance(outer_loop.body[0], SemanticAssignStmt)
+        self.assertIsInstance(outer_loop.body[1], SemanticForStmt)
+
+        text = specialized.mlir_text()
+        self.assertEqual(text.count("pto.vecscope {"), 1)
+        self.assertRegex(text, r"pto\.vecscope \{\n\s+scf\.for %row_\d+ = %c0 to %valid_rows_\d+ step %c1")
+        self.assertNotRegex(text, r"scf\.for %row_\d+ = [^\n]+\{\n\s+pto\.vecscope \{")
+
     def test_unused_tile_does_not_hoist_tile_buf_addr_or_valid_shape_intrinsics(self) -> None:
         @pto.vkernel(op="tile_usage_scan_unique", dtypes=[(pto.f32, pto.f32, pto.f32)], advanced=True)
         def kernel(dst: pto.Tile, src: pto.Tile, scratch: pto.Tile):

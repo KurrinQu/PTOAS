@@ -662,24 +662,37 @@ class _SemanticAnalyzer:
     ) -> bool:
         saw_vector_activity = False
         for stmt in statements:
-            if isinstance(stmt, FrontendStrictVecscopeStmt):
+            if self._frontend_stmt_is_vecscope_boundary(stmt):
                 return False
-            if isinstance(stmt, FrontendIfStmt):
-                return False
-            if isinstance(stmt, FrontendExprStmt) and (
-                self._is_dma_call(stmt.expr) or self._is_sync_call(stmt.expr)
-            ):
-                return False
-            if isinstance(stmt, FrontendForStmt):
-                if not self._block_can_live_in_inferred_vecscope(stmt.body):
-                    return False
+            if self._frontend_stmt_can_live_in_inferred_vecscope(stmt):
                 saw_vector_activity = True
                 continue
-            if self._frontend_stmt_contains_vector_activity(stmt):
-                saw_vector_activity = True
+            if self._frontend_stmt_is_scalar_vecscope_stmt(stmt):
                 continue
             return False
         return saw_vector_activity
+
+    def _frontend_stmt_is_vecscope_boundary(self, stmt: FrontendStmtNode) -> bool:
+        if isinstance(stmt, (FrontendStrictVecscopeStmt, FrontendIfStmt)):
+            return True
+        return (
+            isinstance(stmt, FrontendExprStmt)
+            and (self._is_dma_call(stmt.expr) or self._is_sync_call(stmt.expr))
+        )
+
+    def _frontend_stmt_can_live_in_inferred_vecscope(
+        self,
+        stmt: FrontendStmtNode,
+    ) -> bool:
+        if isinstance(stmt, FrontendForStmt):
+            return self._block_can_live_in_inferred_vecscope(stmt.body)
+        return self._frontend_stmt_contains_vector_activity(stmt)
+
+    def _frontend_stmt_is_scalar_vecscope_stmt(
+        self,
+        stmt: FrontendStmtNode,
+    ) -> bool:
+        return isinstance(stmt, FrontendAssignStmt)
 
     def _frontend_stmt_contains_vector_activity(self, stmt: FrontendStmtNode) -> bool:
         expr: FrontendExprNode | None = None
