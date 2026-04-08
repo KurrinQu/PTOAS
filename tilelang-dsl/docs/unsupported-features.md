@@ -210,12 +210,11 @@ So this is currently metadata storage rather than full behavioral support.
 The guide presents general Python slicing with dynamic starts and strides. The
 current stable DMA-oriented implementation is still a narrower 2D profile:
 
-- only rank-2 TensorView slicing is supported
-- slice `stop` must be explicit
+- slice `stop` must be explicit on all dimensions
 - slice `start` may be a compile-time constant or runtime index expression
 - slice `step` must be a static positive integer
-- axis 0 may use `step > 1`
-- axis 1 must keep `step == 1`
+- dimension 0 may use `step > 1`
+- dimension 1 must keep `step == 1` (current DMA restriction)
 
 Dynamic bounds are supported within those constraints.
 
@@ -237,10 +236,10 @@ Implemented today:
 
 Still unsupported or intentionally deferred:
 
-- only rank-2 TensorView slices are accepted
+- TensorView slices up to 5D are supported
 - the destination/source Tile must be a statically specialized rank-2 UB Tile
 - dynamic slice `step`
-- stepped DMA on TensorView slice axis 1
+- stepped DMA on TensorView slice dimension 1
 - `dma_load(..., pad_mode=PadMode.PadNull, init_out_buffer=True)`
 - `dma_store(..., pad_mode != PadMode.PadNull, ...)`
 - `dma_store(..., pad_value=..., ...)`

@@ -44,21 +44,21 @@ def tile_scale(
     work_tile: pto.Tile,
     scale_factor: pto.f32,
 ):
-    rows = 4
-    cols = 16
+    dim0 = 4
+    dim1 = 16
 
     # Stage one GM tile into UB.
-    pto.dma_load(input_tensor[0:rows, 0:cols], work_tile)
+    pto.dma_load(input_tensor[0:dim0, 0:dim1], work_tile)
 
     # Run vector compute over the UB tile using tile indexing sugar.
-    for row in range(0, rows):
+    for i in range(0, dim0):
         mask = pto.make_mask(pto.f32, PAT.ALL)
-        vec = pto.vlds(work_tile[row, 0:])
+        vec = pto.vlds(work_tile[i, 0:])
         scaled = pto.vmuls(vec, scale_factor, mask)
-        pto.vsts(scaled, work_tile[row, 0:], mask)
+        pto.vsts(scaled, work_tile[i, 0:], mask)
 
     # Write the UB result back to GM.
-    pto.dma_store(work_tile, output_tensor[0:rows, 0:cols])
+    pto.dma_store(work_tile, output_tensor[0:dim0, 0:dim1])
 ```
 
 The example illustrates the key components of a TileLang kernel:
@@ -84,11 +84,11 @@ def elementwise_add(
     rhs_tile: pto.Tile,
     dst_tile: pto.Tile,
 ):
-    rows = 4
-    cols = 16
+    dim0 = 4
+    dim1 = 16
 
-    pto.dma_load(lhs_gm[0:rows, 0:cols], lhs_tile)
-    pto.dma_load(rhs_gm[0:rows, 0:cols], rhs_tile)
+    pto.dma_load(lhs_gm[0:dim0, 0:dim1], lhs_tile)
+    pto.dma_load(rhs_gm[0:dim0, 0:dim1], rhs_tile)
 
     for lane in range(0, 256, 64):
         mask = pto.make_mask(pto.f32, PAT.ALL)
@@ -97,7 +97,7 @@ def elementwise_add(
         summed = pto.vadd(lhs_vec, rhs_vec, mask)
         pto.vsts(summed, dst_tile, lane, mask)
 
-    pto.dma_store(dst_tile, out_gm[0:rows, 0:cols])
+    pto.dma_store(dst_tile, out_gm[0:dim0, 0:dim1])
 ```
 
 Both examples follow the same fundamental pattern: load data from global memory into local tiles, perform vector operations, and store results back. The compiler automatically infers vector-scope boundaries for the base vector operations. The `Tile` parameters are specialized to concrete shapes during compilation. Later sections cover advanced features such as matchers, template slots, raw pointer operations, and explicit scope management with `strict_vecscope`.
@@ -683,11 +683,11 @@ MemRefs are used for stateless load/store operations that accept `buf_like` oper
 
 ### TensorView Types
 
-TensorView types represent views into tensors residing in Global Memory (GM). They are used as kernel parameters for describing GM data and support slicing operations to create logical partitions for DMA load/store operations.
+TensorView types represent multi‑dimensional (up to 5D) views into tensors residing in Global Memory (GM). They are used as kernel parameters for describing GM data and support slicing operations to create logical partitions for DMA load/store operations.
 
 ### TensorView Type Definition
 
-TensorView types are parameterized by shape and element type:
+TensorView types are parameterized by shape (a tuple of up to 5 dimensions) and element type:
 
 ```python
 # Kernel parameter using TensorView
@@ -698,7 +698,7 @@ def tiled_kernel(
     tile_buf: pto.Tile              # UB tile
 ):
     # Access tensor view properties
-    rows, cols = input_tensor.shape      # (dynamic or static)
+    shape = input_tensor.shape           # tuple of dimensions (dynamic or static, up to 5D)
     dtype = input_tensor.element_type    # e.g., pto.f32
     strides = input_tensor.strides       # stride in elements
 ```
@@ -708,12 +708,13 @@ def tiled_kernel(
 - Shape can be **static** (compile-time constants) or **dynamic** (determined at runtime)
 - Strides are expressed in elements, not bytes
 - Memory space is always GM (Global Memory)
+- Maximum rank is 5 (PTO ISA right‑aligns lower‑rank shapes to 5D)
 
 ### TensorView Attributes
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `shape` | `tuple[int, ...]` | Tensor dimensions (2D only in current profile) |
+| `shape` | `tuple[int, ...]` | Tensor dimensions (supports up to 5 dimensions, right-aligned to 5D in PTO ISA) |
 | `element_type` | `Type` | Element data type (e.g., `pto.f32`, `pto.f16`) |
 | `strides` | `tuple[int, ...]` | Stride in elements for each dimension |
 | `offset` | `pto.i64` | Byte offset from base pointer (internal) |
@@ -760,28 +761,36 @@ TensorView supports Python slicing syntax to create logical partitions:
 
 ```python
 # Create a partition from a tensor view
-partition = tensor_view[row_start:row_end, col_start:col_end]
+partition = tensor_view[dim0_start:dim0_end, dim1_start:dim1_end]
 
 # Example: extract a 16x16 tile from a larger tensor
 tile_view = large_tensor[0:16, 0:16]
 
 # Dynamic offsets and sizes
-row_start = tensor_view.shape[0] // 2
-dynamic_partition = tensor_view[row_start:tensor_view.shape[0], 4:20]
+dim0_start = tensor_view.shape[0] // 2
+dynamic_partition = tensor_view[dim0_start:tensor_view.shape[0], 4:20]
 
-# Static positive step on the outer axis
+# Static positive step on dimension 0
 stepped_partition = tensor_view[0:32:2, 0:16]
+
+# 5D slicing example (future support)
+# partition_5d = tensor_view[
+#     d0_start:d0_end, 
+#     d1_start:d1_end, 
+#     d2_start:d2_end, 
+#     d3_start:d3_end, 
+#     d4_start:d4_end
+# ]
 ```
 
 **Constraints:**
 - Slicing returns a new TensorView representing the logical partition
 - The partition must be within the original tensor bounds
-- The current stable DMA-oriented profile is rank-2 only
-- `stop` must be explicit on both axes
+- `stop` must be explicit on all dimensions
 - `start` may be static or dynamic
 - `step` must be a static positive integer
-- axis 0 may use `step > 1`
-- axis 1 must keep `step == 1`
+- Dimension 0 may use `step > 1`
+- Dimension 1 must keep `step == 1` (current implementation restriction for DMA operations)
 
 ### Alignment Type
 
@@ -1404,11 +1413,10 @@ The `pto.dma_load` and `pto.dma_store` operations automatically infer DMA transf
 
 The current stable frontend-only inference profile covers:
 
-- rank-2 TensorView slices only
-- explicit `stop` on both axes
+- explicit `stop` on all dimensions
 - constant or runtime `start`
 - static positive `step`
-- stepped slices only on axis 0
+- stepped slices only on dimension 0 (current DMA restriction)
 - statically specialized rank-2 UB Tile operands
 
 #### Benefits of Automatic Inference
