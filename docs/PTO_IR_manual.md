@@ -707,6 +707,51 @@ pto.tload ins(%pv : !pto.partition_tensor_view<16x16xf16>)
 
 ---
 
+##### `pto.tprefetch` - Prefetch Partition View into Tile
+
+**Summary:** Prefetches a GM-backed partition view into a temporary local tile buffer. This maps to PTO-ISA `TPREFETCH(dst, src)` and, unlike most PTO intrinsics, does not add implicit wait-event synchronization in the C++ wrapper.
+
+**Semantics:**
+
+```
+TPREFETCH(dst, src)
+```
+
+The detailed caching / hint behavior is target-defined by PTO-ISA. In PTOAS the
+op is modeled as writing the prefetched data into `dst`.
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `src` | `pto.partition_tensor_view` or lowered GM memref | Source global view |
+| `dst` | `pto.tile_buf` or lowered local memref | Destination local tile |
+
+**Results:** None. Writes into `dst` via DPS pattern.
+
+**Constraints & Verification:**
+
+- `src` must be a partition view before lowering, or the corresponding lowered ranked memref form after `PTOViewToMemref`.
+- `dst` must be a tile buffer before lowering, or the corresponding lowered ranked memref form after `PTOViewToMemref`.
+- `dst` must use `loc=vec` or `loc=mat`.
+- Static source extents and static destination valid extents must be positive when known.
+- `src` and `dst` element types must have the same element size in bytes.
+
+**Hardware Mapping:**
+
+- Executes on the **DMA pipeline** (`PIPE_MTE2`, GM -> local tile)
+
+**Basic Example:**
+
+```mlir
+pto.tprefetch ins(%pv : !pto.partition_tensor_view<16x16xf16>)
+              outs(%tb : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16,
+                    v_row=16, v_col=16, blayout=row_major, slayout=none_box,
+                    fractal=512, pad=0>)
+```
+
+---
+
 ##### `pto.tstore` - Store Tile to Partition View
 
 **Summary:** Stores a 2-D tile buffer back to a 2-D partition view. Supports phase/atomic/relu/pre-quant controls that lower to the corresponding `TSTORE` template overload family.

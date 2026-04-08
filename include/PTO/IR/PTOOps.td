@@ -489,6 +489,42 @@ def TLoadOp  : PTO_TOp<"tload", [
   }];
 }
 
+def TPrefetchOp : PTO_TOp<"tprefetch", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Prefetch global data into a local tile buffer.";
+  let description = [{
+    Prefetches data from a global partition view into a temporary local tile
+    buffer. Unlike most PTO intrinsics, TPREFETCH does not carry implicit
+    TSYNC(wait_events...) semantics in PTO-ISA.
+
+    DPS form:
+      pto.tprefetch ins(%src) outs(%dst)
+  }];
+
+  let arguments = (ins
+    PTODpsType:$src,
+    PTODpsType:$dst
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `ins` `(` $src `:` qualified(type($src)) `)`
+    `outs` `(` $dst `:` qualified(type($dst)) `)`
+    attr-dict
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_MTE2; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+}
+
 def TStoreOp: PTO_TOp<"tstore", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,

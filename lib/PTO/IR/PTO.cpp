@@ -1484,6 +1484,63 @@ LogicalResult TLoadOp::verify() {
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
+LogicalResult TPrefetchOp::verify() {
+  Type srcTy = getSrc().getType();
+  Type dstTy = getDst().getType();
+
+  Type srcElem;
+  Type dstElem;
+
+  if (auto srcPart = dyn_cast<pto::PartitionTensorViewType>(srcTy)) {
+    auto srcShape = srcPart.getShape();
+    for (unsigned i = 0; i < srcShape.size(); ++i) {
+      if (srcShape[i] != ShapedType::kDynamic && srcShape[i] <= 0)
+        return emitOpError() << "expects src shape[" << i << "] to be positive";
+    }
+    srcElem = srcPart.getElementType();
+  } else if (auto srcMr = dyn_cast<MemRefType>(srcTy)) {
+    if (!srcMr.hasRank())
+      return emitOpError("expects src memref to be ranked");
+    for (int64_t dim : srcMr.getShape()) {
+      if (dim != ShapedType::kDynamic && dim <= 0)
+        return emitOpError("expects src memref shape to be positive");
+    }
+    srcElem = srcMr.getElementType();
+  } else {
+    return emitOpError("expects src to be !pto.partition_tensor_view or memref");
+  }
+
+  if (auto dstTile = dyn_cast<pto::TileBufType>(dstTy)) {
+    if (failed(verifyTileBufCommon(*this, dstTile, "dst")))
+      return failure();
+    auto dstValid = dstTile.getValidShape();
+    for (unsigned i = 0; i < dstValid.size(); ++i) {
+      if (dstValid[i] != ShapedType::kDynamic && dstValid[i] <= 0)
+        return emitOpError() << "expects dst valid_shape[" << i << "] to be positive";
+    }
+    auto dstSpace = getPTOMemorySpaceEnum(dstTile);
+    if (!dstSpace || (*dstSpace != pto::AddressSpace::VEC &&
+                      *dstSpace != pto::AddressSpace::MAT))
+      return emitOpError("expects dst to use loc=vec or loc=mat");
+    dstElem = dstTile.getElementType();
+  } else if (auto dstMr = dyn_cast<MemRefType>(dstTy)) {
+    auto dstSpace = getPTOMemorySpaceEnum(dstMr);
+    if (!dstSpace || (*dstSpace != pto::AddressSpace::VEC &&
+                      *dstSpace != pto::AddressSpace::MAT))
+      return emitOpError("expects dst memref to use loc=vec or loc=mat");
+    if (!dstMr.hasRank())
+      return emitOpError("expects dst memref to be ranked");
+    dstElem = dstMr.getElementType();
+  } else {
+    return emitOpError("expects dst to be !pto.tile_buf or memref");
+  }
+
+  if (getElemByteSize(srcElem) != getElemByteSize(dstElem))
+    return emitOpError("expects src and dst element types to have the same element size");
+
+  return success();
+}
+
 LogicalResult mlir::pto::SetFFTsOp::verify() {
   auto mr = llvm::dyn_cast<mlir::MemRefType>(getFfts().getType());
   if (!mr)
@@ -8792,6 +8849,12 @@ static void addEffect(
 // 针对 OpOperand* 的重载
 void TLoadOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   // [Fix] 单个操作数，直接取地址
+  addEffect(effects, &getSrcMutable(), MemoryEffects::Read::get());
+  addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
+}
+
+void TPrefetchOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   addEffect(effects, &getSrcMutable(), MemoryEffects::Read::get());
   addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
 }
