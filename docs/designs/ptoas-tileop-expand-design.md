@@ -813,8 +813,6 @@ def template_xxx(dst: pto.Tile, src0: pto.Tile, ...):
   当前 `pto.tadd` 的向量库模板实现如下：
 
   ```python
-  """TileLang DSL template for pto.tadd — used by ExpandTileOp tests."""
-
   import sys
   from pathlib import Path
   import tilelang_dsl as pto
@@ -822,8 +820,7 @@ def template_xxx(dst: pto.Tile, src0: pto.Tile, ...):
 
   @pto.vkernel(
       target="a5",
-      op="pto.tadd",
-      dtypes=[(pto.f32, pto.f32, pto.f32)]
+      op="pto.tadd"
   )
   def template_tadd(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
       dtype = dst.element_type

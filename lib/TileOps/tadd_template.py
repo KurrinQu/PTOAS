@@ -1,4 +1,4 @@
-"""TileLang DSL template for pto.tadd — used by ExpandTileOp tests."""
+"""TileLang DSL template for pto.tadd"""
 
 import sys
 from pathlib import Path
