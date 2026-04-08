@@ -205,6 +205,51 @@ class TileLangDSLMatcherEntryTests(unittest.TestCase):
             specialized.mlir_text(),
         )
 
+    def test_select_kernel_binds_omitted_dtypes_via_anytype_defaults(self) -> None:
+        @pto.vkernel(op="matcher_default_dtypes_unique")
+        def kernel(inp: pto.Tile, out: pto.Tile):
+            return None
+
+        selected = pto.select_kernel(
+            "a5",
+            "matcher_default_dtypes_unique",
+            (pto.f16, pto.f16),
+        )
+
+        self.assertEqual(selected.dtype_signature, (pto.f16, pto.f16))
+        self.assertEqual(
+            [(param.name, param.kind, param.dtype) for param in selected.parameters],
+            [("inp", "tile", pto.f16), ("out", "tile", pto.f16)],
+        )
+        specialized = selected.specialize(
+            inp=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+            out=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        )
+        self.assertIn(
+            "!pto.tile_buf<loc=vec, dtype=f16, rows=8, cols=16, v_row=8, v_col=16",
+            specialized.mlir_text(),
+        )
+
+    def test_select_kernel_default_dtypes_preserve_scalar_annotations(self) -> None:
+        @pto.vkernel(op="matcher_default_dtypes_scalar_guard_unique")
+        def kernel(inp: pto.TensorView, scale: pto.i32):
+            return None
+
+        selected = pto.select_kernel(
+            "a5",
+            "matcher_default_dtypes_scalar_guard_unique",
+            (pto.f32, pto.i32),
+        )
+        self.assertEqual(selected.dtype_signature, (pto.f32, pto.i32))
+
+        with self.assertRaises(LookupError) as ctx:
+            pto.select_kernel(
+                "a5",
+                "matcher_default_dtypes_scalar_guard_unique",
+                (pto.f32, pto.f16),
+            )
+        self.assertIn("found no registered kernel", str(ctx.exception))
+
     def test_select_kernel_matches_wildcards_deterministically(self) -> None:
         @pto.vkernel(
             op="matcher_wildcard_unique",
@@ -525,6 +570,18 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             _ = kernel.op
         self.assertIn("bind a concrete op", str(ctx.exception))
+
+    def test_descriptor_defaults_dtypes_for_beginner_tile_kernels(self) -> None:
+        @pto.vkernel(op="default_dtypes_unique")
+        def kernel(inp: pto.Tile, out: pto.Tile):
+            return None
+
+        self.assertEqual(kernel.match_ops, ("default_dtypes_unique",))
+        self.assertEqual(kernel.dtypes, ((pto.AnyType, pto.AnyType),))
+        self.assertEqual(kernel.metadata["dtypes"], ((pto.AnyType, pto.AnyType),))
+        with self.assertRaises(ValueError) as ctx:
+            _ = kernel.dtype_signature
+        self.assertIn("choose a concrete dtype signature", str(ctx.exception))
 
     def test_descriptor_accepts_templates_metadata(self) -> None:
         @pto.vkernel(

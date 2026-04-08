@@ -7,8 +7,7 @@ import tilelang_dsl as pto
 
 @pto.vkernel(
     target="a5",
-    op="pto.tadd",
-    dtypes=[(pto.f32, pto.f32, pto.f32)]
+    op="pto.tadd"
 )
 def template_tadd(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
     dtype = dst.element_type

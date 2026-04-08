@@ -20,7 +20,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
-from .kernel import VKernelDescriptor
+from .kernel import VKernelDescriptor, _match_descriptor_dtype_signature
 from .types import MemorySpace, ScalarType, TileSpecialization
 
 
@@ -73,18 +73,24 @@ def _match_descriptor(
     op_name: str,
     dtype_name: str,
 ) -> VKernelDescriptor | None:
-    """Find the first descriptor matching (op, dtype)."""
+    """Find and bind the first descriptor matching (op, dtype)."""
     target_dtype = _DTYPE_MAP.get(dtype_name)
     if target_dtype is None:
         return None
 
     for desc in descriptors:
-        if desc.selected_op != op_name:
+        if op_name not in desc.match_ops:
             continue
-        # Check dtype signature: all entries must match the target dtype.
-        sig = desc.dtype_signature
-        if all(d == target_dtype for d in sig):
-            return desc
+        op_bound = desc._bind_selected_op(op_name)
+        if not op_bound.dtypes:
+            continue
+        operand_types = tuple(target_dtype for _ in op_bound.dtypes[0])
+        matched_signature = _match_descriptor_dtype_signature(op_bound, operand_types)
+        if matched_signature is None:
+            continue
+        if op_bound._selected_dtype_signature == matched_signature:
+            return op_bound
+        return op_bound._bind_selected_dtype_signature(matched_signature)
     return None
 
 

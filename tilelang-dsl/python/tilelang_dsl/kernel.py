@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .types import (
+    AnyType,
     MemorySpace,
     PointerType,
     ScalarType,
@@ -1223,6 +1224,21 @@ def _collect_parameter_specs(py_fn: Callable[..., Any]) -> tuple[KernelParameter
     return tuple(_validate_parameter_spec(param) for param in signature.parameters.values())
 
 
+def _default_dtype_signature(
+    parameter_specs: tuple[KernelParameterSpec, ...],
+) -> tuple[Any, ...]:
+    defaults: list[Any] = []
+    for param_spec in parameter_specs:
+        if param_spec.kind in {"tensorview", "tile"}:
+            defaults.append(AnyType)
+            continue
+        if param_spec.kind == "ptr":
+            defaults.append(param_spec.annotation.element_dtype)
+            continue
+        defaults.append(param_spec.annotation)
+    return tuple(defaults)
+
+
 def _validate_dtype_arity(
     parameter_specs: tuple[KernelParameterSpec, ...],
     dtypes: tuple[tuple[Any, ...], ...],
@@ -1314,8 +1330,10 @@ def _build_descriptor(
     _validate_function_body(source_info, advanced_enabled=advanced_enabled)
     match_ops = _freeze_match_ops(op=op, ops=ops)
     frozen_templates = _freeze_templates(templates, match_ops=match_ops)
-    frozen_dtypes = _freeze_dtypes(dtypes)
     parameter_specs = _collect_parameter_specs(py_fn)
+    if dtypes is None:
+        dtypes = (_default_dtype_signature(parameter_specs),)
+    frozen_dtypes = _freeze_dtypes(dtypes)
     _validate_dtype_arity(parameter_specs, frozen_dtypes)
 
     selected_op: str | None = None
