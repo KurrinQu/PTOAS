@@ -195,25 +195,7 @@ _BINARY_OP_NAMES = {
     ast.FloorDiv: "floordiv",
 }
 
-_DMA_CALL_KEYWORDS = {
-    "dma_load": frozenset(
-        {
-            "pad_mode",
-            "pad_value",
-            "left_padding",
-            "right_padding",
-            "init_out_buffer",
-        }
-    ),
-    "dma_store": frozenset(
-        {
-            "pad_mode",
-            "pad_value",
-            "left_padding",
-            "right_padding",
-        }
-    ),
-}
+_DMA_CALL_KEYWORDS: dict[str, frozenset[str]] = {}
 
 
 def _attribute_path(node: ast.AST) -> tuple[str, ...] | None:
@@ -284,7 +266,7 @@ def _build_call_keywords(
         raise context.error(
             node,
             f"`{call_name}` does not support keyword arguments in TileLang DSL v1; "
-            "only `pto.dma_load` and `pto.dma_store` currently accept them",
+            "no public call surface currently accepts them",
         )
 
     seen: set[str] = set()

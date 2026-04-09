@@ -208,7 +208,7 @@ class _KernelBodyValidator(ast.NodeVisitor):
             raise self.source_info.error(
                 node,
                 f"`{call_name}` does not support keyword arguments in TileLang DSL v1; "
-                "only `pto.dma_load` and `pto.dma_store` currently accept them",
+                "no public call surface currently accepts them",
             )
 
         seen: set[str] = set()

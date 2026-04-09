@@ -20,20 +20,20 @@ It focuses on:
 
 ## Current Tier Snapshot
 
-This migration note lives at the boundary between the stable starter path and
+This migration note lives at the boundary between the basic starter path and
 the broader expert surface. The public-surface groups discussed across the
 guide, this migration note, and the support matrix currently map to tiers as
 follows:
 
 | Surface Family | Tier | Migration Meaning |
 |----------------|------|-------------------|
-| `TensorView` | `stable` | Keep as the default GM-facing operand model. |
-| `Tile` | `stable` | Keep as the default UB-facing compute tile model. |
-| `dma_load` / `dma_store` | `stable` | Keep as the preferred high-level GM <-> UB path. |
-| Base vector ops such as `make_mask`, `vlds`, `vsts`, `vadd`, `vmuls` | `stable` | Keep as the default compute skeleton before dropping to expert surfaces. |
+| `TensorView` | `basic` | Keep as the default GM-facing operand model. |
+| `Tile` | `basic` | Keep as the default UB-facing compute tile model. |
+| `dma_load` / `dma_store` | `basic` | Keep as the preferred high-level GM <-> UB path. |
+| Base vector ops such as `make_mask`, `vlds`, `vsts`, `vadd`, `vmuls` | `basic` | Keep as the default compute skeleton before dropping to expert surfaces. |
 | Raw pointer family such as `ptr(...)`, `castptr`, `addptr`, `GMPtr`, `UBPtr`, `UBRef` | `advanced` | Use when moving from the starter path to expert pointer-form authoring. |
 | Low-level DMA family such as `copy_*` and `set_loop*_stride_*` / `set_loop_size_*` | `advanced` | Use only when the high-level DMA surface is not sufficient. |
-| Tile helper family such as `tile.slice(...)`, `tile.reshape(...)`, `tile.to_ubref()`, `tile.as_ptr()`, `tile.to_memref()`, `tile_from_ptr(...)`, `tile_from_memref(...)`, `tile_with_strides(...)`, `tile_config(...)` | `advanced` | Treat as partial or evolving surface rather than part of the stable starter path. |
+| Tile helper family such as `tile.slice(...)`, `tile.reshape(...)`, `tile.to_ubref()`, `tile.as_ptr()`, `tile.to_memref()`, `tile_from_ptr(...)`, `tile_from_memref(...)`, `tile_with_strides(...)`, `tile_config(...)` | `advanced` | Treat as partial or evolving surface rather than part of the basic starter path. |
 
 For the exact tier source of truth, see
 `tilelang-dsl/python/tilelang_dsl/support_matrix.py`.

@@ -64,11 +64,6 @@ These documented surfaces are not accepted by the current frontend:
 - `pto.get_buf(...)`
 - `pto.rls_buf(...)`
 
-### Missing High-Level Tile Copy Surface
-
-The guide documents `pto.dma_copy(...)`, but the current package does not
-provide that high-level operation. Only the raw low-level copy op
-`pto.copy_ubuf_to_ubuf(...)` exists in advanced mode.
 
 ### Missing Vector Load/Store Families
 
@@ -218,34 +213,6 @@ current stable DMA-oriented implementation is still a narrower 2D profile:
 
 Dynamic bounds are supported within those constraints.
 
-### High-Level DMA Ops
-
-`pto.dma_load(...)` and `pto.dma_store(...)` now accept the documented keyword
-surface on the stable path, but the implemented contract is still a narrowed
-frontend-only subset.
-
-Implemented today:
-
-- non-zero/dynamic slice starts and dynamic stops
-- static positive outer-axis slice steps with inferred DMA strides
-- `dma_load` keywords: `pad_mode`, `pad_value`, `left_padding`,
-  `right_padding`, `init_out_buffer`
-- `dma_store` trim keywords: `left_padding`, `right_padding`
-- padded `dma_load` lowering for `PadNull`, `PadFirstElem`, and `PadValue`
-- trimmed `dma_store` lowering for `pad_mode=PadMode.PadNull`
-
-Still unsupported or intentionally deferred:
-
-- TensorView slices up to 5D are supported
-- the destination/source Tile must be a statically specialized rank-2 UB Tile
-- dynamic slice `step`
-- stepped DMA on TensorView slice dimension 1
-- `dma_load(..., pad_mode=PadMode.PadNull, init_out_buffer=True)`
-- `dma_store(..., pad_mode != PadMode.PadNull, ...)`
-- `dma_store(..., pad_value=..., ...)`
-- store-side GM fill / backend-init semantics
-- any shape profile where slice extent does not match the Tile window after
-  applying padding or trim
 
 ### Tile Indexing Sugar
 

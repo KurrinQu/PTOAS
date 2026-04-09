@@ -6,10 +6,10 @@ FOLLOW_UP_CHANGE = "extend-tilelang-dsl-matcher-and-advanced-surface"
 
 # Tier definitions for TileLang DSL surface classification
 # These tiers represent the user-facing support level of language features:
-# - STABLE: Core surface that is fully supported and recommended for general use
+# - BASIC: Core surface that is fully supported and recommended for general use
 # - ADVANCED: Features requiring advanced=True, suitable for expert users
 
-STABLE_TIER = "stable"
+BASIC_TIER = "basic"
 ADVANCED_TIER = "advanced"
 
 # Tier metadata for PTO calls and language constructs
@@ -17,8 +17,6 @@ ADVANCED_TIER = "advanced"
 
 SUPPORTED_TOPLEVEL_PTO_CALLS = frozenset(
     {
-        "dma_load",
-        "dma_store",
         "set_flag",
         "wait_flag",
         "pipe_barrier",
@@ -108,10 +106,10 @@ DEFERRED_PTO_SURFACES = frozenset(
 # These groupings intentionally mirror the user-facing authoring tiers rather
 # than the internal lowering organization.
 
-STABLE_TENSORVIEW_SURFACES = frozenset({"TensorView"})
-STABLE_TILE_SURFACES = frozenset({"Tile"})
-STABLE_HIGH_LEVEL_DMA_SURFACES = frozenset({"pto.dma_load", "pto.dma_store"})
-STABLE_BASE_VECTOR_SURFACES = frozenset(
+BASIC_TENSORVIEW_SURFACES = frozenset({"TensorView"})
+BASIC_TILE_SURFACES = frozenset({"Tile"})
+BASIC_HIGH_LEVEL_DMA_SURFACES = frozenset()
+BASIC_BASE_VECTOR_SURFACES = frozenset(
     f"pto.{name}" for name in sorted(SUPPORTED_VECSCOPE_PTO_CALLS)
 )
 
@@ -154,7 +152,7 @@ ADVANCED_TILE_HELPER_SURFACES = frozenset(
         "pto.tile_config",
     }
 )
-STABLE_TILE_INDEXING_SURFACES = frozenset(
+BASIC_TILE_INDEXING_SURFACES = frozenset(
     {
         "tile[start:]",
         "tile[row, col:]",
@@ -162,11 +160,10 @@ STABLE_TILE_INDEXING_SURFACES = frozenset(
 )
 
 AUTHORING_TIER_SURFACE_GROUPS = {
-    "TensorView": STABLE_TENSORVIEW_SURFACES,
-    "Tile": STABLE_TILE_SURFACES,
-    "dma_load/store": STABLE_HIGH_LEVEL_DMA_SURFACES,
-    "base_vector_ops": STABLE_BASE_VECTOR_SURFACES,
-    "tile_indexing_sugar": STABLE_TILE_INDEXING_SURFACES,
+    "TensorView": BASIC_TENSORVIEW_SURFACES,
+    "Tile": BASIC_TILE_SURFACES,
+    "base_vector_ops": BASIC_BASE_VECTOR_SURFACES,
+    "tile_indexing_sugar": BASIC_TILE_INDEXING_SURFACES,
     "strict_vecscope": ADVANCED_EXPLICIT_VECSCOPE_SURFACES,
     "raw_pointer_family": ADVANCED_RAW_POINTER_SURFACES,
     "low_level_dma_family": ADVANCED_LOW_LEVEL_DMA_SURFACES,
@@ -174,11 +171,10 @@ AUTHORING_TIER_SURFACE_GROUPS = {
 }
 
 AUTHORING_TIER_GROUP_TIERS = {
-    "TensorView": STABLE_TIER,
-    "Tile": STABLE_TIER,
-    "dma_load/store": STABLE_TIER,
-    "base_vector_ops": STABLE_TIER,
-    "tile_indexing_sugar": STABLE_TIER,
+    "TensorView": BASIC_TIER,
+    "Tile": BASIC_TIER,
+    "base_vector_ops": BASIC_TIER,
+    "tile_indexing_sugar": BASIC_TIER,
     "strict_vecscope": ADVANCED_TIER,
     "raw_pointer_family": ADVANCED_TIER,
     "low_level_dma_family": ADVANCED_TIER,
@@ -209,15 +205,15 @@ def get_pto_call_tier(call_name: str) -> str:
         call_name: Name of the PTO call (without 'pto.' prefix)
 
     Returns:
-        One of STABLE_TIER or ADVANCED_TIER
+        One of BASIC_TIER or ADVANCED_TIER
 
     Raises:
         KeyError: If the PTO call is not part of the supported DSL surface
     """
     if call_name in SUPPORTED_TOPLEVEL_PTO_CALLS:
-        return STABLE_TIER
+        return BASIC_TIER
     if call_name in SUPPORTED_VECSCOPE_PTO_CALLS:
-        return STABLE_TIER
+        return BASIC_TIER
     if call_name in ADVANCED_VECSCOPE_PTO_CALLS:
         return ADVANCED_TIER
     if call_name in ADVANCED_EXPR_PTO_CALLS:
@@ -229,6 +225,10 @@ def get_pto_call_tier(call_name: str) -> str:
 
 UNSUPPORTED_LANGUAGE_CONSTRUCTS = frozenset(
     {
+        "dma_load",
+        "dma_store",
+        "pto.dma_load",
+        "pto.dma_store",
         "pto.get_buf",
         "pto.rls_buf",
         "pto.dma_copy",
@@ -250,14 +250,12 @@ UNSUPPORTED_LANGUAGE_CONSTRUCTS = frozenset(
 # Tier mapping for language constructs (non-PTO-call features)
 # These are higher-level abstractions in the TileLang DSL
 LANGUAGE_CONSTRUCT_TIERS = {
-    # Stable tier constructs
-    "TensorView": STABLE_TIER,
-    "Tile": STABLE_TIER,
-    "dma_load": STABLE_TIER,
-    "dma_store": STABLE_TIER,
-    "PadMode": STABLE_TIER,
-    "tile[start:]": STABLE_TIER,
-    "tile[row, col:]": STABLE_TIER,
+    # Basic tier constructs
+    "TensorView": BASIC_TIER,
+    "Tile": BASIC_TIER,
+    "PadMode": BASIC_TIER,
+    "tile[start:]": BASIC_TIER,
+    "tile[row, col:]": BASIC_TIER,
     # Advanced tier constructs
     "ptr": ADVANCED_TIER,  # raw pointer constructor
     "UBRef": ADVANCED_TIER,  # UB reference type
@@ -287,7 +285,7 @@ def get_feature_tier(feature_name: str) -> str:
             - A qualified construct (e.g., 'tile.slice', 'pto.tile_from_ptr')
 
     Returns:
-        One of STABLE_TIER or ADVANCED_TIER
+        One of BASIC_TIER or ADVANCED_TIER
 
     Raises:
         KeyError: If the feature is documented but not part of the supported DSL surface
@@ -321,13 +319,13 @@ __all__ = [
     "ADVANCED_VECSCOPE_PTO_CALLS",
     "SUPPORTED_TOPLEVEL_PTO_CALLS",
     "SUPPORTED_VECSCOPE_PTO_CALLS",
-    "STABLE_TIER",
+    "BASIC_TIER",
     "ADVANCED_TIER",
-    "STABLE_TENSORVIEW_SURFACES",
-    "STABLE_TILE_SURFACES",
-    "STABLE_HIGH_LEVEL_DMA_SURFACES",
-    "STABLE_BASE_VECTOR_SURFACES",
-    "STABLE_TILE_INDEXING_SURFACES",
+    "BASIC_TENSORVIEW_SURFACES",
+    "BASIC_TILE_SURFACES",
+    "BASIC_HIGH_LEVEL_DMA_SURFACES",
+    "BASIC_BASE_VECTOR_SURFACES",
+    "BASIC_TILE_INDEXING_SURFACES",
     "ADVANCED_EXPLICIT_VECSCOPE_SURFACES",
     "ADVANCED_RAW_POINTER_SURFACES",
     "ADVANCED_LOW_LEVEL_DMA_SURFACES",

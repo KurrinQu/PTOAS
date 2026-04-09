@@ -6,13 +6,13 @@ The DSL is designed to generate MLIR function libraries rather than direct binar
 
 ## Language Tier
 
-The DSL surface is organized into multiple maturity tiers, reflecting the stability and intended use of different language features. As the design evolves, the stable authoring path is being explicitly separated from more advanced surfaces. Refer to the following table when reading this guide:
+The DSL surface is organized into multiple maturity tiers, reflecting the stability and intended use of different language features. As the design evolves, the basic authoring path is being explicitly separated from more advanced surfaces. Refer to the following table when reading this guide:
 
 | Surface Family | Tier | Usage Guidance |
 |----------------|------|----------------|
-| `TensorView` | `stable` | Default GM-facing data model for starter kernels. |
-| `Tile` | `stable` | Default UB-facing compute tile for starter kernels. |
-| Base vector ops (`make_mask`, `vlds`, `vsts`, `vadd`, `vmuls`, etc.) | `stable` | Default compute skeleton for starter kernels. |
+| `TensorView` | `basic` | Default GM-facing data model for starter kernels. |
+| `Tile` | `basic` | Default UB-facing compute tile for starter kernels. |
+| Base vector ops (`make_mask`, `vlds`, `vsts`, `vadd`, `vmuls`, etc.) | `basic` | Default compute skeleton for starter kernels. |
 | `strict_vecscope` | `advanced` | Explicit vector-scope management for expert authoring. |
 | Raw pointer family (`ptr(...)`, `castptr`, `addptr`, `GMPtr`, `UBPtr`, `UBRef`) | `advanced` | For expert authoring and migration; not required for Quick Start. |
 | DMA family (`copy_*`, `set_loop*_stride_*`, `set_loop_size_*`) | `advanced` | Direct DMA engine control for expert authoring. |
