@@ -1,0 +1,77 @@
+## Control Flow
+
+### Vector Scopes
+
+The TileLang DSL supports implicit vector scope inference, allowing developers to write vector operations directly without explicit `pto.vecscope()` blocks. The compiler automatically groups consecutive, data-dependent vector operations into implicit vector scopes during lowering.
+
+#### Implicit Scope Inference
+
+**Note:** The explicit `pto.vecscope()` construct is deprecated. Vector operations are automatically grouped into implicit scopes by the compiler's Scope Inference Pass.
+
+When you write vector operations like `pto.vlds`, `pto.vadd`, `pto.vsts` directly in your code, the compiler's **Scope Inference Pass** analyzes the control flow graph and automatically creates vector scopes:
+
+```python
+# No explicit vecscope needed - compiler infers scope boundaries
+vec = pto.vlds(outer_ptr, offset)
+result = pto.vadd(vec, vec, all_mask)
+pto.vsts(result, dst_ptr, offset, all_mask)
+```
+
+The compiler automatically groups these three operations into a single implicit vector scope because they form a data-dependent chain.
+
+**Scope boundary rules:**
+1. **Control flow boundaries**: Branches (`if`/`else`), loops (`for`/`while`), and function calls create implicit scope boundaries
+2. **Scalar operations**: Non-vector operations (e.g., scalar arithmetic, pointer arithmetic) create boundaries
+3. **Explicit strict_vecscope**: User-defined `strict_vecscope` blocks create hard boundaries
+
+#### Explicit Scope Boundaries with `strict_vecscope` [Advanced Tier]
+
+For precise control over scope boundaries, use explicit `strict_vecscope` blocks. These create hard boundaries that prevent the compiler from merging operations across the block boundary:
+
+```python
+with pto.strict_vecscope(src_ptr, dst_ptr, start, end) as (s, d, lb, ub):
+    # Operations inside this block are isolated from outside
+    # Compiler will not merge operations across this boundary
+    for i in range(lb, ub, 64):
+        vec = pto.vlds(s, i)
+        pto.vsts(vec, d, i, all_mask)
+```
+
+**Use cases for strict_vecscope:**
+- Performance optimization: Isolate critical vector computation regions
+- Debugging: Create explicit boundaries to isolate vector operations
+- Resource management: Control vector register allocation boundaries
+- Compatibility: Ensure deterministic scope placement for hardware constraints
+
+### Loops
+
+Counted loops use Python's `range` syntax:
+
+```python
+for i in range(lb, ub, step):
+    # Loop body
+    mask, rem = pto.make_mask(pto.f32, remaining)
+    # ...
+```
+
+Loop-carried state is automatically handled through variable updates within the loop.
+
+### Conditionals
+
+`if` statements support value merging:
+
+```python
+flag: pto.i1 = some_condition
+step: pto.i32 = 0
+
+if flag:
+    step = pto.i32(64)
+else:
+    step = pto.i32(128)
+
+# 'step' here is the merged result from both branches
+```
+
+Variables defined in only one branch are local to that branch.
+
+
