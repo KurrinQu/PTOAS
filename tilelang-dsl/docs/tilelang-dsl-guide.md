@@ -2778,6 +2778,31 @@ scaled = pto.vmuls(vec_f32, pto.f32(2.0), mask32)
 |--------------|------|-------------|
 | `result` | `VRegType` | Shifted values |
 
+#### `pto.vbr(value: ScalarType) -> VRegType`
+
+**Description**: Broadcast scalar to all vector lanes.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `value` | `ScalarType` | Scalar source |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Vector whose active lanes all carry `value` |
+
+**Constraints**:
+- Supported scalar types are `i8`, `i16`, `i32`, `f16`, `bf16`, `f32`.
+- For integer types, only the low bits of the scalar source are consumed according to the bit width (8, 16, or 32 bits).
+
+**Example**:
+```python
+# Broadcast scalar constant to vector
+zero_vec = pto.vbr(0.0)
+one_vec = pto.vbr(1.0)
+```
+
 ### Carry & Select Operations
 
 Operations with carry propagation and selection.
