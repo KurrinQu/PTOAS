@@ -9105,8 +9105,20 @@ PTO_DEFINE_UNARY_EFFECTS(TRecipOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TReluOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TFModOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TFModSOp, getSrcMutable(), getDstMutable())
-PTO_DEFINE_TERNARY_EFFECTS(TRemOp, getSrc0Mutable(), getSrc1Mutable(), getTmpMutable(), getDstMutable())
-PTO_DEFINE_BINARY_EFFECTS(TRemSOp, getSrcMutable(), getTmpMutable(), getDstMutable())
+void TRemOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getSrc0Mutable());
+  PTO_ADD_READ(getSrc1Mutable());
+  PTO_ADD_WRITE(getTmpMutable());
+  PTO_ADD_WRITE(getDstMutable());
+}
+
+void TRemSOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getSrcMutable());
+  PTO_ADD_WRITE(getTmpMutable());
+  PTO_ADD_WRITE(getDstMutable());
+}
 PTO_DEFINE_UNARY_EFFECTS(TRowExpandOp, getSrcMutable(), getDstMutable())
 
 void TRowExpandDivOp::getEffects(
@@ -9204,7 +9216,7 @@ void TRsqrtOp::getEffects(
   PTO_ADD_READ(getSrcMutable());
   auto tmp = getTmpMutable();
   if (!tmp.empty())
-    PTO_ADD_READ(tmp[0]);
+    PTO_ADD_WRITE(tmp[0]);
   PTO_ADD_WRITE(getDstMutable());
 }
 
