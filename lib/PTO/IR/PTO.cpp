@@ -1246,11 +1246,17 @@ LogicalResult mlir::pto::CastPtrOp::verify() {
   auto inputPtrType = dyn_cast<mlir::pto::PtrType>(inputType);
   auto resultPtrType = dyn_cast<mlir::pto::PtrType>(resultType);
   auto inputMemRefType = dyn_cast<BaseMemRefType>(inputType);
+  auto inputTensorViewType = dyn_cast<mlir::pto::TensorViewType>(inputType);
+  auto inputPartitionViewType =
+      dyn_cast<mlir::pto::PartitionTensorViewType>(inputType);
   bool inputIsInteger = isa<IntegerType>(inputType);
   bool resultIsInteger = isa<IntegerType>(resultType);
 
-  if (!inputPtrType && !inputMemRefType && !inputIsInteger)
-    return emitOpError("input must be an integer, memref, or !pto.ptr<...>");
+  if (!inputPtrType && !inputMemRefType && !inputTensorViewType &&
+      !inputPartitionViewType && !inputIsInteger)
+    return emitOpError(
+        "input must be an integer, memref, tensor_view, partition_tensor_view, "
+        "or !pto.ptr<...>");
   if (!resultPtrType && !resultIsInteger)
     return emitOpError("result must be an integer or !pto.ptr<...>");
 
@@ -1266,6 +1272,15 @@ LogicalResult mlir::pto::CastPtrOp::verify() {
     auto resultSpace = resultPtrType.getMemorySpace();
     if (memrefSpace && memrefSpace != resultSpace)
       return emitOpError("memref-to-ptr cast must stay within the same PTO memory space");
+  }
+
+  if ((inputTensorViewType || inputPartitionViewType) && resultIsInteger)
+    return emitOpError("tensor_view-to-integer cast is unsupported");
+
+  if ((inputTensorViewType || inputPartitionViewType) && resultPtrType &&
+      resultPtrType.getMemorySpace() !=
+          mlir::pto::AddressSpaceAttr::get(getContext(), mlir::pto::AddressSpace::GM)) {
+    return emitOpError("tensor_view-to-ptr cast must stay within gm memory space");
   }
 
   if (inputPtrType && resultPtrType &&

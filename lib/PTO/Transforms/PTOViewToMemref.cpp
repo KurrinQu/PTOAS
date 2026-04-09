@@ -442,6 +442,24 @@ static Type convertPTOTypeToMemRef(Type t) {
                            MemRefLayoutAttrInterface(), pty.getMemorySpace());
   }
 
+  // 1.5. 处理 !pto.tensor_view<...> / !pto.partition_tensor_view<...>
+  auto buildDynamicViewMemRef = [&](ArrayRef<int64_t> shape, Type elemTy) -> Type {
+    int64_t dyn = ShapedType::kDynamic;
+    SmallVector<int64_t> dynShape(shape.size(), dyn);
+    SmallVector<int64_t> dynStrides(shape.size(), dyn);
+    auto layout = StridedLayoutAttr::get(
+        t.getContext(), /*offset=*/dyn, /*strides=*/dynStrides);
+    auto gmSpace =
+        mlir::pto::AddressSpaceAttr::get(t.getContext(), mlir::pto::AddressSpace::GM);
+    return MemRefType::get(dynShape, elemTy, layout, gmSpace);
+  };
+
+  if (auto tvTy = dyn_cast<mlir::pto::TensorViewType>(t))
+    return buildDynamicViewMemRef(tvTy.getShape(), tvTy.getElementType());
+
+  if (auto partTy = dyn_cast<mlir::pto::PartitionTensorViewType>(t))
+    return buildDynamicViewMemRef(partTy.getShape(), partTy.getElementType());
+
   // 2. 处理 !pto.tile_buf<...>
   if (auto tbTy = dyn_cast<mlir::pto::TileBufType>(t)) {
     SmallVector<int64_t> strides;
@@ -946,13 +964,56 @@ struct PTOViewToMemrefPass
         Location loc = op.getLoc();
 
         Value view = op.getTensorView();
-        auto mrTy = dyn_cast<BaseMemRefType>(view.getType());
+        auto mrTy = dyn_cast<MemRefType>(view.getType());
         if (!mrTy)
           continue; // leave it to later passes if it hasn't been lowered yet
 
         Value dimIdx = op.getDimIndex();
         Value dim = rewriter.create<memref::DimOp>(loc, view, dimIdx);
         rewriter.replaceOp(op, dim);
+      }
+
+      // ------------------------------------------------------------------
+      // Stage 1.3: Lower pto.get_tensor_view_stride -> strided memref metadata
+      // ------------------------------------------------------------------
+      SmallVector<mlir::pto::GetTensorViewStrideOp, 8> tvStrides;
+      func.walk([&](mlir::pto::GetTensorViewStrideOp op) { tvStrides.push_back(op); });
+
+      for (auto op : tvStrides) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+        Location loc = op.getLoc();
+
+        Value view = op.getTensorView();
+        auto mrTy = dyn_cast<MemRefType>(view.getType());
+        if (!mrTy)
+          continue; // leave it to later passes if it hasn't been lowered yet
+
+        int64_t dimIndex = 0;
+        if (!getConstIndexValue(op.getDimIndex(), dimIndex)) {
+          op.emitError("get_tensor_view_stride currently expects a constant dim index");
+          signalPassFailure();
+          return;
+        }
+        if (dimIndex < 0 || dimIndex >= mrTy.getRank()) {
+          op.emitError("get_tensor_view_stride dim index is out of bounds");
+          signalPassFailure();
+          return;
+        }
+
+        SmallVector<int64_t> staticStrides;
+        int64_t offset = ShapedType::kDynamic;
+        if (succeeded(getStridesAndOffset(mrTy, staticStrides, offset)) &&
+            dimIndex < (int64_t)staticStrides.size() &&
+            staticStrides[dimIndex] != ShapedType::kDynamic) {
+          rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(
+              op, staticStrides[dimIndex]);
+          continue;
+        }
+
+        auto metadata =
+            rewriter.create<memref::ExtractStridedMetadataOp>(loc, view);
+        rewriter.replaceOp(op, metadata.getStrides()[dimIndex]);
       }
 
       // ------------------------------------------------------------------

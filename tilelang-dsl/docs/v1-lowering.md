@@ -62,7 +62,9 @@ Current lowering shape:
 
 The implemented shape profile is:
 - Tile physical shape must stay static
-- TensorView shape access may lower through hidden shape arguments
+- TensorView parameters stay in authoring IR as `!pto.tensor_view<...>`
+- TensorView shape access lowers through `pto.get_tensor_view_dim`
+- TensorView stride access lowers through `pto.get_tensor_view_stride`
 - TensorView slice bounds may be dynamic
 - TensorView slice spelling may omit leading axes; written axes are right-aligned
   onto the trailing physical axes of the 5D descriptor

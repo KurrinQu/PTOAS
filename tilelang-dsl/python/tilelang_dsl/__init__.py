@@ -32,6 +32,7 @@ from .types import (
     TypeVariable,
     WildcardType,
     bf16,
+    bytewidth,
     f16,
     f32,
     get_lanes,
@@ -81,5 +82,6 @@ __all__ = [
     "AnyInt",
     "AnyType",
     "AnyMask",
+    "bytewidth",
     "get_lanes",
 ]

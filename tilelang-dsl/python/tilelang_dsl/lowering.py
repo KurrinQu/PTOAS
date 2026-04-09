@@ -30,6 +30,7 @@ from .semantic import (
     SemanticReturnStmt,
     SemanticScalarType,
     SemanticSetFlagStmt,
+    SemanticShapeType,
     SemanticStmt,
     SemanticVecscopeStmt,
     SemanticStrictVecscopeStmt,
@@ -264,7 +265,7 @@ class _AuthoringRenderer:
                     self._collect_used_tile_buffers_from_expr(slice_expr.step, used)
             return
         if isinstance(expr, SemanticAttributeAccess):
-            if expr.attr not in {"shape", "valid_shape", "element_type"}:
+            if expr.attr not in {"shape", "valid_shape", "strides", "element_type"}:
                 self._collect_used_tile_buffers_from_expr(expr.base, used)
             return
         if isinstance(expr, SemanticSubscriptAccess):
@@ -395,7 +396,10 @@ class _AuthoringRenderer:
         indent: int,
     ) -> list[str]:
         if len(stmt.targets) != 1:
-            if isinstance(stmt.value, SemanticTupleExpr):
+            if isinstance(stmt.value, SemanticTupleExpr) or (
+                isinstance(stmt.value, SemanticAttributeAccess)
+                and isinstance(stmt.value.type, SemanticShapeType)
+            ):
                 return self._render_tuple_expr_assign(stmt, env, indent=indent)
             return self._render_multi_result_assign(stmt, env, indent=indent)
         target = stmt.targets[0]
@@ -420,13 +424,26 @@ class _AuthoringRenderer:
         *,
         indent: int,
     ) -> list[str]:
-        if not isinstance(stmt.value, SemanticTupleExpr):
-            raise NotImplementedError("tuple expression assignment expects a SemanticTupleExpr")
-        if len(stmt.targets) != len(stmt.value.elements):
+        if isinstance(stmt.value, SemanticTupleExpr):
+            elements = stmt.value.elements
+        elif isinstance(stmt.value, SemanticAttributeAccess) and isinstance(stmt.value.type, SemanticShapeType):
+            elements = tuple(
+                SemanticSubscriptAccess(
+                    base=stmt.value,
+                    index=SemanticLiteralExpr(value=axis, type=SemanticIndexType()),
+                    type=SemanticIndexType(),
+                )
+                for axis in range(stmt.value.type.rank)
+            )
+        else:
+            raise NotImplementedError(
+                "tuple expression assignment expects a SemanticTupleExpr or shape-like attribute value"
+            )
+        if len(stmt.targets) != len(elements):
             raise NotImplementedError("tuple expression assignment arity mismatch")
 
         lines: list[str] = []
-        for target, element in zip(stmt.targets, stmt.value.elements):
+        for target, element in zip(stmt.targets, elements):
             lowered = self._lower_expr(
                 element,
                 env,
@@ -1331,10 +1348,17 @@ class _AuthoringRenderer:
     ) -> _RenderedValue:
         dim_index = self._new_temp()
         axis_value = self._materialize_constant(axis, SemanticIndexType())
-        into.append(
-            self._indent(indent)
-            + f"{dim_index} = memref.dim {tensor_base.name}, {axis_value} : {self._render_type(tensor_base.type)}"
-        )
+        if isinstance(tensor_base.type, SemanticTensorViewType):
+            into.append(
+                self._indent(indent)
+                + f"{dim_index} = pto.get_tensor_view_dim {tensor_base.name}, {axis_value} : "
+                + f"{self._render_type(tensor_base.type)} -> index"
+            )
+        else:
+            into.append(
+                self._indent(indent)
+                + f"{dim_index} = memref.dim {tensor_base.name}, {axis_value} : {self._render_type(tensor_base.type)}"
+            )
         return _RenderedValue(name=dim_index, type=SemanticIndexType())
 
     def _materialize_dma_axis_extent(
@@ -1756,8 +1780,27 @@ class _AuthoringRenderer:
         if isinstance(expr, SemanticBinaryExpr):
             if into is None:
                 into = []
+            if expr.op in {"and", "or"}:
+                return self._lower_bool_expr(
+                    expr.op,
+                    expr.lhs,
+                    expr.rhs,
+                    env,
+                    indent=indent,
+                    desired_name=desired_name,
+                    into=into,
+                )
             lhs = self._lower_expr(expr.lhs, env, indent=indent, into=into)
             rhs = self._lower_expr(expr.rhs, env, indent=indent, into=into)
+            if expr.op in {"eq", "ne"}:
+                return self._lower_compare_expr(
+                    expr.op,
+                    lhs,
+                    rhs,
+                    indent=indent,
+                    desired_name=desired_name,
+                    into=into,
+                )
             result_name = desired_name or self._new_temp()
             into.append(
                 self._indent(indent)
@@ -1965,6 +2008,64 @@ class _AuthoringRenderer:
 
         raise NotImplementedError(f"unsupported pto call `{expr.name}` in lowering")
 
+    def _lower_compare_expr(
+        self,
+        op: str,
+        lhs: _RenderedValue,
+        rhs: _RenderedValue,
+        *,
+        indent: int,
+        desired_name: str | None,
+        into: list[str],
+    ) -> _RenderedValue:
+        result_name = desired_name or self._new_temp()
+        if isinstance(lhs.type, SemanticIndexType) and isinstance(rhs.type, SemanticIndexType):
+            predicate = "eq" if op == "eq" else "ne"
+        elif isinstance(lhs.type, SemanticScalarType) and lhs.type == rhs.type:
+            if lhs.type.dtype.name in {"f16", "bf16", "f32"}:
+                predicate = "oeq" if op == "eq" else "une"
+                cmp_name = "arith.cmpf"
+            else:
+                predicate = "eq" if op == "eq" else "ne"
+                cmp_name = "arith.cmpi"
+            into.append(
+                self._indent(indent)
+                + f"{result_name} = {cmp_name} {predicate}, {lhs.name}, {rhs.name} : "
+                f"{self._render_type(lhs.type)}"
+            )
+            return _RenderedValue(name=result_name, type=_I1_TYPE)
+        else:
+            raise NotImplementedError(
+                f"comparison lowering requires matching scalar types or index operands, got {lhs.type!r} and {rhs.type!r}"
+            )
+
+        into.append(
+            self._indent(indent)
+            + f"{result_name} = arith.cmpi {predicate}, {lhs.name}, {rhs.name} : {self._render_type(lhs.type)}"
+        )
+        return _RenderedValue(name=result_name, type=_I1_TYPE)
+
+    def _lower_bool_expr(
+        self,
+        op: str,
+        lhs_expr: SemanticExpr,
+        rhs_expr: SemanticExpr,
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+        desired_name: str | None,
+        into: list[str],
+    ) -> _RenderedValue:
+        lhs = self._lower_condition(lhs_expr, env, indent=indent, into=into)
+        rhs = self._lower_condition(rhs_expr, env, indent=indent, into=into)
+        result_name = desired_name or self._new_temp()
+        arith_op = "arith.andi" if op == "and" else "arith.ori"
+        into.append(
+            self._indent(indent)
+            + f"{result_name} = {arith_op} {lhs.name}, {rhs.name} : i1"
+        )
+        return _RenderedValue(name=result_name, type=_I1_TYPE)
+
     def _render_string_literal(self, expr: SemanticExpr) -> str:
         if isinstance(expr, SemanticLiteralExpr) and isinstance(expr.value, str):
             escaped = expr.value.replace("\\", "\\\\").replace('"', '\\"')
@@ -2148,6 +2249,32 @@ class _AuthoringRenderer:
                 into=into,
                 desired_name=desired_name,
             )
+        if (
+            into is not None
+            and isinstance(expr.base, SemanticAttributeAccess)
+            and expr.base.attr in {"shape", "valid_shape", "strides"}
+            and isinstance(expr.base.base, SemanticBindingRef)
+            and isinstance(expr.base.base.type, SemanticTensorViewType)
+            and isinstance(expr.index, SemanticLiteralExpr)
+            and isinstance(expr.index.value, int)
+        ):
+            tensor_value = env.get(
+                expr.base.base.binding.name,
+                _RenderedValue(expr.base.base.binding.ssa_name, expr.base.base.type),
+            )
+            result_name = desired_name or self._new_temp()
+            axis_value = self._materialize_constant(expr.index.value, SemanticIndexType())
+            op_name = (
+                "pto.get_tensor_view_stride"
+                if expr.base.attr == "strides"
+                else "pto.get_tensor_view_dim"
+            )
+            into.append(
+                self._indent(indent)
+                + f"{result_name} = {op_name} {tensor_value.name}, {axis_value} : "
+                + f"{self._render_type(tensor_value.type)} -> index"
+            )
+            return _RenderedValue(name=result_name, type=SemanticIndexType())
         value = self._extract_shape_subscript_value(expr, env)
         if isinstance(value, _RenderedValue):
             return value
@@ -2165,6 +2292,9 @@ class _AuthoringRenderer:
 
     def _tensor_shape_binding_name(self, tensor_name: str, axis: int) -> str:
         return f"__shape_{tensor_name}_{axis}"
+
+    def _tensor_stride_binding_name(self, tensor_name: str, axis: int) -> str:
+        return f"__stride_{tensor_name}_{axis}"
 
     def _materialize_tile_memref(
         self,
@@ -2226,15 +2356,15 @@ class _AuthoringRenderer:
         env: dict[str, _RenderedValue],
     ) -> int | _RenderedValue:
         if not isinstance(expr.base, SemanticAttributeAccess):
-            raise NotImplementedError("only shape indexing is supported in TileLang DSL v1 lowering")
-        if expr.base.attr not in {"shape", "valid_shape"}:
+            raise NotImplementedError("only shape/stride indexing is supported in TileLang DSL v1 lowering")
+        if expr.base.attr not in {"shape", "valid_shape", "strides"}:
             raise NotImplementedError(
-                "only `.shape[...]` and `.valid_shape[...]` indexing are supported in TileLang DSL v1 lowering"
+                "only `.shape[...]`, `.valid_shape[...]`, and `.strides[...]` indexing are supported in TileLang DSL v1 lowering"
             )
         if not isinstance(expr.index, SemanticLiteralExpr) or not isinstance(expr.index.value, int):
-            raise NotImplementedError("shape indices must be integer literals in TileLang DSL v1 lowering")
+            raise NotImplementedError("shape/stride indices must be integer literals in TileLang DSL v1 lowering")
         if not isinstance(expr.base.base, SemanticBindingRef):
-            raise NotImplementedError("shape indexing expects a bound TensorView or Tile value")
+            raise NotImplementedError("shape/stride indexing expects a bound TensorView or Tile value")
 
         base_binding = expr.base.base.binding
         base_value = env.get(base_binding.name, _RenderedValue(base_binding.ssa_name, base_binding.type))
@@ -2254,15 +2384,18 @@ class _AuthoringRenderer:
             return _RenderedValue(name=base_binding.ssa_name, type=base_type)
 
         if isinstance(base_type, SemanticTensorViewType):
-            hidden_name = self._tensor_shape_binding_name(base_binding.name, index)
+            if expr.base.attr == "strides":
+                hidden_name = self._tensor_stride_binding_name(base_binding.name, index)
+            else:
+                hidden_name = self._tensor_shape_binding_name(base_binding.name, index)
             hidden_value = env.get(hidden_name)
             if hidden_value is None:
                 raise NotImplementedError(
-                    f"missing TensorView shape binding for '{base_binding.name}.{expr.base.attr}[{index}]'"
+                    f"missing TensorView {expr.base.attr} binding for '{base_binding.name}.{expr.base.attr}[{index}]'"
                 )
             return hidden_value
 
-        raise NotImplementedError("shape indexing expects a Tile or TensorView operand")
+        raise NotImplementedError("shape/stride indexing expects a Tile or TensorView operand")
 
     def _format_shape_tuple(self, shape: tuple[int | None, ...]) -> str:
         return "(" + ", ".join("?" if dim is None else str(dim) for dim in shape) + ")"
@@ -2330,10 +2463,9 @@ class _AuthoringRenderer:
         if isinstance(ty, SemanticPtrType):
             return f"!pto.ptr<{ty.element_dtype.name}, {ty.memory_space}>"
         if isinstance(ty, SemanticTensorViewType):
-            return self._render_memref_type(
+            return self._render_tensor_view_type(
                 element_dtype=ty.element_dtype.name,
                 shape=("?",) * ty.rank,
-                memory_space="gm",
             )
         if isinstance(ty, SemanticTileType):
             return self._render_tile_buf_type(ty)
@@ -2367,6 +2499,15 @@ class _AuthoringRenderer:
     ) -> str:
         dims = "x".join(str(dim) for dim in shape)
         return f"memref<{dims}x{element_dtype}, {self._render_memref_memory_space(memory_space)}>"
+
+    def _render_tensor_view_type(
+        self,
+        *,
+        element_dtype: str,
+        shape: tuple[int | str, ...],
+    ) -> str:
+        dims = "x".join(str(dim) for dim in shape)
+        return f"!pto.tensor_view<{dims}x{element_dtype}>"
 
     def _render_memref_memory_space(self, memory_space: str) -> str:
         if memory_space == "gm":

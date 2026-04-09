@@ -422,6 +422,43 @@ This op is primarily defined on `!pto.tensor_view`.
 
 ---
 
+##### `pto.get_tensor_view_stride` - Get Tensor View Dimension Stride
+
+**Summary:** Returns the logical stride of a given dimension of a tensor view.
+
+**Semantics:**
+
+```mlir
+stride = get_tensor_view_stride(tv_or_mr, dim_index)
+```
+
+This op is defined on `!pto.tensor_view`. During internal lowering, the same
+query may temporarily appear on the memref form lowered from the tensor view.
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `tensor_view` | `!pto.tensor_view<...>` or `memref<...>` | Logical tensor view or its lowered memref form |
+| `dim_index` | `index` | Dimension index (0-based) |
+
+**Results:** `index` — the logical stride of the requested dimension, measured
+in elements rather than bytes.
+
+**Notes:**
+
+- This op is the IR counterpart of the DSL-side `TensorView.strides` metadata access.
+- After lowering to memref, static strides may be folded into constants, while dynamic strides are derived from memref metadata.
+
+**Basic Example:**
+
+```mlir
+%s0 = pto.get_tensor_view_stride %tv, %c0 : !pto.tensor_view<?x?xf32> -> index
+%s1 = pto.get_tensor_view_stride %tv, %c1 : !pto.tensor_view<?x?xf32> -> index
+```
+
+---
+
 ##### `pto.partition_view` - Partition Tensor View
 
 **Summary:** Creates a logical window on a tensor_view using offsets and sizes, producing a `partition_tensor_view`.

@@ -228,6 +228,23 @@ class _KernelBodyValidator(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+            if node.func.attr == "as_ptr":
+                if node.keywords:
+                    raise self.source_info.error(
+                        node,
+                        "`as_ptr` does not support keyword arguments in TileLang DSL v1",
+                    )
+                if node.args:
+                    raise self.source_info.error(
+                        node,
+                        "`as_ptr()` does not accept positional arguments in TileLang DSL v1",
+                    )
+                if self.advanced_enabled:
+                    return
+                raise self.source_info.error(
+                    node,
+                    "surface `as_ptr` requires advanced=True in TileLang DSL v1",
+                )
             if node.func.value.id == "pto" and node.func.attr == "tpl":
                 self._validate_call_keywords(node)
                 return
@@ -373,6 +390,144 @@ class KernelParameterSpec:
 
 
 @dataclass(frozen=True)
+class _ConstraintValue:
+    value: Any | None
+
+    def _coerce_other(self, other: Any) -> Any | None:
+        if isinstance(other, _ConstraintValue):
+            return other.value
+        return other
+
+    def _arith(self, other: Any, fn: Callable[[Any, Any], Any]) -> "_ConstraintValue":
+        other_value = self._coerce_other(other)
+        if self.value is None or other_value is None:
+            return _ConstraintValue(None)
+        return _ConstraintValue(fn(self.value, other_value))
+
+    def _compare(self, other: Any, fn: Callable[[Any, Any], bool]) -> bool:
+        other_value = self._coerce_other(other)
+        if self.value is None or other_value is None:
+            return True
+        return fn(self.value, other_value)
+
+    def __add__(self, other: Any) -> "_ConstraintValue":
+        return self._arith(other, lambda lhs, rhs: lhs + rhs)
+
+    def __radd__(self, other: Any) -> "_ConstraintValue":
+        return _ConstraintValue(self._coerce_other(other)).__add__(self)
+
+    def __sub__(self, other: Any) -> "_ConstraintValue":
+        return self._arith(other, lambda lhs, rhs: lhs - rhs)
+
+    def __rsub__(self, other: Any) -> "_ConstraintValue":
+        return _ConstraintValue(self._coerce_other(other)).__sub__(self)
+
+    def __mul__(self, other: Any) -> "_ConstraintValue":
+        return self._arith(other, lambda lhs, rhs: lhs * rhs)
+
+    def __rmul__(self, other: Any) -> "_ConstraintValue":
+        return _ConstraintValue(self._coerce_other(other)).__mul__(self)
+
+    def __floordiv__(self, other: Any) -> "_ConstraintValue":
+        return self._arith(other, lambda lhs, rhs: lhs // rhs)
+
+    def __rfloordiv__(self, other: Any) -> "_ConstraintValue":
+        return _ConstraintValue(self._coerce_other(other)).__floordiv__(self)
+
+    def __eq__(self, other: Any) -> bool:  # type: ignore[override]
+        return self._compare(other, lambda lhs, rhs: lhs == rhs)
+
+    def __ne__(self, other: Any) -> bool:  # type: ignore[override]
+        return self._compare(other, lambda lhs, rhs: lhs != rhs)
+
+    def __le__(self, other: Any) -> bool:
+        return self._compare(other, lambda lhs, rhs: lhs <= rhs)
+
+    def __lt__(self, other: Any) -> bool:
+        return self._compare(other, lambda lhs, rhs: lhs < rhs)
+
+    def __ge__(self, other: Any) -> bool:
+        return self._compare(other, lambda lhs, rhs: lhs >= rhs)
+
+    def __gt__(self, other: Any) -> bool:
+        return self._compare(other, lambda lhs, rhs: lhs > rhs)
+
+    def __bool__(self) -> bool:
+        if self.value is None:
+            return True
+        return bool(self.value)
+
+    def __repr__(self) -> str:
+        return "?" if self.value is None else repr(self.value)
+
+
+class _ConstraintSequenceView:
+    def __init__(self, values: tuple[Any | None, ...]):
+        self._values = tuple(_ConstraintValue(value) for value in values)
+
+    def __getitem__(self, index: int) -> _ConstraintValue:
+        if -len(self._values) <= index < len(self._values):
+            return self._values[index]
+        return _ConstraintValue(None)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __repr__(self) -> str:
+        return repr(tuple(self._values))
+
+
+class _ConstraintParamView:
+    def __init__(self, name: str, attrs: Mapping[str, Any]):
+        self._name = name
+        self._attrs = dict(attrs)
+
+    def _sequence_attr(self, attr_name: str) -> _ConstraintSequenceView:
+        values = self._attrs.get(attr_name)
+        if values is None:
+            rank = self._attrs.get("rank")
+            if isinstance(rank, int) and rank > 0:
+                values = (None,) * rank
+            else:
+                values = ()
+        return _ConstraintSequenceView(tuple(values))
+
+    @property
+    def shape(self) -> _ConstraintSequenceView:
+        return self._sequence_attr("shape")
+
+    @property
+    def valid_shape(self) -> _ConstraintSequenceView:
+        return self._sequence_attr("valid_shape")
+
+    @property
+    def strides(self) -> _ConstraintSequenceView:
+        return self._sequence_attr("strides")
+
+    @property
+    def rank(self) -> _ConstraintValue:
+        return _ConstraintValue(self._attrs.get("rank"))
+
+    @property
+    def dtype(self) -> Any:
+        return self._attrs.get("dtype")
+
+    @property
+    def memory_space(self) -> Any:
+        return self._attrs.get("memory_space")
+
+    @property
+    def config(self) -> Any:
+        return self._attrs.get("config")
+
+    def __repr__(self) -> str:
+        return f"{self._name}<{self._attrs!r}>"
+
+
+@dataclass(frozen=True)
 class VKernelDescriptor:
     """Descriptor returned by `@tilelang_dsl.vkernel`."""
 
@@ -392,6 +547,7 @@ class VKernelDescriptor:
     _selected_op: str | None = None
     _selected_dtype_signature: tuple[ScalarType, ...] | None = None
     _parameters: tuple[BoundKernelParameter, ...] | None = field(default=None, repr=False)
+    _constraint_context_attrs: tuple[tuple[str, Any], ...] = field(default=(), repr=False)
 
     @property
     def py_fn(self) -> Callable[..., Any]:
@@ -459,8 +615,41 @@ class VKernelDescriptor:
     def specializations_by_name(self) -> dict[str, TileSpecialization]:
         return dict(self.specializations)
 
+    @property
+    def constraint_context_attrs(self) -> dict[str, Any]:
+        return dict(self._constraint_context_attrs)
+
     def _tile_parameter_names(self) -> tuple[str, ...]:
         return tuple(param.name for param in self._parameter_specs if param.kind == "tile")
+
+    def _bind_constraint_context_attrs(
+        self,
+        context_attrs: Mapping[str, Any],
+    ) -> "VKernelDescriptor":
+        frozen_context_attrs = tuple(
+            sorted(dict(context_attrs).items(), key=lambda item: item[0])
+        )
+        if self._constraint_context_attrs == frozen_context_attrs:
+            return self
+        return VKernelDescriptor(
+            target=self.target,
+            match_ops=self.match_ops,
+            dtypes=self.dtypes,
+            name=self.name,
+            verify_enabled=self.verify_enabled,
+            advanced_enabled=self.advanced_enabled,
+            _parameter_specs=self._parameter_specs,
+            _py_fn=self._py_fn,
+            _source_info=self._source_info,
+            specializations=self.specializations,
+            constraints=self.constraints,
+            priority=self.priority,
+            _templates=self._templates,
+            _selected_op=self._selected_op,
+            _selected_dtype_signature=self._selected_dtype_signature,
+            _parameters=self._parameters,
+            _constraint_context_attrs=frozen_context_attrs,
+        )
 
     def _bind_selected_dtype_signature(
         self,
@@ -484,6 +673,7 @@ class VKernelDescriptor:
             _selected_op=self._selected_op,
             _selected_dtype_signature=dtype_signature,
             _parameters=bound_parameters,
+            _constraint_context_attrs=self._constraint_context_attrs,
         )
 
     def _bind_selected_op(self, op: str) -> "VKernelDescriptor":
@@ -511,6 +701,7 @@ class VKernelDescriptor:
             _selected_op=normalized_op,
             _selected_dtype_signature=self._selected_dtype_signature,
             _parameters=self._parameters,
+            _constraint_context_attrs=self._constraint_context_attrs,
         )
 
     def specialize(self, **bindings: Any) -> "VKernelDescriptor":
@@ -551,6 +742,7 @@ class VKernelDescriptor:
             _selected_dtype_signature=self._selected_dtype_signature,
             _parameters=self._parameters,
             _py_fn=self._py_fn,
+            _constraint_context_attrs=self._constraint_context_attrs,
         )
 
     def _require_specialized_tiles(self, api_name: str) -> None:
@@ -577,6 +769,92 @@ class VKernelDescriptor:
                 "before materialization"
             )
 
+    def _constraint_context_for_evaluation(
+        self,
+        extra_context_attrs: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        attrs = dict(self._constraint_context_attrs)
+        if extra_context_attrs is not None:
+            attrs.update(extra_context_attrs)
+        attrs.setdefault("target", self.target)
+        if self._selected_op is not None:
+            attrs.setdefault("op", self._selected_op)
+            attrs.setdefault("selected_op", self._selected_op)
+
+        for spec in self._parameter_specs:
+            existing = attrs.get(spec.name)
+            param_attrs = {} if not isinstance(existing, dict) else dict(existing)
+            param_attrs.setdefault("kind", spec.kind)
+            attrs.setdefault(f"{spec.name}_kind", spec.kind)
+            if f"{spec.name}_shape" in attrs:
+                param_attrs.setdefault("shape", tuple(attrs[f"{spec.name}_shape"]))
+            if f"{spec.name}_valid_shape" in attrs:
+                param_attrs.setdefault("valid_shape", tuple(attrs[f"{spec.name}_valid_shape"]))
+            if f"{spec.name}_strides" in attrs:
+                param_attrs.setdefault("strides", tuple(attrs[f"{spec.name}_strides"]))
+            if f"{spec.name}_rank" in attrs:
+                param_attrs.setdefault("rank", attrs[f"{spec.name}_rank"])
+            if f"{spec.name}_memory_space" in attrs:
+                param_attrs.setdefault("memory_space", attrs[f"{spec.name}_memory_space"])
+
+            if spec.kind == "tensorview":
+                # TensorView authoring form is normalized to 5D in the current DSL spec.
+                param_attrs.setdefault("rank", 5)
+                param_attrs.setdefault("memory_space", "gm")
+                attrs.setdefault(f"{spec.name}_rank", 5)
+                attrs.setdefault(f"{spec.name}_memory_space", "gm")
+            attrs[spec.name] = param_attrs
+
+        if self._parameters is not None:
+            for param in self._parameters:
+                param_attrs = attrs.get(param.name)
+                if not isinstance(param_attrs, dict):
+                    param_attrs = {"kind": param.kind}
+                param_attrs.setdefault("dtype", param.dtype)
+                attrs[param.name] = param_attrs
+                attrs.setdefault(f"{param.name}_dtype", param.dtype)
+
+        for name, spec in self.specializations_by_name.items():
+            effective_valid_shape = spec.shape if spec.valid_shape is None else spec.valid_shape
+            param_attrs = attrs.get(name)
+            if not isinstance(param_attrs, dict):
+                param_attrs = {"kind": "tile"}
+            config_mapping = None if spec.config is None else dict(spec.config.fields)
+            param_attrs.update(
+                {
+                    "shape": spec.shape,
+                    "rank": len(spec.shape),
+                    "memory_space": spec.memory_space.value,
+                    "valid_shape": effective_valid_shape,
+                    "config": config_mapping,
+                }
+            )
+            attrs[name] = param_attrs
+            attrs[f"{name}_shape"] = spec.shape
+            attrs[f"{name}_rank"] = len(spec.shape)
+            attrs[f"{name}_memory_space"] = spec.memory_space.value
+            attrs[f"{name}_valid_shape"] = effective_valid_shape
+            if len(spec.shape) == 1:
+                attrs[f"{name}_extent"] = spec.shape[0]
+                attrs[f"{name}_valid_extent"] = effective_valid_shape[0]
+            elif len(spec.shape) == 2:
+                attrs[f"{name}_rows"] = spec.shape[0]
+                attrs[f"{name}_cols"] = spec.shape[1]
+                attrs[f"{name}_valid_rows"] = effective_valid_shape[0]
+                attrs[f"{name}_valid_cols"] = effective_valid_shape[1]
+        return attrs
+
+    def _validate_materialization_constraints(self, api_name: str) -> None:
+        if not self.constraints:
+            return
+        context_attrs = self._constraint_context_for_evaluation()
+        if _evaluate_constraints(self, context_attrs):
+            return
+        raise LookupError(
+            f"{api_name}() constraint evaluation rejected kernel {self.name!r} "
+            "for the current specialization/context attributes"
+        )
+
     def _build_authoring_module(self):
         self.parameters
         frontend_kernel = build_frontend_kernel_node(self)
@@ -586,6 +864,7 @@ class VKernelDescriptor:
     def mlir_text(self) -> str:
         self._require_materialization_binding("mlir_text")
         self._require_specialized_tiles("mlir_text")
+        self._validate_materialization_constraints("mlir_text")
         return self._build_authoring_module().render()
 
     def mlir_module(self) -> "MaterializedMLIRModule":
@@ -596,11 +875,13 @@ class VKernelDescriptor:
     def verify(self, *, ptoas_bin: str | Path | None = None) -> "VerificationResult":
         self._require_materialization_binding("verify")
         self._require_specialized_tiles("verify")
+        self._validate_materialization_constraints("verify")
         return self.mlir_module().verify(ptoas_bin=ptoas_bin)
 
     def emit(self, path: str | Path) -> None:
         self._require_materialization_binding("emit")
         self._require_specialized_tiles("emit")
+        self._validate_materialization_constraints("emit")
         output_path = Path(path)
         output_path.write_text(self.mlir_text(), encoding="utf-8")
 
@@ -1361,6 +1642,7 @@ def _build_descriptor(
         _selected_op=selected_op,
         _selected_dtype_signature=selected_dtype_signature,
         _parameters=bound_parameters,
+        _constraint_context_attrs=(),
     )
 
 
@@ -1368,9 +1650,44 @@ def _evaluate_constraints(
     descriptor: VKernelDescriptor,
     context_attrs: Mapping[str, Any],
 ) -> bool:
+    named_context: dict[str, Any] = {
+        "target": context_attrs.get("target"),
+        "op": context_attrs.get("op"),
+        "selected_op": context_attrs.get("selected_op"),
+    }
+    for spec in descriptor._parameter_specs:
+        param_attrs = context_attrs.get(spec.name)
+        if not isinstance(param_attrs, Mapping):
+            param_attrs = {}
+        named_context[spec.name] = _ConstraintParamView(spec.name, param_attrs)
+
     for index, constraint in enumerate(descriptor.constraints):
         try:
-            result = constraint(context_attrs)
+            signature = inspect.signature(constraint)
+            parameters = list(signature.parameters.values())
+            kwargs: dict[str, Any] = {}
+            for parameter in parameters:
+                if parameter.kind == inspect.Parameter.VAR_POSITIONAL:
+                    raise TypeError("constraint callables with *args are not supported")
+                if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+                    for key, value in named_context.items():
+                        kwargs.setdefault(key, value)
+                    for key, value in context_attrs.items():
+                        kwargs.setdefault(key, value)
+                    continue
+                if parameter.name in named_context:
+                    kwargs[parameter.name] = named_context[parameter.name]
+                    continue
+                if parameter.name in context_attrs:
+                    kwargs[parameter.name] = context_attrs[parameter.name]
+                    continue
+                if parameter.default is not inspect._empty:
+                    continue
+                raise TypeError(
+                    f"constraint {index} for kernel {descriptor.name!r} requires unsupported parameter "
+                    f"{parameter.name!r}"
+                )
+            result = constraint(**kwargs)
         except Exception as exc:
             raise TypeError(
                 f"constraint {index} for kernel {descriptor.name!r} raised {type(exc).__name__}: {exc}"
@@ -1455,7 +1772,10 @@ def select_kernel(
     constrained_candidates = [
         descriptor
         for descriptor in type_matched_candidates
-        if _evaluate_constraints(descriptor, normalized_context_attrs)
+        if _evaluate_constraints(
+            descriptor,
+            descriptor._constraint_context_for_evaluation(normalized_context_attrs),
+        )
     ]
     if not constrained_candidates:
         raise LookupError(
@@ -1476,7 +1796,7 @@ def select_kernel(
             f"target={normalized_target!r}, op={normalized_op!r}, operand_types={normalized_operand_types!r}: "
             f"{winner_set}"
         )
-    return winners[0]
+    return winners[0]._bind_constraint_context_attrs(normalized_context_attrs)
 
 
 def vkernel(

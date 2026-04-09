@@ -17,6 +17,8 @@ ADVANCED_TIER = "advanced"
 
 SUPPORTED_TOPLEVEL_PTO_CALLS = frozenset(
     {
+        "bytewidth",
+        "get_lanes",
         "set_flag",
         "wait_flag",
         "pipe_barrier",
@@ -145,6 +147,7 @@ ADVANCED_TILE_HELPER_SURFACES = frozenset(
         "tile.reshape",
         "tile.to_ubref",
         "tile.as_ptr",
+        "tensorview.as_ptr",
         "tile.to_memref",
         "pto.tile_from_ptr",
         "pto.tile_from_memref",
@@ -267,6 +270,7 @@ LANGUAGE_CONSTRUCT_TIERS = {
     "tile.reshape": ADVANCED_TIER,
     "tile.to_ubref": ADVANCED_TIER,
     "tile.as_ptr": ADVANCED_TIER,
+    "tensorview.as_ptr": ADVANCED_TIER,
     "tile.to_memref": ADVANCED_TIER,
     "pto.tile_from_ptr": ADVANCED_TIER,
     "pto.tile_from_memref": ADVANCED_TIER,

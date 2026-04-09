@@ -89,7 +89,7 @@ the concrete specialization:
         (pto.AnyFloat, pto.AnyFloat),
         (pto.AnyInt, pto.AnyInt),
     ],
-    constraints=[lambda attrs: attrs.get("enabled", True)],
+    constraints=[lambda enabled=True: enabled],
     priority=10,
 )
 def kernel(inp: pto.TensorView, out: pto.Tile):

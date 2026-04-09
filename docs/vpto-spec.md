@@ -322,6 +322,48 @@ Typical examples:
 - `!pto.ptr<f32, ub>`
 - `!pto.ptr<bf16, gm>`
 
+### Tensor View Metadata Query Ops
+
+VPTO source programs may keep GM tensor operands in logical `!pto.tensor_view`
+form instead of exposing them as raw memrefs. Two metadata-query ops are used to
+read shape and stride information from that logical view:
+
+#### `pto.get_tensor_view_dim`
+
+- **syntax:** `%dim = pto.get_tensor_view_dim %tv, %idx : !pto.tensor_view<...> -> index`
+- **semantics:** Returns the runtime extent of dimension `%idx` from the logical tensor view.
+
+```c
+dim = tv.shape[idx];
+```
+
+Example:
+
+```mlir
+%d2 = pto.get_tensor_view_dim %src, %c2 : !pto.tensor_view<?x?x?x?x?xf32> -> index
+```
+
+#### `pto.get_tensor_view_stride`
+
+- **syntax:** `%stride = pto.get_tensor_view_stride %tv, %idx : !pto.tensor_view<...> -> index`
+- **semantics:** Returns the logical stride of dimension `%idx`, measured in elements rather than bytes.
+
+```c
+stride = tv.strides[idx];
+```
+
+Example:
+
+```mlir
+%s2 = pto.get_tensor_view_stride %src, %c2 : !pto.tensor_view<?x?x?x?x?xf32> -> index
+```
+
+Notes:
+
+- These ops are metadata queries only and do not trigger any hardware pipeline activity.
+- In authoring-form IR, they operate on `!pto.tensor_view`.
+- During compiler-internal lowering, they may be rewritten to equivalent memref metadata queries such as `memref.dim` and extracted strided metadata.
+
 ### Pointer Operations
 
 #### `pto.castptr`

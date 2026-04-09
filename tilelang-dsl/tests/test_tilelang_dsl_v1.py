@@ -29,6 +29,7 @@ from tilelang_dsl.frontend_ast import (
 from tilelang_dsl.lowering import AuthoringModule, lower_semantic_kernel
 from tilelang_dsl.semantic import (
     SemanticAssignStmt,
+    SemanticBinaryExpr,
     SemanticCallExpr,
     SemanticDmaConfigStmt,
     SemanticForStmt,
@@ -62,6 +63,7 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertTrue(hasattr(pto, "TileSpecialization"))
         self.assertTrue(hasattr(pto, "PointerType"))
         self.assertTrue(hasattr(pto, "ptr"))
+        self.assertTrue(hasattr(pto, "bytewidth"))
         self.assertTrue(hasattr(pto, "get_lanes"))
         self.assertTrue(hasattr(pto, "PAT"))
         self.assertTrue(hasattr(pto, "PadMode"))
@@ -96,6 +98,8 @@ class TileLangDSLSupportMatrixTests(unittest.TestCase):
         self.assertEqual(get_feature_tier("pto.vadd"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.vmuls"), BASIC_TIER)
         self.assertEqual(get_feature_tier("PadMode"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.bytewidth"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.get_lanes"), BASIC_TIER)
         self.assertEqual(get_feature_tier("tile[start:]"), BASIC_TIER)
         self.assertEqual(get_feature_tier("tile[row, col:]"), BASIC_TIER)
 
@@ -306,8 +310,8 @@ class TileLangDSLMatcherEntryTests(unittest.TestCase):
         self.assertIn("requires pto.select_kernel(...)", str(ctx.exception))
 
     def test_select_kernel_evaluates_constraints_before_priority(self) -> None:
-        def requires_large_batch(context_attrs):
-            return context_attrs.get("batch", 0) >= 1024
+        def requires_large_batch(batch=0):
+            return batch >= 1024
 
         @pto.vkernel(
             op="matcher_constraint_priority_unique",
@@ -376,7 +380,7 @@ class TileLangDSLMatcherEntryTests(unittest.TestCase):
         @pto.vkernel(
             op="matcher_constraint_empty_unique",
             dtypes=[(pto.AnyFloat, pto.AnyFloat)],
-            constraints=[lambda context_attrs: context_attrs.get("enabled", False)],
+            constraints=[lambda enabled=False: enabled],
             priority=1,
         )
         def kernel(inp: pto.TensorView, out: pto.TensorView):
@@ -390,6 +394,77 @@ class TileLangDSLMatcherEntryTests(unittest.TestCase):
                 context_attrs={"enabled": False},
             )
         self.assertIn("after constraint evaluation", str(ctx.exception))
+
+    def test_materialization_constraints_can_see_specializations_and_selected_context_attrs(self) -> None:
+        @pto.vkernel(
+            op="matcher_materialization_constraint_unique",
+            dtypes=[(pto.f32, pto.f32)],
+            constraints=[
+                lambda src: src.rank == 5,
+                lambda dst, expected_rows=None: dst.shape[0] == expected_rows,
+                lambda src, dst: dst.valid_shape[1] <= src.shape[4],
+            ],
+        )
+        def kernel(src: pto.TensorView, dst: pto.Tile):
+            return None
+
+        selected = pto.select_kernel(
+            "a5",
+            "matcher_materialization_constraint_unique",
+            (pto.f32, pto.f32),
+            context_attrs={"expected_rows": 8, "src_shape": (2, 2, 1, 1, 16), "src_strides": (32, 16, 16, 16, 1)},
+        ).specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB, valid_shape=(4, 16)),
+        )
+        text = selected.mlir_text()
+        self.assertIn("!pto.tensor_view<?x?x?x?x?xf32>", text)
+        self.assertIn("!pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16", text)
+
+        rejected = pto.select_kernel(
+            "a5",
+            "matcher_materialization_constraint_unique",
+            (pto.f32, pto.f32),
+            context_attrs={"expected_rows": 8, "src_shape": (2, 2, 1, 1, 8), "src_strides": (16, 8, 8, 8, 1)},
+        ).specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB, valid_shape=(4, 16)),
+        )
+        with self.assertRaises(LookupError) as ctx:
+            rejected.mlir_text()
+        self.assertIn("constraint evaluation rejected", str(ctx.exception))
+
+    def test_constraints_support_parameter_style_shape_and_stride_access(self) -> None:
+        @pto.vkernel(
+            op="matcher_parameter_style_constraints_unique",
+            dtypes=[(pto.f32, pto.f32)],
+            constraints=[
+                lambda src, dst: src.rank == 5,
+                lambda src: src.strides[4] == 1,
+                lambda src, dst: src.shape[0] <= dst.shape[0],
+            ],
+        )
+        def kernel(src: pto.TensorView, dst: pto.Tile):
+            return None
+
+        selected = pto.select_kernel(
+            "a5",
+            "matcher_parameter_style_constraints_unique",
+            (pto.f32, pto.f32),
+            context_attrs={"src_shape": (4, 1, 1, 1, 16), "src_strides": (16, 16, 16, 16, 1)},
+        ).specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        )
+        self.assertIn("!pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16", selected.mlir_text())
+
+        rejected = pto.select_kernel(
+            "a5",
+            "matcher_parameter_style_constraints_unique",
+            (pto.f32, pto.f32),
+            context_attrs={"src_shape": (16, 1, 1, 1, 16), "src_strides": (16, 16, 16, 16, 1)},
+        ).specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        )
+        with self.assertRaises(LookupError):
+            rejected.mlir_text()
 
     def test_select_kernel_binds_selected_op_for_multi_op_descriptor(self) -> None:
         @pto.vkernel(
@@ -694,7 +769,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("// tilelang.specialize tile shape=(16, 32) memory_space=ub", text)
         self.assertIn('module attributes {pto.target_arch = "a5"} {', text)
         self.assertIn(
-            "func.func @kernel(%arg0: memref<?x?xf32, #pto.address_space<gm>>, %arg1: !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) attributes { pto.tilelang.instance } {",
+            "func.func @kernel(%arg0: !pto.tensor_view<?x?x?x?x?xf32>, %arg1: !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) attributes { pto.tilelang.instance } {",
             text,
         )
         module = specialized.mlir_module()
@@ -765,7 +840,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("// tilelang.target = a5", text)
         self.assertIn("// tilelang.op = multi_op_materialize_sub_unique", text)
         self.assertIn(
-            'func.func @kernel(%arg0: memref<?x?xf32, #pto.address_space<gm>>, %arg1: memref<?x?xf32, #pto.address_space<gm>>) attributes { pto.tilelang.instance } {',
+            'func.func @kernel(%arg0: !pto.tensor_view<?x?x?x?x?xf32>, %arg1: !pto.tensor_view<?x?x?x?x?xf32>) attributes { pto.tilelang.instance } {',
             text,
         )
 
@@ -1176,6 +1251,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
 
         semantic_kernel = analyze_frontend_kernel(frontend_kernel)
         self.assertIsInstance(semantic_kernel.parameters[0].type, SemanticTensorViewType)
+        self.assertEqual(semantic_kernel.parameters[0].type.rank, 5)
         self.assertIsInstance(semantic_kernel.parameters[1].type, SemanticTileType)
         self.assertEqual(semantic_kernel.parameters[1].type.shape, (8, 16))
         self.assertIsInstance(semantic_kernel.parameters[2].type, SemanticScalarType)
@@ -1217,6 +1293,90 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("scf.for %lane_", text)
         self.assertIn("to %ub_6 step %vec_step_7 {", text)
 
+    def test_tensorview_defaults_to_5d_shape_profile(self) -> None:
+        @pto.vkernel(op="tensorview_5d_shape_profile_unique", dtypes=[(pto.f32,)])
+        def kernel(inp: pto.TensorView):
+            d0, d1, d2, d3, d4 = inp.valid_shape
+            return None
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(kernel))
+        self.assertIsInstance(semantic_kernel.parameters[0].type, SemanticTensorViewType)
+        self.assertEqual(semantic_kernel.parameters[0].type.rank, 5)
+        self.assertEqual(
+            [(param.name, param.kind) for param in semantic_kernel.parameters],
+            [("inp", "tensorview")],
+        )
+
+        text = kernel.mlir_text()
+        self.assertIn(
+            "func.func @kernel(%arg0: !pto.tensor_view<?x?x?x?x?xf32>) "
+            "attributes { pto.tilelang.instance } {",
+            text,
+        )
+        self.assertEqual(text.count("pto.get_tensor_view_dim"), 5)
+
+    def test_tensorview_strides_profile_lowers_through_explicit_stride_queries(self) -> None:
+        @pto.vkernel(op="tensorview_5d_stride_profile_unique", dtypes=[(pto.f32,)])
+        def kernel(inp: pto.TensorView):
+            s0, s1, s2, s3, s4 = inp.strides
+            for lane in range(0, s4, 1):
+                current = lane
+            return None
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(kernel))
+        self.assertEqual(
+            [(param.name, param.kind) for param in semantic_kernel.parameters],
+            [("inp", "tensorview")],
+        )
+
+        text = kernel.mlir_text()
+        self.assertIn(
+            "func.func @kernel(%arg0: !pto.tensor_view<?x?x?x?x?xf32>) "
+            "attributes { pto.tilelang.instance } {",
+            text,
+        )
+        self.assertEqual(text.count("pto.get_tensor_view_stride"), 5)
+        self.assertRegex(text, r"scf\.for %lane_\d+ = %c0 to %s4_\d+ step %c1 \{")
+
+    def test_tensorview_accepts_full_5d_slice_profile(self) -> None:
+        @pto.vkernel(op="tensorview_5d_slice_profile_unique", dtypes=[(pto.f32,)])
+        def kernel(inp: pto.TensorView):
+            view = inp[0:1, 0:2, 0:3, 0:4, 0:5]
+            return None
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(kernel))
+        slice_assign = semantic_kernel.body[0]
+        self.assertIsInstance(slice_assign, SemanticAssignStmt)
+        self.assertEqual(slice_assign.value.type.rank, 5)
+        self.assertEqual(slice_assign.value.type.extents, (1, 2, 3, 4, 5))
+        self.assertEqual(slice_assign.value.type.physical_axes, (0, 1, 2, 3, 4))
+
+    def test_tensorview_3d_slice_profile_right_aligns_into_5d_descriptor(self) -> None:
+        @pto.vkernel(op="tensorview_3d_slice_profile_unique", dtypes=[(pto.f32,)])
+        def kernel(inp: pto.TensorView):
+            view = inp[0:8, 0:16, 0:32]
+            return None
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(kernel))
+        slice_assign = semantic_kernel.body[0]
+        self.assertIsInstance(slice_assign, SemanticAssignStmt)
+        self.assertEqual(slice_assign.value.type.rank, 3)
+        self.assertEqual(slice_assign.value.type.extents, (8, 16, 32))
+        self.assertEqual(slice_assign.value.type.physical_axes, (2, 3, 4))
+
+    def test_tensorview_2d_slice_profile_right_aligns_into_5d_descriptor(self) -> None:
+        @pto.vkernel(op="tensorview_2d_slice_profile_unique", dtypes=[(pto.f32,)])
+        def kernel(inp: pto.TensorView):
+            view = inp[0:16, 0:32]
+            return None
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(kernel))
+        slice_assign = semantic_kernel.body[0]
+        self.assertIsInstance(slice_assign, SemanticAssignStmt)
+        self.assertEqual(slice_assign.value.type.rank, 2)
+        self.assertEqual(slice_assign.value.type.extents, (16, 32))
+        self.assertEqual(slice_assign.value.type.physical_axes, (3, 4))
+
     def test_dynamic_tensorview_shape_profile_supports_runtime_bound_without_high_level_dma(self) -> None:
         @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f32)])
         def kernel(inp: pto.TensorView, tile: pto.Tile):
@@ -1235,7 +1395,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
         self.assertEqual(
             [(param.name, param.kind) for param in semantic_kernel.parameters],
-            [("inp", "tensorview"), ("tile", "tile"), ("__shape_inp_0", "tensorview_shape")],
+            [("inp", "tensorview"), ("tile", "tile")],
         )
 
         rows_assign = semantic_kernel.body[0]
@@ -1247,11 +1407,11 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
 
         text = specialized.mlir_text()
         self.assertIn(
-            "func.func @kernel(%arg0: memref<?x?xf32, #pto.address_space<gm>>, %arg1: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>, %arg2: index) attributes { pto.tilelang.instance } {",
+            "func.func @kernel(%arg0: !pto.tensor_view<?x?x?x?x?xf32>, %arg1: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>) attributes { pto.tilelang.instance } {",
             text,
         )
         self.assertIn("scf.for %lane_", text)
-        self.assertIn("to %arg2 step %c1 {", text)
+        self.assertIn("pto.get_tensor_view_dim", text)
 
     def test_semantic_recognizes_padmode_symbol(self) -> None:
         @pto.vkernel(op="pad_mode_symbol", dtypes=[(pto.f32, pto.f32)])
@@ -1523,6 +1683,24 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("pto.tile_valid_cols %arg0", text)
         self.assertRegex(text, r"pto\.vlds %tmp_\d+\[%row_\d+, %col_\d+\]")
         self.assertRegex(text, r"pto\.vsts %summed_\d+, %tmp_\d+\[%row_\d+, %col_\d+\], %mask_\d+")
+
+    def test_bytewidth_surface_lowers_to_constant_index(self) -> None:
+        @pto.vkernel(op="bytewidth_query_unique", dtypes=[(pto.f32,)], advanced=True)
+        def kernel(dst: pto.Tile):
+            elem_bytes = pto.bytewidth(dst.element_type)
+            rows, cols = dst.valid_shape
+            for col in range(0, cols, elem_bytes):
+                current = col
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("= arith.constant 4 : index", text)
+        self.assertRegex(text, r"scf\.for %col_\d+ = %c0 to %cols_\d+ step %elem_bytes_\d+")
+        self.assertIn("pto.tile_valid_cols %arg0", text)
 
     def test_scalar_loop_prologue_does_not_force_vecscope_into_inner_loop(self) -> None:
         @pto.vkernel(op="tadd_outer_scope_unique", dtypes=[(pto.f32, pto.f32, pto.f32)])
@@ -1947,6 +2125,159 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             r"pto\.copy_ubuf_to_gm %ub_dst_\d+, %typed_dst_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+",
         )
 
+    def test_as_ptr_method_and_keyword_low_level_dma_surface_lower_in_advanced_mode(self) -> None:
+        @pto.vkernel(op="tensorview_tile_as_ptr_dma_unique", dtypes=[(pto.f32, pto.f32)], advanced=True)
+        def kernel(inp: pto.TensorView, dst: pto.Tile):
+            gm_ptr = inp.as_ptr()
+            ub_ptr = dst.as_ptr()
+
+            pto.set_loop2_stride_outtoub(src_stride=4096, dst_stride=2048)
+            pto.set_loop1_stride_outtoub(src_stride=1024, dst_stride=512)
+            pto.set_loop_size_outtoub(loop1=1, loop2=1)
+            pto.copy_gm_to_ubuf(
+                src=gm_ptr,
+                dst=ub_ptr,
+                n_burst=1,
+                len_burst=64,
+                gm_stride=128,
+                ub_stride=128,
+                enable_ub_pad=False,
+            )
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        self.assertTrue(any(isinstance(stmt, SemanticDmaConfigStmt) for stmt in semantic_kernel.body))
+        self.assertTrue(any(isinstance(stmt, SemanticLowLevelCopyStmt) for stmt in semantic_kernel.body))
+
+        text = specialized.mlir_text()
+        self.assertRegex(
+            text,
+            r"%gm_ptr_\d+ = pto\.castptr %arg0 : !pto\.tensor_view<\?x\?x\?x\?x\?xf32> -> !pto\.ptr<f32, gm>",
+        )
+        self.assertRegex(
+            text,
+            r"%ub_ptr_\d+ = pto\.castptr %arg1 : !pto\.tile_buf<loc=vec, dtype=f32, rows=8, cols=64, v_row=8, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0> -> !pto\.ptr<f32, ub>",
+        )
+        self.assertRegex(text, r"pto\.set_loop2_stride_outtoub %tmp_\d+, %tmp_\d+ : i64, i64")
+        self.assertRegex(text, r"pto\.set_loop1_stride_outtoub %tmp_\d+, %tmp_\d+ : i64, i64")
+        self.assertRegex(text, r"pto\.set_loop_size_outtoub %tmp_\d+, %tmp_\d+ : i64, i64")
+        self.assertRegex(
+            text,
+            r"pto\.copy_gm_to_ubuf %gm_ptr_\d+, %ub_ptr_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %false, %tmp_\d+, %tmp_\d+, %tmp_\d+",
+        )
+
+    def test_copy_ubuf_to_gm_keyword_surface_lowers_in_advanced_mode(self) -> None:
+        @pto.vkernel(op="tile_to_tensorview_dma_unique", dtypes=[(pto.f32, pto.f32)], advanced=True)
+        def kernel(src: pto.Tile, dst: pto.TensorView):
+            ub_ptr = src.as_ptr()
+            gm_ptr = dst.as_ptr()
+
+            pto.set_loop2_stride_ubtoout(src_stride=4096, dst_stride=2048)
+            pto.set_loop1_stride_ubtoout(src_stride=1024, dst_stride=512)
+            pto.set_loop_size_ubtoout(loop1=1, loop2=1)
+            pto.copy_ubuf_to_gm(
+                src=ub_ptr,
+                dst=gm_ptr,
+                n_burst=1,
+                len_burst=64,
+                gm_stride=128,
+                ub_stride=128,
+            )
+            return None
+
+        specialized = kernel.specialize(
+            src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        self.assertTrue(any(isinstance(stmt, SemanticDmaConfigStmt) for stmt in semantic_kernel.body))
+        self.assertTrue(any(isinstance(stmt, SemanticLowLevelCopyStmt) for stmt in semantic_kernel.body))
+
+        text = specialized.mlir_text()
+        self.assertRegex(
+            text,
+            r"%ub_ptr_\d+ = pto\.castptr %arg0 : !pto\.tile_buf<loc=vec, dtype=f32, rows=8, cols=64, v_row=8, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0> -> !pto\.ptr<f32, ub>",
+        )
+        self.assertRegex(
+            text,
+            r"%gm_ptr_\d+ = pto\.castptr %arg1 : !pto\.tensor_view<\?x\?x\?x\?x\?xf32> -> !pto\.ptr<f32, gm>",
+        )
+        self.assertRegex(text, r"pto\.set_loop2_stride_ubtoout %tmp_\d+, %tmp_\d+ : i64, i64")
+        self.assertRegex(text, r"pto\.set_loop1_stride_ubtoout %tmp_\d+, %tmp_\d+ : i64, i64")
+        self.assertRegex(text, r"pto\.set_loop_size_ubtoout %tmp_\d+, %tmp_\d+ : i64, i64")
+        self.assertRegex(
+            text,
+            r"pto\.copy_ubuf_to_gm %ub_ptr_\d+, %gm_ptr_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+",
+        )
+
+    def test_if_compare_or_condition_lowers_to_cmp_and_bool_ops(self) -> None:
+        @pto.vkernel(op="if_compare_or", dtypes=[(pto.f32,)])
+        def kernel(src: pto.TensorView):
+            loop1 = src.shape[3]
+            loop2 = src.shape[4]
+            step = 64
+            if loop1 != 1 or loop2 != 1:
+                step = 128
+            else:
+                step = 64
+            return None
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(kernel))
+        self.assertEqual(
+            [(param.name, param.kind) for param in semantic_kernel.parameters],
+            [("src", "tensorview")],
+        )
+        self.assertIsInstance(semantic_kernel.body[3], SemanticIfStmt)
+        condition = semantic_kernel.body[3].condition
+        self.assertIsInstance(condition, SemanticBinaryExpr)
+        self.assertEqual(condition.op, "or")
+        self.assertIsInstance(condition.lhs, SemanticBinaryExpr)
+        self.assertEqual(condition.lhs.op, "ne")
+        self.assertIsInstance(condition.rhs, SemanticBinaryExpr)
+        self.assertEqual(condition.rhs.op, "ne")
+
+        text = kernel.mlir_text()
+        self.assertEqual(text.count("arith.cmpi ne"), 2)
+        self.assertRegex(text, r"%loop1_\d+ = pto\.get_tensor_view_dim %arg0, %c3 : !pto\.tensor_view<\?x\?x\?x\?x\?xf32> -> index")
+        self.assertRegex(text, r"%loop2_\d+ = pto\.get_tensor_view_dim %arg0, %c4 : !pto\.tensor_view<\?x\?x\?x\?x\?xf32> -> index")
+        self.assertRegex(text, r"arith\.cmpi ne, %loop1_\d+, %c1 : index")
+        self.assertRegex(text, r"arith\.cmpi ne, %loop2_\d+, %c1 : index")
+        self.assertRegex(text, r"arith\.ori %tmp_\d+, %tmp_\d+ : i1")
+        self.assertRegex(text, r"%step_\d+ = scf\.if %tmp_\d+ -> \(index\) \{")
+
+    def test_shape_and_stride_tuple_unpacking_lower_cleanly(self) -> None:
+        @pto.vkernel(op="shape_stride_unpack", dtypes=[(pto.f32, pto.f32)], advanced=True)
+        def kernel(src: pto.TensorView, dst: pto.Tile):
+            g0, g1, g2, g3, g4 = src.shape
+            s0, s1, s2, s3, s4 = src.strides
+            ub_rows, ub_cols = dst.shape
+            total = g0 + g1 + g2 + g3 + g4
+            stride_total = s0 + s1 + s2 + s3 + s4
+            area = ub_rows * ub_cols
+            if total != 0 or stride_total != area:
+                total = area
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        self.assertEqual(
+            [(param.name, param.kind) for param in semantic_kernel.parameters],
+            [("src", "tensorview"), ("dst", "tile")],
+        )
+
+        text = specialized.mlir_text()
+        self.assertEqual(text.count("pto.get_tensor_view_dim"), 5)
+        self.assertEqual(text.count("pto.get_tensor_view_stride"), 5)
+        self.assertRegex(text, r"%ub_rows_\d+ = arith\.constant 8 : index")
+        self.assertRegex(text, r"%ub_cols_\d+ = arith\.constant 64 : index")
+
     def test_advanced_mode_lowers_compare_predicate_carry_and_rearrangement_families(self) -> None:
         @pto.vkernel(op="advanced_family", dtypes=[(pto.i32, pto.i32, pto.i32, pto.i32)], advanced=True)
         def kernel(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, scalar: pto.i32):
@@ -2064,12 +2395,16 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
 
         text = specialized.mlir_text()
         self.assertIn(
-            "func.func @kernel(%arg0: memref<?x?xf32, #pto.address_space<gm>>, %arg1: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>, %arg2: i32, %arg3: index) attributes { pto.tilelang.instance } {",
+            "func.func @kernel(%arg0: !pto.tensor_view<?x?x?x?x?xf32>, %arg1: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>, %arg2: i32) attributes { pto.tilelang.instance } {",
             text,
         )
         self.assertRegex(
             text,
-            r"pto\.strict_vecscope\(%tmp_\d+, %tmp_\d+, %arg2, %c0, %arg3, %c64\)",
+            r"%rows_\d+ = pto\.get_tensor_view_dim %arg0, %c0 : !pto\.tensor_view<\?x\?x\?x\?x\?xf32> -> index",
+        )
+        self.assertRegex(
+            text,
+            r"pto\.strict_vecscope\(%tmp_\d+, %tmp_\d+, %arg2, %c0, %rows_\d+, %c64\)",
         )
         self.assertRegex(
             text,

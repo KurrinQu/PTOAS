@@ -194,8 +194,53 @@ _BINARY_OP_NAMES = {
     ast.Mult: "mul",
     ast.FloorDiv: "floordiv",
 }
+_COMPARE_OP_NAMES = {
+    ast.Eq: "eq",
+    ast.NotEq: "ne",
+}
+_BOOL_OP_NAMES = {
+    ast.And: "and",
+    ast.Or: "or",
+}
 
-_DMA_CALL_KEYWORDS: dict[str, frozenset[str]] = {}
+_DMA_CALL_KEYWORDS: dict[str, frozenset[str]] = {
+    "set_loop2_stride_outtoub": frozenset({"src_stride", "dst_stride"}),
+    "set_loop1_stride_outtoub": frozenset({"src_stride", "dst_stride"}),
+    "set_loop_size_outtoub": frozenset({"loop1", "loop2"}),
+    "set_loop2_stride_ubtoout": frozenset({"src_stride", "dst_stride"}),
+    "set_loop1_stride_ubtoout": frozenset({"src_stride", "dst_stride"}),
+    "set_loop_size_ubtoout": frozenset({"loop1", "loop2"}),
+    "copy_gm_to_ubuf": frozenset(
+        {
+            "src",
+            "dst",
+            "sid",
+            "n_burst",
+            "len_burst",
+            "left_padding_count",
+            "right_padding_count",
+            "data_select_bit",
+            "enable_ub_pad",
+            "l2_cache_ctl",
+            "gm_stride",
+            "ub_stride",
+        }
+    ),
+    "copy_ubuf_to_gm": frozenset(
+        {
+            "src",
+            "dst",
+            "sid",
+            "n_burst",
+            "len_burst",
+            "reserved",
+            "burst_dst_stride",
+            "burst_src_stride",
+            "gm_stride",
+            "ub_stride",
+        }
+    ),
+}
 
 
 def _attribute_path(node: ast.AST) -> tuple[str, ...] | None:
@@ -324,6 +369,43 @@ def _build_expr(node: ast.AST, context: _FrontendBuildContext) -> FrontendExprNo
             op=op_name,
             rhs=_build_expr(node.right, context),
         )
+    if isinstance(node, ast.Compare):
+        if len(node.ops) != 1 or len(node.comparators) != 1:
+            raise context.error(
+                node,
+                "chained comparisons are not supported in TileLang DSL v1",
+            )
+        op_name = _COMPARE_OP_NAMES.get(type(node.ops[0]))
+        if op_name is None:
+            raise context.error(
+                node,
+                f"unsupported comparison operator `{type(node.ops[0]).__name__}` in TileLang DSL v1",
+            )
+        return FrontendBinaryExpr(
+            lhs=_build_expr(node.left, context),
+            op=op_name,
+            rhs=_build_expr(node.comparators[0], context),
+        )
+    if isinstance(node, ast.BoolOp):
+        op_name = _BOOL_OP_NAMES.get(type(node.op))
+        if op_name is None:
+            raise context.error(
+                node,
+                f"unsupported boolean operator `{type(node.op).__name__}` in TileLang DSL v1",
+            )
+        if len(node.values) < 2:
+            raise context.error(
+                node,
+                "boolean expressions must contain at least two operands in TileLang DSL v1",
+            )
+        expr = _build_expr(node.values[0], context)
+        for value in node.values[1:]:
+            expr = FrontendBinaryExpr(
+                lhs=expr,
+                op=op_name,
+                rhs=_build_expr(value, context),
+            )
+        return expr
     if isinstance(node, ast.Call):
         if (
             isinstance(node.func, ast.Attribute)

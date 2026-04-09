@@ -135,9 +135,9 @@ def ptr(dtype: ScalarType, memory_space: MemorySpace) -> PointerType:
     return PointerType(element_dtype=dtype, memory_space=memory_space)
 
 
-def get_lanes(dtype: ScalarType) -> int:
+def bytewidth(dtype: ScalarType) -> int:
     if not isinstance(dtype, ScalarType):
-        raise TypeError("get_lanes expects a TileLang scalar dtype")
+        raise TypeError("bytewidth expects a TileLang scalar dtype")
     byte_widths = {
         "i8": 1,
         "i16": 2,
@@ -148,8 +148,12 @@ def get_lanes(dtype: ScalarType) -> int:
     }
     width = byte_widths.get(dtype.name)
     if width is None:
-        raise TypeError(f"dtype `{dtype.name}` is not supported by get_lanes")
-    return 256 // width
+        raise TypeError(f"dtype `{dtype.name}` is not supported by bytewidth")
+    return width
+
+
+def get_lanes(dtype: ScalarType) -> int:
+    return 256 // bytewidth(dtype)
 
 
 __all__ = [
@@ -183,5 +187,6 @@ __all__ = [
     "AnyInt",
     "AnyType",
     "AnyMask",
+    "bytewidth",
     "get_lanes",
 ]

@@ -246,6 +246,26 @@ def GetTensorViewDimOp : PTO_Op<"get_tensor_view_dim", [Pure]> {
   }];
 }
 
+// Get the logical stride of a tensor_view dimension in elements.
+// Result type: Index (use arith.index_cast if i32 is needed).
+def GetTensorViewStrideOp : PTO_Op<"get_tensor_view_stride", [Pure]> {
+  let summary = "Get the stride of a dimension of a tensor_view.";
+  let description = [{
+    Returns the stride, measured in elements, of the given dimension of a
+    logical tensor view. This op accepts either !pto.tensor_view or the memref
+    it is lowered to.
+  }];
+  let arguments = (ins
+    TensorViewOrMemRef:$tensor_view,
+    Index:$dim_index
+  );
+  let results = (outs Index:$result);
+  let assemblyFormat = [{
+    $tensor_view `,` $dim_index `:` qualified(type($tensor_view)) `->` qualified(type($result))
+    attr-dict
+  }];
+}
+
 def AllocTileOp : PTO_Op<"alloc_tile", [AttrSizedOperandSegments]> {
   let summary = "Allocates a tile buffer (logical buffer).";
 

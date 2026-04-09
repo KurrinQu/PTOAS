@@ -112,8 +112,8 @@ Kernels are defined using the `@pto.vkernel` decorator with enhanced matching ca
     op="matmul",                    # PTO operation name to match
     dtypes=[(pto.f16, pto.f16, pto.f32)],  # Type signatures
     constraints=[                    # Additional constraints
-        AnyOf(k_dim_aligned_64, continuous_memory),
-        Not(requires_ub_memory)
+        lambda a, b: a.shape[1] == b.shape[0],
+        lambda batch=1: batch >= 1,
     ],
     priority=100                    # Priority for selection
 )
@@ -130,7 +130,7 @@ def matmul_fallback(a: pto.Tile, b: pto.Tile, c: pto.Tile) -> None:
 | `ops` | `List[str]` | No* | List of PTO operation names to match. **Mutually exclusive with `op`**. Use this when one descriptor should match multiple concrete ops. |
 | `dtypes` | `List[Tuple[Type, ...]]` | Yes | List of type signatures. Each tuple specifies the expected data types for the operation's operands (inputs and outputs) in order. |
 | `templates` | `Dict[str, Dict[str, str]]` | No | Static template-slot mappings. Each slot maps concrete matcher ops to real `pto.*` op names. Required when the kernel body uses `pto.tpl(...)`. |
-| `constraints` | `List[Constraint]` | No | Additional constraints that must be satisfied for the kernel to be selected. Can include logical combinations (`AnyOf`, `AllOf`, `Not`). Default: empty list. |
+| `constraints` | `List[Callable[..., bool]]` | No | Additional selection-time predicates. Constraint arguments bind by name to kernel parameter proxy objects or `context_attrs` keys. Default: empty list. |
 | `priority` | `int` | No | Selection priority when multiple kernels match. Higher values have higher priority. Default: `0`. |
 | `name` | `str` | No | Kernel name (used for debugging and profiling). Defaults to the decorated function's name. |
 | `advanced` | `bool` | No | Enable implicit vecscope inference. When `True`, vector operations inside loops automatically infer their vecscope. Default: `False`. |
@@ -182,7 +182,7 @@ The `dtypes` parameter supports flexible type matching:
 
 #### Constraint System
 
-Constraints are compile-time predicates that refine kernel selection. The system supports logical combinations of constraints.
+Constraints are compile-time predicates that refine kernel selection. In the current implementation, each entry in `constraints=[...]` is a Python callable returning `True` or `False`.
 
 ##### Predefined Constraints
 
@@ -208,10 +208,9 @@ Constraints are compile-time predicates that refine kernel selection. The system
 Users can define custom constraints using predicate functions:
 
 ```python
-# Define a custom constraint
-def large_batch(batch_size: pto.i32) -> pto.Constraint:
-    """Batch size must be ≥ 1024."""
-    return pto.Constraint(lambda op: op.batch_size >= batch_size)
+# Define a custom constraint that consumes one context attr by name.
+def large_batch(min_batch: int):
+    return lambda batch=0: batch >= min_batch
 
 @pto.vkernel(
     target="a5",
@@ -223,6 +222,47 @@ def large_batch_matmul(a: pto.Tile, b: pto.Tile, c: pto.Tile) -> None:
     # Optimized for large batch sizes
     pass
 ```
+
+Constraint callables bind by parameter name.
+
+- Kernel parameter names such as `src`, `dst`, `a`, `b` receive lightweight proxy objects, so constraints can use direct expressions like `src.shape[0] <= dst.shape[0]`.
+- Extra `context_attrs` passed to `pto.select_kernel(...)` bind by key name, for example `batch`, `enabled`, or `expected_rows`.
+
+##### Parameter Proxy Objects
+
+When a constraint argument name matches a kernel parameter name, the callable receives a lightweight proxy object rather than raw Python data.
+
+- For `TensorView` parameters, the proxy exposes `rank`, `shape`, `strides`, `dtype`, and `memory_space`.
+- For `Tile` parameters, the proxy exposes `rank`, `shape`, `valid_shape`, `dtype`, `memory_space`, and `config`.
+- `shape`, `strides`, and `valid_shape` support index access such as `src.shape[0]` or `dst.valid_shape[1]`.
+- Missing or not-yet-known metadata evaluates as "unknown", so comparisons conservatively pass rather than failing early.
+
+Example:
+
+```python
+def tload_preconditions(src, dst):
+    logical_rows = src.shape[0] * src.shape[1] * src.shape[2] * src.shape[3]
+    logical_cols = src.shape[4]
+    return (
+        src.rank == 5
+        and src.strides[4] == 1
+        and dst.valid_shape[0] <= logical_rows
+        and dst.valid_shape[1] <= logical_cols
+        and logical_rows <= dst.shape[0]
+        and logical_cols <= dst.shape[1]
+    )
+
+@pto.vkernel(
+    target="a5",
+    op="pto.tload",
+    dtypes=[(pto.f32, pto.f32)],
+    constraints=[tload_preconditions],
+)
+def template_tload(src: pto.TensorView, dst: pto.Tile):
+    return None
+```
+
+This is the recommended constraint style for current TileLang DSL head.
 
 #### Kernel Selection Mechanism
 
@@ -265,11 +305,14 @@ selected = pto.select_kernel(
 
 ```python
 # High-performance kernel for aligned K dimension
+def k_aligned_64(k=0):
+    return k % 64 == 0
+
 @pto.vkernel(
     target="a5",
     op="matmul",
     dtypes=[(pto.f16, pto.f16, pto.f32)],
-    constraints=[k_dim_aligned_64],
+    constraints=[k_aligned_64],
     priority=200
 )
 def matmul_aligned_k(a: pto.Tile, b: pto.Tile, c: pto.Tile) -> None:
@@ -292,6 +335,9 @@ def matmul_general(a: pto.Tile, b: pto.Tile, c: pto.Tile) -> None:
 ##### Elementwise Operation with Type Polymorphism
 
 ```python
+def same_shape(a, b, out):
+    return a.shape[0] == out.shape[0] and b.shape[0] == out.shape[0]
+
 @pto.vkernel(
     target="a5",
     op="add",
@@ -299,7 +345,7 @@ def matmul_general(a: pto.Tile, b: pto.Tile, c: pto.Tile) -> None:
         (pto.AnyFloat, pto.AnyFloat, pto.AnyFloat),
         (pto.AnyInt, pto.AnyInt, pto.AnyInt)
     ],
-    constraints=[broadcastable]
+    constraints=[same_shape]
 )
 def polymorphic_add(a: pto.Tile, b: pto.Tile, out: pto.Tile) -> None:
     # Single implementation handles both float and integer types
@@ -312,17 +358,14 @@ def polymorphic_add(a: pto.Tile, b: pto.Tile, out: pto.Tile) -> None:
 ##### Constrained Convolution Kernel
 
 ```python
+def prefer_static_nhwc(src, weight):
+    return src.rank == 4 and weight.rank == 4
+
 @pto.vkernel(
     target="a5",
     op="conv2d",
     dtypes=[(pto.f16, pto.f16, pto.f32)],
-    constraints=[
-        AllOf(
-            tensor_rank(4),          # NHWC format
-            static_shape,            # No dynamic dimensions
-            Not(requires_ub_memory)  # GM memory preferred
-        )
-    ],
+    constraints=[prefer_static_nhwc],
     priority=150
 )
 def conv2d_nhwc_f16_f32(input: pto.Tile, filter: pto.Tile, output: pto.Tile) -> None:
@@ -1040,6 +1083,75 @@ Variables defined in only one branch are local to that branch.
 
 The DSL provides operations grouped by functionality. All operations use the `pto.` prefix. Operations are organized by functional families following the VPTO instruction set architecture.
 
+### Type Query Operations
+
+Operations for querying type properties.
+
+#### `pto.bytewidth(dtype: Type) -> pto.i32`
+
+**Description**: Returns the size in bytes of a single element of the given data type.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `dtype` | `Type` | Data type (e.g., `pto.f32`, `pto.f16`, `pto.i8`) |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `size` | `pto.i32` | Element size in bytes |
+
+**Example**:
+```python
+f32_size = pto.bytewidth(pto.f32)  # Returns 4
+f16_size = pto.bytewidth(pto.f16)  # Returns 2
+i8_size = pto.bytewidth(pto.i8)    # Returns 1
+```
+
+**Common Use Case**: Calculate byte offsets for memory access:
+```python
+element_type = pto.f32
+byte_offset = index * pto.bytewidth(element_type)
+```
+
+#### `pto.get_lanes(dtype: Type) -> pto.i32`
+
+**Description**: Returns the number of vector lanes for a given element type, based on the hardware vector register size (256 bytes). This is useful for determining the vector width when using element-indexing syntax.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `dtype` | `Type` | Data type (e.g., `pto.f32`, `pto.f16`, `pto.i8`) |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `lanes` | `pto.i32` | Number of vector lanes for the given element type |
+
+**Example**:
+```python
+f32_lanes = pto.get_lanes(pto.f32)  # Returns 64 (256 / 4)
+f16_lanes = pto.get_lanes(pto.f16)  # Returns 128 (256 / 2)
+i8_lanes = pto.get_lanes(pto.i8)    # Returns 256 (256 / 1)
+```
+
+**Common Use Case**: Loop stride calculation for vector operations:
+```python
+dtype = pto.f32
+lanes = pto.get_lanes(dtype)
+for col in range(0, cols, lanes):
+    # Load/store vectors of 'lanes' elements
+    pass
+```
+
+**Relationship with `pto.bytewidth`**:
+```python
+# The relationship between bytewidth and get_lanes:
+lanes = 256 // pto.bytewidth(dtype)
+# This is equivalent to:
+lanes = pto.get_lanes(dtype)
+```
+
 ### Pointer Construction [Advanced Tier]
 
 Operations for creating and manipulating typed pointers.
@@ -1196,87 +1308,87 @@ This section contains both DMA configuration operations (setting loop strides an
 
 ```python
 # DMA configuration example (requires careful parameter tuning)
-pto.set_loop2_stride_outtoub(32, 128)    # Outer loop strides
-pto.set_loop1_stride_outtoub(1, 32)      # Inner loop strides  
-pto.set_loop_size_outtoub(16, 16)        # Transfer size
-pto.copy_gm_to_ubuf(gm_ptr, ub_ptr, ...)
+pto.set_loop2_stride_outtoub(src_stride=32, dst_stride=128)  # Outer loop strides
+pto.set_loop1_stride_outtoub(src_stride=1, dst_stride=32)    # Inner loop strides
+pto.set_loop_size_outtoub(loop1=16, loop2=16)                # Transfer size
+pto.copy_gm_to_ubuf(src=gm_ptr, dst=ub_ptr, n_burst=16, len_burst=128, gm_stride=128, ub_stride=128)
 
 ```
 
-#### `pto.set_loop2_stride_outtoub(stride0: pto.i64, stride1: pto.i64) -> None`  [Advanced Tier]
+#### `pto.set_loop2_stride_outtoub(src_stride: pto.i64, dst_stride: pto.i64) -> None`  [Advanced Tier]
 
 **Description**: Configures DMA stride parameters for GM → UB transfers (loop2).
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `stride0` | `pto.i64` | First dimension stride |
-| `stride1` | `pto.i64` | Second dimension stride |
+| `src_stride` | `pto.i64` | Source-side stride |
+| `dst_stride` | `pto.i64` | Destination-side stride |
 
 **Returns**: None (side-effect operation)
 
-#### `pto.set_loop1_stride_outtoub(stride0: pto.i64, stride1: pto.i64) -> None`  [Advanced Tier]
+#### `pto.set_loop1_stride_outtoub(src_stride: pto.i64, dst_stride: pto.i64) -> None`  [Advanced Tier]
 
 **Description**: Configures DMA stride parameters for GM → UB transfers (loop1).
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `stride0` | `pto.i64` | First dimension stride |
-| `stride1` | `pto.i64` | Second dimension stride |
+| `src_stride` | `pto.i64` | Source-side stride |
+| `dst_stride` | `pto.i64` | Destination-side stride |
 
 **Returns**: None (side-effect operation)
 
-#### `pto.set_loop_size_outtoub(size0: pto.i64, size1: pto.i64) -> None`  [Advanced Tier]
+#### `pto.set_loop_size_outtoub(loop1: pto.i64, loop2: pto.i64) -> None`  [Advanced Tier]
 
 **Description**: Configures DMA transfer size for GM → UB transfers.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `size0` | `pto.i64` | First dimension size |
-| `size1` | `pto.i64` | Second dimension size |
+| `loop1` | `pto.i64` | Inner loop trip count |
+| `loop2` | `pto.i64` | Outer loop trip count |
 
 **Returns**: None (side-effect operation)
 
 **Example**:
 ```python
-pto.set_loop_size_outtoub(1, 1)
+pto.set_loop_size_outtoub(loop1=1, loop2=1)
 ```
 
-#### `pto.set_loop2_stride_ubtoout(stride0: pto.i64, stride1: pto.i64) -> None`  [Advanced Tier]
+#### `pto.set_loop2_stride_ubtoout(src_stride: pto.i64, dst_stride: pto.i64) -> None`  [Advanced Tier]
 
 **Description**: Configures DMA stride parameters for UB → GM transfers (loop2).
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `stride0` | `pto.i64` | First dimension stride |
-| `stride1` | `pto.i64` | Second dimension stride |
+| `src_stride` | `pto.i64` | Source-side stride |
+| `dst_stride` | `pto.i64` | Destination-side stride |
 
 **Returns**: None (side-effect operation)
 
-#### `pto.set_loop1_stride_ubtoout(stride0: pto.i64, stride1: pto.i64) -> None`  [Advanced Tier]
+#### `pto.set_loop1_stride_ubtoout(src_stride: pto.i64, dst_stride: pto.i64) -> None`  [Advanced Tier]
 
 **Description**: Configures DMA stride parameters for UB → GM transfers (loop1).
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `stride0` | `pto.i64` | First dimension stride |
-| `stride1` | `pto.i64` | Second dimension stride |
+| `src_stride` | `pto.i64` | Source-side stride |
+| `dst_stride` | `pto.i64` | Destination-side stride |
 
 **Returns**: None (side-effect operation)
 
-#### `pto.set_loop_size_ubtoout(size0: pto.i64, size1: pto.i64) -> None`  [Advanced Tier]
+#### `pto.set_loop_size_ubtoout(loop1: pto.i64, loop2: pto.i64) -> None`  [Advanced Tier]
 
 **Description**: Configures DMA transfer size for UB → GM transfers.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `size0` | `pto.i64` | First dimension size |
-| `size1` | `pto.i64` | Second dimension size |
+| `loop1` | `pto.i64` | Inner loop trip count |
+| `loop2` | `pto.i64` | Outer loop trip count |
 
 **Returns**: None (side-effect operation)
 
@@ -1286,7 +1398,7 @@ pto.set_loop_size_outtoub(1, 1)
 
 The following operations provide direct control over DMA transfers but require manual stride and size configuration.
 
-#### `pto.copy_gm_to_ubuf(src: GMPtr, dst: UBPtr, src_offset: pto.i64, src_stride0: pto.i64, src_stride1: pto.i64, dst_offset: pto.i64, dst_stride0: pto.i64, transpose: pto.i1, pad_left: pto.i64, pad_right: pto.i64, pad_value: pto.i64) -> None`  [Advanced Tier]
+#### `pto.copy_gm_to_ubuf(src: GMPtr, dst: UBPtr, sid: pto.i64 = 0, n_burst: pto.i64, len_burst: pto.i64, left_padding_count: pto.i64 = 0, right_padding_count: pto.i64 = 0, enable_ub_pad: pto.i1 = False, l2_cache_ctl: pto.i64 = 0, gm_stride: pto.i64, ub_stride: pto.i64) -> None`  [Advanced Tier]
 
 **Description**: Copies data from Global Memory (GM) to Unified Buffer (UB).
 
@@ -1295,21 +1407,33 @@ The following operations provide direct control over DMA transfers but require m
 |-----------|------|-------------|
 | `src` | `GMPtr` | Source GM pointer |
 | `dst` | `UBPtr` | Destination UB pointer |
-| `src_offset` | `pto.i64` | Source offset |
-| `src_stride0` | `pto.i64` | Source stride dimension 0 |
-| `src_stride1` | `pto.i64` | Source stride dimension 1 |
-| `dst_offset` | `pto.i64` | Destination offset |
-| `dst_stride0` | `pto.i64` | Destination stride dimension 0 |
-| `transpose` | `pto.i1` | Transpose flag |
-| `pad_left` | `pto.i64` | Left padding size |
-| `pad_right` | `pto.i64` | Right padding size |
-| `pad_value` | `pto.i64` | Padding value |
+| `sid` | `pto.i64` | DMA stream/control operand, defaults to `0` |
+| `n_burst` | `pto.i64` | Number of bursts |
+| `len_burst` | `pto.i64` | Bytes copied by each burst |
+| `left_padding_count` | `pto.i64` | Left padding count, defaults to `0` |
+| `right_padding_count` | `pto.i64` | Right padding count, defaults to `0` |
+| `enable_ub_pad` | `pto.i1` | Convenience alias for `data_select_bit`, defaults to `False` |
+| `l2_cache_ctl` | `pto.i64` | L2 cache control operand, defaults to `0` |
+| `gm_stride` | `pto.i64` | GM-side stride in bytes |
+| `ub_stride` | `pto.i64` | UB-side stride in bytes |
 
 **Returns**: None (side-effect operation)
 
+**Notes**:
+- In TileLang DSL, the keyword form above is the recommended public surface.
+- The lowering still maps to the underlying low-level PTO operand ABI in positional order.
+
 **Example**:
 ```python
-pto.copy_gm_to_ubuf(gm_ptr, ub_ptr, 0, 32, 128, 0, 0, False, 0, 128, 128)
+pto.copy_gm_to_ubuf(
+    src=gm_ptr,
+    dst=ub_ptr,
+    n_burst=32,
+    len_burst=128,
+    gm_stride=128,
+    ub_stride=128,
+    enable_ub_pad=False,
+)
 ```
 
 #### `pto.copy_ubuf_to_ubuf(src: UBPtr, dst: UBPtr, src_offset: pto.i64, src_stride0: pto.i64, src_stride1: pto.i64, dst_offset: pto.i64, dst_stride0: pto.i64, dst_stride1: pto.i64) -> None`  [Advanced Tier]
@@ -1330,7 +1454,7 @@ pto.copy_gm_to_ubuf(gm_ptr, ub_ptr, 0, 32, 128, 0, 0, False, 0, 128, 128)
 
 **Returns**: None (side-effect operation)
 
-#### `pto.copy_ubuf_to_gm(src: UBPtr, dst: GMPtr, src_offset: pto.i64, src_stride0: pto.i64, src_stride1: pto.i64, dst_offset: pto.i64, dst_stride0: pto.i64, dst_stride1: pto.i64) -> None`  [Advanced Tier]
+#### `pto.copy_ubuf_to_gm(src: UBPtr, dst: GMPtr, sid: pto.i64 = 0, n_burst: pto.i64, len_burst: pto.i64, reserved: pto.i64 = 0, gm_stride: pto.i64, ub_stride: pto.i64) -> None`  [Advanced Tier]
 
 **Description**: Copies data from Unified Buffer (UB) to Global Memory (GM).
 
@@ -1339,18 +1463,30 @@ pto.copy_gm_to_ubuf(gm_ptr, ub_ptr, 0, 32, 128, 0, 0, False, 0, 128, 128)
 |-----------|------|-------------|
 | `src` | `UBPtr` | Source UB pointer |
 | `dst` | `GMPtr` | Destination GM pointer |
-| `src_offset` | `pto.i64` | Source offset |
-| `src_stride0` | `pto.i64` | Source stride dimension 0 |
-| `src_stride1` | `pto.i64` | Source stride dimension 1 |
-| `dst_offset` | `pto.i64` | Destination offset |
-| `dst_stride0` | `pto.i64` | Destination stride dimension 0 |
-| `dst_stride1` | `pto.i64` | Destination stride dimension 1 |
+| `sid` | `pto.i64` | DMA stream/control operand, defaults to `0` |
+| `n_burst` | `pto.i64` | Number of bursts |
+| `len_burst` | `pto.i64` | Bytes copied by each burst |
+| `reserved` | `pto.i64` | Reserved operand, defaults to `0` |
+| `gm_stride` | `pto.i64` | GM-side stride in bytes |
+| `ub_stride` | `pto.i64` | UB-side stride in bytes |
 
 **Returns**: None (side-effect operation)
 
+**Notes**:
+- In TileLang DSL, the keyword form above is the recommended public surface.
+- `gm_stride`/`ub_stride` are ergonomic aliases for the low-level `burst_dst_stride`/`burst_src_stride` operands.
+- The lowering still maps to the underlying low-level PTO operand ABI in positional order.
+
 **Example**:
 ```python
-pto.copy_ubuf_to_gm(ub_ptr, gm_ptr, 0, 32, 128, 0, 128, 128)
+pto.copy_ubuf_to_gm(
+    src=ub_ptr,
+    dst=gm_ptr,
+    n_burst=32,
+    len_burst=128,
+    gm_stride=128,
+    ub_stride=128,
+)
 ```
 
 ### Address Generation Syntax Sugar
@@ -1398,7 +1534,7 @@ The number of elements loaded/stored in a single vector operation is determined 
 vector_lanes = 256 // element_size_bytes(element_type)
 ```
 
-**Convenience API**: Use `pto.get_lanes(dtype)` to compute vector lanes for a given element type (e.g., `pto.get_lanes(pto.f32)` returns 64, `pto.get_lanes(pto.f16)` returns 128).
+**Convenience API**: Use `pto.get_lanes(dtype)` to compute vector lanes for a given element type (e.g., `pto.get_lanes(pto.f32)` returns 64, `pto.get_lanes(pto.f16)` returns 128). See [Type Query Operations](#type-query-operations) for full documentation.
 
 Where `element_size_bytes` is:
 - 1 byte for `i8`
