@@ -12,11 +12,10 @@ The DSL surface is organized into multiple maturity tiers, reflecting the stabil
 |----------------|------|----------------|
 | `TensorView` | `stable` | Default GM-facing data model for starter kernels. |
 | `Tile` | `stable` | Default UB-facing compute tile for starter kernels. |
-| `dma_load` / `dma_store` | `stable` | Preferred GM ↔ UB data‑movement path. |
 | Base vector ops (`make_mask`, `vlds`, `vsts`, `vadd`, `vmuls`, etc.) | `stable` | Default compute skeleton for starter kernels. |
 | `strict_vecscope` | `advanced` | Explicit vector-scope management for expert authoring. |
 | Raw pointer family (`ptr(...)`, `castptr`, `addptr`, `GMPtr`, `UBPtr`, `UBRef`) | `advanced` | For expert authoring and migration; not required for Quick Start. |
-| Low‑level DMA family (`copy_*`, `set_loop*_stride_*`, `set_loop_size_*`) | `advanced` | Use only when the high‑level DMA interface is insufficient. |
+| DMA family (`copy_*`, `set_loop*_stride_*`, `set_loop_size_*`) | `advanced` | Direct DMA engine control for expert authoring. |
 | Tile helper family (`tile.slice(...)`, `tile.reshape(...)`, `tile.to_ubref()`, `tile.as_ptr()`, `tile.to_memref()`, `tile_from_ptr(...)`, `tile_from_memref(...)`, `tile_with_strides(...)`, `tile_config(...)`) | `advanced` | Partial or evolving surface; not the default entry point. |
 
 For the authoritative tier classification, consult `tilelang-dsl/python/tilelang_dsl/support_matrix.py`. For known implementation gaps, refer to `tilelang-dsl/docs/unsupported-features.md`.
@@ -29,7 +28,6 @@ TileLang DSL provides the following core constructs for kernel authoring:
 
 - `TensorView` – Access global memory (GM) tensors
 - `Tile` – Local computation buffers in unified buffer (UB)
-- `dma_load` / `dma_store` – Move data between GM and UB
 - Base vector operations (`make_mask`, `vlds`, `vmuls`, `vadd`, `vsts`) – Perform vector computations
 
 A typical kernel follows the GM → UB → vector compute → GM pattern:
@@ -48,7 +46,7 @@ def tile_scale(
     dim1 = 16
 
     # Stage one GM tile into UB.
-    pto.dma_load(input_tensor[0:dim0, 0:dim1], work_tile)
+    # GM -> UB data movement (implementation detail)
 
     # Run vector compute over the UB tile using tile indexing sugar.
     for i in range(0, dim0):
@@ -58,15 +56,14 @@ def tile_scale(
         pto.vsts(scaled, work_tile[i, 0:], mask)
 
     # Write the UB result back to GM.
-    pto.dma_store(work_tile, output_tensor[0:dim0, 0:dim1])
+    # UB -> GM data movement (implementation detail)
 ```
 
 The example illustrates the key components of a TileLang kernel:
 
 1. **`TensorView` parameters** – Access global memory tensors
 2. **`Tile` parameters** – Local computation buffers in unified buffer (UB)
-3. **`dma_load` / `dma_store`** – Move data between GM and UB
-4. **Base vector operations** (`make_mask`, `vlds`, `vmuls`, `vadd`, `vsts`) – Perform vector computations
+3. **Base vector operations** (`make_mask`, `vlds`, `vmuls`, `vadd`, `vsts`) – Perform vector computations
 
 Here is a second example with two inputs and one output:
 
@@ -87,8 +84,7 @@ def elementwise_add(
     dim0 = 4
     dim1 = 16
 
-    pto.dma_load(lhs_gm[0:dim0, 0:dim1], lhs_tile)
-    pto.dma_load(rhs_gm[0:dim0, 0:dim1], rhs_tile)
+    # GM -> UB data movement (implementation detail)
 
     for lane in range(0, 256, 64):
         mask = pto.make_mask(pto.f32, PAT.ALL)
@@ -97,7 +93,7 @@ def elementwise_add(
         summed = pto.vadd(lhs_vec, rhs_vec, mask)
         pto.vsts(summed, dst_tile, lane, mask)
 
-    pto.dma_store(dst_tile, out_gm[0:dim0, 0:dim1])
+    # UB -> GM data movement (implementation detail)
 ```
 
 Both examples follow the same fundamental pattern: load data from global memory into local tiles, perform vector operations, and store results back. The compiler automatically infers vector-scope boundaries for the base vector operations. The `Tile` parameters are specialized to concrete shapes during compilation. Later sections cover advanced features such as matchers, template slots, raw pointer operations, and explicit scope management with `strict_vecscope`.
@@ -729,32 +725,6 @@ Padding mode controls how out-of-bounds accesses are handled during DMA load/sto
 | `PadMode.PadFirstElem` | Pad using the first element of the source |
 | `PadMode.PadValue` | Pad using a specified value (requires `pad_value` parameter) |
 
-In the current stable frontend-only DMA profile:
-
-- `pto.dma_load(...)` lowers `PadNull`, `PadFirstElem`, and `PadValue`.
-- `pto.dma_store(...)` currently only lowers `PadNull`; store-side GM fill remains unsupported.
-
-**Usage:**
-```python
-import tilelang_dsl as pto
-
-# Load with an explicit fill value
-pto.dma_load(
-    src_partition[0:16, 0:14],
-    dst_tile,
-    pad_mode=pto.PadMode.PadValue,
-    pad_value=0.0,
-    left_padding=1,
-    right_padding=1,
-)
-
-# Load with first-element padding
-pto.dma_load(src_partition[0:16, 0:14], dst_tile, pad_mode=pto.PadMode.PadFirstElem)
-
-# Load without padding (default)
-pto.dma_load(src_partition[0:16, 0:16], dst_tile)  # pad_mode=pto.PadMode.PadNull
-```
-
 ### Slicing Syntax
 
 TensorView supports Python slicing syntax to create logical partitions:
@@ -1210,34 +1180,19 @@ from pto import SyncOpType
 pto.rls_buf(SyncOpType.TLOAD, 0)
 ```
 
-### Low-level DMA Programming (Legacy) [Advanced Tier]
+### DMA Programming [Advanced Tier]
 
-**Note**: These low-level DMA programming operations are automatically handled by `pto.dma_load` and `pto.dma_store` in most cases. They expose hardware DMA engine parameters directly and should only be used when the automatic inference provided by the high-level API is insufficient for specific optimization needs.
-
-This section contains both DMA configuration operations (setting loop strides and sizes) and DMA execution operations (copying data). Prefer the high-level `pto.dma_load` and `pto.dma_store` operations which automatically infer all parameters from TensorView slices and Tile properties.
-
-#### When to Use Low-level DMA Programming
-
-Consider using these low-level operations only in the following scenarios:
-
-1. **Performance micro-optimization**: When specific DMA parameter tuning is required for performance-critical code
-2. **Non-standard access patterns**: When TensorView slicing syntax cannot express the desired memory access pattern
-3. **Hardware-specific optimizations**: When targeting specific DMA engine characteristics not captured by the high-level API
-
-For 99% of use cases, `pto.dma_load` and `pto.dma_store` with TensorView slicing provide sufficient control and are much easier to use correctly.
+This section contains both DMA configuration operations (setting loop strides and sizes) and DMA execution operations (copying data).
 
 #### Manual Configuration Example
 
 ```python
-# Manual DMA configuration (discouraged for normal use)
+# DMA configuration example (requires careful parameter tuning)
 pto.set_loop2_stride_outtoub(32, 128)    # Outer loop strides
 pto.set_loop1_stride_outtoub(1, 32)      # Inner loop strides  
 pto.set_loop_size_outtoub(16, 16)        # Transfer size
 pto.copy_gm_to_ubuf(gm_ptr, ub_ptr, ...)
 
-# Equivalent using high-level API (recommended)
-pto.dma_load(input_tensor[0:16, 0:16], ub_tile)
-# All loop strides and sizes automatically inferred
 ```
 
 #### `pto.set_loop2_stride_outtoub(stride0: pto.i64, stride1: pto.i64) -> None`  [Advanced Tier]
@@ -1319,9 +1274,9 @@ pto.set_loop_size_outtoub(1, 1)
 
 #### DMA Execution Operations
 
-**Note**: These operations execute DMA transfers but require manual configuration of DMA parameters (loop strides, loop sizes) using the `set_loop*_stride_*` and `set_loop_size_*` operations described above. The high-level `pto.dma_load` and `pto.dma_store` operations automatically handle both configuration and execution.
+**Note**: These operations execute DMA transfers but require manual configuration of DMA parameters (loop strides, loop sizes) using the `set_loop*_stride_*` and `set_loop_size_*` operations described above.
 
-The following operations provide direct control over DMA transfers but require manual stride and size configuration. Prefer the high-level Tile Data Movement operations for most use cases.
+The following operations provide direct control over DMA transfers but require manual stride and size configuration.
 
 #### `pto.copy_gm_to_ubuf(src: GMPtr, dst: UBPtr, src_offset: pto.i64, src_stride0: pto.i64, src_stride1: pto.i64, dst_offset: pto.i64, dst_stride0: pto.i64, transpose: pto.i1, pad_left: pto.i64, pad_right: pto.i64, pad_value: pto.i64) -> None`  [Advanced Tier]
 
@@ -1389,172 +1344,6 @@ pto.copy_gm_to_ubuf(gm_ptr, ub_ptr, 0, 32, 128, 0, 0, False, 0, 128, 128)
 ```python
 pto.copy_ubuf_to_gm(ub_ptr, gm_ptr, 0, 32, 128, 0, 128, 128)
 ```
-
-### Tile Data Movement Operations
-
-High-level operations for moving data between TensorView partitions (GM) and Tile buffers (UB), as well as between Tile buffers. These operations **automatically handle all low-level DMA configuration** and provide an intuitive interface based on tile semantics.
-
-#### Automatic DMA Parameter Inference
-
-The `pto.dma_load` and `pto.dma_store` operations automatically infer DMA transfer parameters (loop strides, loop sizes) from:
-
-1. **TensorView slices** - Python slicing syntax captures stride information:
-   ```python
-   # Contiguous slice: [0:16, 0:16]
-   pto.dma_load(input_tensor[0:16, 0:16], ub_tile)
-   
-   # Strided slice: [0:64:2, 0:32] → stride=2 in first dimension
-   pto.dma_load(input_tensor[0:64:2, 0:32], ub_tile)
-   ```
-
-2. **Tile shape / valid shape** - The statically specialized rank-2 UB Tile shape determines the UB-side row stride and visible window.
-
-3. **Padding / trim requirements** - Specified via operation parameters.
-
-The current stable frontend-only inference profile covers:
-
-- explicit `stop` on all dimensions
-- constant or runtime `start`
-- static positive `step`
-- stepped slices only on dimension 0 (current DMA restriction)
-- statically specialized rank-2 UB Tile operands
-
-#### Benefits of Automatic Inference
-
-- **Simplified API**: No need to manually call `set_loop*_stride_*` and `set_loop_size_*` operations
-- **Reduced errors**: Automatic parameter validation and consistency checking
-- **Hardware abstraction**: Focus on data movement semantics, not DMA engine details
-- **Portable code**: Same TileLang code works across different DMA implementations
-
-For advanced use cases requiring manual DMA parameter control, see the [Low-level DMA Programming (Legacy)](#low-level-dma-programming-legacy) section.
-
-#### `pto.dma_load(src: TensorView, dst: Tile, pad_mode: PadMode = PadMode.PadNull, pad_value: ScalarType = None, left_padding: Index = 0, right_padding: Index = 0, init_out_buffer: bool = False) -> None`
-
-**Description**: Loads data from a TensorView partition (GM) into a Tile buffer (UB). This maps to `pto.copy_gm_to_ubuf` operation in VPTO IR.
-
-**Parameters**:
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `src` | `TensorView` | Source tensor view partition (must be in GM) |
-| `dst` | `Tile` | Destination tile buffer (must be in UB memory space) |
-| `pad_mode` | `PadMode` | Padding mode (PadNull, PadFirstElem, PadValue) |
-| `pad_value` | `ScalarType` | Padding value (required if `pad_mode == PadValue`) |
-| `left_padding` | `Index` | Left padding element count |
-| `right_padding` | `Index` | Right padding element count |
-| `init_out_buffer` | `bool` | Initialize output buffer before loading |
-
-**Returns**: None (side-effect operation)
-
-**Constraints**:
-- Destination tile must have `memory_space = MemorySpace.UB`
-- Element dtypes of source and destination must match
-- Source partition shape must match destination tile valid shape after accounting for `left_padding` / `right_padding`
-- `PadValue` requires `pad_value`
-- `PadNull` with `init_out_buffer=True` is not supported in the current stable frontend-only path
-
-**Example**:
-```python
-# Load a 16x16 partition into a UB tile
-pto.dma_load(input_tensor[0:16, 0:16], ub_tile)
-
-# Load a 14-column slice into a 16-column tile with 1-element padding bands
-pto.dma_load(
-    input_tensor[0:16, 0:14],
-    ub_tile,
-    pad_mode=pto.PadMode.PadValue,
-    pad_value=0.0,
-    left_padding=1,
-    right_padding=1,
-)
-
-# Load from a dynamic, non-zero row start
-row_start = input_tensor.shape[0] // 2
-pto.dma_load(input_tensor[row_start:input_tensor.shape[0], 4:20], ub_tile)
-```
-
-#### `pto.dma_store(src: Tile, dst: TensorView, pad_mode: PadMode = PadMode.PadNull, pad_value: ScalarType = None, left_padding: Index = 0, right_padding: Index = 0) -> None`
-
-**Description**: Stores data from a Tile buffer (UB) to a TensorView partition (GM). This maps to `pto.copy_ubuf_to_gm` operation in VPTO IR.
-
-**Parameters**:
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `src` | `Tile` | Source tile buffer (must be in UB memory space) |
-| `dst` | `TensorView` | Destination tensor view partition (must be in GM) |
-| `pad_mode` | `PadMode` | Public DMA surface keyword; current stable lowering only accepts `PadNull` |
-| `pad_value` | `ScalarType` | Reserved for future GM-side fill support; currently rejected |
-| `left_padding` | `Index` | Trim count removed from the left side of the source Tile interior window |
-| `right_padding` | `Index` | Trim count removed from the right side of the source Tile interior window |
-
-**Returns**: None (side-effect operation)
-
-**Constraints**:
-- Source tile must have `memory_space = MemorySpace.UB`
-- Element dtypes of source and destination must match
-- Destination partition shape must match the source Tile valid shape after applying `left_padding` / `right_padding`
-- The current stable frontend-only path only lowers `pad_mode=PadMode.PadNull`
-- `pad_value` and GM-side fill are unsupported today
-
-**Example**:
-```python
-# Store a UB tile to a GM partition
-pto.dma_store(ub_tile, output_tensor[0:16, 0:16])
-
-# Trim one element from both sides of a 16-column Tile and write back 14 columns
-pto.dma_store(
-    ub_tile,
-    output_tensor[0:16, 0:14],
-    left_padding=1,
-    right_padding=1,
-)
-```
-
-#### `pto.dma_copy(src: Tile, dst: Tile, src_offset: tuple[Index, Index] = (0, 0), dst_offset: tuple[Index, Index] = (0, 0), copy_shape: tuple[Index, Index] = None) -> None`
-
-**Description**: Copies data between Tile buffers within Unified Buffer (UB → UB). This maps to `pto.copy_ubuf_to_ubuf` operation in VPTO IR.
-
-**Parameters**:
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `src` | `Tile` | Source tile buffer (must be in UB memory space) |
-| `dst` | `Tile` | Destination tile buffer (must be in UB memory space) |
-| `src_offset` | `tuple[Index, Index]` | Offset within source tile (row, col) in elements |
-| `dst_offset` | `tuple[Index, Index]` | Offset within destination tile (row, col) in elements |
-| `copy_shape` | `tuple[Index, Index]` | Shape of region to copy (rows, cols) in elements. If None, copies the maximum valid region starting from offsets. |
-
-**Returns**: None (side-effect operation)
-
-**Constraints**:
-- Both tiles must have `memory_space = MemorySpace.UB`
-- Element types of source and destination must match
-- Source and destination regions must be within tile valid shapes
-
-**Example**:
-```python
-# Copy entire tile
-pto.dma_copy(src_tile, dst_tile)
-
-# Copy subregion: copy 8x8 block from (2,2) in src to (0,0) in dst
-pto.dma_copy(src_tile, dst_tile, 
-              src_offset=(2, 2), 
-              dst_offset=(0, 0), 
-              copy_shape=(8, 8))
-```
-
-**Note**: These high-level operations automatically handle DMA stride and size configuration based on tile shapes, layouts, and offsets. For low-level control, see the [Low-level DMA Programming (Legacy)](#low-level-dma-programming-legacy) section.
-
-#### VPTO IR Mapping
-
-The high-level DMA operations in TileLang DSL map to corresponding operations in VPTO IR:
-
-| TileLang DSL Operation | VPTO IR Operation | Description |
-|------------------------|-------------------|-------------|
-| `pto.dma_load` | `pto.copy_gm_to_ubuf` | Loads data from GM tensor view to UB tile buffer |
-| `pto.dma_store` | `pto.copy_ubuf_to_gm` | Stores data from UB tile buffer to GM tensor view |
-| `pto.dma_copy` | `pto.copy_ubuf_to_ubuf` | Copies data between UB tile buffers |
-
-These mappings allow the TileLang compiler to generate efficient VPTO IR code while providing a higher-level, more intuitive API for developers. The compiler automatically handles the conversion between Tile/TensorView abstractions and the low-level pointer/stride representation required by VPTO IR operations.
-
 
 ### Address Generation Syntax Sugar
 
