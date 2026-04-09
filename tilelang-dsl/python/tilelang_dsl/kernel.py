@@ -1412,6 +1412,19 @@ def _matches_wildcard(pattern: WildcardType, actual: ScalarType) -> bool:
     raise TypeError(f"unsupported wildcard matcher {pattern.name!r}")
 
 
+def _matches_scalar_annotation(
+    annotation: ScalarType | WildcardType | TypeVariable,
+    actual: ScalarType,
+) -> bool:
+    if isinstance(annotation, ScalarType):
+        return annotation == actual
+    if isinstance(annotation, WildcardType):
+        return _matches_wildcard(annotation, actual)
+    if isinstance(annotation, TypeVariable):
+        return True
+    raise TypeError(f"unsupported scalar annotation {annotation!r}")
+
+
 def _match_dtype_signature(
     dtype_signature: tuple[Any, ...],
     operand_types: tuple[ScalarType, ...],
@@ -1488,7 +1501,7 @@ def _validate_parameter_spec(param: inspect.Parameter) -> KernelParameterSpec:
             kind="ptr",
             annotation=annotation,
         )
-    if isinstance(annotation, ScalarType):
+    if isinstance(annotation, (ScalarType, WildcardType, TypeVariable)):
         return KernelParameterSpec(
             name=param.name,
             kind="scalar",
@@ -1515,6 +1528,9 @@ def _default_dtype_signature(
             continue
         if param_spec.kind == "ptr":
             defaults.append(param_spec.annotation.element_dtype)
+            continue
+        if isinstance(param_spec.annotation, (WildcardType, TypeVariable)):
+            defaults.append(AnyType)
             continue
         defaults.append(param_spec.annotation)
     return tuple(defaults)
@@ -1562,7 +1578,7 @@ def _bind_parameter(
             annotation=param_spec.annotation,
             dtype=scalar_dtype,
         )
-    if param_spec.annotation != scalar_dtype:
+    if not _matches_scalar_annotation(param_spec.annotation, scalar_dtype):
         raise TypeError(
             f"scalar parameter '{param_spec.name}' annotation {param_spec.annotation!r} "
             f"does not match selected dtype {scalar_dtype!r}"

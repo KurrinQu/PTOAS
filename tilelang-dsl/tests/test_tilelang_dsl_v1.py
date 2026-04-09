@@ -297,6 +297,48 @@ class TileLangDSLMatcherEntryTests(unittest.TestCase):
             )
         self.assertIn("found no registered kernel", str(ctx.exception))
 
+    def test_scalar_typevar_annotation_tracks_selected_dtype(self) -> None:
+        elem = pto.TypeVar("Elem")
+
+        @pto.vkernel(
+            op="scalar_typevar_binding_unique",
+            dtypes=[(elem, elem, elem)],
+        )
+        def kernel(inp: pto.Tile, scale: elem, out: pto.Tile):
+            return None
+
+        selected = pto.select_kernel(
+            "a5",
+            "scalar_typevar_binding_unique",
+            (pto.bf16, pto.bf16, pto.bf16),
+        )
+
+        self.assertEqual(selected.dtype_signature, (pto.bf16, pto.bf16, pto.bf16))
+        self.assertEqual(
+            [(param.name, param.kind, param.dtype) for param in selected.parameters],
+            [("inp", "tile", pto.bf16), ("scale", "scalar", pto.bf16), ("out", "tile", pto.bf16)],
+        )
+
+    def test_scalar_wildcard_annotation_accepts_selected_dtype(self) -> None:
+        @pto.vkernel(
+            op="scalar_wildcard_binding_unique",
+            dtypes=[(pto.AnyType, pto.AnyType, pto.AnyType)],
+        )
+        def kernel(inp: pto.Tile, scale: pto.AnyType, out: pto.Tile):
+            return None
+
+        selected = pto.select_kernel(
+            "a5",
+            "scalar_wildcard_binding_unique",
+            (pto.i16, pto.i16, pto.i16),
+        )
+
+        self.assertEqual(selected.dtype_signature, (pto.i16, pto.i16, pto.i16))
+        self.assertEqual(
+            [(param.name, param.kind, param.dtype) for param in selected.parameters],
+            [("inp", "tile", pto.i16), ("scale", "scalar", pto.i16), ("out", "tile", pto.i16)],
+        )
+
     def test_polymorphic_descriptor_requires_select_kernel_before_materialization(self) -> None:
         @pto.vkernel(
             op="matcher_materialization_gate_unique",
@@ -653,6 +695,32 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertEqual(kernel.match_ops, ("default_dtypes_unique",))
         self.assertEqual(kernel.dtypes, ((pto.AnyType, pto.AnyType),))
         self.assertEqual(kernel.metadata["dtypes"], ((pto.AnyType, pto.AnyType),))
+        with self.assertRaises(ValueError) as ctx:
+            _ = kernel.dtype_signature
+        self.assertIn("choose a concrete dtype signature", str(ctx.exception))
+
+    def test_descriptor_defaults_scalar_typevar_to_anytype(self) -> None:
+        elem = pto.TypeVar("Elem")
+
+        @pto.vkernel(op="default_scalar_typevar_unique")
+        def kernel(inp: pto.Tile, scale: elem, out: pto.Tile):
+            return None
+
+        self.assertEqual(kernel.match_ops, ("default_scalar_typevar_unique",))
+        self.assertEqual(kernel.dtypes, ((pto.AnyType, pto.AnyType, pto.AnyType),))
+        self.assertEqual(kernel.metadata["dtypes"], ((pto.AnyType, pto.AnyType, pto.AnyType),))
+        with self.assertRaises(ValueError) as ctx:
+            _ = kernel.dtype_signature
+        self.assertIn("choose a concrete dtype signature", str(ctx.exception))
+
+    def test_descriptor_defaults_scalar_wildcard_to_anytype(self) -> None:
+        @pto.vkernel(op="default_scalar_wildcard_unique")
+        def kernel(inp: pto.Tile, scale: pto.AnyType, out: pto.Tile):
+            return None
+
+        self.assertEqual(kernel.match_ops, ("default_scalar_wildcard_unique",))
+        self.assertEqual(kernel.dtypes, ((pto.AnyType, pto.AnyType, pto.AnyType),))
+        self.assertEqual(kernel.metadata["dtypes"], ((pto.AnyType, pto.AnyType, pto.AnyType),))
         with self.assertRaises(ValueError) as ctx:
             _ = kernel.dtype_signature
         self.assertIn("choose a concrete dtype signature", str(ctx.exception))

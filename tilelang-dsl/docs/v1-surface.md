@@ -93,16 +93,22 @@ The descriptor keeps these metadata fields:
 v1 accepts these parameter categories:
 - bare `TensorView`
 - bare `Tile`
-- explicit scalar annotations such as `pto.i32`, `pto.f16`, `pto.f32`
+- scalar annotations such as `pto.i32`, `pto.f16`, `pto.f32`, `pto.AnyType`, or `pto.TypeVar("T")`
 
 Binding rules:
 - the single `dtypes` signature binds parameter element types positionally
 - `TensorView` parameters get their element dtype from the same position in
   `dtypes`
 - `Tile` parameters get their element dtype from the same position in `dtypes`
-- scalar parameters must use an explicit scalar annotation
-- scalar annotations must exactly match the dtype at the same position in
+- scalar parameters must use a TileLang scalar-style annotation
+- scalar annotations may be concrete scalar dtypes, wildcard dtypes, or
+  `TypeVar(...)`
+- concrete scalar annotations must exactly match the dtype at the same position
+  in `dtypes`
+- wildcard scalar annotations must accept the dtype at the same position in
   `dtypes`
+- `TypeVar(...)` scalar annotations bind to the selected dtype at the same
+  position in `dtypes`
 
 Example:
 
