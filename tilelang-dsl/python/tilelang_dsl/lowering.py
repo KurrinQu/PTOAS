@@ -1792,7 +1792,7 @@ class _AuthoringRenderer:
                 )
             lhs = self._lower_expr(expr.lhs, env, indent=indent, into=into)
             rhs = self._lower_expr(expr.rhs, env, indent=indent, into=into)
-            if expr.op in {"eq", "ne"}:
+            if expr.op in {"eq", "ne", "gt", "lt", "ge", "le"}:
                 return self._lower_compare_expr(
                     expr.op,
                     lhs,
@@ -2038,13 +2038,37 @@ class _AuthoringRenderer:
     ) -> _RenderedValue:
         result_name = desired_name or self._new_temp()
         if isinstance(lhs.type, SemanticIndexType) and isinstance(rhs.type, SemanticIndexType):
-            predicate = "eq" if op == "eq" else "ne"
+            index_predicates = {
+                "eq": "eq",
+                "ne": "ne",
+                "gt": "sgt",
+                "lt": "slt",
+                "ge": "sge",
+                "le": "sle",
+            }
+            predicate = index_predicates[op]
         elif isinstance(lhs.type, SemanticScalarType) and lhs.type == rhs.type:
             if lhs.type.dtype.name in {"f16", "bf16", "f32"}:
-                predicate = "oeq" if op == "eq" else "une"
+                float_predicates = {
+                    "eq": "oeq",
+                    "ne": "une",
+                    "gt": "ogt",
+                    "lt": "olt",
+                    "ge": "oge",
+                    "le": "ole",
+                }
+                predicate = float_predicates[op]
                 cmp_name = "arith.cmpf"
             else:
-                predicate = "eq" if op == "eq" else "ne"
+                int_predicates = {
+                    "eq": "eq",
+                    "ne": "ne",
+                    "gt": "sgt",
+                    "lt": "slt",
+                    "ge": "sge",
+                    "le": "sle",
+                }
+                predicate = int_predicates[op]
                 cmp_name = "arith.cmpi"
             into.append(
                 self._indent(indent)

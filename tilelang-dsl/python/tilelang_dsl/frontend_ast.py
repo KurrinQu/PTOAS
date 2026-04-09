@@ -143,6 +143,7 @@ class FrontendIfStmt(FrontendStmtNode):
     condition: FrontendExprNode
     then_body: tuple[FrontendStmtNode, ...]
     else_body: tuple[FrontendStmtNode, ...]
+    is_constexpr: bool = False
 
 
 @dataclass(frozen=True)
@@ -197,6 +198,10 @@ _BINARY_OP_NAMES = {
 _COMPARE_OP_NAMES = {
     ast.Eq: "eq",
     ast.NotEq: "ne",
+    ast.Gt: "gt",
+    ast.Lt: "lt",
+    ast.GtE: "ge",
+    ast.LtE: "le",
 }
 _BOOL_OP_NAMES = {
     ast.And: "and",
@@ -544,10 +549,32 @@ def _build_stmt(node: ast.stmt, context: _FrontendBuildContext) -> FrontendStmtN
             body=tuple(_build_stmt(stmt, context) for stmt in node.body),
         )
     if isinstance(node, ast.If):
+        is_constexpr = False
+        condition_node: ast.AST = node.test
+        if (
+            isinstance(node.test, ast.Call)
+            and isinstance(node.test.func, ast.Attribute)
+            and isinstance(node.test.func.value, ast.Name)
+            and node.test.func.value.id == "pto"
+            and node.test.func.attr == "constexpr"
+        ):
+            if node.test.keywords:
+                raise context.error(
+                    node.test,
+                    "pto.constexpr() does not support keyword arguments in TileLang DSL v1",
+                )
+            if len(node.test.args) != 1:
+                raise context.error(
+                    node.test,
+                    "pto.constexpr() expects exactly 1 positional argument in TileLang DSL v1",
+                )
+            is_constexpr = True
+            condition_node = node.test.args[0]
         return FrontendIfStmt(
-            condition=_build_expr(node.test, context),
+            condition=_build_expr(condition_node, context),
             then_body=tuple(_build_stmt(stmt, context) for stmt in node.body),
             else_body=tuple(_build_stmt(stmt, context) for stmt in node.orelse),
+            is_constexpr=is_constexpr,
         )
     if isinstance(node, ast.With):
         if len(node.items) != 1:

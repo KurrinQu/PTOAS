@@ -17,6 +17,7 @@ ADVANCED_TIER = "advanced"
 
 SUPPORTED_TOPLEVEL_PTO_CALLS = frozenset(
     {
+        "constexpr",
         "bytewidth",
         "get_lanes",
         "set_flag",
@@ -251,6 +252,8 @@ LANGUAGE_CONSTRUCT_TIERS = {
     "TensorView": BASIC_TIER,
     "Tile": BASIC_TIER,
     "PadMode": BASIC_TIER,
+    "constexpr": BASIC_TIER,
+    "pto.constexpr": BASIC_TIER,
     "tile[start:]": BASIC_TIER,
     "tile[row, col:]": BASIC_TIER,
     # Advanced tier constructs

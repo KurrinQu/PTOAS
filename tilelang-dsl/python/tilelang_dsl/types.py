@@ -156,6 +156,10 @@ def get_lanes(dtype: ScalarType) -> int:
     return 256 // bytewidth(dtype)
 
 
+def constexpr(value: bool) -> bool:
+    return value
+
+
 __all__ = [
     "ScalarType",
     "WildcardType",
@@ -187,6 +191,7 @@ __all__ = [
     "AnyInt",
     "AnyType",
     "AnyMask",
+    "constexpr",
     "bytewidth",
     "get_lanes",
 ]

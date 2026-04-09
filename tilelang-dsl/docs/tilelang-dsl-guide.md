@@ -624,6 +624,66 @@ def unified_arithmetic(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
             pto.vsts(out, dst[row, col:], mask)
 ```
 
+#### Compile-time Specialization with `pto.constexpr`
+
+The `pto.constexpr` construct enables compile-time branching for kernel specialization, allowing different code paths to be selected based on static compile-time information. Unlike runtime conditionals that generate control flow, `pto.constexpr` branches are resolved during kernel descriptor materialization, with only the selected branch retained for lowering.
+
+**Syntax and Usage**:
+```python
+if pto.constexpr(condition):
+    # Branch taken if condition evaluates to True at compile time
+    ...
+else:
+    # Branch taken if condition evaluates to False at compile time
+    ...
+```
+
+**Semantics**:
+- The `condition` must be evaluable at compile time during kernel descriptor materialization.
+- Only the selected branch is analyzed, semantically checked, and lowered to VPTO IR.
+- The non-selected branch is discarded entirely and does not contribute to runtime control flow or value merging.
+- If the condition cannot be proven static, descriptor materialization fails with a frontend diagnostic.
+
+**Comparison with Runtime Conditionals**:
+
+| Aspect | Runtime `if` | `pto.constexpr` |
+|--------|--------------|-----------------|
+| **Evaluation time** | Runtime | Compile-time (descriptor materialization) |
+| **Control flow** | Generates `scf.if` with merge logic | No runtime control flow; branch eliminated |
+| **Value merging** | Both branches must produce compatible values for merge | No value merging; only one branch exists after elimination |
+| **Use case** | Dynamic decision making based on runtime values | Code generation specialization based on static parameters |
+
+**Typical Static Inputs**:
+- Literal integers, booleans, and strings
+- Data type symbols (`src.element_type`, `dst.element_type`) and comparisons derived from them
+- Statically specialized `Tile.shape` and `Tile.valid_shape` values
+- Frontend query helpers such as `pto.bytewidth(dtype)` and `pto.get_lanes(dtype)`
+
+**Constraints and Notes**:
+- `TensorView.shape` and `TensorView.strides` may be represented by hidden kernel parameters rather than descriptor-time constants. They should not be assumed constexpr unless separately bound through specialization or other compile-time context.
+- `pto.constexpr` is a frontend-only authoring construct; it does not correspond to any runtime VPTO instruction.
+
+**Guidelines**:
+- Use `constraints=[...]` and `pto.select_kernel(...)` when specialization requires selecting an entirely different kernel descriptor.
+- Use `pto.constexpr` when the kernel remains the same but internal regions require specialization based on compile-time parameters.
+
+**Example**:
+```python
+@pto.vkernel(target="a5", op="pto.trowsum")
+def template_trowsum(dst: pto.Tile, src: pto.Tile, tmp: pto.Tile):
+    acc_dtype = tmp.element_type
+    dst_dtype = dst.element_type
+    dst_mask_1, _ = pto.make_mask(dst_dtype, 1)
+
+    if pto.constexpr(acc_dtype != dst_dtype):
+        # Type conversion required
+        v_acc_casted = pto.vcvt(v_acc, dst_mask_1, dst_dtype)
+        pto.vsts(v_acc_casted, dst[row, 0:], dst_mask_1)
+    else:
+        # No conversion needed
+        pto.vsts(v_acc, dst[row, 0:], dst_mask_1)
+```
+
 ### Value Model
 
 The DSL operates on symbolic values, not Python runtime values:
@@ -1103,9 +1163,65 @@ else:
 
 Variables defined in only one branch are local to that branch.
 
+
 ## Operations
 
 The DSL provides operations grouped by functionality. All operations use the `pto.` prefix. Operations are organized by functional families following the VPTO instruction set architecture.
+
+### Frontend-only Authoring Operations
+
+Operations in this family affect descriptor construction and code generation
+shape. They are consumed by the frontend and do not correspond to runtime VPTO
+instructions by themselves.
+
+#### `pto.constexpr(value: bool) -> bool`
+
+**Description**: Compile-time conditional construct for kernel specialization. Marks a boolean expression for evaluation during descriptor materialization, enabling branch elimination based on static compile-time information.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `value` | `bool` | Boolean expression that must be evaluable at compile time. |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `bool` | A frontend-only compile-time boolean used to guard `if` statements. |
+
+**Behavior**:
+- Evaluated during kernel descriptor materialization before semantic analysis and lowering.
+- When used in `if pto.constexpr(...):` statements, only the selected branch is retained; the other branch is discarded entirely.
+- If the condition cannot be proven static, descriptor materialization fails with a frontend diagnostic.
+- Does not generate runtime control flow or value merging logic.
+
+**Examples**:
+```python
+# Specialize based on element size
+dtype = dst.element_type
+elem_bytes = pto.bytewidth(dtype)
+
+if pto.constexpr(elem_bytes == 2):
+    # Specialized path for 16-bit types (f16/bf16)
+    ...
+else:
+    # Fallback path for other types
+    ...
+```
+
+```python
+# Specialize based on tile shape
+rows, cols = dst.shape
+
+if pto.constexpr(rows == 1 and cols == 16):
+    # Fast path for specific tile configuration
+    ...
+```
+
+**Constraints**:
+- `pto.constexpr` is a frontend-only authoring construct with no runtime representation.
+- The condition must be statically evaluable from descriptor-time information (data types, tile shapes, literals, etc.).
+- For kernel-level specialization, prefer `constraints=[...]` and `pto.select_kernel(...)`.
+- See [Compile-time Specialization with `pto.constexpr`](#compile-time-specialization-with-ptoconstexpr) for detailed usage guidelines.
 
 ### Type Query Operations
 

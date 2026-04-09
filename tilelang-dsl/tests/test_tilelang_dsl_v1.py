@@ -63,6 +63,7 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertTrue(hasattr(pto, "TileSpecialization"))
         self.assertTrue(hasattr(pto, "PointerType"))
         self.assertTrue(hasattr(pto, "ptr"))
+        self.assertTrue(hasattr(pto, "constexpr"))
         self.assertTrue(hasattr(pto, "bytewidth"))
         self.assertTrue(hasattr(pto, "get_lanes"))
         self.assertTrue(hasattr(pto, "PAT"))
@@ -100,6 +101,8 @@ class TileLangDSLSupportMatrixTests(unittest.TestCase):
         self.assertEqual(get_feature_tier("PadMode"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.bytewidth"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.get_lanes"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.constexpr"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("constexpr"), BASIC_TIER)
         self.assertEqual(get_feature_tier("tile[start:]"), BASIC_TIER)
         self.assertEqual(get_feature_tier("tile[row, col:]"), BASIC_TIER)
 
@@ -2304,6 +2307,44 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             analyze_frontend_kernel(build_frontend_kernel_node(specialized))
         self.assertIn("pto.castptr input must be an index/i64, pointer, or memref-backed address value", str(tile_ctx.exception))
 
+    def test_constexpr_if_folds_static_dtype_condition_without_scf_if(self) -> None:
+        @pto.vkernel(op="constexpr_if_dtype_fold", dtypes=[(pto.f16, pto.f32)])
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            step = 64
+            if pto.constexpr(dst.element_type != src.element_type):
+                step = 128
+            else:
+                step = 64
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        self.assertFalse(any(isinstance(stmt, SemanticIfStmt) for stmt in semantic_kernel.body))
+
+        text = specialized.mlir_text()
+        self.assertNotIn("scf.if", text)
+        self.assertNotIn("arith.cmpi ne", text)
+        self.assertRegex(text, r"%step_\d+ = arith\.constant 128 : index")
+
+    def test_constexpr_if_rejects_non_static_condition(self) -> None:
+        @pto.vkernel(op="constexpr_if_dynamic_reject", dtypes=[(pto.f32,)])
+        def kernel(src: pto.TensorView):
+            step = 64
+            if pto.constexpr(src.shape[0] != 1):
+                step = 128
+            return None
+
+        with self.assertRaises(TypeError) as ctx:
+            analyze_frontend_kernel(build_frontend_kernel_node(kernel))
+        self.assertIn(
+            "if pto.constexpr(...) condition must be a compile-time bool",
+            str(ctx.exception),
+        )
+
     def test_if_compare_or_condition_lowers_to_cmp_and_bool_ops(self) -> None:
         @pto.vkernel(op="if_compare_or", dtypes=[(pto.f32,)])
         def kernel(src: pto.TensorView):
@@ -2337,6 +2378,47 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertRegex(text, r"arith\.cmpi ne, %loop1_\d+, %c1 : index")
         self.assertRegex(text, r"arith\.cmpi ne, %loop2_\d+, %c1 : index")
         self.assertRegex(text, r"arith\.ori %tmp_\d+, %tmp_\d+ : i1")
+        self.assertRegex(text, r"%step_\d+ = scf\.if %tmp_\d+ -> \(index\) \{")
+
+    def test_if_ordered_index_comparisons_lower_to_signed_cmp_predicates(self) -> None:
+        @pto.vkernel(op="if_compare_ordered_index", dtypes=[(pto.f32,)])
+        def kernel(src: pto.TensorView):
+            dim0 = src.shape[0]
+            dim1 = src.shape[1]
+            step = 64
+            if dim0 > 1 and dim1 <= 8:
+                step = 128
+            else:
+                step = 32
+            return None
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(kernel))
+        self.assertIsInstance(semantic_kernel.body[3], SemanticIfStmt)
+        condition = semantic_kernel.body[3].condition
+        self.assertIsInstance(condition, SemanticBinaryExpr)
+        self.assertEqual(condition.op, "and")
+
+        text = kernel.mlir_text()
+        self.assertRegex(text, r"arith\.cmpi sgt, %dim0_\d+, %c1 : index")
+        self.assertRegex(text, r"arith\.cmpi sle, %dim1_\d+, %c8 : index")
+        self.assertRegex(text, r"arith\.andi %tmp_\d+, %tmp_\d+ : i1")
+        self.assertRegex(text, r"%step_\d+ = scf\.if %tmp_\d+ -> \(index\) \{")
+
+    def test_if_ordered_float_comparison_lowers_to_cmpf_predicate(self) -> None:
+        @pto.vkernel(op="if_compare_ordered_float", dtypes=[(pto.f32, pto.f32, pto.f32)])
+        def kernel(src: pto.TensorView, lhs: pto.f32, rhs: pto.f32):
+            step = 64
+            if lhs > rhs:
+                step = 128
+            else:
+                step = 64
+            return None
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(kernel))
+        self.assertIsInstance(semantic_kernel.body[1], SemanticIfStmt)
+
+        text = kernel.mlir_text()
+        self.assertRegex(text, r"arith\.cmpf ogt, %arg1, %arg2 : f32")
         self.assertRegex(text, r"%step_\d+ = scf\.if %tmp_\d+ -> \(index\) \{")
 
     def test_shape_and_stride_tuple_unpacking_lower_cleanly(self) -> None:

@@ -618,23 +618,43 @@ class _SemanticAnalyzer:
                     )
                 else:
                     for stmt in run:
-                        semantic_stmt, current_env = self._analyze_stmt(
+                        emitted_stmts, current_env = self._analyze_stmt_or_inline(
                             stmt,
                             current_env,
                             allow_outer_lookup=allow_outer_lookup,
                         )
-                        semantic_statements.append(semantic_stmt)
+                        semantic_statements.extend(emitted_stmts)
                 index = end
                 continue
 
-            semantic_stmt, current_env = self._analyze_stmt(
+            emitted_stmts, current_env = self._analyze_stmt_or_inline(
                 statements[index],
                 current_env,
                 allow_outer_lookup=allow_outer_lookup,
             )
-            semantic_statements.append(semantic_stmt)
+            semantic_statements.extend(emitted_stmts)
             index += 1
         return tuple(semantic_statements), current_env
+
+    def _analyze_stmt_or_inline(
+        self,
+        stmt: FrontendStmtNode,
+        env: dict[str, SemanticBinding],
+        *,
+        allow_outer_lookup: bool,
+    ) -> tuple[tuple[SemanticStmt, ...], dict[str, SemanticBinding]]:
+        if isinstance(stmt, FrontendIfStmt) and stmt.is_constexpr:
+            return self._analyze_constexpr_if(
+                stmt,
+                env,
+                allow_outer_lookup=allow_outer_lookup,
+            )
+        semantic_stmt, updated_env = self._analyze_stmt(
+            stmt,
+            env,
+            allow_outer_lookup=allow_outer_lookup,
+        )
+        return (semantic_stmt,), updated_env
 
     def _wrap_kernel_body_in_inferred_vecscope(
         self,
@@ -781,12 +801,12 @@ class _SemanticAnalyzer:
         current_env = dict(env)
         semantic_statements = []
         for stmt in statements:
-            semantic_stmt, current_env = self._analyze_stmt(
+            emitted_stmts, current_env = self._analyze_stmt_or_inline(
                 stmt,
                 current_env,
                 allow_outer_lookup=allow_outer_lookup,
             )
-            semantic_statements.append(semantic_stmt)
+            semantic_statements.extend(emitted_stmts)
         return tuple(semantic_statements), current_env
 
     def _semantic_block_contains_vector_activity(
@@ -1577,13 +1597,7 @@ class _SemanticAnalyzer:
         raise ValueError(f"unsupported frontend assignment target {type(target).__name__}")
 
     def _binding_value_for_expr(self, expr: SemanticExpr) -> Any | None:
-        if isinstance(expr, SemanticSymbolExpr):
-            return expr.value
-        if isinstance(expr, SemanticLiteralExpr):
-            return expr.value
-        if isinstance(expr, SemanticBindingRef):
-            return expr.binding.value
-        return None
+        return self._try_static_value(expr)
 
     def _annotation_type(
         self,
@@ -1659,6 +1673,11 @@ class _SemanticAnalyzer:
     ) -> tuple[SemanticStmt, dict[str, SemanticBinding]]:
         condition = self._analyze_expr(stmt.condition, env, allow_outer_lookup=allow_outer_lookup)
         self._require_condition_type(condition.type)
+        if self._contains_meta_condition_operand(condition):
+            raise TypeError(
+                "if condition comparing meta values requires wrapping the condition with pto.constexpr(...) "
+                "in TileLang DSL v1"
+            )
 
         then_body, then_env = self._analyze_block(
             stmt.then_body,
@@ -1701,6 +1720,36 @@ class _SemanticAnalyzer:
                 results=tuple(merged_results),
             ),
             updated_env,
+        )
+
+    def _contains_meta_condition_operand(self, expr: SemanticExpr) -> bool:
+        if isinstance(expr, SemanticBinaryExpr):
+            if expr.op in {"eq", "ne"} and (
+                isinstance(expr.lhs.type, SemanticMetaType) or isinstance(expr.rhs.type, SemanticMetaType)
+            ):
+                return True
+            if expr.op in {"and", "or"}:
+                return self._contains_meta_condition_operand(expr.lhs) or self._contains_meta_condition_operand(expr.rhs)
+        return False
+
+    def _analyze_constexpr_if(
+        self,
+        stmt: FrontendIfStmt,
+        env: dict[str, SemanticBinding],
+        *,
+        allow_outer_lookup: bool,
+    ) -> tuple[tuple[SemanticStmt, ...], dict[str, SemanticBinding]]:
+        condition = self._analyze_expr(stmt.condition, env, allow_outer_lookup=allow_outer_lookup)
+        self._require_condition_type(condition.type)
+        static_value = self._require_constexpr_condition_bool(
+            condition,
+            context="if pto.constexpr(...) condition",
+        )
+        selected_body = stmt.then_body if static_value else stmt.else_body
+        return self._analyze_block(
+            selected_body,
+            dict(env),
+            allow_outer_lookup=allow_outer_lookup,
         )
 
     def _analyze_strict_vecscope(
@@ -2177,8 +2226,18 @@ class _SemanticAnalyzer:
                 return SemanticScalarType(dtype=i1)
             if isinstance(lhs.type, SemanticScalarType) and lhs.type == rhs.type:
                 return SemanticScalarType(dtype=i1)
+            if isinstance(lhs.type, SemanticMetaType) and lhs.type == rhs.type:
+                return SemanticScalarType(dtype=i1)
             raise TypeError(
-                "comparison expressions currently require matching scalar types or index-typed operands"
+                "comparison expressions currently require matching scalar/meta types or index-typed operands"
+            )
+        if op in {"gt", "lt", "ge", "le"}:
+            if isinstance(lhs.type, SemanticIndexType) and isinstance(rhs.type, SemanticIndexType):
+                return SemanticScalarType(dtype=i1)
+            if isinstance(lhs.type, SemanticScalarType) and lhs.type == rhs.type:
+                return SemanticScalarType(dtype=i1)
+            raise TypeError(
+                "ordered comparison expressions currently require matching scalar types or index-typed operands"
             )
         if op in {"and", "or"}:
             self._require_condition_type(lhs.type)
@@ -2210,6 +2269,10 @@ class _SemanticAnalyzer:
             return self._analyze_bytewidth(args)
         if name == "get_lanes":
             return self._analyze_get_lanes(args)
+        if name == "constexpr":
+            raise TypeError(
+                "pto.constexpr(...) is only supported as an if-condition wrapper in TileLang DSL v1"
+            )
         if name == "make_mask":
             return self._analyze_make_mask(args)
         if name == "vlds":
@@ -2808,19 +2871,170 @@ class _SemanticAnalyzer:
         if not isinstance(expr.type, SemanticIndexType):
             raise TypeError("slice bounds and vector offsets must be index-typed in TileLang DSL v1")
 
+    def _try_static_dtype(self, expr: SemanticExpr) -> ScalarType | None:
+        if (
+            isinstance(expr, SemanticSymbolExpr)
+            and expr.type.kind == "dtype"
+            and isinstance(expr.value, ScalarType)
+        ):
+            return expr.value
+        if (
+            isinstance(expr, SemanticBindingRef)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "dtype"
+            and isinstance(expr.binding.value, ScalarType)
+        ):
+            return expr.binding.value
+        return None
+
+    def _try_static_subscript_value(self, expr: SemanticSubscriptAccess) -> Any | None:
+        index_value = self._try_static_value(expr.index)
+        if not isinstance(index_value, int):
+            return None
+
+        base = expr.base
+        if isinstance(base, SemanticAttributeAccess) and isinstance(base.base, SemanticBindingRef):
+            binding_ref = base.base
+            binding_type = binding_ref.type
+            if isinstance(binding_type, SemanticTileType):
+                if base.attr == "shape" and binding_type.shape is not None:
+                    if 0 <= index_value < len(binding_type.shape):
+                        return binding_type.shape[index_value]
+                if base.attr == "valid_shape" and binding_type.valid_shape is not None:
+                    if 0 <= index_value < len(binding_type.valid_shape):
+                        return binding_type.valid_shape[index_value]
+                return None
+            if isinstance(binding_type, SemanticTensorViewType):
+                return None
+
+        base_value = self._try_static_value(base)
+        if isinstance(base_value, (tuple, list)):
+            if 0 <= index_value < len(base_value):
+                return base_value[index_value]
+            return None
+        return None
+
+    def _try_static_value(self, expr: SemanticExpr | None) -> Any | None:
+        if expr is None:
+            return None
+        if isinstance(expr, SemanticSymbolExpr):
+            return expr.value
+        if isinstance(expr, SemanticLiteralExpr):
+            return expr.value
+        if isinstance(expr, SemanticBindingRef):
+            return expr.binding.value
+        if isinstance(expr, SemanticTupleExpr):
+            elements = []
+            for element in expr.elements:
+                static_element = self._try_static_value(element)
+                if static_element is None:
+                    return None
+                elements.append(static_element)
+            return tuple(elements)
+        if isinstance(expr, SemanticSubscriptAccess):
+            return self._try_static_subscript_value(expr)
+        if isinstance(expr, SemanticBinaryExpr):
+            if expr.op in {"and", "or"}:
+                lhs_bool = self._try_static_condition_bool(expr.lhs)
+                rhs_bool = self._try_static_condition_bool(expr.rhs)
+                if lhs_bool is None or rhs_bool is None:
+                    return None
+                if expr.op == "and":
+                    return lhs_bool and rhs_bool
+                return lhs_bool or rhs_bool
+            lhs = self._try_static_value(expr.lhs)
+            rhs = self._try_static_value(expr.rhs)
+            if lhs is None or rhs is None:
+                return None
+            if expr.op == "add":
+                if isinstance(lhs, int) and isinstance(rhs, int):
+                    return lhs + rhs
+                return None
+            if expr.op == "sub":
+                if isinstance(lhs, int) and isinstance(rhs, int):
+                    return lhs - rhs
+                return None
+            if expr.op == "mul":
+                if isinstance(lhs, int) and isinstance(rhs, int):
+                    return lhs * rhs
+                return None
+            if expr.op == "floordiv":
+                if isinstance(lhs, int) and isinstance(rhs, int):
+                    if rhs == 0:
+                        return None
+                    return lhs // rhs
+                return None
+            if expr.op == "eq":
+                return lhs == rhs
+            if expr.op == "ne":
+                return lhs != rhs
+            if expr.op == "gt":
+                try:
+                    return lhs > rhs
+                except TypeError:
+                    return None
+            if expr.op == "lt":
+                try:
+                    return lhs < rhs
+                except TypeError:
+                    return None
+            if expr.op == "ge":
+                try:
+                    return lhs >= rhs
+                except TypeError:
+                    return None
+            if expr.op == "le":
+                try:
+                    return lhs <= rhs
+                except TypeError:
+                    return None
+            return None
+        if isinstance(expr, SemanticCallExpr):
+            if expr.namespace != "pto":
+                return None
+            if expr.name == "bytewidth":
+                if len(expr.args) != 1:
+                    return None
+                dtype = self._try_static_dtype(expr.args[0])
+                if dtype is None:
+                    return None
+                return bytewidth(dtype)
+            if expr.name == "get_lanes":
+                if len(expr.args) != 1:
+                    return None
+                dtype = self._try_static_dtype(expr.args[0])
+                if dtype is None:
+                    return None
+                return self._vreg_type_for_dtype(dtype).lanes
+        return None
+
+    def _try_static_condition_bool(self, expr: SemanticExpr | None) -> bool | None:
+        value = self._try_static_value(expr)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int):
+            return value != 0
+        return None
+
+    def _require_constexpr_condition_bool(
+        self,
+        expr: SemanticExpr,
+        *,
+        context: str,
+    ) -> bool:
+        value = self._try_static_condition_bool(expr)
+        if value is None:
+            raise TypeError(
+                f"{context} must be a compile-time bool in TileLang DSL v1"
+            )
+        return value
+
     def _static_index_value(self, expr: SemanticExpr | None, *, default: int | None) -> int | None:
         if expr is None:
             return default
-        if isinstance(expr, SemanticLiteralExpr):
-            if isinstance(expr.type, SemanticIndexType) and isinstance(expr.value, int):
-                return expr.value
-            return None
-        if (
-            isinstance(expr, SemanticBindingRef)
-            and isinstance(expr.type, SemanticIndexType)
-            and isinstance(expr.binding.value, int)
-        ):
-            return expr.binding.value
+        value = self._try_static_value(expr)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
         return None
 
     def _require_optional_index_typed_expr(self, expr: SemanticExpr | None) -> None:
