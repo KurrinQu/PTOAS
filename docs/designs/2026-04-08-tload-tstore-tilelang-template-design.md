@@ -396,8 +396,8 @@ def template_tstore(src: pto.Tile, dst: pto.TensorView):
 | 2 | rank-5 `partition_tensor_view` 的 authoring/lowering 路径 | IR pipeline | blocking |
 | 3 | `pto.copy_gm_to_ubuf` / `pto.copy_ubuf_to_gm` 的 DSL Python wrapper 暴露 burst 字段 | DSL frontend wrapper | blocking |
 | 4 | `TensorView.as_ptr()` | 类型系统 | blocking |
-| 5 | `pto.set_loop*_stride_*` / `pto.set_loop_size_*` 的 src/dst 与 loop1/loop2 **命名参数** | DMA intrinsic | 可暂缓（ergonomics） |
-| 6 | `pto.bytewidth(dtype)` | scalar builtin | 必要 |
+| 5 | `pto.bytewidth(dtype)` | scalar builtin | 必要 |
+| 6 | `pto.set_loop*_stride_*` / `pto.set_loop_size_*` 的 src/dst 与 loop1/loop2 **命名参数** | DMA intrinsic | 可暂缓（ergonomics） |
 | 7 | `pto.assert_rank / assert_eq / assert_le`（实例化期断言） | frontend 约束 | 可暂缓 |
 | 8 | fp4 偏移减半的 dtype 特化分支 | dtype 处理 | 可暂缓 |
 | 9 | 非 row-major UB tile stride 泛化 | tile 布局 | 可暂缓 |
@@ -507,7 +507,18 @@ class TensorView:
     def as_ptr(self) -> GMPtr: ...     # 对应已有的 Tile.as_ptr()
 ```
 
-### 5. `set_loop*_stride_*` / `set_loop_size_*` 的命名参数（可暂缓）
+### 5. `pto.bytewidth(dtype)`
+
+模板内部需要统一把元素个数换算为字节数：
+
+- `len_burst = g4 * elem_bytes`
+- `gm_stride = s3 * elem_bytes`
+- `ub_stride = ub_cols * elem_bytes`
+
+需要一个明确的 frontend 内建 `pto.bytewidth(dtype) -> pto.i32`，在实例化阶段可求值
+（对 fp4 要处理 bit-width 不满 1 字节的 case，或先作为 error 拦截）。
+
+### 6. `set_loop*_stride_*` / `set_loop_size_*` 的命名参数（可暂缓）
 
 当前 DSL 签名是：
 
@@ -539,17 +550,6 @@ lowering 时再按硬件的 bit field 约定打包。这不是新能力，只是
 不过这一条不阻塞模板主路径：现有的 `(stride0, stride1)` / `(size0, size1)` 位置参数
 仍可调用，只要在调用点用注释固定 src/dst、loop1/loop2 的位置约定即可。先暂缓，
 等模板主路径走通后再补齐。
-
-### 6. `pto.bytewidth(dtype)`
-
-模板内部需要统一把元素个数换算为字节数：
-
-- `len_burst = g4 * elem_bytes`
-- `gm_stride = s3 * elem_bytes`
-- `ub_stride = ub_cols * elem_bytes`
-
-需要一个明确的 frontend 内建 `pto.bytewidth(dtype) -> pto.i32`，在实例化阶段可求值
-（对 fp4 要处理 bit-width 不满 1 字节的 case，或先作为 error 拦截）。
 
 ### 7. 实例化期断言 `pto.assert_`（可暂缓）
 
