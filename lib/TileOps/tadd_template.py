@@ -9,7 +9,7 @@ import tilelang_dsl as pto
     target="a5",
     op="pto.tadd"
 )
-def template_tadd(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
+def template_tadd(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
     dtype = dst.element_type
     valid_rows, valid_cols = dst.valid_shape
 
