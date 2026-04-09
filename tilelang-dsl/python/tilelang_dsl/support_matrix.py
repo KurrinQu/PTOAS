@@ -120,9 +120,6 @@ ADVANCED_RAW_POINTER_SURFACES = frozenset(
         "ptr",
         "pto.ptr",
         "PointerType",
-        "GMPtr",
-        "UBPtr",
-        "UBRef",
         "pto.castptr",
         "pto.addptr",
     }
@@ -145,12 +142,9 @@ ADVANCED_TILE_HELPER_SURFACES = frozenset(
     {
         "tile.slice",
         "tile.reshape",
-        "tile.to_ubref",
         "tile.as_ptr",
         "tensorview.as_ptr",
-        "tile.to_memref",
         "pto.tile_from_ptr",
-        "pto.tile_from_memref",
         "pto.tile_with_strides",
         "pto.tile_config",
     }
@@ -261,19 +255,13 @@ LANGUAGE_CONSTRUCT_TIERS = {
     "tile[row, col:]": BASIC_TIER,
     # Advanced tier constructs
     "ptr": ADVANCED_TIER,  # raw pointer constructor
-    "UBRef": ADVANCED_TIER,  # UB reference type
-    "GMPtr": ADVANCED_TIER,  # GM pointer type
-    "UBPtr": ADVANCED_TIER,  # UB pointer type
     "strict_vecscope": ADVANCED_TIER,  # explicit vecscope management
     "pto.strict_vecscope": ADVANCED_TIER,
     "tile.slice": ADVANCED_TIER,
     "tile.reshape": ADVANCED_TIER,
-    "tile.to_ubref": ADVANCED_TIER,
     "tile.as_ptr": ADVANCED_TIER,
     "tensorview.as_ptr": ADVANCED_TIER,
-    "tile.to_memref": ADVANCED_TIER,
     "pto.tile_from_ptr": ADVANCED_TIER,
-    "pto.tile_from_memref": ADVANCED_TIER,
     "pto.tile_with_strides": ADVANCED_TIER,
     "pto.tile_config": ADVANCED_TIER,
 }

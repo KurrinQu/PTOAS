@@ -2156,11 +2156,11 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         text = specialized.mlir_text()
         self.assertRegex(
             text,
-            r"%gm_ptr_\d+ = pto\.castptr %arg0 : !pto\.tensor_view<\?x\?x\?x\?x\?xf32> -> !pto\.ptr<f32, gm>",
+            r"%gm_ptr_\d+ = pto\.tensor_view_addr %arg0 : !pto\.tensor_view<\?x\?x\?x\?x\?xf32> -> !pto\.ptr<f32, gm>",
         )
         self.assertRegex(
             text,
-            r"%ub_ptr_\d+ = pto\.castptr %arg1 : !pto\.tile_buf<loc=vec, dtype=f32, rows=8, cols=64, v_row=8, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0> -> !pto\.ptr<f32, ub>",
+            r"%ub_ptr_\d+ = pto\.tile_buf_addr %arg1 : !pto\.tile_buf<loc=vec, dtype=f32, rows=8, cols=64, v_row=8, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0> -> !pto\.ptr<f32, ub>",
         )
         self.assertRegex(text, r"pto\.set_loop2_stride_outtoub %tmp_\d+, %tmp_\d+ : i64, i64")
         self.assertRegex(text, r"pto\.set_loop1_stride_outtoub %tmp_\d+, %tmp_\d+ : i64, i64")
@@ -2200,11 +2200,11 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         text = specialized.mlir_text()
         self.assertRegex(
             text,
-            r"%ub_ptr_\d+ = pto\.castptr %arg0 : !pto\.tile_buf<loc=vec, dtype=f32, rows=8, cols=64, v_row=8, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0> -> !pto\.ptr<f32, ub>",
+            r"%ub_ptr_\d+ = pto\.tile_buf_addr %arg0 : !pto\.tile_buf<loc=vec, dtype=f32, rows=8, cols=64, v_row=8, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0> -> !pto\.ptr<f32, ub>",
         )
         self.assertRegex(
             text,
-            r"%gm_ptr_\d+ = pto\.castptr %arg1 : !pto\.tensor_view<\?x\?x\?x\?x\?xf32> -> !pto\.ptr<f32, gm>",
+            r"%gm_ptr_\d+ = pto\.tensor_view_addr %arg1 : !pto\.tensor_view<\?x\?x\?x\?x\?xf32> -> !pto\.ptr<f32, gm>",
         )
         self.assertRegex(text, r"pto\.set_loop2_stride_ubtoout %tmp_\d+, %tmp_\d+ : i64, i64")
         self.assertRegex(text, r"pto\.set_loop1_stride_ubtoout %tmp_\d+, %tmp_\d+ : i64, i64")
@@ -2213,6 +2213,28 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             text,
             r"pto\.copy_ubuf_to_gm %ub_ptr_\d+, %gm_ptr_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+",
         )
+
+    def test_castptr_rejects_tensorview_or_tile_inputs_in_advanced_mode(self) -> None:
+        @pto.vkernel(op="castptr_tensorview_reject_unique", dtypes=[(pto.f32,)], advanced=True)
+        def tensorview_kernel(inp: pto.TensorView):
+            tmp = pto.castptr(inp, pto.ptr(pto.f32, pto.MemorySpace.GM))
+            return None
+
+        with self.assertRaises(TypeError) as tensorview_ctx:
+            analyze_frontend_kernel(build_frontend_kernel_node(tensorview_kernel))
+        self.assertIn("pto.castptr input must be an index/i64, pointer, or memref-backed address value", str(tensorview_ctx.exception))
+
+        @pto.vkernel(op="castptr_tile_reject_unique", dtypes=[(pto.f32,)], advanced=True)
+        def tile_kernel(inp: pto.Tile):
+            tmp = pto.castptr(inp, pto.ptr(pto.f32, pto.MemorySpace.UB))
+            return None
+
+        specialized = tile_kernel.specialize(
+            inp=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+        with self.assertRaises(TypeError) as tile_ctx:
+            analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        self.assertIn("pto.castptr input must be an index/i64, pointer, or memref-backed address value", str(tile_ctx.exception))
 
     def test_if_compare_or_condition_lowers_to_cmp_and_bool_ops(self) -> None:
         @pto.vkernel(op="if_compare_or", dtypes=[(pto.f32,)])

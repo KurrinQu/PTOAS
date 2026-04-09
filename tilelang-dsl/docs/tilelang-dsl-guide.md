@@ -14,11 +14,37 @@ The DSL surface is organized into multiple maturity tiers, reflecting the stabil
 | `Tile` | `basic` | Default UB-facing compute tile for starter kernels. |
 | Base vector ops (`make_mask`, `vlds`, `vsts`, `vadd`, `vmuls`, etc.) | `basic` | Default compute skeleton for starter kernels. |
 | `strict_vecscope` | `advanced` | Explicit vector-scope management for expert authoring. |
-| Raw pointer family (`ptr(...)`, `castptr`, `addptr`, `GMPtr`, `UBPtr`, `UBRef`) | `advanced` | For expert authoring and migration; not required for Quick Start. |
+| Raw pointer family (`ptr(...)`, `castptr`, `addptr`) | `advanced` | For expert authoring and migration; not required for Quick Start. |
 | DMA family (`copy_*`, `set_loop*_stride_*`, `set_loop_size_*`) | `advanced` | Direct DMA engine control for expert authoring. |
-| Tile helper family (`tile.slice(...)`, `tile.reshape(...)`, `tile.to_ubref()`, `tile.as_ptr()`, `tile.to_memref()`, `tile_from_ptr(...)`, `tile_from_memref(...)`, `tile_with_strides(...)`, `tile_config(...)`) | `advanced` | Partial or evolving surface; not the default entry point. |
+| Tile helper family (`tile.slice(...)`, `tile.reshape(...)`, `tile.as_ptr()`, `tile_from_ptr(...)`, `tile_with_strides(...)`, `tile_config(...)`) | `advanced` | Partial or evolving surface; not the default entry point. |
 
 For the authoritative tier classification, consult `tilelang-dsl/python/tilelang_dsl/support_matrix.py`. For known implementation gaps, refer to `tilelang-dsl/docs/unsupported-features.md`.
+
+### Basic vs Advanced Authoring Modes
+
+The TileLang DSL provides two distinct authoring modes:
+
+**Basic Mode (default)**
+- Uses **Tile element/slice semantics** for buffer access
+- Direct tile indexing syntax: `tile[start:]`, `tile[row, col:]`
+- Vector operations use element-indexing syntax: `pto.vlds(tile[row, col:])`, `pto.vsts(vec, tile[start:], mask)`
+- No pointer arithmetic or explicit offset calculations
+- Suitable for most kernel authoring with high-level abstractions
+
+**Advanced Mode (`advanced=True` in `@pto.vkernel`)**
+- Uses **raw pointer semantics** for explicit memory management  
+- Direct pointer operations correspond to `pto.ptr` types in MLIR
+- Explicit pointer arithmetic: `ptr(...)`, `castptr`, `addptr`
+- Manual DMA engine control with low-level copy operations
+- Requires explicit buffer management and pointer arithmetic
+- Intended for expert users and performance-critical optimizations
+
+**Key Differences**
+- **Basic mode**: Uses tile element-indexing syntax (`tile[row, col:]`, `tile[start:]`) for vector operations
+- **Advanced mode**: Uses pointer byte-offset syntax (`pto.vlds(buf: ptr, offset)`) for vector operations
+- Tile slices in basic mode correspond to MLIR `memref` types
+- Raw pointers in advanced mode correspond to MLIR `pto.ptr` types
+- No automatic conversion between tile and pointer semantics - choose the appropriate syntax for your authoring mode
 
 ## Quick Start
 
@@ -696,13 +722,10 @@ This replaces string literals (`MemorySpace.GM`/`MemorySpace.UB`) with compile-t
 
 ### Pointer Type Aliases [Advanced Tier]
 
-For clarity in API documentation, the following type aliases are used:
+For clarity in API documentation, the following type alias is used:
 
 | Alias | Equivalent Type | Description |
 |-------|----------------|-------------|
-| `GMPtr` | `ptr(..., MemorySpace.GM)` | Pointer to Global Memory |
-| `UBPtr` | `ptr(..., MemorySpace.UB)` | Pointer to Unified Buffer |
-| `UBRef` | `Union[MemRefType, UBPtr]` | UB buffer or pointer (accepted by load/store ops) |
 | `Tile` | `pto.tile(...)` | Tile buffer with layout and configuration |
 
 ### MemRef Types
@@ -944,20 +967,29 @@ offset = tile.offset                  # pto.i64(0) or specified offset
 
 #### Conversion Operations
 
-Tiles support both explicit and implicit conversion to UBRef. When a tile is used in operations expecting a UBRef (e.g., `pto.vlds`, `pto.vsts`), it is automatically converted.
-
+**Basic Mode Syntax**: Use tile element-indexing directly in vector operations:
 ```python
-# Convert to UBRef (implicit in vector operations)
-ub_ref = tile.to_ubref()              # Explicit conversion
-# or use tile as UBRef directly in vector ops
-vec = pto.vlds(tile, offset)          # Implicit conversion
+# 2D tile indexing
+vec = pto.vlds(tile[row, col:])    
+pto.vsts(vec, tile[row, col:], mask)
 
-# Convert to typed pointer
-ptr = tile.as_ptr()                   # Returns pto.ptr(pto.f32, MemorySpace.UB)
+# 1D tile indexing  
+vec = pto.vlds(tile[start:])
+pto.vsts(vec, tile[start:], mask)
+```
 
-# Convert to MemRef (for compatibility)
-memref = tile.to_memref()             # Returns pto.memref((256, 128), pto.f32, MemorySpace.UB)
+**Advanced Mode Syntax**: Convert tiles to typed pointers for byte-offset operations:
+```python
+# Convert tile to pointer
+ptr = tile.as_ptr()                # Returns pto.ptr(pto.f32, MemorySpace.UB)
 
+# Use pointer with byte offset
+vec = pto.vlds(ptr, offset)
+pto.vsts(vec, ptr, offset, mask)
+```
+
+**Tile Manipulation Operations**:
+```python
 # Extract slice of tile
 slice_tile = tile.slice((0, 0), (64, 128))  # 64x128 slice from top-left corner
 
@@ -974,14 +1006,10 @@ def tiled_kernel(
     output_tile: pto.Tile,             # Another tile parameter
     scale: pto.f32
 ):
-    # Convert tiles to UBRef for vector operations
-    ub_in = input_tile.to_ubref()
-    ub_out = output_tile.to_ubref()
-    
-    # Or use tiles directly (implicit conversion)
+    # Tiles can be used directly in vector operations (no explicit conversion needed)
     all_mask = pto.make_mask(pto.f32, PAT.ALL)
     for i in range(0, 256, 64):
-        # tile implicitly converts to UBRef in vlds with element-indexing syntax
+        # tile element-indexing syntax for basic mode vector operations
         vec = pto.vlds(input_tile[i, 0:])        # Load from row i, columns 0 to vector_lanes-1
         scaled = pto.vmuls(vec, scale, all_mask)
         pto.vsts(scaled, output_tile[i, 0:], all_mask)  # Store to same position
@@ -993,10 +1021,6 @@ def tiled_kernel(
 # Create tile from existing pointer with shape
 ptr = pto.castptr(0, pto.ptr(pto.f32, MemorySpace.UB))
 tile = pto.tile_from_ptr(ptr, (256, 128), pto.f32)
-
-# Create tile from memref
-memref = pto.memref((256, 128), pto.f32, MemorySpace.UB)
-tile = pto.tile_from_memref(memref)
 
 # Create tile with explicit stride
 tile = pto.tile_with_strides((256, 128), pto.f32, MemorySpace.UB, 
@@ -1158,12 +1182,12 @@ Operations for creating and manipulating typed pointers.
 
 #### `pto.castptr(offset: pto.i64, ptr_type: Type) -> PtrType`
 
-**Description**: Creates a pointer with the specified offset and type.
+**Description**: Creates a typed pointer from an integer address, a memref-backed address value, or another typed pointer in the same memory space.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `offset` | `pto.i64` | Byte offset from base address |
+| `offset` | `pto.i64` / address-like value | Integer address, memref-backed address value, or existing pointer |
 | `ptr_type` | `Type` | Target pointer type (e.g., `pto.ptr(pto.f32, MemorySpace.GM)`) |
 
 **Returns**:
@@ -1175,6 +1199,8 @@ Operations for creating and manipulating typed pointers.
 ```python
 ub_ptr = pto.castptr(0, pto.ptr(pto.f32, MemorySpace.UB))
 ```
+
+`TensorView.as_ptr()` and `Tile.as_ptr()` remain the preferred high-level APIs. They lower directly to address-extraction intrinsics (`pto.tensor_view_addr` / `pto.tile_buf_addr`) with pointer result types, while tile slice / buffer-view authoring paths continue to materialize memref results from the same intrinsics.
 
 #### `pto.addptr(ptr: PtrType, offset: pto.i64) -> PtrType`
 
@@ -1646,16 +1672,16 @@ The syntax sugar eliminates manual byte calculations, reduces errors, and makes 
 
 Operations for loading data from memory into vector registers.
 
-#### `pto.vlds(buf: UBRef, offset: Index) -> VRegType`  [Advanced Tier]
-#### `pto.vlds(tile[row, col:]) -> VRegType`
-#### `pto.vlds(tile[start:]) -> VRegType`
+#### `pto.vlds(buf: ptr, offset: Index) -> VRegType`  [Advanced Tier]
+#### `pto.vlds(tile[row, col:]) -> VRegType`  [Basic Tier]
+#### `pto.vlds(tile[start:]) -> VRegType`  [Basic Tier]
 
 **Description**: Stateless vector load from buffer. Supports both traditional byte-offset syntax and new element-indexing syntax.
 
 **Parameters (byte-offset syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `buf` | `UBRef` | Buffer or pointer (UB memory space) |
+| `buf` | `ptr` | Pointer to buffer in UB memory space (Advanced mode only - requires explicit pointer) |
 | `offset` | `Index` | Byte offset |
 
 **Parameters (element-indexing syntax)**:
@@ -1696,16 +1722,16 @@ def generic_scale(src: pto.Tile, dst: pto.Tile, scale: pto.f32):
             pto.vsts(scaled, dst[i, j:], all_mask)
 ```
 
-#### `pto.vldas(buf: UBRef, offset: Index, align: pto.align) -> VRegType`  [Advanced Tier]
-#### `pto.vldas(tile[row, col:], align: pto.align) -> VRegType`  
-#### `pto.vldas(tile[start:], align: pto.align) -> VRegType`
+#### `pto.vldas(buf: ptr, offset: Index, align: pto.align) -> VRegType`  [Advanced Tier]
+#### `pto.vldas(tile[row, col:], align: pto.align) -> VRegType`  [Basic Tier]
+#### `pto.vldas(tile[start:], align: pto.align) -> VRegType`  [Basic Tier]
 
 **Description**: Aligned vector load with explicit alignment carrier. Supports both byte-offset and element-indexing syntax.
 
 **Parameters (byte-offset syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `buf` | `UBRef` | Buffer or pointer (UB memory space) |
+| `buf` | `ptr` | Pointer to buffer in UB memory space (Advanced mode only - requires explicit pointer) |
 | `offset` | `Index` | Byte offset |
 | `align` | `pto.align` | Alignment specification |
 
@@ -1731,16 +1757,16 @@ vec = pto.vldas(tile[i, j:], align)
 vec = pto.vldas(tile[k:], align)
 ```
 
-#### `pto.vldus(buf: UBRef, offset: Index) -> VRegType`  [Advanced Tier]
-#### `pto.vldus(tile[row, col:]) -> VRegType`  
-#### `pto.vldus(tile[start:]) -> VRegType`
+#### `pto.vldus(buf: ptr, offset: Index) -> VRegType`  [Advanced Tier]
+#### `pto.vldus(tile[row, col:]) -> VRegType`  [Basic Tier]
+#### `pto.vldus(tile[start:]) -> VRegType`  [Basic Tier]
 
 **Description**: Unaligned vector load. Supports both byte-offset and element-indexing syntax.
 
 **Parameters (byte-offset syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `buf` | `UBRef` | Buffer or pointer (UB memory space) |
+| `buf` | `ptr` | Pointer to buffer in UB memory space (Advanced mode only - requires explicit pointer) |
 | `offset` | `Index` | Byte offset |
 
 **Parameters (element-indexing syntax)**:
@@ -1764,16 +1790,16 @@ vec = pto.vldus(tile[i, j:])
 vec = pto.vldus(tile[k:])
 ```
 
-#### `pto.vplds(buf: UBRef, offset: Index, pred: MaskType) -> VRegType`  [Advanced Tier]
-#### `pto.vplds(tile[row, col:], pred: MaskType) -> VRegType`  
-#### `pto.vplds(tile[start:], pred: MaskType) -> VRegType`
+#### `pto.vplds(buf: ptr, offset: Index, pred: MaskType) -> VRegType`  [Advanced Tier]
+#### `pto.vplds(tile[row, col:], pred: MaskType) -> VRegType`  [Basic Tier]
+#### `pto.vplds(tile[start:], pred: MaskType) -> VRegType`  [Basic Tier]
 
 **Description**: Predicated vector load stateless. Supports both byte-offset and element-indexing syntax.
 
 **Parameters (byte-offset syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `buf` | `UBRef` | Buffer or pointer (UB memory space) |
+| `buf` | `ptr` | Pointer to buffer in UB memory space (Advanced mode only - requires explicit pointer) |
 | `offset` | `Index` | Byte offset |
 | `pred` | `MaskType` | Predicate mask |
 
@@ -1799,17 +1825,17 @@ vec = pto.vplds(tile[i, j:], mask)
 vec = pto.vplds(tile[k:], mask)
 ```
 
-#### `pto.vldx2(buf1: UBRef, buf2: UBRef, offset: Index) -> (VRegType, VRegType)`  [Advanced Tier]
-#### `pto.vldx2(tile1[row, col:], tile2[row, col:]) -> (VRegType, VRegType)`  
-#### `pto.vldx2(tile1[start:], tile2[start:]) -> (VRegType, VRegType)`
+#### `pto.vldx2(buf1: ptr, buf2: ptr, offset: Index) -> (VRegType, VRegType)`  [Advanced Tier]
+#### `pto.vldx2(tile1[row, col:], tile2[row, col:]) -> (VRegType, VRegType)`  [Basic Tier]
+#### `pto.vldx2(tile1[start:], tile2[start:]) -> (VRegType, VRegType)`  [Basic Tier]
 
 **Description**: Dual vector load from two buffers. Supports both byte-offset and element-indexing syntax.
 
 **Parameters (byte-offset syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `buf1` | `UBRef` | First buffer or pointer |
-| `buf2` | `UBRef` | Second buffer or pointer |
+| `buf1` | `ptr` | Pointer to first buffer (Advanced mode only - requires explicit pointer) |
+| `buf2` | `ptr` | Pointer to second buffer (Advanced mode only - requires explicit pointer) |
 | `offset` | `Index` | Byte offset (applied to both buffers) |
 
 **Parameters (element-indexing syntax)**:
@@ -1837,16 +1863,16 @@ vec1, vec2 = pto.vldx2(tile_a[i, j:], tile_b[i, j:])
 vec1, vec2 = pto.vldx2(tile_a[k:], tile_b[k:])
 ```
 
-#### `pto.vsld(buf: UBRef, offset: Index) -> VRegType`  [Advanced Tier]
-#### `pto.vsld(tile[row, col]) -> VRegType`  
-#### `pto.vsld(tile[pos]) -> VRegType`
+#### `pto.vsld(buf: ptr, offset: Index) -> VRegType`  [Advanced Tier]
+#### `pto.vsld(tile[row, col]) -> VRegType`  [Basic Tier]
+#### `pto.vsld(tile[pos]) -> VRegType`  [Basic Tier]
 
 **Description**: Scalar load to vector (broadcast scalar to all lanes). Supports both byte-offset and element-indexing syntax. The element-indexing syntax loads a single element (not a vector) and broadcasts it to all lanes.
 
 **Parameters (byte-offset syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `buf` | `UBRef` | Buffer or pointer (UB memory space) |
+| `buf` | `ptr` | Pointer to buffer in UB memory space (Advanced mode only - requires explicit pointer) |
 | `offset` | `Index` | Byte offset |
 
 **Parameters (element-indexing syntax)**:
@@ -2894,9 +2920,9 @@ def elementwise_kernel(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
 
 Operations for storing data from vector registers to memory (stateless).
 
-#### `pto.vsts(vec: VRegType, buf: UBRef, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
-#### `pto.vsts(vec: VRegType, tile[row, col:], mask: MaskType) -> None`  
-#### `pto.vsts(vec: VRegType, tile[start:], mask: MaskType) -> None`
+#### `pto.vsts(vec: VRegType, buf: ptr, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
+#### `pto.vsts(vec: VRegType, tile[row, col:], mask: MaskType) -> None`  [Basic Tier]
+#### `pto.vsts(vec: VRegType, tile[start:], mask: MaskType) -> None`  [Basic Tier]
 
 **Description**: Stateless vector store to buffer. Supports both byte-offset and element-indexing syntax.
 
@@ -2904,7 +2930,7 @@ Operations for storing data from vector registers to memory (stateless).
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `vec` | `VRegType` | Vector to store |
-| `buf` | `UBRef` | Destination buffer or pointer (UB memory space) |
+| `buf` | `ptr` | Pointer to destination buffer in UB memory space (Advanced mode only - requires explicit pointer) |
 | `offset` | `Index` | Byte offset |
 | `mask` | `MaskType` | Predicate mask |
 
@@ -2943,7 +2969,7 @@ def generic_store(src: pto.Tile, dst: pto.Tile):
             pto.vsts(vec, dst[i, j:], all_mask)  # No manual offset calculation
 ```
 
-#### `pto.psts(mask: MaskType, buf: UBRef, offset: Index) -> None`  [Advanced Tier]
+#### `pto.psts(mask: MaskType, buf: ptr, offset: Index) -> None`  [Advanced Tier]
 #### `pto.psts(mask: MaskType, tile[row, col:]) -> None`  
 #### `pto.psts(mask: MaskType, tile[start:]) -> None`
 
@@ -2953,7 +2979,7 @@ def generic_store(src: pto.Tile, dst: pto.Tile):
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `mask` | `MaskType` | Mask to store |
-| `buf` | `UBRef` | Destination buffer or pointer |
+| `buf` | `ptr` | Pointer to destination buffer (Advanced mode only - requires explicit pointer) |
 | `offset` | `Index` | Byte offset |
 
 **Parameters (element-indexing syntax)**:
@@ -2970,7 +2996,7 @@ def generic_store(src: pto.Tile, dst: pto.Tile):
 
 **Returns**: None (side-effect operation)
 
-#### `pto.vsst(scalar: ScalarType, buf: UBRef, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
+#### `pto.vsst(scalar: ScalarType, buf: ptr, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
 #### `pto.vsst(scalar: ScalarType, tile[row, col:], mask: MaskType) -> None`  
 #### `pto.vsst(scalar: ScalarType, tile[start:], mask: MaskType) -> None`
 
@@ -2980,7 +3006,7 @@ def generic_store(src: pto.Tile, dst: pto.Tile):
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `scalar` | `ScalarType` | Scalar value |
-| `buf` | `UBRef` | Destination buffer or pointer |
+| `buf` | `ptr` | Pointer to destination buffer (Advanced mode only - requires explicit pointer) |
 | `offset` | `Index` | Byte offset |
 | `mask` | `MaskType` | Predicate mask |
 
@@ -3000,7 +3026,7 @@ def generic_store(src: pto.Tile, dst: pto.Tile):
 
 **Returns**: None (side-effect operation)
 
-#### `pto.vstx2(vec1: VRegType, vec2: VRegType, buf1: UBRef, buf2: UBRef, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
+#### `pto.vstx2(vec1: VRegType, vec2: VRegType, buf1: ptr, buf2: ptr, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
 #### `pto.vstx2(vec1: VRegType, vec2: VRegType, tile1[row, col:], tile2[row, col:], mask: MaskType) -> None`  
 #### `pto.vstx2(vec1: VRegType, vec2: VRegType, tile1[start:], tile2[start:], mask: MaskType) -> None`
 
@@ -3011,8 +3037,8 @@ def generic_store(src: pto.Tile, dst: pto.Tile):
 |-----------|------|-------------|
 | `vec1` | `VRegType` | First vector to store |
 | `vec2` | `VRegType` | Second vector to store |
-| `buf1` | `UBRef` | First destination buffer |
-| `buf2` | `UBRef` | Second destination buffer |
+| `buf1` | `ptr` | First destination buffer |
+| `buf2` | `ptr` | Second destination buffer |
 | `offset` | `Index` | Byte offset (applied to both buffers) |
 | `mask` | `MaskType` | Predicate mask |
 
@@ -3036,7 +3062,7 @@ def generic_store(src: pto.Tile, dst: pto.Tile):
 
 **Returns**: None (side-effect operation)
 
-#### `pto.vsta(vec: VRegType, buf: UBRef, offset: Index, align: pto.align, mask: MaskType) -> None`  [Advanced Tier]
+#### `pto.vsta(vec: VRegType, buf: ptr, offset: Index, align: pto.align, mask: MaskType) -> None`  [Advanced Tier]
 #### `pto.vsta(vec: VRegType, tile[row, col:], align: pto.align, mask: MaskType) -> None`  
 #### `pto.vsta(vec: VRegType, tile[start:], align: pto.align, mask: MaskType) -> None`
 
@@ -3046,7 +3072,7 @@ def generic_store(src: pto.Tile, dst: pto.Tile):
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `vec` | `VRegType` | Vector to store |
-| `buf` | `UBRef` | Destination buffer or pointer |
+| `buf` | `ptr` | Pointer to destination buffer (Advanced mode only - requires explicit pointer) |
 | `offset` | `Index` | Byte offset |
 | `align` | `pto.align` | Alignment specification |
 | `mask` | `MaskType` | Predicate mask |
@@ -3073,7 +3099,7 @@ def generic_store(src: pto.Tile, dst: pto.Tile):
 
 Operations for storing data with stateful semantics.
 
-#### `pto.pstu(mask: MaskType, buf: UBRef, offset: Index) -> None`[Advanced Tier]
+#### `pto.pstu(mask: MaskType, buf: ptr, offset: Index) -> None`[Advanced Tier]
 
 **Description**: Predicate stateful store.
 
@@ -3081,12 +3107,12 @@ Operations for storing data with stateful semantics.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `mask` | `MaskType` | Mask to store |
-| `buf` | `UBRef` | Destination buffer or pointer |
+| `buf` | `ptr` | Pointer to destination buffer (Advanced mode only - requires explicit pointer) |
 | `offset` | `Index` | Byte offset |
 
 **Returns**: None (side-effect operation)
 
-#### `pto.vstu(vec: VRegType, buf: UBRef, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
+#### `pto.vstu(vec: VRegType, buf: ptr, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
 
 **Description**: Vector stateful store.
 
@@ -3094,13 +3120,13 @@ Operations for storing data with stateful semantics.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `vec` | `VRegType` | Vector to store |
-| `buf` | `UBRef` | Destination buffer or pointer |
+| `buf` | `ptr` | Pointer to destination buffer (Advanced mode only - requires explicit pointer) |
 | `offset` | `Index` | Byte offset |
 | `mask` | `MaskType` | Predicate mask |
 
 **Returns**: None (side-effect operation)
 
-#### `pto.vstus(vec: VRegType, buf: UBRef, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
+#### `pto.vstus(vec: VRegType, buf: ptr, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
 
 **Description**: Vector store update stateless.
 
@@ -3108,13 +3134,13 @@ Operations for storing data with stateful semantics.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `vec` | `VRegType` | Vector to store |
-| `buf` | `UBRef` | Destination buffer or pointer |
+| `buf` | `ptr` | Pointer to destination buffer (Advanced mode only - requires explicit pointer) |
 | `offset` | `Index` | Byte offset |
 | `mask` | `MaskType` | Predicate mask |
 
 **Returns**: None (side-effect operation)
 
-#### `pto.vstur(vec: VRegType, buf: UBRef, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
+#### `pto.vstur(vec: VRegType, buf: ptr, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
 
 **Description**: Vector store update register.
 
@@ -3122,7 +3148,7 @@ Operations for storing data with stateful semantics.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `vec` | `VRegType` | Vector to store |
-| `buf` | `UBRef` | Destination buffer or pointer |
+| `buf` | `ptr` | Pointer to destination buffer (Advanced mode only - requires explicit pointer) |
 | `offset` | `Index` | Byte offset |
 | `mask` | `MaskType` | Predicate mask |
 

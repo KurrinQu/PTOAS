@@ -1246,17 +1246,11 @@ LogicalResult mlir::pto::CastPtrOp::verify() {
   auto inputPtrType = dyn_cast<mlir::pto::PtrType>(inputType);
   auto resultPtrType = dyn_cast<mlir::pto::PtrType>(resultType);
   auto inputMemRefType = dyn_cast<BaseMemRefType>(inputType);
-  auto inputTensorViewType = dyn_cast<mlir::pto::TensorViewType>(inputType);
-  auto inputPartitionViewType =
-      dyn_cast<mlir::pto::PartitionTensorViewType>(inputType);
   bool inputIsInteger = isa<IntegerType>(inputType);
   bool resultIsInteger = isa<IntegerType>(resultType);
 
-  if (!inputPtrType && !inputMemRefType && !inputTensorViewType &&
-      !inputPartitionViewType && !inputIsInteger)
-    return emitOpError(
-        "input must be an integer, memref, tensor_view, partition_tensor_view, "
-        "or !pto.ptr<...>");
+  if (!inputPtrType && !inputMemRefType && !inputIsInteger)
+    return emitOpError("input must be an integer, memref, or !pto.ptr<...>");
   if (!resultPtrType && !resultIsInteger)
     return emitOpError("result must be an integer or !pto.ptr<...>");
 
@@ -1274,20 +1268,91 @@ LogicalResult mlir::pto::CastPtrOp::verify() {
       return emitOpError("memref-to-ptr cast must stay within the same PTO memory space");
   }
 
-  if ((inputTensorViewType || inputPartitionViewType) && resultIsInteger)
-    return emitOpError("tensor_view-to-integer cast is unsupported");
-
-  if ((inputTensorViewType || inputPartitionViewType) && resultPtrType &&
-      resultPtrType.getMemorySpace() !=
-          mlir::pto::AddressSpaceAttr::get(getContext(), mlir::pto::AddressSpace::GM)) {
-    return emitOpError("tensor_view-to-ptr cast must stay within gm memory space");
-  }
-
   if (inputPtrType && resultPtrType &&
       inputPtrType.getMemorySpace() != resultPtrType.getMemorySpace()) {
     return emitOpError("ptr-to-ptr cast must stay within the same PTO memory space");
   }
 
+  return success();
+}
+
+LogicalResult mlir::pto::TensorViewAddrOp::verify() {
+  Type srcType = getSrc().getType();
+  Type dstType = getDst().getType();
+
+  Type elementType;
+  int64_t expectedRank = -1;
+  auto gmSpace =
+      mlir::pto::AddressSpaceAttr::get(getContext(), mlir::pto::AddressSpace::GM);
+
+  if (auto tvType = dyn_cast<mlir::pto::TensorViewType>(srcType)) {
+    elementType = tvType.getElementType();
+    expectedRank = tvType.getRank();
+  } else if (auto partType = dyn_cast<mlir::pto::PartitionTensorViewType>(srcType)) {
+    elementType = partType.getElementType();
+    expectedRank = partType.getRank();
+  } else if (auto memrefType = dyn_cast<BaseMemRefType>(srcType)) {
+    elementType = memrefType.getElementType();
+    expectedRank = memrefType.getRank();
+    auto srcSpace =
+        dyn_cast_or_null<mlir::pto::AddressSpaceAttr>(memrefType.getMemorySpace());
+    if (srcSpace && srcSpace != gmSpace)
+      return emitOpError("memref source must stay in gm memory space");
+  } else {
+    return emitOpError("source must be a tensor_view, partition_tensor_view, or memref");
+  }
+
+  if (auto dstMemRefType = dyn_cast<BaseMemRefType>(dstType)) {
+    if (dstMemRefType.getElementType() != elementType)
+      return emitOpError("memref result element type must match source element type");
+    if (dstMemRefType.getRank() != expectedRank)
+      return emitOpError("memref result rank must match source rank");
+    auto dstSpace =
+        dyn_cast_or_null<mlir::pto::AddressSpaceAttr>(dstMemRefType.getMemorySpace());
+    if (dstSpace && dstSpace != gmSpace)
+      return emitOpError("memref result must stay in gm memory space");
+    return success();
+  }
+
+  auto dstPtrType = dyn_cast<mlir::pto::PtrType>(dstType);
+  if (!dstPtrType)
+    return emitOpError("result must be a memref or !pto.ptr<...>");
+  if (dstPtrType.getElementType() != elementType)
+    return emitOpError("pointer result element type must match source element type");
+  if (dstPtrType.getMemorySpace() != gmSpace)
+    return emitOpError("pointer result must stay in gm memory space");
+  return success();
+}
+
+LogicalResult mlir::pto::TileBufAddrOp::verify() {
+  auto srcType = dyn_cast<mlir::pto::TileBufType>(getSrc().getType());
+  if (!srcType)
+    return emitOpError("source must be a !pto.tile_buf<...>");
+
+  Type dstType = getDst().getType();
+  Type elementType = srcType.getElementType();
+  auto srcSpace =
+      dyn_cast_or_null<mlir::pto::AddressSpaceAttr>(srcType.getMemorySpace());
+
+  if (auto dstMemRefType = dyn_cast<BaseMemRefType>(dstType)) {
+    if (dstMemRefType.getElementType() != elementType)
+      return emitOpError("memref result element type must match tile element type");
+    if (dstMemRefType.getRank() != static_cast<int64_t>(srcType.getShape().size()))
+      return emitOpError("memref result rank must match tile rank");
+    auto dstSpace =
+        dyn_cast_or_null<mlir::pto::AddressSpaceAttr>(dstMemRefType.getMemorySpace());
+    if (srcSpace && dstSpace && srcSpace != dstSpace)
+      return emitOpError("memref result must stay within the tile memory space");
+    return success();
+  }
+
+  auto dstPtrType = dyn_cast<mlir::pto::PtrType>(dstType);
+  if (!dstPtrType)
+    return emitOpError("result must be a memref or !pto.ptr<...>");
+  if (dstPtrType.getElementType() != elementType)
+    return emitOpError("pointer result element type must match tile element type");
+  if (srcSpace && dstPtrType.getMemorySpace() != srcSpace)
+    return emitOpError("pointer result must stay within the tile memory space");
   return success();
 }
 

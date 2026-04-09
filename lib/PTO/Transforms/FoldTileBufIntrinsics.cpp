@@ -94,9 +94,10 @@ struct FoldTileBufIntrinsicsPass
     });
 
     // Fold pto.tile_buf_addr → bind_tile's source memref (the static-layout
-    // pto.pointer_cast result).  This bypasses the dynamic-offset memref
-    // produced by bind_tile itself, so downstream vlds/vsts canonicalization
-    // sees a clean strided<[..],offset:0> layout.
+    // pto.pointer_cast result), or further to pto.castptr when the requested
+    // result type is already !pto.ptr<...>. This bypasses the dynamic-offset
+    // memref produced by bind_tile itself, so downstream vlds/vsts
+    // canonicalization sees a clean strided<[..],offset:0> layout.
     for (auto addrOp : addrOps) {
       pto::BindTileOp bindOp = findBindTileForTileBuf(addrOp.getSrc(), addrOp);
       if (!bindOp)
@@ -109,14 +110,29 @@ struct FoldTileBufIntrinsicsPass
         return signalPassFailure();
       }
 
-      // The declared tile_buf_addr result type may differ from the actual
-      // bind_tile source layout (e.g. plain shape vs. strided layout) — the
-      // downstream vector ops are polymorphic over strided layouts of the
-      // same element type and shape, so retype the result in place.
-      if (srcMemref.getType() != addrOp.getDst().getType())
-        addrOp.getDst().setType(cast<MemRefType>(srcMemref.getType()));
+      if (auto resultMemrefType = dyn_cast<MemRefType>(addrOp.getDst().getType())) {
+        // The declared tile_buf_addr result type may differ from the actual
+        // bind_tile source layout (e.g. plain shape vs. strided layout) — the
+        // downstream vector ops are polymorphic over strided layouts of the
+        // same element type and shape, so retype the result in place.
+        if (srcMemref.getType() != resultMemrefType)
+          addrOp.getDst().setType(cast<MemRefType>(srcMemref.getType()));
+        addrOp.getDst().replaceAllUsesWith(srcMemref);
+        addrOp.erase();
+        continue;
+      }
 
-      addrOp.getDst().replaceAllUsesWith(srcMemref);
+      auto resultPtrType = dyn_cast<pto::PtrType>(addrOp.getDst().getType());
+      if (!resultPtrType) {
+        addrOp.emitError(
+            "FoldTileBufIntrinsics: tile_buf_addr result must be memref or !pto.ptr");
+        return signalPassFailure();
+      }
+
+      builder.setInsertionPoint(addrOp);
+      Value replacement =
+          builder.create<pto::CastPtrOp>(addrOp.getLoc(), resultPtrType, srcMemref);
+      addrOp.getDst().replaceAllUsesWith(replacement);
       addrOp.erase();
     }
 

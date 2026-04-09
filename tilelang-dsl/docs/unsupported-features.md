@@ -34,7 +34,6 @@ the current package:
 - `pto.memref(...)`
 - `pto.vreg(...)`
 - `pto.mask_b8`, `pto.mask_b16`, `pto.mask_b32`
-- `GMPtr`, `UBPtr`, `UBRef`
 - `BLayout`, `SLayout`, `PadValue`
 - `SyncOpType`
 
@@ -47,12 +46,9 @@ and aliases from the guide.
 
 The following guide surfaces are not implemented as public APIs:
 
-- `tile.to_ubref()`
-- `tile.to_memref()`
 - `tile.slice(...)`
 - `tile.reshape(...)`
 - `pto.tile_from_ptr(...)`
-- `pto.tile_from_memref(...)`
 - `pto.tile_with_strides(...)`
 - `pto.tile_config(...)`
 

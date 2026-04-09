@@ -1939,42 +1939,24 @@ class _SemanticAnalyzer:
     def _analyze_as_ptr_method(self, base: SemanticExpr) -> SemanticExpr:
         base_type = base.type
         if isinstance(base_type, SemanticTensorViewType):
-            target_type = SemanticPtrType(
-                element_dtype=base_type.element_dtype,
-                memory_space="gm",
-            )
-            target_expr = SemanticLiteralExpr(
-                value=PointerType(
-                    element_dtype=base_type.element_dtype,
-                    memory_space=MemorySpace.GM,
-                ),
-                type=SemanticMetaType(kind="ptr_type"),
-            )
             return SemanticCallExpr(
                 namespace="pto",
-                name="castptr",
-                args=(base, target_expr),
-                type=target_type,
+                name="tensor_view_as_ptr",
+                args=(base,),
+                type=SemanticPtrType(
+                    element_dtype=base_type.element_dtype,
+                    memory_space="gm",
+                ),
             )
         if isinstance(base_type, SemanticTileType):
-            memory_space = base_type.memory_space or "ub"
-            memory_space_enum = MemorySpace.GM if memory_space == "gm" else MemorySpace.UB
-            target_type = SemanticPtrType(
-                element_dtype=base_type.element_dtype,
-                memory_space=memory_space,
-            )
-            target_expr = SemanticLiteralExpr(
-                value=PointerType(
-                    element_dtype=base_type.element_dtype,
-                    memory_space=memory_space_enum,
-                ),
-                type=SemanticMetaType(kind="ptr_type"),
-            )
             return SemanticCallExpr(
                 namespace="pto",
-                name="castptr",
-                args=(base, target_expr),
-                type=target_type,
+                name="tile_as_ptr",
+                args=(base,),
+                type=SemanticPtrType(
+                    element_dtype=base_type.element_dtype,
+                    memory_space=base_type.memory_space or "ub",
+                ),
             )
         raise TypeError("`as_ptr()` expects a TensorView or Tile value in TileLang DSL v1")
 
@@ -2607,16 +2589,7 @@ class _SemanticAnalyzer:
             if expr.type.memory_space != target_type.memory_space:
                 raise TypeError("pto.castptr pointer-to-pointer casts must stay within one PTO memory space")
             return
-        if isinstance(expr.type, SemanticTensorViewType):
-            if target_type.memory_space != "gm":
-                raise TypeError("pto.castptr TensorView casts require a GM pointer target")
-            return
-        if isinstance(expr.type, SemanticTileType):
-            tile_memory_space = expr.type.memory_space or "ub"
-            if tile_memory_space != target_type.memory_space:
-                raise TypeError("pto.castptr Tile casts must preserve the Tile memory space")
-            return
-        raise TypeError("pto.castptr input must be an index/i64, pointer, TensorView, or Tile value")
+        raise TypeError("pto.castptr input must be an index/i64, pointer, or memref-backed address value")
 
     def _is_i64_dtype_expr(self, expr: SemanticExpr) -> bool:
         if isinstance(expr, SemanticSymbolExpr):

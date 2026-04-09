@@ -1017,6 +1017,37 @@ struct PTOViewToMemrefPass
       }
 
       // ------------------------------------------------------------------
+      // Stage 1.35: Lower pto.tensor_view_addr -> underlying memref / ptr
+      // ------------------------------------------------------------------
+      SmallVector<mlir::pto::TensorViewAddrOp, 8> tvAddrs;
+      func.walk([&](mlir::pto::TensorViewAddrOp op) { tvAddrs.push_back(op); });
+
+      for (auto op : tvAddrs) {
+        Value src = op.getSrc();
+        auto srcMemRefType = dyn_cast<MemRefType>(src.getType());
+        if (!srcMemRefType)
+          continue; // wait until tensor_view/partition_view lowering materializes the memref
+
+        if (isa<MemRefType>(op.getDst().getType())) {
+          if (src.getType() != op.getDst().getType())
+            op.getDst().setType(srcMemRefType);
+          op.getDst().replaceAllUsesWith(src);
+          op.erase();
+          continue;
+        }
+
+        auto ptrType = dyn_cast<pto::PtrType>(op.getDst().getType());
+        if (!ptrType)
+          continue;
+
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+        Value ptr = rewriter.create<pto::CastPtrOp>(op.getLoc(), ptrType, src);
+        op.getDst().replaceAllUsesWith(ptr);
+        op.erase();
+      }
+
+      // ------------------------------------------------------------------
       // Stage 1.5: Fold pto.addptr chains into load/store_scalar.
       // ------------------------------------------------------------------
       SmallVector<mlir::pto::LoadScalarOp, 8> loadScalars;
@@ -1208,6 +1239,37 @@ struct PTOViewToMemrefPass
         }
         
         rewriter.replaceOp(op, sv.getResult());
+      }
+
+      // ------------------------------------------------------------------
+      // Stage 2.1: Lower any remaining pto.tensor_view_addr on subviews
+      // ------------------------------------------------------------------
+      tvAddrs.clear();
+      func.walk([&](mlir::pto::TensorViewAddrOp op) { tvAddrs.push_back(op); });
+
+      for (auto op : tvAddrs) {
+        Value src = op.getSrc();
+        auto srcMemRefType = dyn_cast<MemRefType>(src.getType());
+        if (!srcMemRefType)
+          continue;
+
+        if (isa<MemRefType>(op.getDst().getType())) {
+          if (src.getType() != op.getDst().getType())
+            op.getDst().setType(srcMemRefType);
+          op.getDst().replaceAllUsesWith(src);
+          op.erase();
+          continue;
+        }
+
+        auto ptrType = dyn_cast<pto::PtrType>(op.getDst().getType());
+        if (!ptrType)
+          continue;
+
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+        Value ptr = rewriter.create<pto::CastPtrOp>(op.getLoc(), ptrType, src);
+        op.getDst().replaceAllUsesWith(ptr);
+        op.erase();
       }
 
       // ------------------------------------------------------------------

@@ -218,8 +218,9 @@ def PartitionViewOp : PTO_Op<"partition_view", [AttrSizedOperandSegments]> {
 }
 
 // Helper: tensor_view or memref (after lowering tensor_view to memref).
-def TensorViewOrMemRef :
-  AnyTypeOf<[TensorViewType, AnyMemRef], "TensorView or MemRef">;
+def TensorViewLikeOrMemRef :
+  AnyTypeOf<[TensorViewType, PartitionTensorViewType, AnyMemRef],
+            "TensorView, PartitionTensorView, or MemRef">;
 
 // Get the size of a dimension of a tensor_view or its lowered memref view.
 // Result type: Index (use arith.index_cast if i32 is needed).
@@ -236,7 +237,7 @@ def GetTensorViewDimOp : PTO_Op<"get_tensor_view_dim", [Pure]> {
         : memref<...>, index -> index
   }];
   let arguments = (ins
-    TensorViewOrMemRef:$tensor_view,
+    TensorViewLikeOrMemRef:$tensor_view,
     Index:$dim_index
   );
   let results = (outs Index:$result);
@@ -256,13 +257,38 @@ def GetTensorViewStrideOp : PTO_Op<"get_tensor_view_stride", [Pure]> {
     it is lowered to.
   }];
   let arguments = (ins
-    TensorViewOrMemRef:$tensor_view,
+    TensorViewLikeOrMemRef:$tensor_view,
     Index:$dim_index
   );
   let results = (outs Index:$result);
   let assemblyFormat = [{
     $tensor_view `,` $dim_index `:` qualified(type($tensor_view)) `->` qualified(type($result))
     attr-dict
+  }];
+}
+
+def TensorViewAddrOp : PTO_Op<"tensor_view_addr", [Pure]> {
+  let summary = "Extract address from a tensor view.";
+  let description = [{
+    Returns the address view carried by a `tensor_view` or
+    `partition_tensor_view` value. The result may be either a memref view or a
+    typed PTO pointer, depending on the requested destination type.
+
+    In authoring-form IR this op preserves the descriptor-style surface;
+    during view-to-memref lowering it collapses to the underlying memref value
+    or to a memref-derived pointer.
+
+    This op may also accept a memref operand after earlier view lowering, in
+    which case it behaves as an identity marker and is removed by lowering.
+  }];
+
+  let arguments = (ins TensorViewLikeOrMemRef:$src);
+  let results = (outs PtrOrMemRef:$dst);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $src attr-dict `:` qualified(type($src)) `->` type($dst)
   }];
 }
 
@@ -1977,18 +2003,21 @@ def SimdTileToMemrefOp : PTO_Op<"simd.tile_to_memref", [Pure]> {
 // ---------------------------------------------------------------------------
 
 def TileBufAddrOp : PTO_Op<"tile_buf_addr", [Pure]> {
-  let summary = "Extract memref address from a tile_buf.";
+  let summary = "Extract address from a tile_buf.";
   let description = [{
-    Returns a memref view of the data region of a `tile_buf` value.
-    The result memref has the same element type, shape (from tile_buf's static
-    shape), and address space as the source tile_buf, with row-major strides.
+    Returns the address view of the data region of a `tile_buf` value.
+    The result may be either a memref view or a typed PTO pointer, depending
+    on the requested destination type. Memref results use the tile's static
+    shape and address space.
 
     This op is emitted by TileLang DSL templates and resolved by the
     FoldTileBufIntrinsics pass after inlining.
   }];
 
   let arguments = (ins TileBufType:$src);
-  let results = (outs AnyMemRef:$dst);
+  let results = (outs PtrOrMemRef:$dst);
+
+  let hasVerifier = 1;
 
   let assemblyFormat = [{
     $src attr-dict `:` qualified(type($src)) `->` type($dst)
