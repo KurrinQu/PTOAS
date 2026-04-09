@@ -296,3 +296,202 @@ mask2 = pto.make_mask(pto.f32, PAT.ALL)              # pattern mode
 |--------------|------|-------------|
 | `result` | `MaskType` | Selected mask |
 
+#### `pto.pld(buf: ptr, offset: Index) -> MaskType`  [Advanced Tier]
+
+**Description**: Loads a predicate mask from buffer.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `buf` | `ptr` | Pointer to buffer containing predicate data |
+| `offset` | `Index` | Byte offset |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `mask` | `MaskType` | Loaded predicate mask |
+
+**Example**:
+```python
+mask = pto.pld(buf, offset)
+```
+
+#### `pto.pldi(imm: pto.i32) -> MaskType`
+
+**Description**: Loads a predicate mask from immediate value.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `imm` | `pto.i32` | Immediate value encoding predicate bits |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `mask` | `MaskType` | Loaded predicate mask |
+
+**Example**:
+```python
+mask = pto.pldi(0xFF)
+```
+
+#### `pto.plds(static_id: pto.i32) -> MaskType`
+
+**Description**: Loads a predicate mask from static storage.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `static_id` | `pto.i32` | Static storage identifier |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `mask` | `MaskType` | Loaded predicate mask |
+
+**Example**:
+```python
+mask = pto.plds(0)
+```
+
+#### `pto.pst(mask: MaskType, buf: ptr, offset: Index) -> None`  [Advanced Tier]
+
+**Description**: Stores a predicate mask to buffer.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `mask` | `MaskType` | Predicate mask to store |
+| `buf` | `ptr` | Pointer to destination buffer |
+| `offset` | `Index` | Byte offset |
+
+**Returns**: None (side-effect operation)
+
+**Example**:
+```python
+pto.pst(mask, buf, offset)
+```
+
+#### `pto.psti(mask: MaskType, imm: pto.i32) -> None`
+
+**Description**: Stores a predicate mask to immediate destination.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `mask` | `MaskType` | Predicate mask to store |
+| `imm` | `pto.i32` | Immediate destination identifier |
+
+**Returns**: None (side-effect operation)
+
+**Example**:
+```python
+pto.psti(mask, 1)
+```
+
+#### `pto.pand(src0: MaskType, src1: MaskType) -> MaskType`
+
+**Description**: Bitwise AND of two predicate masks.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `src0` | `MaskType` | First input mask |
+| `src1` | `MaskType` | Second input mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `MaskType` | Bitwise AND of input masks |
+
+**Example**:
+```python
+result = pto.pand(mask1, mask2)
+```
+
+#### `pto.por(src0: MaskType, src1: MaskType) -> MaskType`
+
+**Description**: Bitwise OR of two predicate masks.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `src0` | `MaskType` | First input mask |
+| `src1` | `MaskType` | Second input mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `MaskType` | Bitwise OR of input masks |
+
+**Example**:
+```python
+result = pto.por(mask1, mask2)
+```
+
+#### `pto.pxor(src0: MaskType, src1: MaskType) -> MaskType`
+
+**Description**: Bitwise XOR of two predicate masks.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `src0` | `MaskType` | First input mask |
+| `src1` | `MaskType` | Second input mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `MaskType` | Bitwise XOR of input masks |
+
+**Example**:
+```python
+result = pto.pxor(mask1, mask2)
+```
+
+#### `pto.pset_b(pattern: pto.MaskPattern) -> MaskType`
+
+**Description**: Creates a mask from a pattern (generic version that automatically selects bitwidth based on context).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `pattern` | `pto.MaskPattern` | Mask pattern enum |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `mask` | `MaskType` | Generated mask with appropriate granularity |
+
+**Note**: Prefer `pto.make_mask()` for automatic bitwidth selection.
+
+#### `pto.pge_b(vec: VRegType, scalar: ScalarType) -> MaskType`
+
+**Description**: Creates a mask where vector elements ≥ scalar (generic version).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `scalar` | `ScalarType` | Scalar comparison value |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `mask` | `MaskType` | Generated mask with appropriate granularity |
+
+#### `pto.plt_b(vec: VRegType, scalar: ScalarType) -> MaskType`
+
+**Description**: Creates a mask where vector elements < scalar (generic version).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `scalar` | `ScalarType` | Scalar comparison value |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `mask` | `MaskType` | Generated mask with appropriate granularity |
+

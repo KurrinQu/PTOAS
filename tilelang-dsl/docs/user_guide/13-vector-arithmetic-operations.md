@@ -160,6 +160,201 @@ abs_vec = pto.vabs(vec_f32, mask32)
 |--------------|------|-------------|
 | `result` | `VRegType` | Bit count values |
 
+#### `pto.vneg(vec: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Negation of vector elements.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `mask` | `MaskType` | Predicate mask (granularity must match vector element type) |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Negated values |
+
+**Constraints**:
+- Mask granularity must match vector element type
+
+**Example**:
+```python
+neg_vec = pto.vneg(vec_f32, mask32)
+```
+
+#### `pto.vcls(vec: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Count leading sign bits of vector elements.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Count of leading sign bits |
+
+**Constraints**:
+- Operates on integer vector types only
+
+#### `pto.vcmin(vec: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Complex minimum of vector elements (treating pairs as complex numbers).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector (interpreted as complex pairs) |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Complex minimum result |
+
+#### `pto.vrsqrt(vec: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Reciprocal square root of vector elements (1/√x).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Reciprocal square root values |
+
+**Constraints**:
+- For floating-point vector types only
+
+#### `pto.vprelu(vec: VRegType, alpha: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Parametric ReLU activation of vector elements: `x if x >= 0 else alpha * x`.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `alpha` | `VRegType` | Slope parameter for negative values |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Parametric ReLU activated values |
+
+#### `pto.vmov(vec: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Vector move (data movement).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Copied vector |
+
+#### `pto.vsunpack(vec: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Signed unpack of vector elements.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Unpacked signed values |
+
+**Constraints**:
+- Operates on integer vector types only
+
+#### `pto.vzunpack(vec: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Zero-extended unpack of vector elements.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Unpacked zero-extended values |
+
+**Constraints**:
+- Operates on integer vector types only
+
+#### `pto.vusqz(vec: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Unsigned squeeze (compression) of vector elements.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Compressed unsigned values |
+
+**Constraints**:
+- Operates on integer vector types only
+
+#### `pto.vsqz(vec: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Signed squeeze (compression) of vector elements.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Compressed signed values |
+
+**Constraints**:
+- Operates on integer vector types only
+
+#### `pto.vexpdiff(vec: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Exponential difference of vector elements.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Exponential difference values |
+
+**Constraints**:
+- For floating-point vector types only
+
 ### Binary Vector Operations
 
 Element-wise binary operations on vector registers.
@@ -345,6 +540,129 @@ sum_vec = pto.vadd(vec_a, vec_b, mask32)
 |--------------|------|-------------|
 | `result` | `VRegType` | Shifted values |
 
+#### `pto.vaddrelu(vec1: VRegType, vec2: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Addition with ReLU activation (max(0, vec1 + vec2)).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec1` | `VRegType` | First input vector |
+| `vec2` | `VRegType` | Second input vector |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | ReLU-activated sum of vectors |
+
+#### `pto.vaddreluconv(vec1: VRegType, vec2: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Convolution addition with ReLU activation (convolution-specific fused operation).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec1` | `VRegType` | First input vector |
+| `vec2` | `VRegType` | Second input vector |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | ReLU-activated convolution sum |
+
+**Constraints**:
+- Optimized for convolution-specific patterns
+
+#### `pto.vsubrelu(vec1: VRegType, vec2: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Subtraction with ReLU activation (max(0, vec1 - vec2)).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec1` | `VRegType` | First input vector |
+| `vec2` | `VRegType` | Second input vector |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | ReLU-activated difference of vectors |
+
+#### `pto.vaxpy(alpha: VRegType, x: VRegType, y: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: BLAS AXPY operation (αx + y).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `alpha` | `VRegType` | Scaling factor |
+| `x` | `VRegType` | Input vector x |
+| `y` | `VRegType` | Input vector y |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Result of αx + y |
+
+#### `pto.vmulconv(vec1: VRegType, vec2: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Convolution multiplication (convolution-specific multiplication).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec1` | `VRegType` | First input vector |
+| `vec2` | `VRegType` | Second input vector |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Convolution product |
+
+**Constraints**:
+- Optimized for convolution-specific patterns
+
+#### `pto.vmull(vec1: VRegType, vec2: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Long multiplication (extended-precision arithmetic).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec1` | `VRegType` | First input vector |
+| `vec2` | `VRegType` | Second input vector |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Extended-precision product |
+
+**Constraints**:
+- Produces wider result than input element types
+
+#### `pto.vmula(vec1: VRegType, vec2: VRegType, vec3: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Fused multiply-add (vec1 * vec2 + vec3).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec1` | `VRegType` | First input vector (multiplier) |
+| `vec2` | `VRegType` | Second input vector (multiplicand) |
+| `vec3` | `VRegType` | Third input vector (addend) |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Result of vec1 * vec2 + vec3 |
+
 ### Vector-Scalar Operations
 
 Operations between vectors and scalars.
@@ -466,6 +784,79 @@ scaled = pto.vmuls(vec_f32, pto.f32(2.0), mask32)
 |--------------|------|-------------|
 | `result` | `VRegType` | Shifted values |
 
+#### `pto.vands(vec: VRegType, scalar: ScalarType, mask: MaskType) -> VRegType`
+
+**Description**: Element-wise bitwise AND of vector and scalar.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `scalar` | `ScalarType` | Scalar operand |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Bitwise AND result |
+
+**Constraints**:
+- Operates on integer vector types only
+
+#### `pto.vors(vec: VRegType, scalar: ScalarType, mask: MaskType) -> VRegType`
+
+**Description**: Element-wise bitwise OR of vector and scalar.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `scalar` | `ScalarType` | Scalar operand |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Bitwise OR result |
+
+**Constraints**:
+- Operates on integer vector types only
+
+#### `pto.vxors(vec: VRegType, scalar: ScalarType, mask: MaskType) -> VRegType`
+
+**Description**: Element-wise bitwise XOR of vector and scalar.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `scalar` | `ScalarType` | Scalar operand |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Bitwise XOR result |
+
+**Constraints**:
+- Operates on integer vector types only
+
+#### `pto.vsubs(vec: VRegType, scalar: ScalarType, mask: MaskType) -> VRegType`
+
+**Description**: Vector minus scalar (broadcast).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `scalar` | `ScalarType` | Scalar subtrahend |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Difference vector |
+
 #### `pto.vbr(value: ScalarType) -> VRegType`
 
 **Description**: Broadcast scalar to all vector lanes.
@@ -558,6 +949,70 @@ Implemented current-package carry/select surface also includes:
 result = pto.vsel(scaled_vec, original_vec, mask32)
 ```
 
+### Reduction Operations
+
+Reduction operations across vector lanes or channels.
+
+#### `pto.vcgadd(vec: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Cross-group addition reduction (reduction across VLanes).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Reduced sum across groups |
+
+#### `pto.vcgmax(vec: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Cross-group maximum reduction (reduction across VLanes).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Reduced maximum across groups |
+
+#### `pto.vcgmin(vec: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Cross-group minimum reduction (reduction across VLanes).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Reduced minimum across groups |
+
+#### `pto.vcpadd(vec: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Cross-channel addition reduction (reduction across channels).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Reduced sum across channels |
+
 ### Data Rearrangement
 
 Operations for rearranging data within vectors.
@@ -626,6 +1081,121 @@ Implemented current-package rearrangement surface also includes:
 | `vec1` | `VRegType` | First deinterleaved vector |
 | `vec2` | `VRegType` | Second deinterleaved vector |
 
+#### `pto.vpack(vec1: VRegType, vec2: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Vector packing (combine elements from two vectors).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec1` | `VRegType` | First input vector |
+| `vec2` | `VRegType` | Second input vector |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Packed vector |
+
+#### `pto.vperm(vec: VRegType, indices: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Vector permutation (reorder elements according to index vector).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `indices` | `VRegType` | Permutation indices |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Permuted vector |
+
+#### `pto.vshift(vec: VRegType, shift_amount: ScalarType, mask: MaskType) -> VRegType`
+
+**Description**: Generic vector shift (shift all elements by same amount).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `shift_amount` | `ScalarType` | Shift amount (same for all elements) |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Shifted vector |
+
+#### `pto.vslide(vec: VRegType, window_size: ScalarType, mask: MaskType) -> VRegType`
+
+**Description**: Vector sliding window (create overlapping windows).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `window_size` | `ScalarType` | Size of sliding window |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Sliding window result |
+
+#### `pto.vsort32(vec: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: 32-element sorting of vector elements.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector (32 elements) |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Sorted vector |
+
+**Constraints**:
+- Input vector must have exactly 32 elements
+
+#### `pto.vmrgsort(vec1: VRegType, vec2: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Merge sort of two vectors.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec1` | `VRegType` | First input vector |
+| `vec2` | `VRegType` | Second input vector |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Merged and sorted vector |
+
+#### `pto.vtranspose(vec: VRegType, rows: ScalarType, cols: ScalarType, mask: MaskType) -> VRegType`
+
+**Description**: Vector transpose (matrix transpose operation).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector (interpreted as matrix) |
+| `rows` | `ScalarType` | Number of rows in matrix |
+| `cols` | `ScalarType` | Number of columns in matrix |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Transposed vector |
+
 ### Conversion & Special Operations
 
 Type conversion and specialized operations.
@@ -693,4 +1263,20 @@ Type conversion and specialized operations.
 | Return Value | Type | Description |
 |--------------|------|-------------|
 | `result` | `VRegType` | Merged and sorted vector |
+
+#### `pto.vci(condition: MaskType, base_index: ScalarType, mask: MaskType) -> VRegType`
+
+**Description**: Conditional index generation (DSA/SFU operation).
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `condition` | `MaskType` | Condition mask |
+| `base_index` | `ScalarType` | Base index value |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Generated indices based on condition |
 

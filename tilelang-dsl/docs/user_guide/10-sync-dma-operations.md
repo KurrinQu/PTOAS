@@ -102,6 +102,107 @@ from pto import SyncOpType
 pto.rls_buf(SyncOpType.TLOAD, 0)
 ```
 
+#### `pto.mem_bar() -> None`
+
+**Description**: Memory barrier for pipeline synchronization.
+
+**Parameters**: None
+
+**Returns**: None (side-effect operation)
+
+**Example**:
+```python
+pto.mem_bar()
+```
+
+#### `pto.set_cross_core(config: pto.i32) -> None`
+
+**Description**: Configures cross-core synchronization settings.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `config` | `pto.i32` | Configuration value for cross-core synchronization |
+
+**Returns**: None (side-effect operation)
+
+**Example**:
+```python
+pto.set_cross_core(1)
+```
+
+#### `pto.set_intra_block(config: pto.i32) -> None`
+
+**Description**: Configures intra-block synchronization settings.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `config` | `pto.i32` | Configuration value for intra-block synchronization |
+
+**Returns**: None (side-effect operation)
+
+**Example**:
+```python
+pto.set_intra_block(2)
+```
+
+#### `pto.set_intra_core(config: pto.i32) -> None`
+
+**Description**: Configures intra-core synchronization settings.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `config` | `pto.i32` | Configuration value for intra-core synchronization |
+
+**Returns**: None (side-effect operation)
+
+**Example**:
+```python
+pto.set_intra_core(3)
+```
+
+#### `pto.wait_flag_dev(pipe_from: PIPE, pipe_to: PIPE, event: EVENT) -> None`
+
+**Description**: Waits for a device-level synchronization flag between hardware pipelines.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `pipe_from` | `PIPE` | Source pipeline (e.g., `PIPE.MTE2`) |
+| `pipe_to` | `PIPE` | Destination pipeline (e.g., `PIPE.V`) |
+| `event` | `EVENT` | Event identifier (e.g., `EVENT.ID0`) |
+
+**Returns**: None (side-effect operation)
+
+**Example**:
+```python
+from pto import PIPE, EVENT
+
+pto.wait_flag_dev(PIPE.MTE2, PIPE.V, EVENT.ID0)
+```
+
+#### `pto.wait_intra_core(pipe_from: PIPE, pipe_to: PIPE, event: EVENT) -> None`
+
+**Description**: Waits for an intra-core synchronization flag between hardware pipelines.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `pipe_from` | `PIPE` | Source pipeline (e.g., `PIPE.MTE2`) |
+| `pipe_to` | `PIPE` | Destination pipeline (e.g., `PIPE.V`) |
+| `event` | `EVENT` | Event identifier (e.g., `EVENT.ID0`) |
+
+**Returns**: None (side-effect operation)
+
+**Example**:
+```python
+from pto import PIPE, EVENT
+
+pto.wait_intra_core(PIPE.MTE2, PIPE.V, EVENT.ID0)
+```
+
 ### DMA Programming [Advanced Tier]
 
 This section contains both DMA configuration operations (setting loop strides and sizes) and DMA execution operations (copying data).
@@ -193,6 +294,41 @@ pto.set_loop_size_outtoub(loop1=1, loop2=1)
 | `loop2` | `pto.i64` | Outer loop trip count |
 
 **Returns**: None (side-effect operation)
+
+#### `pto.set_loop(loop_id: pto.i32, src_stride: pto.i64, dst_stride: pto.i64) -> None`  [Advanced Tier]
+
+**Description**: Configures DMA stride parameters for a generic loop.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `loop_id` | `pto.i32` | Loop identifier (e.g., 1 for inner loop, 2 for outer loop) |
+| `src_stride` | `pto.i64` | Source-side stride |
+| `dst_stride` | `pto.i64` | Destination-side stride |
+
+**Returns**: None (side-effect operation)
+
+**Example**:
+```python
+pto.set_loop(1, src_stride=32, dst_stride=64)
+```
+
+#### `pto.set_loop_size(loop_id: pto.i32, size: pto.i64) -> None`  [Advanced Tier]
+
+**Description**: Configures DMA transfer size for a generic loop.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `loop_id` | `pto.i32` | Loop identifier (e.g., 1 for inner loop, 2 for outer loop) |
+| `size` | `pto.i64` | Loop trip count |
+
+**Returns**: None (side-effect operation)
+
+**Example**:
+```python
+pto.set_loop_size(1, 16)
+```
 
 #### DMA Execution Operations
 

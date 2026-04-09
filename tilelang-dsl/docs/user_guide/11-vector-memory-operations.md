@@ -379,6 +379,107 @@ vec = pto.vsld(tile[i, j])    # Load single element at (i,j) and broadcast
 vec = pto.vsld(tile[k])       # Load single element at position k and broadcast
 ```
 
+#### `pto.vgather2(buf1: ptr, buf2: ptr, offsets1: Index, offsets2: Index) -> (VRegType, VRegType)`  [Advanced Tier]
+
+**Description**: Dual‑lane gather load from two buffers using irregular access patterns.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `buf1` | `ptr` | Pointer to first buffer |
+| `buf2` | `ptr` | Pointer to second buffer |
+| `offsets1` | `Index` | Byte offsets for first buffer |
+| `offsets2` | `Index` | Byte offsets for second buffer |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `vec1` | `VRegType` | Gathered vector from first buffer |
+| `vec2` | `VRegType` | Gathered vector from second buffer |
+
+**Example**:
+```python
+vec1, vec2 = pto.vgather2(buf1, buf2, offsets1, offsets2)
+```
+
+#### `pto.vgather2_bc(buf1: ptr, buf2: ptr, offsets1: Index, offsets2: Index, broadcast: ScalarType) -> (VRegType, VRegType)`  [Advanced Tier]
+
+**Description**: Dual‑lane gather load with broadcast scalar to all lanes.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `buf1` | `ptr` | Pointer to first buffer |
+| `buf2` | `ptr` | Pointer to second buffer |
+| `offsets1` | `Index` | Byte offsets for first buffer |
+| `offsets2` | `Index` | Byte offsets for second buffer |
+| `broadcast` | `ScalarType` | Scalar value broadcast to all lanes |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `vec1` | `VRegType` | Gathered vector from first buffer |
+| `vec2` | `VRegType` | Gathered vector from second buffer |
+
+**Example**:
+```python
+vec1, vec2 = pto.vgather2_bc(buf1, buf2, offsets1, offsets2, pto.f32(1.0))
+```
+
+#### `pto.vgatherb(buf: ptr, offsets: Index) -> VRegType`  [Advanced Tier]
+
+**Description**: Byte‑granularity gather load.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `buf` | `ptr` | Pointer to buffer |
+| `offsets` | `Index` | Byte offsets |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `vec` | `VRegType` | Gathered vector |
+
+**Example**:
+```python
+vec = pto.vgatherb(buf, offsets)
+```
+
+#### `pto.vsldb(buf: ptr, offset: Index, broadcast: ScalarType) -> VRegType`  [Advanced Tier]
+#### `pto.vsldb(tile[row, col], broadcast: ScalarType) -> VRegType`  [Basic Tier]
+#### `pto.vsldb(tile[pos], broadcast: ScalarType) -> VRegType`  [Basic Tier]
+
+**Description**: Scalar load with broadcast (enhanced version of `vsld`). Supports both byte‑offset and element‑indexing syntax.
+
+**Parameters (byte-offset syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `buf` | `ptr` | Pointer to buffer |
+| `offset` | `Index` | Byte offset |
+| `broadcast` | `ScalarType` | Scalar value broadcast to all lanes |
+
+**Parameters (element-indexing syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `tile[row, col]` | `Tile` with indexing | 2D tile with row and column indices (single element) |
+| `tile[pos]` | `Tile` with indexing | 1D tile with element index (single element) |
+| `broadcast` | `ScalarType` | Scalar value broadcast to all lanes |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `vec` | `VRegType` | Vector with loaded scalar broadcast to all lanes |
+
+**Example**:
+```python
+# Byte-offset syntax
+vec = pto.vsldb(ub_ptr, offset, pto.f32(0.0))
+
+# Element-indexing syntax
+vec = pto.vsldb(tile[i, j], pto.f32(1.0))
+```
+
 ### Vector Store Operations
 
 Operations for storing data from vector registers to memory.
@@ -557,6 +658,121 @@ def generic_store(src: pto.Tile, dst: pto.Tile):
 | `mask` | `MaskType` | Predicate mask |
 
 **Returns**: None (side-effect operation)
+
+#### `pto.vscatter(vec: VRegType, buf: ptr, offsets: Index, mask: MaskType) -> None`  [Advanced Tier]
+
+**Description**: Scatter store with irregular access pattern.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Vector to scatter |
+| `buf` | `ptr` | Pointer to destination buffer |
+| `offsets` | `Index` | Byte offsets for scatter locations |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**: None (side-effect operation)
+
+**Example**:
+```python
+pto.vscatter(vec, buf, offsets, mask)
+```
+
+#### `pto.vsstb(scalar: ScalarType, buf: ptr, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
+#### `pto.vsstb(scalar: ScalarType, tile[row, col:], mask: MaskType) -> None`  [Basic Tier]
+#### `pto.vsstb(scalar: ScalarType, tile[start:], mask: MaskType) -> None`  [Basic Tier]
+
+**Description**: Scalar to vector store with broadcast (enhanced version of `vsst`). Supports both byte‑offset and element‑indexing syntax.
+
+**Parameters (byte-offset syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `scalar` | `ScalarType` | Scalar value |
+| `buf` | `ptr` | Pointer to destination buffer |
+| `offset` | `Index` | Byte offset |
+| `mask` | `MaskType` | Predicate mask |
+
+**Parameters (element-indexing syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `scalar` | `ScalarType` | Scalar value |
+| `tile[row, col:]` | `Tile` with indexing | 2D tile with row index and starting column (vector-width range) |
+| `mask` | `MaskType` | Predicate mask |
+
+**Parameters (1D element-indexing syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `scalar` | `ScalarType` | Scalar value |
+| `tile[start:]` | `Tile` with indexing | 1D tile with starting element index (vector-width range) |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**: None (side-effect operation)
+
+**Example**:
+```python
+# Byte-offset syntax
+pto.vsstb(pto.f32(0.0), ub_ptr, offset, mask)
+
+# Element-indexing syntax
+pto.vsstb(pto.f32(1.0), tile[i, j:], mask)
+```
+
+#### `pto.vstar(vec: VRegType, buf: ptr, offset: Index, align: pto.align, mask: MaskType) -> None`  [Advanced Tier]
+#### `pto.vstar(vec: VRegType, tile[row, col:], align: pto.align, mask: MaskType) -> None`  [Basic Tier]
+#### `pto.vstar(vec: VRegType, tile[start:], align: pto.align, mask: MaskType) -> None`  [Basic Tier]
+
+**Description**: Vector store with alignment requirement (enhanced version of `vsta`). Supports both byte‑offset and element‑indexing syntax.
+
+**Parameters (byte-offset syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Vector to store |
+| `buf` | `ptr` | Pointer to destination buffer |
+| `offset` | `Index` | Byte offset |
+| `align` | `pto.align` | Alignment specification |
+| `mask` | `MaskType` | Predicate mask |
+
+**Parameters (element-indexing syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Vector to store |
+| `tile[row, col:]` | `Tile` with indexing | 2D tile with row index and starting column (vector-width range) |
+| `align` | `pto.align` | Alignment specification |
+| `mask` | `MaskType` | Predicate mask |
+
+**Parameters (1D element-indexing syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Vector to store |
+| `tile[start:]` | `Tile` with indexing | 1D tile with starting element index (vector-width range) |
+| `align` | `pto.align` | Alignment specification |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**: None (side-effect operation)
+
+**Example**:
+```python
+# Byte-offset syntax
+pto.vstar(vec, ub_ptr, offset, align, mask)
+
+# Element-indexing syntax
+pto.vstar(vec, tile[i, j:], align, mask)
+```
+
+#### `pto.vstas(vec: VRegType, buf: ptr, offset: Index, align: pto.align, mask: MaskType) -> None`  [Advanced Tier]
+#### `pto.vstas(vec: VRegType, tile[row, col:], align: pto.align, mask: MaskType) -> None`  [Basic Tier]
+#### `pto.vstas(vec: VRegType, tile[start:], align: pto.align, mask: MaskType) -> None`  [Basic Tier]
+
+**Description**: Aligned vector store (alias for `vstar`). Supports both byte‑offset and element‑indexing syntax.
+
+**Parameters**: Same as `pto.vstar`.
+
+**Returns**: None (side-effect operation)
+
+**Example**:
+```python
+pto.vstas(vec, tile[i, j:], align, mask)
+```
 
 ### Stateful Store Operations
 
