@@ -310,7 +310,7 @@ result = ptr + offset   // offset is in elements, not bytes
 ##### `pto.castptr` - Explicit Pointer Cast
 
 **Summary:** Performs an explicit cast between integer addresses and `!pto.ptr`,
-or between two `!pto.ptr` types.
+between memref-backed addresses and `!pto.ptr`, or between two `!pto.ptr` types.
 
 **Semantics:**
 
@@ -324,13 +324,14 @@ or between two `!pto.ptr` types.
 
 | Name | Type | Description |
 |------|------|-------------|
-| `input` | `integer` or `!pto.ptr<...>` | Source value to cast |
+| `input` | `integer`, `memref<...>`, or `!pto.ptr<...>` | Source value to cast |
 
 **Results:** `integer` or `!pto.ptr<...>`
 
 **Constraints & Verification:**
 
 - Integer-to-integer casts are rejected; use normal integer cast ops instead
+- Descriptor values such as `!pto.tensor_view<...>` and `!pto.partition_tensor_view<...>` are not legal direct inputs; extract a memref address first
 - Pointer-to-pointer casts are only legal when source and destination stay in
   the same PTO memory space (`gm` or `ub`)
 - The operation is pure (no side effects)
@@ -338,6 +339,35 @@ or between two `!pto.ptr` types.
 **Hardware Mapping:**
 
 - No hardware pipeline (representation conversion only)
+
+##### `pto.tensor_view_addr` - Extract Tensor View Address
+
+**Summary:** Extracts the address view carried by a tensor-view descriptor.
+
+**Semantics:**
+
+```mlir
+%mr = pto.tensor_view_addr %tv : !pto.tensor_view<?x?xf32> -> memref<?x?xf32, #pto.address_space<gm>>
+%ptr = pto.tensor_view_addr %tv : !pto.tensor_view<?x?xf32> -> !pto.ptr<f32, gm>
+```
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `src` | `!pto.tensor_view<...>`, `!pto.partition_tensor_view<...>`, or `memref<...>` | Descriptor or already-lowered memref |
+
+**Results:** `memref<...>` or `!pto.ptr<...>`
+
+**Constraints & Verification:**
+
+- The op is pure and only exposes the address view already carried by the source descriptor
+- Pointer results must stay in GM and preserve the source element type
+- After view lowering, the operand may already be a memref; the op is then an identity marker
+
+**Hardware Mapping:**
+
+- No hardware pipeline (address extraction only)
 
 ##### `pto.make_tensor_view` - Create Tensor View
 

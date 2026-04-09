@@ -366,16 +366,28 @@ Notes:
 
 ### Pointer Operations
 
+#### `pto.tensor_view_addr`
+
+- **syntax:** `%result = pto.tensor_view_addr %src : !pto.tensor_view<...> -> memref<...>`
+- **syntax:** `%result = pto.tensor_view_addr %src : !pto.tensor_view<...> -> !pto.ptr<T, gm>`
+- **semantics:** Extract the underlying address view from a `tensor_view` or `partition_tensor_view`.
+
+```c
+result = addr_of(src);
+```
+
+`pto.tensor_view_addr` is an address-extraction operation. It does not move data and does not by itself imply any hardware side effect. When the result type is a memref, it exposes the lowered view directly. When the result type is `!pto.ptr<..., gm>`, it exposes the same address in pointer form. After compiler-internal view lowering, the operand may already be a memref; in that case the op is folded away or rewritten to an equivalent memref-to-ptr cast.
+
 #### `pto.castptr`
 
 - **syntax:** `%result = pto.castptr %addr : i64 -> !pto.ptr<T, space>`
-- **semantics:** Reinterpret a scalar address value as a typed PTO pointer in the target memory space.
+- **semantics:** Reinterpret an integer, memref base address, or existing PTO pointer as a typed PTO pointer in the target memory space.
 
 ```c
 result = (ptr<T, space>)addr;
 ```
 
-`pto.castptr` is a pointer-construction operation. It does not perform data movement and does not by itself imply any load/store side effect.
+`pto.castptr` is a pointer-construction operation. It does not perform data movement and does not by itself imply any load/store side effect. Descriptor values such as `tensor_view` / `partition_tensor_view` are not valid direct operands; extract their address first with `pto.tensor_view_addr`.
 
 #### `pto.addptr`
 
