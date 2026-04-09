@@ -775,6 +775,7 @@ class _AuthoringRenderer:
         row_count = self._materialize_dma_axis_extent(slice_expr, 0, env, indent=indent, into=into)
         col_count = self._materialize_dma_axis_extent(slice_expr, 1, env, indent=indent, into=into)
         gm_row_stride = self._materialize_tensor_row_stride_bytes(
+            slice_expr,
             tensor_base,
             element_bytes,
             indent=indent,
@@ -846,6 +847,7 @@ class _AuthoringRenderer:
             into=into,
         )
         gm_row_stride = self._materialize_tensor_row_stride_bytes(
+            slice_expr,
             tensor_base,
             element_bytes,
             indent=indent,
@@ -1269,30 +1271,34 @@ class _AuthoringRenderer:
         indent: int,
         into: list[str],
     ) -> _RenderedValue:
-        row_start = self._lower_expr(slice_expr.slices[0].start, env, indent=indent, into=into)
-        col_start = self._lower_expr(slice_expr.slices[1].start, env, indent=indent, into=into)
-        row_stride_elems = self._materialize_tensor_dim(
-            tensor_base,
-            axis=1,
-            indent=indent,
-            into=into,
+        offset_elems = _RenderedValue(
+            name=self._materialize_constant(0, SemanticIndexType()),
+            type=SemanticIndexType(),
         )
-        row_offset_elems = self._emit_binary_value(
-            "mul",
-            row_start,
-            row_stride_elems,
-            SemanticIndexType(),
-            indent=indent,
-            into=into,
-        )
-        offset_elems = self._emit_binary_value(
-            "add",
-            row_offset_elems,
-            col_start,
-            SemanticIndexType(),
-            indent=indent,
-            into=into,
-        )
+        for axis_index, slice_axis in enumerate(slice_expr.slices):
+            axis_start = self._lower_expr(slice_axis.start, env, indent=indent, into=into)
+            axis_stride_elems = self._materialize_tensor_axis_stride_elems(
+                tensor_base,
+                axis=slice_expr.type.physical_axes[axis_index],
+                indent=indent,
+                into=into,
+            )
+            axis_offset_elems = self._emit_binary_value(
+                "mul",
+                axis_start,
+                axis_stride_elems,
+                SemanticIndexType(),
+                indent=indent,
+                into=into,
+            )
+            offset_elems = self._emit_binary_value(
+                "add",
+                offset_elems,
+                axis_offset_elems,
+                SemanticIndexType(),
+                indent=indent,
+                into=into,
+            )
         return self._emit_binary_value(
             "mul",
             offset_elems,
@@ -1381,23 +1387,53 @@ class _AuthoringRenderer:
     ) -> _RenderedValue:
         return self._lower_to_i64(slice_expr.slices[0].step, env, indent=indent, into=into)
 
+    def _materialize_tensor_axis_stride_elems(
+        self,
+        tensor_base: _RenderedValue,
+        axis: int,
+        *,
+        indent: int,
+        into: list[str],
+    ) -> _RenderedValue:
+        stride = _RenderedValue(
+            name=self._materialize_constant(1, SemanticIndexType()),
+            type=SemanticIndexType(),
+        )
+        for dim_axis in range(axis + 1, tensor_base.type.rank):
+            dim_value = self._materialize_tensor_dim(
+                tensor_base,
+                axis=dim_axis,
+                indent=indent,
+                into=into,
+            )
+            stride = self._emit_binary_value(
+                "mul",
+                stride,
+                dim_value,
+                SemanticIndexType(),
+                indent=indent,
+                into=into,
+            )
+        return stride
+
     def _materialize_tensor_row_stride_bytes(
         self,
+        slice_expr: SemanticTensorSliceExpr,
         tensor_base: _RenderedValue,
         element_bytes: int,
         *,
         indent: int,
         into: list[str],
     ) -> _RenderedValue:
-        dim_value = self._materialize_tensor_dim(
+        stride_elems = self._materialize_tensor_axis_stride_elems(
             tensor_base,
-            axis=1,
+            axis=slice_expr.type.physical_axes[0],
             indent=indent,
             into=into,
         )
         dim_bytes = self._emit_binary_value(
             "mul",
-            dim_value,
+            stride_elems,
             _RenderedValue(
                 name=self._materialize_constant(element_bytes, SemanticIndexType()),
                 type=SemanticIndexType(),

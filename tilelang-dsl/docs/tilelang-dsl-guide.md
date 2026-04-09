@@ -705,6 +705,7 @@ def tiled_kernel(
 - Strides are expressed in elements, not bytes
 - Memory space is always GM (Global Memory)
 - Maximum rank is 5 (PTO ISA right‑aligns lower‑rank shapes to 5D)
+- When higher dimensions are 1, a 5D TensorView can be abbreviated to lower‑rank forms. For example, shape `(1,1,64,32,16)` can be written as `(64,32,16)` (3D), and shape `(1,1,1,32,16)` can be written as `(32,16)` (2D).
 
 ### TensorView Attributes
 
@@ -743,19 +744,26 @@ dynamic_partition = tensor_view[dim0_start:tensor_view.shape[0], 4:20]
 # Static positive step on dimension 0
 stepped_partition = tensor_view[0:32:2, 0:16]
 
-# 5D slicing example (future support)
-# partition_5d = tensor_view[
-#     d0_start:d0_end, 
-#     d1_start:d1_end, 
-#     d2_start:d2_end, 
-#     d3_start:d3_end, 
-#     d4_start:d4_end
-# ]
+# Right-aligned shorthand on a 5D descriptor:
+# if the leading 2 axes are logical singleton dimensions, a 3D-style slice
+# maps to the trailing 3 physical axes.
+partition_3d = tensor_view[d2_start:d2_end, d3_start:d3_end, d4_start:d4_end]
+
+# Full 5D spelling remains available when needed
+partition_5d = tensor_view[
+    d0_start:d0_end,
+    d1_start:d1_end,
+    d2_start:d2_end,
+    d3_start:d3_end,
+    d4_start:d4_end,
+]
 ```
 
 **Constraints:**
 - Slicing returns a new TensorView representing the logical partition
 - The partition must be within the original tensor bounds
+- When fewer than 5 slice axes are written, they are right-aligned to the
+  trailing physical axes of the 5D descriptor
 - `stop` must be explicit on all dimensions
 - `start` may be static or dynamic
 - `step` must be a static positive integer

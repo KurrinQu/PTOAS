@@ -95,6 +95,7 @@ _ADVANCED_VECTOR_ACTIVITY_OPS = (
     | _CARRY_OPS
     | _REARRANGEMENT_OPS
 )
+_TENSORVIEW_RANK = 5
 
 
 class SemanticType:
@@ -104,7 +105,7 @@ class SemanticType:
 @dataclass(frozen=True)
 class SemanticTensorViewType(SemanticType):
     element_dtype: ScalarType
-    rank: int = 2
+    rank: int = _TENSORVIEW_RANK
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,7 @@ class SemanticTensorSliceType(SemanticType):
     element_dtype: ScalarType
     rank: int
     extents: tuple[int | None, ...]
+    physical_axes: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -485,7 +487,10 @@ class _SemanticAnalyzer:
 
     def _parameter_type(self, param: Any) -> SemanticType:
         if param.kind == "tensorview":
-            return SemanticTensorViewType(element_dtype=param.dtype)
+            return SemanticTensorViewType(
+                element_dtype=param.dtype,
+                rank=_TENSORVIEW_RANK,
+            )
         if param.kind == "tile":
             spec = self._tile_specializations.get(param.name)
             rank = 2 if spec is None else len(spec.shape)
@@ -1914,10 +1919,12 @@ class _SemanticAnalyzer:
         tensor_type: SemanticTensorViewType,
         index: SemanticTupleExpr,
     ) -> SemanticTensorSliceType:
-        if len(index.elements) != tensor_type.rank:
+        if not 1 <= len(index.elements) <= tensor_type.rank:
             raise TypeError(
-                f"TensorView slice rank {len(index.elements)} does not match TensorView rank {tensor_type.rank}"
+                f"TensorView slice rank {len(index.elements)} must be between 1 and "
+                f"{tensor_type.rank} in TileLang DSL v1"
             )
+        axis_offset = tensor_type.rank - len(index.elements)
         extents = []
         for axis, element in enumerate(index.elements):
             if not isinstance(element, SemanticSliceExpr):
@@ -1933,8 +1940,9 @@ class _SemanticAnalyzer:
             extents.append(self._normalized_tensor_slice_extent(element))
         return SemanticTensorSliceType(
             element_dtype=tensor_type.element_dtype,
-            rank=tensor_type.rank,
+            rank=len(index.elements),
             extents=tuple(extents),
+            physical_axes=tuple(range(axis_offset, tensor_type.rank)),
         )
 
     def _normalize_tensor_slice(
@@ -1944,8 +1952,10 @@ class _SemanticAnalyzer:
     ) -> tuple[SemanticTensorSliceAxis, ...]:
         if not isinstance(index, SemanticTupleExpr):
             raise TypeError("TensorView slicing expects a tuple index in TileLang DSL v1")
-        if len(index.elements) != rank:
-            raise TypeError(f"TensorView slicing expects {rank} slice elements in TileLang DSL v1")
+        if not 1 <= len(index.elements) <= rank:
+            raise TypeError(
+                f"TensorView slicing expects between 1 and {rank} slice elements in TileLang DSL v1"
+            )
         slices = []
         for element in index.elements:
             if not isinstance(element, SemanticSliceExpr):

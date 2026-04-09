@@ -34,7 +34,7 @@ OpenSpec source of truth for this capability:
 ## Implemented v1 Support Matrix
 
 The current v1 lowering contract supports:
-- 2D `TensorView`
+- fixed-rank 5D `TensorView` descriptors
 - 1D/2D `Tile`
 - `dma_load`
 - `dma_store`
@@ -64,6 +64,8 @@ The implemented shape profile is:
 - Tile physical shape must stay static
 - TensorView shape access may lower through hidden shape arguments
 - TensorView slice bounds may be dynamic
+- TensorView slice spelling may omit leading axes; written axes are right-aligned
+  onto the trailing physical axes of the 5D descriptor
 - loop bounds may be dynamic
 - tail `remaining` values may be dynamic
 
@@ -71,6 +73,9 @@ The current DMA lowering still uses the static physical Tile shape when the
 TensorView slice extent is dynamic. This keeps v1 inside the current
 authoring-form contract without introducing fully dynamic Tile allocation or
 tail-DMA semantics.
+
+Although the descriptor rank is 5D, the current DMA-oriented slicing/lowering
+path still only supports rank-2 TensorView slices.
 
 ## Examples
 

@@ -164,8 +164,13 @@ The following documented attributes are not implemented:
 - `strides`
 - `offset`
 
-In practice, `TensorView` is still treated as a 2D GM view in the current
-profile.
+In practice, `TensorView` is now modeled as a fixed 5D GM view in the current
+profile, but the DMA-oriented slicing/lowering path remains narrower than the
+full guide:
+
+- `shape` / `valid_shape` exposure follows the 5D descriptor
+- fewer written slice axes are right-aligned onto the trailing physical axes
+- DMA-oriented slicing/lowering still only accepts rank-2 TensorView slices
 
 ### Tile Attribute Model
 
