@@ -85,9 +85,9 @@ element_type = pto.f32
 byte_offset = index * pto.bytewidth(element_type)
 ```
 
-#### `pto.get_lanes(dtype: Type) -> pto.i32`
+#### `pto.elements_per_vreg(dtype: Type) -> pto.i32`
 
-**Description**: Returns the number of vector lanes for a given element type, based on the hardware vector register size (256 bytes). This is useful for determining the vector width when using element-indexing syntax.
+**Description**: Returns the number of elements per vector register for a given element type, based on the hardware vector register size (256 bytes). This function computes `256 // bytewidth(dtype)`, which represents the maximum number of elements of the given type that can fit in a single vector register. Useful for determining vector width and loop stride calculations.
 
 **Parameters**:
 | Parameter | Type | Description |
@@ -97,30 +97,30 @@ byte_offset = index * pto.bytewidth(element_type)
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `lanes` | `pto.i32` | Number of vector lanes for the given element type |
+| `elems` | `pto.i32` | Number of elements per vector register for the given element type |
 
 **Example**:
 ```python
-f32_lanes = pto.get_lanes(pto.f32)  # Returns 64 (256 / 4)
-f16_lanes = pto.get_lanes(pto.f16)  # Returns 128 (256 / 2)
-i8_lanes = pto.get_lanes(pto.i8)    # Returns 256 (256 / 1)
+f32_elems_per_vreg = pto.elements_per_vreg(pto.f32)  # Returns 64 (256 / 4)
+f16_elems_per_vreg = pto.elements_per_vreg(pto.f16)  # Returns 128 (256 / 2)
+i8_elems_per_vreg = pto.elements_per_vreg(pto.i8)    # Returns 256 (256 / 1)
 ```
 
 **Common Use Case**: Loop stride calculation for vector operations:
 ```python
 dtype = pto.f32
-lanes = pto.get_lanes(dtype)
-for col in range(0, cols, lanes):
-    # Load/store vectors of 'lanes' elements
+elems_per_vreg = pto.elements_per_vreg(dtype)  # Returns 64 for f32
+for col in range(0, cols, elems_per_vreg):
+    # Load/store vectors of 'elems_per_vreg' elements
     pass
 ```
 
 **Relationship with `pto.bytewidth`**:
 ```python
-# The relationship between bytewidth and get_lanes:
-lanes = 256 // pto.bytewidth(dtype)
+# The relationship between bytewidth and elements per vector register:
+elems = 256 // pto.bytewidth(dtype)
 # This is equivalent to:
-lanes = pto.get_lanes(dtype)
+elems = pto.elements_per_vreg(dtype)
 ```
 
 ### Pointer Construction [Advanced Tier]
@@ -151,21 +151,22 @@ ub_ptr = pto.castptr(0, pto.ptr(pto.f32, MemorySpace.UB))
 
 #### `pto.addptr(ptr: PtrType, offset: pto.i64) -> PtrType`
 
-**Description**: Adds an offset to an existing pointer.
+**Description**: Adds an element offset to an existing pointer. The offset is counted in elements, not bytes.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `ptr` | `PtrType` | Source pointer |
-| `offset` | `pto.i64` | Byte offset to add |
+| `offset` | `pto.i64` | Element offset to add (counted in elements, not bytes) |
 
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `new_ptr` | `PtrType` | Pointer with offset applied |
+| `new_ptr` | `PtrType` | Pointer with element offset applied |
 
 **Example**:
 ```python
-next_ptr = pto.addptr(ub_ptr, 4096)
+# Advance pointer by 1024 f32 elements (not bytes)
+next_ptr = pto.addptr(ub_ptr, 1024)
 ```
 

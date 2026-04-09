@@ -24,9 +24,10 @@ Instead of specifying a single `op` parameter, you can provide an `ops` list to 
 def elementwise_arithmetic(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
     dtype = dst.element_type
     rows, cols = dst.valid_shape
+    elems_per_vreg = pto.elements_per_vreg(dtype)  # Number of elements per vector register
     for row in range(0, rows, 1):
         remained = cols
-        for col in range(0, cols, pto.get_lanes(dtype)):
+        for col in range(0, cols, elems_per_vreg):
             mask, remained = pto.make_mask(dtype, remained)
             lhs = pto.vlds(src0[row, col:])
             rhs = pto.vlds(src1[row, col:])
@@ -245,10 +246,11 @@ def unified_arithmetic(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
     """Single implementation for six arithmetic operations."""
     dtype = dst.element_type
     rows, cols = dst.valid_shape
+    elems_per_vreg = pto.elements_per_vreg(dtype)  # Number of elements per vector register
     
     for row in range(0, rows, 1):
         remained = cols
-        for col in range(0, cols, pto.get_lanes(dtype)):
+        for col in range(0, cols, elems_per_vreg):
             mask, remained = pto.make_mask(dtype, remained)
             lhs = pto.vlds(src0[row, col:])
             rhs = pto.vlds(src1[row, col:])
@@ -289,7 +291,7 @@ else:
 - Literal integers, booleans, and strings
 - Data type symbols (`src.element_type`, `dst.element_type`) and comparisons derived from them
 - Statically specialized `Tile.shape` and `Tile.valid_shape` values
-- Frontend query helpers such as `pto.bytewidth(dtype)` and `pto.get_lanes(dtype)`
+- Frontend query helpers such as `pto.bytewidth(dtype)` and `pto.elements_per_vreg(dtype)` (which computes elements per vector register)
 
 **Constraints and Notes**:
 - `TensorView.shape` and `TensorView.strides` may be represented by hidden kernel parameters rather than descriptor-time constants. They should not be assumed constexpr unless separately bound through specialization or other compile-time context.

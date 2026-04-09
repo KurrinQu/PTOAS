@@ -2,6 +2,24 @@
 
 Operations for pipeline synchronization and buffer management.
 
+#### Enum Types for Synchronization
+
+The following enum types provide type-safe parameter specification for synchronization operations:
+
+- **`BarrierType`**: Memory barrier types for `pto.mem_bar`
+  - `VV_ALL`: All prior vector ops complete before subsequent
+  - `VST_VLD`: All prior vector stores visible before subsequent loads  
+  - `VLD_VST`: All prior vector loads complete before subsequent stores
+
+- **`Pipe`**: Hardware pipeline identifiers
+  - `MTE2`: Memory Transfer Engine 2 pipeline
+  - `V`: Vector pipeline
+  - `MTE3`: Memory Transfer Engine 3 pipeline
+  - `ALL`: All pipelines (for barrier operations)
+
+- **`Event`**: Event identifiers for synchronization
+  - `ID0`, `ID1`, `ID2`, `ID3`, ..., `ID31`: Event IDs 0-31 (A5 supports 32 event IDs, 0-15 for subblock 0, 16-31 for subblock 1)
+
 #### `pto.set_flag(pipe_from: PIPE, pipe_to: PIPE, event: EVENT) -> None`
 
 **Description**: Sets a synchronization flag between hardware pipelines.
@@ -60,91 +78,105 @@ from pto import PIPE
 pto.pipe_barrier(PIPE.ALL)
 ```
 
-#### `pto.get_buf(op_type: SyncOpType, buf_id: pto.i32, mode: pto.i32 = 0) -> None`
+#### `pto.get_buf(pipe: Pipe, buf_id: pto.i64, mode: pto.i64) -> None`
 
-**Description**: Acquires a buffer for producer-consumer synchronization.
+**Description**: Acquire buffer slot for inter-pipeline double-buffering coordination.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `op_type` | `SyncOpType` | Operation type (e.g., `SyncOpType.TLOAD`) |
-| `buf_id` | `pto.i32` | Buffer identifier |
-| `mode` | `pto.i32` | Acquisition mode (default: 0) |
+| `pipe` | `Pipe` | Pipeline identifier (e.g., `Pipe.MTE2`, `Pipe.V`, `Pipe.MTE3`) |
+| `buf_id` | `pto.i64` | Buffer identifier |
+| `mode` | `pto.i64` | Acquisition mode |
 
 **Returns**: None (side-effect operation)
 
 **Example**:
 ```python
-from pto import SyncOpType
+from pto import Pipe
 
-# Acquire buffer for DMA load operation
-pto.get_buf(SyncOpType.TLOAD, 0)
+# Acquire buffer for MTE2 pipeline
+pto.get_buf(Pipe.MTE2, 0, 0)
 ```
 
-#### `pto.rls_buf(op_type: SyncOpType, buf_id: pto.i32, mode: pto.i32 = 0) -> None`
+#### `pto.rls_buf(pipe: Pipe, buf_id: pto.i64, mode: pto.i64) -> None`
 
-**Description**: Releases a previously acquired buffer.
+**Description**: Release buffer slot to allow other pipeline to proceed.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `op_type` | `SyncOpType` | Operation type (e.g., `SyncOpType.TLOAD`) |
-| `buf_id` | `pto.i32` | Buffer identifier |
-| `mode` | `pto.i32` | Release mode (default: 0) |
-
-**Returns**: None (side-effect操作)
-
-**Example**:
-```python
-from pto import SyncOpType
-
-# Release buffer for DMA load operation
-pto.rls_buf(SyncOpType.TLOAD, 0)
-```
-
-#### `pto.mem_bar() -> None`
-
-**Description**: Memory barrier for pipeline synchronization.
-
-**Parameters**: None
+| `pipe` | `Pipe` | Pipeline identifier (e.g., `Pipe.MTE2`, `Pipe.V`, `Pipe.MTE3`) |
+| `buf_id` | `pto.i64` | Buffer identifier |
+| `mode` | `pto.i64` | Release mode |
 
 **Returns**: None (side-effect operation)
 
 **Example**:
 ```python
-pto.mem_bar()
+from pto import Pipe
+
+# Release buffer for MTE2 pipeline
+pto.rls_buf(Pipe.MTE2, 0, 0)
 ```
 
-#### `pto.set_cross_core(config: pto.i32) -> None`
+#### `pto.mem_bar(barrier_type: BarrierType) -> None`
 
-**Description**: Configures cross-core synchronization settings.
+**Description**: Memory barrier for pipeline synchronization within vector scope. Required when UB addresses alias between vector load/store operations.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `config` | `pto.i32` | Configuration value for cross-core synchronization |
+| `barrier_type` | `BarrierType` | Barrier type: `BarrierType.VV_ALL` (all prior vector ops complete before subsequent), `BarrierType.VST_VLD` (all prior vector stores visible before subsequent loads), `BarrierType.VLD_VST` (all prior vector loads complete before subsequent stores) |
 
 **Returns**: None (side-effect operation)
 
 **Example**:
 ```python
-pto.set_cross_core(1)
+from pto import BarrierType
+
+# Ensure stores are visible before loads to same UB region
+pto.mem_bar(BarrierType.VST_VLD)
 ```
 
-#### `pto.set_intra_block(config: pto.i32) -> None`
+#### `pto.set_cross_core(core_id: pto.i64, event_id: Event) -> None`
 
-**Description**: Configures intra-block synchronization settings.
+**Description**: Signal event to another core (cross-core synchronization).
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `config` | `pto.i32` | Configuration value for intra-block synchronization |
+| `core_id` | `pto.i64` | Target/source core identifier (platform-specific mapping) |
+| `event_id` | `Event` | Cross-core event identifier (e.g., `Event.ID0`) |
 
 **Returns**: None (side-effect operation)
 
 **Example**:
 ```python
-pto.set_intra_block(2)
+from pto import Event
+
+# Signal event ID0 to core 0
+pto.set_cross_core(0, Event.ID0)
+```
+
+#### `pto.set_intra_block(block_id: pto.i64, event_id: Event) -> None`
+
+**Description**: Signal event within a block (A5). Specifies trigger pipe. 1:1 per subblock.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `block_id` | `pto.i64` | Block/pipeline identifier specifying trigger pipe |
+| `event_id` | `Event` | Event identifier (e.g., `Event.ID0`) |
+
+**Returns**: None (side-effect operation)
+
+**Example**:
+```python
+from pto import Event
+
+# Signal event ID0 on block/pipeline 0
+pto.set_intra_block(0, Event.ID0)
 ```
 
 #### `pto.set_intra_core(config: pto.i32) -> None`
@@ -163,44 +195,44 @@ pto.set_intra_block(2)
 pto.set_intra_core(3)
 ```
 
-#### `pto.wait_flag_dev(pipe_from: PIPE, pipe_to: PIPE, event: EVENT) -> None`
+#### `pto.wait_flag_dev(core_id: pto.i64, event_id: Event) -> None`
 
-**Description**: Waits for a device-level synchronization flag between hardware pipelines.
+**Description**: Wait for event from another core. SU-level blocking — entire core stalls.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `pipe_from` | `PIPE` | Source pipeline (e.g., `PIPE.MTE2`) |
-| `pipe_to` | `PIPE` | Destination pipeline (e.g., `PIPE.V`) |
-| `event` | `EVENT` | Event identifier (e.g., `EVENT.ID0`) |
+| `core_id` | `pto.i64` | Core identifier |
+| `event_id` | `Event` | Event identifier (e.g., `Event.ID0`) |
 
 **Returns**: None (side-effect operation)
 
 **Example**:
 ```python
-from pto import PIPE, EVENT
+from pto import Event
 
-pto.wait_flag_dev(PIPE.MTE2, PIPE.V, EVENT.ID0)
+# Wait for event ID0 from core 0
+pto.wait_flag_dev(0, Event.ID0)
 ```
 
-#### `pto.wait_intra_core(pipe_from: PIPE, pipe_to: PIPE, event: EVENT) -> None`
+#### `pto.wait_intra_core(block_id: pto.i64, event_id: Event) -> None`
 
-**Description**: Waits for an intra-core synchronization flag between hardware pipelines.
+**Description**: Wait for event within block (A5). Specifies which pipeline should wait — only that pipe stalls, SU and other pipes continue.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `pipe_from` | `PIPE` | Source pipeline (e.g., `PIPE.MTE2`) |
-| `pipe_to` | `PIPE` | Destination pipeline (e.g., `PIPE.V`) |
-| `event` | `EVENT` | Event identifier (e.g., `EVENT.ID0`) |
+| `block_id` | `pto.i64` | Block/pipeline identifier specifying which pipeline should wait |
+| `event_id` | `Event` | Event identifier (e.g., `Event.ID0`) |
 
 **Returns**: None (side-effect operation)
 
 **Example**:
 ```python
-from pto import PIPE, EVENT
+from pto import Event
 
-pto.wait_intra_core(PIPE.MTE2, PIPE.V, EVENT.ID0)
+# Wait for event ID0 on block/pipeline 0
+pto.wait_intra_core(0, Event.ID0)
 ```
 
 ### DMA Programming [Advanced Tier]
@@ -426,4 +458,3 @@ pto.copy_ubuf_to_gm(
     ub_stride=128,
 )
 ```
-

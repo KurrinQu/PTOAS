@@ -1,3 +1,24 @@
+### Enum Types for Vector Memory Operations
+
+The following enum types provide type-safe parameter specification for vector memory operations:
+
+- **`DeinterleaveDist`**: Deinterleave distribution modes for `pto.vldx2`
+  - `B8`: 8-bit element deinterleave (for i8)
+  - `B16`: 16-bit element deinterleave (for i16, f16, bf16)
+  - `B32`: 32-bit element deinterleave (for i32, f32)
+  - `BD`: Broadcast deinterleave mode
+
+- **`InterleaveDist`**: Interleave distribution modes for `pto.vstx2`
+  - `B8`: 8-bit element interleave (for i8)
+  - `B16`: 16-bit element interleave (for i16, f16, bf16)
+  - `B32`: 32-bit element interleave (for i32, f32)
+
+- **`StrideMode`**: Stride modes for `pto.vsld`
+  - `S3_B16`: Stride 3, block size 16
+  - `S4_B64`: Stride 4, block size 64
+  - `S8_B32`: Stride 8, block size 32
+  - `S2_B64`: Stride 2, block size 64
+
 ### Address Generation Syntax Sugar
 
 To simplify address calculation and reduce manual byte offset computation errors, TileLang DSL provides syntactic sugar for vector load/store operations using element-based indexing. This syntax automatically computes the byte offset based on tile shape, element type, and layout.
@@ -43,7 +64,7 @@ The number of elements loaded/stored in a single vector operation is determined 
 vector_lanes = 256 // element_size_bytes(element_type)
 ```
 
-**Convenience API**: Use `pto.get_lanes(dtype)` to compute vector lanes for a given element type (e.g., `pto.get_lanes(pto.f32)` returns 64, `pto.get_lanes(pto.f16)` returns 128). See [Type Query Operations](09-frontend-operations.md#type-query-operations) for full documentation.
+**Convenience API**: Use `pto.elements_per_vreg(dtype)` to compute the number of elements per vector register for a given element type (e.g., `pto.elements_per_vreg(pto.f32)` returns 64, `pto.elements_per_vreg(pto.f16)` returns 128). See [Type Query Operations](09-frontend-operations.md#type-query-operations) for full documentation.
 
 Where `element_size_bytes` is:
 - 1 byte for `i8`
@@ -102,7 +123,7 @@ The byte offset is automatically computed based on tile layout:
 The indexing syntax is supported for all vector load and store operations with the following syntax mapping:
 
 - **Vector-range indexing** (`tile[row, col:]` or `tile[start:]`):
-  - Load operations: `vlds`, `vldas`, `vldus`, `vplds`, `vldx2`
+  - Load operations: `vlds`, `vldas`, `vldus`, `vldx2`
   - Store operations: `vsts`, `vsta`, `psts`, `vsst`, `vstx2`
 
 - **Single-element indexing** (`tile[row, col]` or `tile[pos]`):
@@ -121,8 +142,8 @@ pto.vsts(vec, tile[i, j:], mask)     # Store vector with mask
 vec = pto.vlds(tile[k:])             # Load vector from elements k to k+vector_lanes-1
 pto.vsts(vec, tile[k:], mask)        # Store vector with mask
 
-# Dual load with indexing
-vec1, vec2 = pto.vldx2(tile_a[i, j:], tile_b[i, j:])
+# Dual load with deinterleave
+low, high = pto.vldx2(tile[i, j:], DeinterleaveDist.B32)
 
 # Aligned load with indexing
 vec = pto.vldas(tile[i, j:], align)
@@ -161,7 +182,7 @@ Operations for loading data from memory into vector registers.
 
 **Description**: Stateless vector load from buffer. Supports both traditional byte-offset syntax and new element-indexing syntax.
 
-**Parameters (byte-offset syntax)**:
+**Parameters (pointer syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `buf` | `ptr` | Pointer to buffer in UB memory space (Advanced mode only - requires explicit pointer) |
@@ -205,52 +226,16 @@ def generic_scale(src: pto.Tile, dst: pto.Tile, scale: pto.f32):
             pto.vsts(scaled, dst[i, j:], all_mask)
 ```
 
-#### `pto.vldas(buf: ptr, offset: Index, align: pto.align) -> VRegType`  [Advanced Tier]
-#### `pto.vldas(tile[row, col:], align: pto.align) -> VRegType`  [Basic Tier]
-#### `pto.vldas(tile[start:], align: pto.align) -> VRegType`  [Basic Tier]
+#### `pto.vldas(buf: ptr) -> pto.align`  [Advanced Tier]
+#### `pto.vldas(tile[row, col:]) -> pto.align`  [Basic Tier]
+#### `pto.vldas(tile[start:]) -> pto.align`  [Basic Tier]
 
-**Description**: Aligned vector load with explicit alignment carrier. Supports both byte-offset and element-indexing syntax.
+**Description**: Prime alignment buffer for subsequent unaligned load. Returns alignment state for use with `pto.vldus`. Supports both pointer syntax and element-indexing syntax.
 
-**Parameters (byte-offset syntax)**:
+**Parameters (pointer syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `buf` | `ptr` | Pointer to buffer in UB memory space (Advanced mode only - requires explicit pointer) |
-| `offset` | `Index` | Byte offset |
-| `align` | `pto.align` | Alignment specification |
-
-**Parameters (element-indexing syntax)**:
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `tile[row, col:]` | `Tile` with indexing | 2D tile with row index and starting column |
-| `tile[start:]` | `Tile` with indexing | 1D tile with starting element index |
-| `align` | `pto.align` | Alignment specification |
-
-**Returns**:
-| Return Value | Type | Description |
-|--------------|------|-------------|
-| `vec` | `VRegType` | Loaded vector register |
-
-**Examples**:
-```python
-# Byte-offset syntax
-vec = pto.vldas(ub_ptr, offset, align)
-
-# Element-indexing syntax
-vec = pto.vldas(tile[i, j:], align)
-vec = pto.vldas(tile[k:], align)
-```
-
-#### `pto.vldus(buf: ptr, offset: Index) -> VRegType`  [Advanced Tier]
-#### `pto.vldus(tile[row, col:]) -> VRegType`  [Basic Tier]
-#### `pto.vldus(tile[start:]) -> VRegType`  [Basic Tier]
-
-**Description**: Unaligned vector load. Supports both byte-offset and element-indexing syntax.
-
-**Parameters (byte-offset syntax)**:
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `buf` | `ptr` | Pointer to buffer in UB memory space (Advanced mode only - requires explicit pointer) |
-| `offset` | `Index` | Byte offset |
 
 **Parameters (element-indexing syntax)**:
 | Parameter | Type | Description |
@@ -261,169 +246,210 @@ vec = pto.vldas(tile[k:], align)
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `vec` | `VRegType` | Loaded vector register |
+| `align` | `pto.align` | Alignment state for use with `pto.vldus` |
 
 **Examples**:
 ```python
-# Byte-offset syntax
-vec = pto.vldus(ub_ptr, offset)
+# Pointer syntax
+align = pto.vldas(ub_ptr)
 
 # Element-indexing syntax
-vec = pto.vldus(tile[i, j:])
-vec = pto.vldus(tile[k:])
+align = pto.vldas(tile[i, j:])
+align = pto.vldas(tile[k:])
 ```
 
-#### `pto.vplds(buf: ptr, offset: Index, pred: MaskType) -> VRegType`  [Advanced Tier]
-#### `pto.vplds(tile[row, col:], pred: MaskType) -> VRegType`  [Basic Tier]
-#### `pto.vplds(tile[start:], pred: MaskType) -> VRegType`  [Basic Tier]
+#### `pto.vldus(buf: ptr, align: pto.align) -> (VRegType, pto.align, ptr)`  [Advanced Tier]
+#### `pto.vldus(tile[row, col:], align: pto.align) -> (VRegType, pto.align, ptr)`  [Basic Tier]
+#### `pto.vldus(tile[start:], align: pto.align) -> (VRegType, pto.align, ptr)`  [Basic Tier]
 
-**Description**: Predicated vector load stateless. Supports both byte-offset and element-indexing syntax.
+**Description**: Unaligned load using primed align state. Requires alignment state from `pto.vldas` or previous `pto.vldus`. Updates alignment state and base pointer for subsequent loads. Supports both pointer syntax and element-indexing syntax.
 
-**Parameters (byte-offset syntax)**:
+**Parameters (pointer syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `buf` | `ptr` | Pointer to buffer in UB memory space (Advanced mode only - requires explicit pointer) |
-| `offset` | `Index` | Byte offset |
-| `pred` | `MaskType` | Predicate mask |
+| `align` | `pto.align` | Alignment state from `pto.vldas` or previous `pto.vldus` |
 
 **Parameters (element-indexing syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `tile[row, col:]` | `Tile` with indexing | 2D tile with row index and starting column |
-| `tile[start:]` | `Tile` with indexing | 1D tile with starting element index |
-| `pred` | `MaskType` | Predicate mask |
-
-**Returns**:
-| Return Value | Type | Description |
-|--------------|------|-------------|
-| `vec` | `VRegType` | Loaded vector register |
-
-**Examples**:
-```python
-# Byte-offset syntax
-vec = pto.vplds(ub_ptr, offset, mask)
-
-# Element-indexing syntax
-vec = pto.vplds(tile[i, j:], mask)
-vec = pto.vplds(tile[k:], mask)
-```
-
-#### `pto.vldx2(buf1: ptr, buf2: ptr, offset: Index) -> (VRegType, VRegType)`  [Advanced Tier]
-#### `pto.vldx2(tile1[row, col:], tile2[row, col:]) -> (VRegType, VRegType)`  [Basic Tier]
-#### `pto.vldx2(tile1[start:], tile2[start:]) -> (VRegType, VRegType)`  [Basic Tier]
-
-**Description**: Dual vector load from two buffers. Supports both byte-offset and element-indexing syntax.
-
-**Parameters (byte-offset syntax)**:
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `buf1` | `ptr` | Pointer to first buffer (Advanced mode only - requires explicit pointer) |
-| `buf2` | `ptr` | Pointer to second buffer (Advanced mode only - requires explicit pointer) |
-| `offset` | `Index` | Byte offset (applied to both buffers) |
-
-**Parameters (element-indexing syntax)**:
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `tile1[row, col:]` | `Tile` with indexing | First 2D tile with row index and starting column |
-| `tile2[row, col:]` | `Tile` with indexing | Second 2D tile with row index and starting column |
+| `align` | `pto.align` | Alignment state from `pto.vldas` or previous `pto.vldus` |
 | _or_ | | |
-| `tile1[start:]` | `Tile` with indexing | First 1D tile with starting element index |
-| `tile2[start:]` | `Tile` with indexing | Second 1D tile with starting element index |
+| `tile[start:]` | `Tile` with indexing | 1D tile with starting element index |
+| `align` | `pto.align` | Alignment state from `pto.vldas` or previous `pto.vldus` |
 
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `vec1` | `VRegType` | Vector from first buffer |
-| `vec2` | `VRegType` | Vector from second buffer |
+| `vec` | `VRegType` | Assembled vector value |
+| `align_out` | `pto.align` | Updated alignment state for next load |
+| `base_out` | `ptr` | Post-update base pointer state |
+
+**Constraints**:
+- A matching `pto.vldas` must appear before the first dependent `pto.vldus` stream in the same vector loop
+- Both alignment state and base address advance across the stream
+- If DSL authoring uses explicit byte/element offsets, the frontend first rewrites them into pointer/index expressions before lowering to this VPTO form.
 
 **Examples**:
 ```python
-# Byte-offset syntax
-vec1, vec2 = pto.vldx2(ub_ptr1, ub_ptr2, offset)
+# Pointer syntax - requires alignment state priming
+align = pto.vldas(ub_ptr)
+vec, align_out, base_out = pto.vldus(ub_ptr, align)
 
 # Element-indexing syntax
-vec1, vec2 = pto.vldx2(tile_a[i, j:], tile_b[i, j:])
-vec1, vec2 = pto.vldx2(tile_a[k:], tile_b[k:])
+align = pto.vldas(tile[i, j:])
+vec, align_out, base_out = pto.vldus(tile[i, j:], align)
+
+# Multiple unaligned loads in a stream
+align = pto.vldas(tile[k:])
+for n in range(4):
+    vec, align, base = pto.vldus(tile[k:], align)  # alignment state updates
 ```
 
-#### `pto.vsld(buf: ptr, offset: Index) -> VRegType`  [Advanced Tier]
-#### `pto.vsld(tile[row, col]) -> VRegType`  [Basic Tier]
-#### `pto.vsld(tile[pos]) -> VRegType`  [Basic Tier]
 
-**Description**: Scalar load to vector (broadcast scalar to all lanes). Supports both byte-offset and element-indexing syntax. The element-indexing syntax loads a single element (not a vector) and broadcasts it to all lanes.
+#### `pto.vldx2(buf: ptr, offset: Index, dist: DeinterleaveDist) -> (VRegType, VRegType)`  [Advanced Tier]
+#### `pto.vldx2(tile[row, col:], dist: DeinterleaveDist) -> (VRegType, VRegType)`  [Basic Tier]
+#### `pto.vldx2(tile[start:], dist: DeinterleaveDist) -> (VRegType, VRegType)`  [Basic Tier]
 
-**Parameters (byte-offset syntax)**:
+**Description**: Dual vector load with deinterleave (AoS → SoA conversion). Loads interleaved data from a single buffer and deinterleaves into two vectors. Supports both byte-offset and element-indexing syntax.
+
+**Parameters (pointer syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `buf` | `ptr` | Pointer to source buffer in UB memory space (Advanced mode only - requires explicit pointer) |
+| `offset` | `Index` | Byte offset |
+| `dist` | `DeinterleaveDist` | Deinterleave distribution mode: `DeinterleaveDist.B8`, `DeinterleaveDist.B16`, `DeinterleaveDist.B32`, `DeinterleaveDist.BD`. Determines element size and interleave pattern. |
+
+**Parameters (element-indexing syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `tile[row, col:]` | `Tile` with indexing | 2D tile with row index and starting column (vector-width range) |
+| `dist` | `DeinterleaveDist` | Deinterleave distribution mode: `DeinterleaveDist.B8`, `DeinterleaveDist.B16`, `DeinterleaveDist.B32`, `DeinterleaveDist.BD`. Determines element size and interleave pattern. |
+| _or_ | | |
+| `tile[start:]` | `Tile` with indexing | 1D tile with starting element index (vector-width range) |
+| `dist` | `DeinterleaveDist` | Deinterleave distribution mode: `DeinterleaveDist.B8`, `DeinterleaveDist.B16`, `DeinterleaveDist.B32`, `DeinterleaveDist.BD`. |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `low` | `VRegType` | First vector (even elements in interleaved stream) |
+| `high` | `VRegType` | Second vector (odd elements in interleaved stream) |
+
+**Constraints**:
+- Source buffer must be in UB memory space
+- Offset must satisfy alignment requirements for the selected distribution mode
+- The requested vector region must be within tile bounds (for element-indexing syntax)
+- Distribution mode must match element type (e.g., `DeinterleaveDist.B32` for 32-bit elements)
+
+**Examples**:
+```python
+from pto import DeinterleaveDist
+
+# Byte-offset syntax
+low, high = pto.vldx2(ub_ptr, offset, DeinterleaveDist.B32)
+
+# Element-indexing syntax
+low, high = pto.vldx2(tile[i, j:], DeinterleaveDist.B32)
+low, high = pto.vldx2(tile[k:], DeinterleaveDist.B16)
+
+# Example: Load interleaved XY pairs into separate X/Y vectors
+x_vec, y_vec = pto.vldx2(xy_tile[i, j:], DeinterleaveDist.B32)
+```
+
+#### `pto.vsld(buf: ptr, offset: Index, stride: StrideMode) -> VRegType`  [Advanced Tier]
+#### `pto.vsld(tile[row, col], stride: StrideMode) -> VRegType`  [Basic Tier]
+#### `pto.vsld(tile[pos], stride: StrideMode) -> VRegType`  [Basic Tier]
+
+**Description**: Strided load with fixed stride pattern. Loads elements from memory with regular stride pattern. The offset parameter encodes displacement with selected stride mode. This is a deprecated compatibility family.
+
+**Parameters (pointer syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `buf` | `ptr` | Pointer to buffer in UB memory space (Advanced mode only - requires explicit pointer) |
-| `offset` | `Index` | Byte offset |
+| `offset` | `Index` | Byte displacement encoded with selected stride mode |
+| `stride` | `StrideMode` | Stride mode token: `StrideMode.S3_B16`, `StrideMode.S4_B64`, `StrideMode.S8_B32`, `StrideMode.S2_B64`. Determines which sub-elements are read from each source block. |
 
 **Parameters (element-indexing syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `tile[row, col]` | `Tile` with indexing | 2D tile with row and column indices (single element) |
+| `stride` | `StrideMode` | Stride mode token: `StrideMode.S3_B16`, `StrideMode.S4_B64`, `StrideMode.S8_B32`, `StrideMode.S2_B64`. |
+| _or_ | | |
 | `tile[pos]` | `Tile` with indexing | 1D tile with element index (single element) |
+| `stride` | `StrideMode` | Stride mode token: `StrideMode.S3_B16`, `StrideMode.S4_B64`, `StrideMode.S8_B32`, `StrideMode.S2_B64`. |
 
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `vec` | `VRegType` | Vector with scalar broadcast to all lanes |
+| `vec` | `VRegType` | Loaded vector with strided pattern |
+
+**Constraints**:
+- The selected stride token determines which sub-elements are read from each source block
+- This operation family is deprecated; prefer other load patterns when possible
 
 **Examples**:
 ```python
+from pto import StrideMode
+
 # Byte-offset syntax
-vec = pto.vsld(ub_ptr, offset)
+vec = pto.vsld(ub_ptr, offset, StrideMode.S4_B64)
 
 # Element-indexing syntax
-vec = pto.vsld(tile[i, j])    # Load single element at (i,j) and broadcast
-vec = pto.vsld(tile[k])       # Load single element at position k and broadcast
+vec = pto.vsld(tile[i, j], StrideMode.S3_B16)
+vec = pto.vsld(tile[k], StrideMode.S8_B32)
 ```
 
-#### `pto.vgather2(buf1: ptr, buf2: ptr, offsets1: Index, offsets2: Index) -> (VRegType, VRegType)`  [Advanced Tier]
+#### `pto.vgather2(buf: ptr, offsets: Index, active_lanes: Index) -> VRegType`  [Advanced Tier]
 
-**Description**: Dual‑lane gather load from two buffers using irregular access patterns.
+**Description**: Indexed gather from UB. Gathers elements from a single buffer using per-lane offsets, with participation bounded by active lanes count.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `buf1` | `ptr` | Pointer to first buffer |
-| `buf2` | `ptr` | Pointer to second buffer |
-| `offsets1` | `Index` | Byte offsets for first buffer |
-| `offsets2` | `Index` | Byte offsets for second buffer |
+| `buf` | `ptr` | Pointer to source buffer in UB memory space |
+| `offsets` | `Index` | Per-lane element offsets (vector register) |
+| `active_lanes` | `Index` | Number of lanes that participate (bounds gather operation) |
 
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `vec1` | `VRegType` | Gathered vector from first buffer |
-| `vec2` | `VRegType` | Gathered vector from second buffer |
+| `vec` | `VRegType` | Gathered vector |
+
+**Constraints**:
+- Only the first `active_lanes` offsets participate in the gather
+- Index element width and interpretation must match selected gather form
+- Each effective address must satisfy the gather form's alignment rules
 
 **Example**:
 ```python
-vec1, vec2 = pto.vgather2(buf1, buf2, offsets1, offsets2)
+vec = pto.vgather2(buf, offsets, active_lanes)
 ```
 
-#### `pto.vgather2_bc(buf1: ptr, buf2: ptr, offsets1: Index, offsets2: Index, broadcast: ScalarType) -> (VRegType, VRegType)`  [Advanced Tier]
+#### `pto.vgather2_bc(buf: ptr, offsets: Index, mask: MaskType) -> VRegType`  [Advanced Tier]
 
-**Description**: Dual‑lane gather load with broadcast scalar to all lanes.
+**Description**: Gather with broadcast, conditioned by mask. Gathers elements from a single buffer using per-lane offsets, with mask gating lane participation.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `buf1` | `ptr` | Pointer to first buffer |
-| `buf2` | `ptr` | Pointer to second buffer |
-| `offsets1` | `Index` | Byte offsets for first buffer |
-| `offsets2` | `Index` | Byte offsets for second buffer |
-| `broadcast` | `ScalarType` | Scalar value broadcast to all lanes |
+| `buf` | `ptr` | Pointer to source buffer in UB memory space |
+| `offsets` | `Index` | Per-lane element offsets (vector register) |
+| `mask` | `MaskType` | Mask gating which lanes participate |
 
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `vec1` | `VRegType` | Gathered vector from first buffer |
-| `vec2` | `VRegType` | Gathered vector from second buffer |
+| `vec` | `VRegType` | Gathered vector |
+
+**Constraints**:
+- Masked-off lanes do not participate in address coalescing and do not trigger address overflow exceptions
+- Destination lanes for masked-off lanes are zero-filled
+- This is a backward-compatible operation family
 
 **Example**:
 ```python
-vec1, vec2 = pto.vgather2_bc(buf1, buf2, offsets1, offsets2, pto.f32(1.0))
+vec = pto.vgather2_bc(buf, offsets, mask)
 ```
 
 #### `pto.vgatherb(buf: ptr, offsets: Index) -> VRegType`  [Advanced Tier]
@@ -446,38 +472,48 @@ vec1, vec2 = pto.vgather2_bc(buf1, buf2, offsets1, offsets2, pto.f32(1.0))
 vec = pto.vgatherb(buf, offsets)
 ```
 
-#### `pto.vsldb(buf: ptr, offset: Index, broadcast: ScalarType) -> VRegType`  [Advanced Tier]
-#### `pto.vsldb(tile[row, col], broadcast: ScalarType) -> VRegType`  [Basic Tier]
-#### `pto.vsldb(tile[pos], broadcast: ScalarType) -> VRegType`  [Basic Tier]
+#### `pto.vsldb(buf: ptr, offset: Index, mask: MaskType) -> VRegType`  [Advanced Tier]
+#### `pto.vsldb(tile[row, col], offset: Index, mask: MaskType) -> VRegType`  [Basic Tier]
+#### `pto.vsldb(tile[pos], offset: Index, mask: MaskType) -> VRegType`  [Basic Tier]
 
-**Description**: Scalar load with broadcast (enhanced version of `vsld`). Supports both byte‑offset and element‑indexing syntax.
+**Description**: Block-strided load for 2D tile access. Loads elements with block stride pattern controlled by packed offset word and mask.
 
 **Parameters (byte-offset syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `buf` | `ptr` | Pointer to buffer |
-| `offset` | `Index` | Byte offset |
-| `broadcast` | `ScalarType` | Scalar value broadcast to all lanes |
+| `buf` | `ptr` | Pointer to buffer in UB memory space |
+| `offset` | `Index` | Packed stride/control word (not plain byte displacement) |
+| `mask` | `MaskType` | Mask controlling which blocks participate |
 
 **Parameters (element-indexing syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `tile[row, col]` | `Tile` with indexing | 2D tile with row and column indices (single element) |
+| `offset` | `Index` | Packed stride/control word (not plain byte displacement) |
+| `mask` | `MaskType` | Mask controlling which blocks participate |
+| _or_ | | |
 | `tile[pos]` | `Tile` with indexing | 1D tile with element index (single element) |
-| `broadcast` | `ScalarType` | Scalar value broadcast to all lanes |
+| `offset` | `Index` | Packed stride/control word (not plain byte displacement) |
+| `mask` | `MaskType` | Mask controlling which blocks participate |
 
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `vec` | `VRegType` | Vector with loaded scalar broadcast to all lanes |
+| `vec` | `VRegType` | Loaded vector with block-strided pattern |
+
+**Constraints**:
+- The offset encodes block stride and repeat pattern, not a plain byte displacement
+- If a block is masked off, the corresponding destination block is zeroed
+- Masked-off blocks must not raise address overflow exceptions
 
 **Example**:
 ```python
 # Byte-offset syntax
-vec = pto.vsldb(ub_ptr, offset, pto.f32(0.0))
+vec = pto.vsldb(ub_ptr, control_word, mask)
 
 # Element-indexing syntax
-vec = pto.vsldb(tile[i, j], pto.f32(1.0))
+vec = pto.vsldb(tile[i, j], control_word, mask)
+vec = pto.vsldb(tile[k], control_word, mask)
 ```
 
 ### Vector Store Operations
@@ -590,92 +626,128 @@ def generic_store(src: pto.Tile, dst: pto.Tile):
 
 **Returns**: None (side-effect operation)
 
-#### `pto.vstx2(vec1: VRegType, vec2: VRegType, buf1: ptr, buf2: ptr, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
-#### `pto.vstx2(vec1: VRegType, vec2: VRegType, tile1[row, col:], tile2[row, col:], mask: MaskType) -> None`  
-#### `pto.vstx2(vec1: VRegType, vec2: VRegType, tile1[start:], tile2[start:], mask: MaskType) -> None`
+#### `pto.vstx2(low: VRegType, high: VRegType, buf: ptr, offset: Index, dist: InterleaveDist, mask: MaskType) -> None`  [Advanced Tier]
+#### `pto.vstx2(low: VRegType, high: VRegType, tile[row, col:], dist: InterleaveDist, mask: MaskType) -> None`  
+#### `pto.vstx2(low: VRegType, high: VRegType, tile[start:], dist: InterleaveDist, mask: MaskType) -> None`
 
-**Description**: Dual vector store to two buffers. Supports both traditional byte-offset syntax and new element-indexing syntax.
-
-**Parameters (byte-offset syntax)**:
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `vec1` | `VRegType` | First vector to store |
-| `vec2` | `VRegType` | Second vector to store |
-| `buf1` | `ptr` | First destination buffer |
-| `buf2` | `ptr` | Second destination buffer |
-| `offset` | `Index` | Byte offset (applied to both buffers) |
-| `mask` | `MaskType` | Predicate mask |
-
-**Parameters (element-indexing syntax)**:
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `vec1` | `VRegType` | First vector to store |
-| `vec2` | `VRegType` | Second vector to store |
-| `tile1[row, col:]` | `Tile` with indexing | First 2D tile with row index and starting column (vector-width range) |
-| `tile2[row, col:]` | `Tile` with indexing | Second 2D tile with row index and starting column (vector-width range) |
-| `mask` | `MaskType` | Predicate mask |
-
-**Parameters (1D element-indexing syntax)**:
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `vec1` | `VRegType` | First vector to store |
-| `vec2` | `VRegType` | Second vector to store |
-| `tile1[start:]` | `Tile` with indexing | First 1D tile with starting element index (vector-width range) |
-| `tile2[start:]` | `Tile` with indexing | Second 1D tile with starting element index (vector-width range) |
-| `mask` | `MaskType` | Predicate mask |
-
-**Returns**: None (side-effect operation)
-
-#### `pto.vsta(vec: VRegType, buf: ptr, offset: Index, align: pto.align, mask: MaskType) -> None`  [Advanced Tier]
-#### `pto.vsta(vec: VRegType, tile[row, col:], align: pto.align, mask: MaskType) -> None`  
-#### `pto.vsta(vec: VRegType, tile[start:], align: pto.align, mask: MaskType) -> None`
-
-**Description**: Aligned vector store with explicit alignment carrier. Supports both traditional byte-offset syntax and new element-indexing syntax.
+**Description**: Dual interleaved store (SoA → AoS conversion). Stores two vectors interleaved into a single buffer. Supports both byte-offset and element-indexing syntax.
 
 **Parameters (byte-offset syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `vec` | `VRegType` | Vector to store |
-| `buf` | `ptr` | Pointer to destination buffer (Advanced mode only - requires explicit pointer) |
+| `low` | `VRegType` | First vector (even elements in interleaved stream) |
+| `high` | `VRegType` | Second vector (odd elements in interleaved stream) |
+| `buf` | `ptr` | Pointer to destination buffer in UB memory space (Advanced mode only - requires explicit pointer) |
 | `offset` | `Index` | Byte offset |
-| `align` | `pto.align` | Alignment specification |
+| `dist` | `InterleaveDist` | Interleave distribution mode: `InterleaveDist.B8`, `InterleaveDist.B16`, `InterleaveDist.B32`. Determines element size and interleave pattern. |
 | `mask` | `MaskType` | Predicate mask |
 
 **Parameters (element-indexing syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `vec` | `VRegType` | Vector to store |
+| `low` | `VRegType` | First vector (even elements in interleaved stream) |
+| `high` | `VRegType` | Second vector (odd elements in interleaved stream) |
 | `tile[row, col:]` | `Tile` with indexing | 2D tile with row index and starting column (vector-width range) |
-| `align` | `pto.align` | Alignment specification |
+| `dist` | `InterleaveDist` | Interleave distribution mode: `InterleaveDist.B8`, `InterleaveDist.B16`, `InterleaveDist.B32`. |
 | `mask` | `MaskType` | Predicate mask |
 
 **Parameters (1D element-indexing syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `vec` | `VRegType` | Vector to store |
+| `low` | `VRegType` | First vector (even elements in interleaved stream) |
+| `high` | `VRegType` | Second vector (odd elements in interleaved stream) |
 | `tile[start:]` | `Tile` with indexing | 1D tile with starting element index (vector-width range) |
-| `align` | `pto.align` | Alignment specification |
+| `dist` | `InterleaveDist` | Interleave distribution mode: `InterleaveDist.B8`, `InterleaveDist.B16`, `InterleaveDist.B32`. |
 | `mask` | `MaskType` | Predicate mask |
 
 **Returns**: None (side-effect operation)
 
-#### `pto.vscatter(vec: VRegType, buf: ptr, offsets: Index, mask: MaskType) -> None`  [Advanced Tier]
+**Constraints**:
+- Destination buffer must be in UB memory space
+- Offset must satisfy alignment requirements for the selected distribution mode
+- The destination vector region must be within tile bounds (for element-indexing syntax)
+- Distribution mode must match element type (e.g., `InterleaveDist.B32` for 32-bit elements)
+- The two source vectors form an ordered pair; interleave semantics must be preserved
 
-**Description**: Scatter store with irregular access pattern.
+**Examples**:
+```python
+from pto import InterleaveDist
+
+# Byte-offset syntax
+pto.vstx2(x_vec, y_vec, ub_ptr, offset, InterleaveDist.B32, mask)
+
+# Element-indexing syntax
+pto.vstx2(x_vec, y_vec, tile[i, j:], InterleaveDist.B32, mask)
+pto.vstx2(x_vec, y_vec, tile[k:], InterleaveDist.B16, mask)
+
+# Example: Store separate X/Y vectors as interleaved XY pairs
+pto.vstx2(x_vec, y_vec, xy_tile[i, j:], InterleaveDist.B32, all_mask)
+```
+
+#### `pto.vsta(align: pto.align, buf: ptr, offset: Index) -> None`  [Advanced Tier]
+#### `pto.vsta(align: pto.align, tile[row, col:]) -> None`  [Basic Tier]
+#### `pto.vsta(align: pto.align, tile[start:]) -> None`  [Basic Tier]
+
+**Description**: Flush alignment state to memory. Writes buffered tail bytes from alignment state to UB memory. Consumes the alignment state after flush.
+
+**Parameters (byte-offset syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `align` | `pto.align` | Pending store-alignment state |
+| `buf` | `ptr` | Pointer to destination buffer in UB memory space (Advanced mode only - requires explicit pointer) |
+| `offset` | `Index` | Flush displacement |
+
+**Parameters (element-indexing syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `align` | `pto.align` | Pending store-alignment state |
+| `tile[row, col:]` | `Tile` with indexing | 2D tile with row index and starting column (vector-width range) |
+| _or_ | | |
+| `align` | `pto.align` | Pending store-alignment state |
+| `tile[start:]` | `Tile` with indexing | 1D tile with starting element index (vector-width range) |
+
+**Returns**: None (side-effect operation)
+
+**Constraints**:
+- The flush address must match the post-updated address expected by the preceding unaligned-store stream
+- After the flush, the corresponding store alignment state is consumed
+- A final flush operation is required to commit buffered bytes after unaligned-store sequences
+- The `align` input should come from the latest `vstu`/`vstus`/`vstur` in the same stream
+
+**Example**:
+```python
+# Byte-offset syntax
+pto.vsta(align, ub_ptr, offset)
+
+# Element-indexing syntax
+pto.vsta(align, tile[i, j:])
+pto.vsta(align, tile[k:])
+```
+
+#### `pto.vscatter(vec: VRegType, buf: ptr, offsets: Index, active_lanes: Index) -> None`  [Advanced Tier]
+
+**Description**: Indexed scatter to UB. Stores vector elements to irregular locations using per-lane offsets, with participation bounded by active lanes count.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `vec` | `VRegType` | Vector to scatter |
-| `buf` | `ptr` | Pointer to destination buffer |
-| `offsets` | `Index` | Byte offsets for scatter locations |
-| `mask` | `MaskType` | Predicate mask |
+| `vec` | `VRegType` | Source vector to scatter |
+| `buf` | `ptr` | Pointer to destination buffer in UB memory space |
+| `offsets` | `Index` | Per-lane element offsets (vector register) |
+| `active_lanes` | `Index` | Number of lanes that participate (bounds scatter operation) |
 
 **Returns**: None (side-effect operation)
 
+**Constraints**:
+- Only `b8`, `b16`, and `b32` element sizes are supported
+- Index vector must use a supported integer element type and layout
+- Each computed address must be element-aligned
+- If indices alias, only one write is guaranteed (winning lane is implementation-defined)
+- Only the first `active_lanes` offsets participate in the scatter
+
 **Example**:
 ```python
-pto.vscatter(vec, buf, offsets, mask)
+pto.vscatter(vec, buf, offsets, active_lanes)
 ```
 
 #### `pto.vsstb(scalar: ScalarType, buf: ptr, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
@@ -684,7 +756,7 @@ pto.vscatter(vec, buf, offsets, mask)
 
 **Description**: Scalar to vector store with broadcast (enhanced version of `vsst`). Supports both byte‑offset and element‑indexing syntax.
 
-**Parameters (byte-offset syntax)**:
+**Parameters (pointer syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `scalar` | `ScalarType` | Scalar value |
@@ -717,118 +789,198 @@ pto.vsstb(pto.f32(0.0), ub_ptr, offset, mask)
 pto.vsstb(pto.f32(1.0), tile[i, j:], mask)
 ```
 
-#### `pto.vstar(vec: VRegType, buf: ptr, offset: Index, align: pto.align, mask: MaskType) -> None`  [Advanced Tier]
-#### `pto.vstar(vec: VRegType, tile[row, col:], align: pto.align, mask: MaskType) -> None`  [Basic Tier]
-#### `pto.vstar(vec: VRegType, tile[start:], align: pto.align, mask: MaskType) -> None`  [Basic Tier]
+#### `pto.vstar(align: pto.align, buf: ptr) -> None`  [Advanced Tier]
+#### `pto.vstar(align: pto.align, tile[row, col:]) -> None`  [Basic Tier]
+#### `pto.vstar(align: pto.align, tile[start:]) -> None`  [Basic Tier]
 
-**Description**: Vector store with alignment requirement (enhanced version of `vsta`). Supports both byte‑offset and element‑indexing syntax.
+**Description**: Flush alignment state using the register-update form. Writes buffered tail bytes from alignment state to UB memory. The implicit update state must correspond to the same store stream that produced the alignment state.
 
 **Parameters (byte-offset syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `vec` | `VRegType` | Vector to store |
-| `buf` | `ptr` | Pointer to destination buffer |
-| `offset` | `Index` | Byte offset |
-| `align` | `pto.align` | Alignment specification |
-| `mask` | `MaskType` | Predicate mask |
+| `align` | `pto.align` | Pending store-alignment state |
+| `buf` | `ptr` | Pointer to destination buffer in UB memory space |
 
 **Parameters (element-indexing syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `vec` | `VRegType` | Vector to store |
+| `align` | `pto.align` | Pending store-alignment state |
 | `tile[row, col:]` | `Tile` with indexing | 2D tile with row index and starting column (vector-width range) |
-| `align` | `pto.align` | Alignment specification |
-| `mask` | `MaskType` | Predicate mask |
+| _or_ | | |
+| `align` | `pto.align` | Pending store-alignment state |
+| `tile[start:]` | `Tile` with indexing | 1D tile with starting element index (vector-width range) |
 
-**Parameters (1D element-indexing syntax)**:
+**Returns**: None (side-effect operation)
+
+**Constraints**:
+- The implicit update state consumed by this flush must correspond to the same store stream that produced the alignment state
+- A final flush operation is required to commit buffered bytes after unaligned-store sequences
+- The `align` input should come from the latest `vstu`/`vstus`/`vstur` in the same stream
+
+**Example**:
+```python
+# Byte-offset syntax
+pto.vstar(align, ub_ptr)
+
+# Element-indexing syntax
+pto.vstar(align, tile[i, j:])
+pto.vstar(align, tile[k:])
+```
+
+#### `pto.vstas(align: pto.align, buf: ptr, offset: Index) -> None`  [Advanced Tier]
+#### `pto.vstas(align: pto.align, tile[row, col:], offset: Index) -> None`  [Basic Tier]
+#### `pto.vstas(align: pto.align, tile[start:], offset: Index) -> None`  [Basic Tier]
+
+**Description**: Scalar-register-offset form of alignment-state flush. Writes buffered tail bytes from alignment state to UB memory with explicit scalar offset. Uses same buffered-tail semantics as `pto.vsta`.
+
+**Parameters (pointer syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `vec` | `VRegType` | Vector to store |
+| `align` | `pto.align` | Pending store-alignment state |
+| `buf` | `ptr` | Pointer to destination buffer in UB memory space |
+| `offset` | `Index` | Scalar-register style displacement |
+
+**Parameters (element-indexing syntax)**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `align` | `pto.align` | Pending store-alignment state |
+| `tile[row, col:]` | `Tile` with indexing | 2D tile with row index and starting column (vector-width range) |
+| `offset` | `Index` | Scalar-register style displacement |
+| _or_ | | |
+| `align` | `pto.align` | Pending store-alignment state |
 | `tile[start:]` | `Tile` with indexing | 1D tile with starting element index (vector-width range) |
-| `align` | `pto.align` | Alignment specification |
-| `mask` | `MaskType` | Predicate mask |
+| `offset` | `Index` | Scalar-register style displacement |
 
 **Returns**: None (side-effect operation)
 
 **Example**:
 ```python
 # Byte-offset syntax
-pto.vstar(vec, ub_ptr, offset, align, mask)
+pto.vstas(align, ub_ptr, offset)
 
 # Element-indexing syntax
-pto.vstar(vec, tile[i, j:], align, mask)
-```
-
-#### `pto.vstas(vec: VRegType, buf: ptr, offset: Index, align: pto.align, mask: MaskType) -> None`  [Advanced Tier]
-#### `pto.vstas(vec: VRegType, tile[row, col:], align: pto.align, mask: MaskType) -> None`  [Basic Tier]
-#### `pto.vstas(vec: VRegType, tile[start:], align: pto.align, mask: MaskType) -> None`  [Basic Tier]
-
-**Description**: Aligned vector store (alias for `vstar`). Supports both byte‑offset and element‑indexing syntax.
-
-**Parameters**: Same as `pto.vstar`.
-
-**Returns**: None (side-effect operation)
-
-**Example**:
-```python
-pto.vstas(vec, tile[i, j:], align, mask)
+pto.vstas(align, tile[i, j:], offset)
+pto.vstas(align, tile[k:], offset)
 ```
 
 ### Stateful Store Operations
 
 Operations for storing data with stateful semantics.
 
-#### `pto.pstu(mask: MaskType, buf: ptr, offset: Index) -> None`[Advanced Tier]
+#### `pto.pstu(align_in: pto.align, mask: MaskType, buf: ptr) -> (pto.align, ptr)`  [Advanced Tier]
 
-**Description**: Predicate stateful store.
-
-**Parameters**:
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `mask` | `MaskType` | Mask to store |
-| `buf` | `ptr` | Pointer to destination buffer (Advanced mode only - requires explicit pointer) |
-| `offset` | `Index` | Byte offset |
-
-**Returns**: None (side-effect operation)
-
-#### `pto.vstu(vec: VRegType, buf: ptr, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
-
-**Description**: Vector stateful store.
+**Description**: Predicate unaligned store with align state update. Stores predicate mask with alignment state threading.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
+| `align_in` | `pto.align` | Incoming store-alignment state |
+| `mask` | `MaskType` | Predicate mask to store |
+| `buf` | `ptr` | Pointer to destination buffer in UB memory space |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `align_out` | `pto.align` | Updated alignment state |
+| `base_out` | `ptr` | Post-update base pointer state |
+
+**Constraints**:
+- Part of stateful unaligned-store sequence with alignment state threading
+
+#### `pto.vstu(align_in: pto.align, base_in: ptr, vec: VRegType, buf: ptr, mode: Index) -> (pto.align, ptr)`  [Advanced Tier]
+
+**Description**: Unaligned store with explicit threaded alignment/base state. Models a stateful unaligned-store sequence in SSA form. Requires a final `pto.vsta`/`pto.vstas`/`pto.vstar` to flush trailing buffered bytes.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `align_in` | `pto.align` | Incoming store-alignment state |
+| `base_in` | `ptr` | Current stream base pointer |
 | `vec` | `VRegType` | Vector to store |
-| `buf` | `ptr` | Pointer to destination buffer (Advanced mode only - requires explicit pointer) |
-| `offset` | `Index` | Byte offset |
-| `mask` | `MaskType` | Predicate mask |
+| `buf` | `ptr` | Destination buffer in UB memory space |
+| `mode` | `Index` | Mode selecting post-update behavior |
 
-**Returns**: None (side-effect operation)
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `align_out` | `pto.align` | Updated buffered-tail state |
+| `base_out` | `ptr` | Post-update base pointer state |
 
-#### `pto.vstus(vec: VRegType, buf: ptr, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
+**Constraints**:
+- Models stateful unaligned-store sequence in SSA form
+- Final flush operation required to commit buffered bytes
 
-**Description**: Vector store update stateless.
+**Example**:
+```python
+# Stateful unaligned store + final flush (vsta form)
+align1, base1 = pto.vstu(align0, base0, vec0, ub_ptr, mode)
+align2, base2 = pto.vstu(align1, base1, vec1, ub_ptr, mode)
+pto.vsta(align2, ub_ptr, tail_offset)
+```
+
+#### `pto.vstus(align_in: pto.align, base_in: ptr, vec: VRegType, buf: ptr, offset: Index) -> (pto.align, ptr)`  [Advanced Tier]
+
+**Description**: Scalar-offset unaligned store with threaded state. Same roles as `pto.vstu` but with explicit scalar displacement.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
+| `align_in` | `pto.align` | Incoming store-alignment state |
+| `base_in` | `ptr` | Current stream base pointer |
 | `vec` | `VRegType` | Vector to store |
-| `buf` | `ptr` | Pointer to destination buffer (Advanced mode only - requires explicit pointer) |
-| `offset` | `Index` | Byte offset |
-| `mask` | `MaskType` | Predicate mask |
+| `buf` | `ptr` | Destination buffer in UB memory space |
+| `offset` | `Index` | Scalar displacement |
 
-**Returns**: None (side-effect operation)
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `align_out` | `pto.align` | Updated buffered-tail state |
+| `base_out` | `ptr` | Post-update base pointer state |
 
-#### `pto.vstur(vec: VRegType, buf: ptr, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
+**Constraints**:
+- Same final flush requirement and state-threading constraints as `pto.vstu`
 
-**Description**: Vector store update register.
+**Example**:
+```python
+# Scalar-offset threaded form + final flush (vstas form)
+align1, base1 = pto.vstus(align0, base0, vec0, ub_ptr, offset0)
+align2, base2 = pto.vstus(align1, base1, vec1, ub_ptr, offset1)
+pto.vstas(align2, ub_ptr, flush_offset)
+```
+
+#### `pto.vstur(align_in: pto.align, vec: VRegType, buf: ptr) -> pto.align`  [Advanced Tier]
+
+**Description**: Register-update unaligned store form. Updates only the residual alignment state without base pointer update. Requires matching flush operation to emit trailing bytes.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
+| `align_in` | `pto.align` | Incoming store-alignment state |
 | `vec` | `VRegType` | Vector to store |
-| `buf` | `ptr` | Pointer to destination buffer (Advanced mode only - requires explicit pointer) |
-| `offset` | `Index` | Byte offset |
-| `mask` | `MaskType` | Predicate mask |
+| `buf` | `ptr` | Destination buffer in UB memory space |
 
-**Returns**: None (side-effect operation)
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `align_out` | `pto.align` | Updated buffered-tail state |
+
+**Constraints**:
+- Updates only residual alignment state (no base pointer update)
+- Matching flush operation still required to emit trailing bytes
+
+**Example**:
+```python
+# Residual-state form + final flush (vstar form)
+align1 = pto.vstur(align0, vec0, ub_ptr)
+align2 = pto.vstur(align1, vec1, ub_ptr)
+pto.vstar(align2, ub_ptr)
+```
+
+#### Align-State Store Closed Loop
+
+For unaligned store families, the state must form a closed loop:
+
+1. Start from an incoming `align` state.
+2. Thread state through one or more `vstu` / `vstus` / `vstur` operations.
+3. Terminate the stream with exactly one flush op: `vsta` or `vstas` or `vstar`.
+4. Do not reuse a flushed `align` state in another stream.

@@ -30,7 +30,7 @@ def elementwise_arithmetic(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
     
     for row in range(0, rows, 1):
         remained = cols
-        for col in range(0, cols, pto.get_lanes(dtype)):
+        for col in range(0, cols, pto.elements_per_vreg(dtype)):
             mask, remained = pto.make_mask(dtype, remained)
             lhs = pto.vlds(src0[row, col:])
             rhs = pto.vlds(src1[row, col:])
@@ -68,7 +68,7 @@ def elementwise_with_postprocess(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
     
     for row in range(0, rows, 1):
         remained = cols
-        for col in range(0, cols, pto.get_lanes(dtype)):
+        for col in range(0, cols, pto.elements_per_vreg(dtype)):
             mask, remained = pto.make_mask(dtype, remained)
             lhs = pto.vlds(src0[row, col:])
             rhs = pto.vlds(src1[row, col:])

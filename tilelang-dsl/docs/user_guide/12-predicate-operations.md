@@ -6,6 +6,10 @@ Operations for creating and manipulating typed masks.
 
 **Pattern alias**: For brevity in examples, the documentation uses `PAT` as an alias for `pto.MaskPattern` (e.g., `PAT.ALL` instead of `pto.MaskPattern.PAT_ALL`). In practice, you can create this alias with `from pto import MaskPattern as PAT` or `PAT = pto.MaskPattern`.
 
+**Part Mode Enum**: The `PartMode` enum provides type-safe part selection for `pto.ppack` and `pto.punpack` operations. It includes the following values: `EVEN` (selects even-indexed elements) and `ODD` (selects odd-indexed elements).
+
+**Predicate Dist Enum**: The `PredicateDist` enum provides type-safe distribution mode selection for predicate load/store families. Common values include `NORM`, `US`, and `DS`.
+
 #### `pto.pset_b8(pattern: pto.MaskPattern) -> pto.mask_b8`
 
 **Description**: Creates an 8-bit granularity mask from a pattern.
@@ -72,114 +76,151 @@ mask16 = pto.make_mask(pto.f16, PAT.ALL)
 mask32 = pto.make_mask(pto.f32, PAT.ALL)
 ```
 
-#### `pto.pge_b8(vec: VRegType, scalar: ScalarType) -> pto.mask_b8`
+#### `pto.pge_b8(pattern: pto.MaskPattern) -> pto.mask_b8`
 
-**Description**: Creates 8-bit mask where vector elements ≥ scalar.
-
-**Parameters**:
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `vec` | `VRegType` | Input vector (element type must match mask granularity) |
-| `scalar` | `ScalarType` | Scalar comparison value |
-
-**Returns**:
-| Return Value | Type | Description |
-|--------------|------|-------------|
-| `mask` | `pto.mask_b8` | 8-bit granularity mask |
-
-**Constraints**:
-- Vector element type must be `i8` or compatible
-
-#### `pto.pge_b16(vec: VRegType, scalar: ScalarType) -> pto.mask_b16`
-
-**Description**: Creates 16-bit mask where vector elements ≥ scalar.
+**Description**: Generate tail mask — first N lanes active based on pattern. Creates an 8-bit granularity mask where the first N lanes are active according to the specified pattern.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `vec` | `VRegType` | Input vector (element type must match mask granularity) |
-| `scalar` | `ScalarType` | Scalar comparison value |
+| `pattern` | `pto.MaskPattern` | Tail mask pattern enum (e.g., `pto.MaskPattern.PAT_VL8`, `pto.MaskPattern.PAT_VL16`) |
 
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `mask` | `pto.mask_b16` | 16-bit granularity mask |
+| `mask` | `pto.mask_b8` | 8-bit granularity tail mask |
 
 **Constraints**:
-- Vector element type must be `f16`/`bf16`/`i16`
-
-#### `pto.pge_b32(vec: VRegType, scalar: ScalarType) -> pto.mask_b32`
-
-**Description**: Creates 32-bit mask where vector elements ≥ scalar.
-
-**Parameters**:
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `vec` | `VRegType` | Input vector (element type must match mask granularity) |
-| `scalar` | `ScalarType` | Scalar comparison value |
-
-**Returns**:
-| Return Value | Type | Description |
-|--------------|------|-------------|
-| `mask` | `pto.mask_b32` | 32-bit granularity mask |
-
-**Constraints**:
-- Vector element type must be `f32`/`i32`
+- Used with `i8` vector operations
+- Pattern must be a valid tail mask pattern (typically `PAT_VL*` variants)
 
 **Example**:
 ```python
-mask = pto.pge_b32(vec_f32, pto.f32(0.0))
+# Tail mask for first 8 lanes
+tail_mask = pto.pge_b8(PAT.VL8)
 ```
 
-#### `pto.plt_b8(vec: VRegType, scalar: ScalarType) -> pto.mask_b8`
+#### `pto.pge_b16(pattern: pto.MaskPattern) -> pto.mask_b16`
 
-**Description**: Creates 8-bit mask where vector elements < scalar.
+**Description**: Generate tail mask — first N lanes active based on pattern. Creates a 16-bit granularity mask where the first N lanes are active according to the specified pattern.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `vec` | `VRegType` | Input vector (element type must match mask granularity) |
-| `scalar` | `ScalarType` | Scalar comparison value |
+| `pattern` | `pto.MaskPattern` | Tail mask pattern enum (e.g., `pto.MaskPattern.PAT_VL8`, `pto.MaskPattern.PAT_VL16`) |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `mask` | `pto.mask_b16` | 16-bit granularity tail mask |
+
+**Constraints**:
+- Used with `f16`/`bf16`/`i16` vector operations
+- Pattern must be a valid tail mask pattern (typically `PAT_VL*` variants)
+
+**Example**:
+```python
+# Tail mask for first 16 lanes
+tail_mask = pto.pge_b16(PAT.VL16)
+```
+
+#### `pto.pge_b32(pattern: pto.MaskPattern) -> pto.mask_b32`
+
+**Description**: Generate tail mask — first N lanes active based on pattern. Creates a 32-bit granularity mask where the first N lanes are active according to the specified pattern.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `pattern` | `pto.MaskPattern` | Tail mask pattern enum (e.g., `pto.MaskPattern.PAT_VL8`, `pto.MaskPattern.PAT_VL16`, `pto.MaskPattern.PAT_VL32`) |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `mask` | `pto.mask_b32` | 32-bit granularity tail mask |
+
+**Constraints**:
+- Used with `f32`/`i32` vector operations
+- Pattern must be a valid tail mask pattern (typically `PAT_VL*` variants)
+
+**Example**:
+```python
+# Tail mask for first 32 lanes
+tail_mask = pto.pge_b32(PAT.VL32)
+```
+
+#### `pto.plt_b8(scalar: pto.i32) -> (pto.mask_b8, pto.i32)`
+
+**Description**: Generate predicate state together with updated scalar state (tail processing). Creates an 8-bit granularity mask and returns updated scalar value for state progression.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `scalar` | `pto.i32` | Input scalar value (typically remaining element count) |
 
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
 | `mask` | `pto.mask_b8` | 8-bit granularity mask |
+| `scalar_out` | `pto.i32` | Updated scalar state |
 
-#### `pto.plt_b16(vec: VRegType, scalar: ScalarType) -> pto.mask_b16`
+**Constraints**:
+- Used with `i8` vector operations for tail processing
+- The scalar input is typically a remaining element count that decrements across successive calls
 
-**Description**: Creates 16-bit mask where vector elements < scalar.
+**Example**:
+```python
+remaining: pto.i32 = 64
+mask, remaining = pto.plt_b8(remaining)  # generates mask for next chunk, updates remaining count
+```
+
+#### `pto.plt_b16(scalar: pto.i32) -> (pto.mask_b16, pto.i32)`
+
+**Description**: Generate predicate state together with updated scalar state (tail processing). Creates a 16-bit granularity mask and returns updated scalar value for state progression.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `vec` | `VRegType` | Input vector (element type must match mask granularity) |
-| `scalar` | `ScalarType` | Scalar comparison value |
+| `scalar` | `pto.i32` | Input scalar value (typically remaining element count) |
 
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
 | `mask` | `pto.mask_b16` | 16-bit granularity mask |
+| `scalar_out` | `pto.i32` | Updated scalar state |
 
-#### `pto.plt_b32(vec: VRegType, scalar: ScalarType) -> (pto.mask_b32, pto.i32)`
+**Constraints**:
+- Used with `f16`/`bf16`/`i16` vector operations for tail processing
+- The scalar input is typically a remaining element count that decrements across successive calls
 
-**Description**: Creates 32-bit mask where vector elements < scalar, returns mask and remaining count.
+**Example**:
+```python
+remaining: pto.i32 = 64
+mask, remaining = pto.plt_b16(remaining)  # generates mask for next chunk, updates remaining count
+```
+
+#### `pto.plt_b32(scalar: pto.i32) -> (pto.mask_b32, pto.i32)`
+
+**Description**: Generate predicate state together with updated scalar state (tail processing). Creates a 32-bit granularity mask and returns updated scalar value for state progression.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `vec` | `VRegType` | Input vector (element type must match mask granularity) |
-| `scalar` | `ScalarType` | Scalar comparison value |
+| `scalar` | `pto.i32` | Input scalar value (typically remaining element count) |
 
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
 | `mask` | `pto.mask_b32` | 32-bit granularity mask |
-| `remaining` | `pto.i32` | Remaining element count |
+| `scalar_out` | `pto.i32` | Updated scalar state |
+
+**Constraints**:
+- Used with `f32`/`i32` vector operations for tail processing
+- The scalar input is typically a remaining element count that decrements across successive calls
 
 **Example**:
 ```python
-mask, remaining = pto.plt_b32(vec_f32, pto.f32(10.0))
+remaining: pto.i32 = 64
+mask, remaining = pto.plt_b32(remaining)  # generates mask for next chunk, updates remaining count
 ```
 
 #### `pto.make_mask(element_type: Type, value: pto.i32 | pto.MaskPattern) -> MaskType | (MaskType, pto.i32)`
@@ -235,7 +276,7 @@ mask1, updated = pto.make_mask(pto.f32, remaining)     # tail processing
 mask2 = pto.make_mask(pto.f32, PAT.ALL)              # pattern mode
 ```
 
-#### `pto.ppack(mask: MaskType, part: str) -> MaskType`
+#### `pto.ppack(mask: MaskType, part: PartMode) -> MaskType`
 
 **Description**: Rearranges a mask according to the requested `part` selector.
 
@@ -243,14 +284,14 @@ mask2 = pto.make_mask(pto.f32, PAT.ALL)              # pattern mode
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `mask` | `MaskType` | Input mask (`mask_b8`, `mask_b16`, or `mask_b32`) |
-| `part` | `str` | Part selector such as `"PART_EVEN"` or `"PART_ODD"` |
+| `part` | `PartMode` | Part selector enum: `PartMode.EVEN` or `PartMode.ODD`. Determines which half of the mask to pack (even-indexed or odd-indexed elements). |
 
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
 | `packed` | `MaskType` | Reordered mask |
 
-#### `pto.punpack(mask: MaskType, part: str) -> MaskType`
+#### `pto.punpack(mask: MaskType, part: PartMode) -> MaskType`
 
 **Description**: Applies the inverse mask-part rearrangement selected by `part`.
 
@@ -258,7 +299,7 @@ mask2 = pto.make_mask(pto.f32, PAT.ALL)              # pattern mode
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `mask` | `MaskType` | Input mask |
-| `part` | `str` | Part selector such as `"PART_EVEN"` or `"PART_ODD"` |
+| `part` | `PartMode` | Part selector enum: `PartMode.EVEN` or `PartMode.ODD`. Determines which half of the mask to unpack (even-indexed or odd-indexed elements). |
 
 **Returns**:
 | Return Value | Type | Description |
@@ -296,15 +337,16 @@ mask2 = pto.make_mask(pto.f32, PAT.ALL)              # pattern mode
 |--------------|------|-------------|
 | `result` | `MaskType` | Selected mask |
 
-#### `pto.pld(buf: ptr, offset: Index) -> MaskType`  [Advanced Tier]
+#### `pto.plds(buf: ptr, offset: Index, dist: PredicateDist = PredicateDist.NORM) -> MaskType`  [Advanced Tier]
 
-**Description**: Loads a predicate mask from buffer.
+**Description**: Predicate load with scalar-index style offset form. This is the default DSL surface for loading predicate masks from UB memory.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `buf` | `ptr` | Pointer to buffer containing predicate data |
-| `offset` | `Index` | Byte offset |
+| `buf` | `ptr` | Source pointer in UB memory space |
+| `offset` | `Index` | Scalar/index-style offset |
+| `dist` | `PredicateDist` | Distribution mode (default: `PredicateDist.NORM`) |
 
 **Returns**:
 | Return Value | Type | Description |
@@ -313,17 +355,19 @@ mask2 = pto.make_mask(pto.f32, PAT.ALL)              # pattern mode
 
 **Example**:
 ```python
-mask = pto.pld(buf, offset)
+mask = pto.plds(buf, offset, PredicateDist.NORM)
 ```
 
-#### `pto.pldi(imm: pto.i32) -> MaskType`
+#### `pto.pld(buf: ptr, offset: Index, dist: PredicateDist) -> MaskType`  [Advanced Tier]
 
-**Description**: Loads a predicate mask from immediate value.
+**Description**: Predicate load with areg/index register style offset encoding.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `imm` | `pto.i32` | Immediate value encoding predicate bits |
+| `buf` | `ptr` | Source pointer in UB memory space |
+| `offset` | `Index` | Areg/index-style offset |
+| `dist` | `PredicateDist` | Distribution mode |
 
 **Returns**:
 | Return Value | Type | Description |
@@ -332,17 +376,19 @@ mask = pto.pld(buf, offset)
 
 **Example**:
 ```python
-mask = pto.pldi(0xFF)
+mask = pto.pld(buf, offset, PredicateDist.NORM)
 ```
 
-#### `pto.plds(static_id: pto.i32) -> MaskType`
+#### `pto.pldi(buf: ptr, imm_offset: pto.i32, dist: PredicateDist) -> MaskType`  [Advanced Tier]
 
-**Description**: Loads a predicate mask from static storage.
+**Description**: Predicate load with immediate-offset encoding form.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `static_id` | `pto.i32` | Static storage identifier |
+| `buf` | `ptr` | Source pointer in UB memory space |
+| `imm_offset` | `pto.i32` | Immediate-offset operand |
+| `dist` | `PredicateDist` | Distribution mode |
 
 **Returns**:
 | Return Value | Type | Description |
@@ -351,7 +397,7 @@ mask = pto.pldi(0xFF)
 
 **Example**:
 ```python
-mask = pto.plds(0)
+mask = pto.pldi(buf, 0, PredicateDist.NORM)
 ```
 
 #### `pto.pst(mask: MaskType, buf: ptr, offset: Index) -> None`  [Advanced Tier]
@@ -449,49 +495,4 @@ result = pto.por(mask1, mask2)
 result = pto.pxor(mask1, mask2)
 ```
 
-#### `pto.pset_b(pattern: pto.MaskPattern) -> MaskType`
-
-**Description**: Creates a mask from a pattern (generic version that automatically selects bitwidth based on context).
-
-**Parameters**:
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `pattern` | `pto.MaskPattern` | Mask pattern enum |
-
-**Returns**:
-| Return Value | Type | Description |
-|--------------|------|-------------|
-| `mask` | `MaskType` | Generated mask with appropriate granularity |
-
-**Note**: Prefer `pto.make_mask()` for automatic bitwidth selection.
-
-#### `pto.pge_b(vec: VRegType, scalar: ScalarType) -> MaskType`
-
-**Description**: Creates a mask where vector elements ≥ scalar (generic version).
-
-**Parameters**:
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `vec` | `VRegType` | Input vector |
-| `scalar` | `ScalarType` | Scalar comparison value |
-
-**Returns**:
-| Return Value | Type | Description |
-|--------------|------|-------------|
-| `mask` | `MaskType` | Generated mask with appropriate granularity |
-
-#### `pto.plt_b(vec: VRegType, scalar: ScalarType) -> MaskType`
-
-**Description**: Creates a mask where vector elements < scalar (generic version).
-
-**Parameters**:
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `vec` | `VRegType` | Input vector |
-| `scalar` | `ScalarType` | Scalar comparison value |
-
-**Returns**:
-| Return Value | Type | Description |
-|--------------|------|-------------|
-| `mask` | `MaskType` | Generated mask with appropriate granularity |
-
+**Note**: Prefer `pto.make_mask()` for automatic bitwidth selection and unified tail/pattern mask generation.

@@ -627,9 +627,9 @@ sum_vec = pto.vadd(vec_a, vec_b, mask32)
 **Constraints**:
 - Optimized for convolution-specific patterns
 
-#### `pto.vmull(vec1: VRegType, vec2: VRegType, mask: MaskType) -> VRegType`
+#### `pto.vmull(vec1: VRegType, vec2: VRegType, mask: MaskType) -> (VRegType, VRegType)`
 
-**Description**: Long multiplication (extended-precision arithmetic).
+**Description**: Widening multiply with split low/high results (extended arithmetic).
 
 **Parameters**:
 | Parameter | Type | Description |
@@ -641,10 +641,17 @@ sum_vec = pto.vadd(vec_a, vec_b, mask32)
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `result` | `VRegType` | Extended-precision product |
+| `low` | `VRegType` | Low part of widened product (`r & 0xFFFFFFFF`) |
+| `high` | `VRegType` | High part of widened product (`r >> 32`) |
 
 **Constraints**:
-- Produces wider result than input element types
+- Current A5 documented form is native `i32/u32` 32x32->64 widening multiply
+- Result is split into two vector outputs instead of a single widened vector
+
+**Example**:
+```python
+low, high = pto.vmull(lhs_i32, rhs_i32, mask32)
+```
 
 #### `pto.vmula(vec1: VRegType, vec2: VRegType, vec3: VRegType, mask: MaskType) -> VRegType`
 
@@ -882,17 +889,111 @@ zero_vec = pto.vbr(0.0)
 one_vec = pto.vbr(1.0)
 ```
 
+**Position Mode Enum**: The `PositionMode` enum provides type-safe position selection for `pto.vdup` operations. Currently only `LOWEST` (selects the lowest-index element) is supported, with more position options planned for future releases.
+
+#### `pto.vdup(input: ScalarType | VRegType, position: PositionMode = PositionMode.LOWEST) -> VRegType`
+
+**Description**: Duplicate scalar or vector element to all lanes.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `input` | `ScalarType` or `VRegType` | Input scalar or source vector |
+| `position` | `PositionMode` | Optional enum selecting which source element to duplicate (default: `PositionMode.LOWEST`) |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Vector with duplicated value in all lanes |
+
+**Constraints**:
+- When `input` is a scalar, it is broadcast to all lanes (similar to `pto.vbr` but with `position` attribute).
+- When `input` is a vector, the element selected by `position` is duplicated to all lanes.
+- Supported scalar types are `i8`, `i16`, `i32`, `f16`, `bf16`, `f32`.
+- The `position` enum selects which source element or scalar position is duplicated. Currently only `PositionMode.LOWEST` is supported, which selects the lowest-index element.
+
+**Example**:
+```python
+# Broadcast scalar to vector (similar to pto.vbr)
+broadcast = pto.vdup(3.14)  # position defaults to "POS_LOWEST"
+
+# Duplicate lowest element of vector to all lanes
+vec = pto.vreg_f32(64)  # 64-element vector
+dup_lowest = pto.vdup(vec)  # position defaults to "POS_LOWEST"
+
+# Explicit position specification
+dup_explicit = pto.vdup(vec, position=PositionMode.LOWEST)
+```
+
 ### Carry & Select Operations
 
 Operations with carry propagation and selection.
 
+**Comparison Mode Enum**: The `CmpMode` enum provides type-safe comparison mode specification for `pto.vcmp` and `pto.vcmps` operations. It includes the following values: `EQ` (equal), `NE` (not equal), `LT` (less than), `LE` (less than or equal), `GT` (greater than), `GE` (greater than or equal).
+
 Implemented current-package carry/select surface also includes:
-- `pto.vcmp(vec0, vec1, seed_mask, cmp_mode) -> MaskType`
-- `pto.vcmps(vec, scalar, seed_mask, cmp_mode) -> MaskType`
 - `pto.vselr(vec0, vec1) -> VRegType`
 - `pto.vselrv2(vec0, vec1) -> VRegType`
 - `pto.vaddcs(vec0, vec1, carry_in, mask) -> (VRegType, MaskType)`
 - `pto.vsubcs(vec0, vec1, carry_in, mask) -> (VRegType, MaskType)`
+
+#### `pto.vcmp(vec0: VRegType, vec1: VRegType, seed_mask: MaskType, cmp_mode: CmpMode) -> MaskType`
+
+**Description**: Element-wise vector comparison with seed mask. Compares two vectors element-wise and generates a predicate mask based on the specified comparison mode.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec0` | `VRegType` | First input vector |
+| `vec1` | `VRegType` | Second input vector |
+| `seed_mask` | `MaskType` | Seed mask that determines which lanes participate in the comparison |
+| `cmp_mode` | `CmpMode` | Comparison mode enum: `CmpMode.EQ` (equal), `CmpMode.NE` (not equal), `CmpMode.LT` (less than), `CmpMode.LE` (less than or equal), `CmpMode.GT` (greater than), `CmpMode.GE` (greater than or equal) |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `MaskType` | Generated predicate mask based on element-wise comparison |
+
+**Constraints**:
+- Only lanes enabled by `seed_mask` participate in the comparison
+- The two input vectors must have the same element type and vector length
+- The output mask granularity matches the input vector element type
+
+**Example**:
+```python
+# Compare two vectors for less-than relation
+all_mask = pto.make_mask(pto.f32, PAT.ALL)
+lt_mask = pto.vcmp(vec_a, vec_b, all_mask, CmpMode.LT)
+```
+
+#### `pto.vcmps(vec: VRegType, scalar: ScalarType, seed_mask: MaskType, cmp_mode: CmpMode) -> MaskType`
+
+**Description**: Vector-scalar comparison with seed mask. Compares each element of a vector against a scalar value and generates a predicate mask based on the specified comparison mode.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec` | `VRegType` | Input vector |
+| `scalar` | `ScalarType` | Scalar value to compare against (must match vector element type) |
+| `seed_mask` | `MaskType` | Seed mask that determines which lanes participate in the comparison |
+| `cmp_mode` | `CmpMode` | Comparison mode enum: `CmpMode.EQ`, `CmpMode.NE`, `CmpMode.LT`, `CmpMode.LE`, `CmpMode.GT`, `CmpMode.GE` |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `MaskType` | Generated predicate mask based on vector-scalar comparison |
+
+**Constraints**:
+- Only lanes enabled by `seed_mask` participate in the comparison
+- The scalar type must match the vector element type
+- The output mask granularity matches the input vector element type
+
+**Example**:
+```python
+# Check which elements are greater than zero
+all_mask = pto.make_mask(pto.f32, PAT.ALL)
+positive_mask = pto.vcmps(values, pto.f32(0.0), all_mask, CmpMode.GT)
+```
 
 #### `pto.vaddc(vec1: VRegType, vec2: VRegType, mask: MaskType) -> (VRegType, MaskType)`
 
@@ -1179,22 +1280,30 @@ Implemented current-package rearrangement surface also includes:
 |--------------|------|-------------|
 | `result` | `VRegType` | Merged and sorted vector |
 
-#### `pto.vtranspose(vec: VRegType, rows: ScalarType, cols: ScalarType, mask: MaskType) -> VRegType`
+#### `pto.vtranspose(dest: ptr, src: ptr, config: pto.i64) -> None`  [Advanced Tier]
 
-**Description**: Vector transpose (matrix transpose operation).
+**Description**: UB-to-UB transpose operation. This op works on UB memory directly (not `vreg -> vreg`).
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `vec` | `VRegType` | Input vector (interpreted as matrix) |
-| `rows` | `ScalarType` | Number of rows in matrix |
-| `cols` | `ScalarType` | Number of columns in matrix |
-| `mask` | `MaskType` | Predicate mask |
+| `dest` | `ptr` | Destination pointer in UB memory space |
+| `src` | `ptr` | Source pointer in UB memory space |
+| `config` | `pto.i64` | ISA control/config operand that encodes transpose layout behavior |
 
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `result` | `VRegType` | Transposed vector |
+| `None` | `None` | Side-effect operation that writes transposed data to `dest` |
+
+**Constraints**:
+- `dest` and `src` must be UB pointers
+- Correctness depends on the `config` encoding and UB layout contract
+
+**Example**:
+```python
+pto.vtranspose(dst_ub_ptr, src_ub_ptr, config_word)
+```
 
 ### Conversion & Special Operations
 
@@ -1264,19 +1373,30 @@ Type conversion and specialized operations.
 |--------------|------|-------------|
 | `result` | `VRegType` | Merged and sorted vector |
 
-#### `pto.vci(condition: MaskType, base_index: ScalarType, mask: MaskType) -> VRegType`
+**Order Mode Enum**: The `OrderMode` enum provides type-safe order selection for `pto.vci` operations. Currently only `ASC` (ascending order) is supported, with more order options planned for future releases.
 
-**Description**: Conditional index generation (DSA/SFU operation).
+#### `pto.vci(index: ScalarType, order: OrderMode = OrderMode.ASC) -> VRegType`
+
+**Description**: Generate a lane-index vector from a scalar seed/index value (DSA/SFU operation).
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `condition` | `MaskType` | Condition mask |
-| `base_index` | `ScalarType` | Base index value |
-| `mask` | `MaskType` | Predicate mask |
+| `index` | `ScalarType` | Scalar seed or base index value |
+| `order` | `OrderMode` | Order mode enum (default: `OrderMode.ASC` for ascending order) |
 
 **Returns**:
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `result` | `VRegType` | Generated indices based on condition |
+| `result` | `VRegType` | Generated index vector |
 
+**Constraints**:
+- This is an index-generation family, not a numeric conversion
+- The `order` parameter and result element type together determine how indices are generated
+- Currently only ascending order (`OrderMode.ASC`) is supported
+
+**Example**:
+```python
+# Generate ascending indices starting from 0
+indices = pto.vci(pto.i32(0), OrderMode.ASC)
+```

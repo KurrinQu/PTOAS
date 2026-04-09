@@ -67,7 +67,6 @@ load/store families. The following documented ops are still unsupported:
 
 - `pto.vldas(...)`
 - `pto.vldus(...)`
-- `pto.vplds(...)`
 - `pto.vldx2(...)`
 - `pto.vsld(...)`
 - `pto.psts(...)`
@@ -231,7 +230,7 @@ Not currently supported from the guide's broader indexing model:
 - single-element syntax such as `tile[row, col]` and `tile[pos]`
 - explicit slice `stop`
 - stepped tile vector slices
-- the guide's wider indexed op family (`vldas`, `vldus`, `vplds`, `vldx2`,
+- the guide's wider indexed op family (`vldas`, `vldus`, `vldx2`,
   `vsld`, `psts`, `vsst`, `vstx2`, `vsta`)
 
 ### Control-Flow Result Merging

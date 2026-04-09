@@ -26,6 +26,25 @@ The compiler automatically groups these three operations into a single implicit 
 
 #### Explicit Scope Boundaries with `strict_vecscope` [Advanced Tier]
 
+##### `pto.strict_vecscope(*captures: AnyType) -> ContextManager[Tuple[AnyType, ...]]`
+
+**Description**: Creates an explicit vector scope boundary with explicit value captures. Values used inside the scope must be passed as arguments; implicit capture from outer scope is rejected.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `*captures` | `AnyType` | Variable number of values to be captured and passed into the scope |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `context_manager` | `ContextManager[Tuple[AnyType, ...]]` | Context manager that yields a tuple of captured values when entered |
+
+**Constraints**:
+- The scope body cannot implicitly capture values from the surrounding scope; all used values must be passed as `captures`.
+- Creates a hard boundary that prevents the compiler from merging vector operations across the scope boundary.
+- Useful for performance optimization, debugging, resource management, and hardware compatibility.
+
 For precise control over scope boundaries, use explicit `strict_vecscope` blocks. These create hard boundaries that prevent the compiler from merging operations across the block boundary:
 
 ```python
