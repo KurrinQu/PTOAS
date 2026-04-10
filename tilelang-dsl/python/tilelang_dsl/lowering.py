@@ -1,3 +1,11 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
 """Authoring-form VPTO lowering skeleton for TileLang DSL v1."""
 
 from __future__ import annotations
@@ -38,6 +46,7 @@ from .semantic import (
     SemanticSymbolExpr,
     SemanticTensorSliceExpr,
     SemanticTensorViewType,
+    SemanticPartitionTensorViewType,
     SemanticTileType,
     SemanticType,
     SemanticTupleExpr,
@@ -1366,7 +1375,7 @@ class _AuthoringRenderer:
     ) -> _RenderedValue:
         dim_index = self._new_temp()
         axis_value = self._materialize_constant(axis, SemanticIndexType())
-        if isinstance(tensor_base.type, SemanticTensorViewType):
+        if isinstance(tensor_base.type, (SemanticTensorViewType, SemanticPartitionTensorViewType)):
             into.append(
                 self._indent(indent)
                 + f"{dim_index} = pto.get_tensor_view_dim {tensor_base.name}, {axis_value} : "
@@ -2512,7 +2521,10 @@ class _AuthoringRenderer:
             and isinstance(expr.base, SemanticAttributeAccess)
             and expr.base.attr in {"shape", "valid_shape", "strides"}
             and isinstance(expr.base.base, SemanticBindingRef)
-            and isinstance(expr.base.base.type, SemanticTensorViewType)
+            and isinstance(
+                expr.base.base.type,
+                (SemanticTensorViewType, SemanticPartitionTensorViewType),
+            )
             and isinstance(expr.index, SemanticLiteralExpr)
             and isinstance(expr.index.value, int)
         ):
@@ -2641,7 +2653,7 @@ class _AuthoringRenderer:
                 return valid_dim
             return _RenderedValue(name=base_binding.ssa_name, type=base_type)
 
-        if isinstance(base_type, SemanticTensorViewType):
+        if isinstance(base_type, (SemanticTensorViewType, SemanticPartitionTensorViewType)):
             if expr.base.attr == "strides":
                 hidden_name = self._tensor_stride_binding_name(base_binding.name, index)
             else:
@@ -2649,11 +2661,11 @@ class _AuthoringRenderer:
             hidden_value = env.get(hidden_name)
             if hidden_value is None:
                 raise NotImplementedError(
-                    f"missing TensorView {expr.base.attr} binding for '{base_binding.name}.{expr.base.attr}[{index}]'"
+                    f"missing TensorView/PartitionTensorView {expr.base.attr} binding for '{base_binding.name}.{expr.base.attr}[{index}]'"
                 )
             return hidden_value
 
-        raise NotImplementedError("shape/stride indexing expects a Tile or TensorView operand")
+        raise NotImplementedError("shape/stride indexing expects a Tile, TensorView, or PartitionTensorView operand")
 
     def _format_shape_tuple(self, shape: tuple[int | None, ...]) -> str:
         return "(" + ", ".join("?" if dim is None else str(dim) for dim in shape) + ")"
@@ -2725,6 +2737,11 @@ class _AuthoringRenderer:
                 element_dtype=ty.element_dtype.name,
                 shape=("?",) * ty.rank,
             )
+        if isinstance(ty, SemanticPartitionTensorViewType):
+            return self._render_partition_tensor_view_type(
+                element_dtype=ty.element_dtype.name,
+                shape=("?",) * ty.rank,
+            )
         if isinstance(ty, SemanticTileType):
             return self._render_tile_buf_type(ty)
         if isinstance(ty, SemanticMaskType):
@@ -2734,14 +2751,14 @@ class _AuthoringRenderer:
         raise NotImplementedError(f"unsupported semantic type {ty!r}")
 
     def _is_memref_like_type(self, ty: SemanticType) -> bool:
-        return isinstance(ty, (SemanticTensorViewType, SemanticTileType)) or (
+        return isinstance(ty, (SemanticTensorViewType, SemanticPartitionTensorViewType, SemanticTileType)) or (
             isinstance(ty, _RenderedTextualType) and ty.text.startswith("memref<")
         )
 
     def _render_copy_buffer_type(self, ty: SemanticType) -> str:
         if isinstance(ty, SemanticPtrType):
             return self._render_type(ty)
-        if isinstance(ty, SemanticTensorViewType):
+        if isinstance(ty, (SemanticTensorViewType, SemanticPartitionTensorViewType)):
             return f"!pto.ptr<{ty.element_dtype.name}, gm>"
         if isinstance(ty, SemanticTileType):
             memory_space = ty.memory_space or "ub"
@@ -2766,6 +2783,15 @@ class _AuthoringRenderer:
     ) -> str:
         dims = "x".join(str(dim) for dim in shape)
         return f"!pto.tensor_view<{dims}x{element_dtype}>"
+
+    def _render_partition_tensor_view_type(
+        self,
+        *,
+        element_dtype: str,
+        shape: tuple[int | str, ...],
+    ) -> str:
+        dims = "x".join(str(dim) for dim in shape)
+        return f"!pto.partition_tensor_view<{dims}x{element_dtype}>"
 
     def _render_memref_memory_space(self, memory_space: str) -> str:
         if memory_space == "gm":

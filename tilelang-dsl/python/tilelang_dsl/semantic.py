@@ -1,3 +1,11 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
 """Semantic model for TileLang DSL descriptor lowering."""
 
 from __future__ import annotations
@@ -176,6 +184,12 @@ class SemanticType:
 
 @dataclass(frozen=True)
 class SemanticTensorViewType(SemanticType):
+    element_dtype: ScalarType
+    rank: int = _TENSORVIEW_RANK
+
+
+@dataclass(frozen=True)
+class SemanticPartitionTensorViewType(SemanticType):
     element_dtype: ScalarType
     rank: int = _TENSORVIEW_RANK
 
@@ -561,6 +575,11 @@ class _SemanticAnalyzer:
     def _parameter_type(self, param: Any) -> SemanticType:
         if param.kind == "tensorview":
             return SemanticTensorViewType(
+                element_dtype=param.dtype,
+                rank=_TENSORVIEW_RANK,
+            )
+        if param.kind == "partition_tensor_view":
+            return SemanticPartitionTensorViewType(
                 element_dtype=param.dtype,
                 rank=_TENSORVIEW_RANK,
             )
@@ -2137,19 +2156,19 @@ class _SemanticAnalyzer:
 
     def _attribute_type(self, base: SemanticExpr, attr: str) -> SemanticType:
         base_type = base.type
-        if isinstance(base_type, SemanticTensorViewType) and attr == "shape":
+        if isinstance(base_type, (SemanticTensorViewType, SemanticPartitionTensorViewType)) and attr == "shape":
             return SemanticShapeType(rank=base_type.rank)
-        if isinstance(base_type, SemanticTensorViewType) and attr == "strides":
+        if isinstance(base_type, (SemanticTensorViewType, SemanticPartitionTensorViewType)) and attr == "strides":
             return SemanticShapeType(rank=base_type.rank)
         if isinstance(base_type, SemanticTileType) and attr == "shape":
             return SemanticShapeType(rank=base_type.rank)
-        if isinstance(base_type, (SemanticTensorViewType, SemanticTileType)) and attr == "valid_shape":
+        if isinstance(base_type, (SemanticTensorViewType, SemanticPartitionTensorViewType, SemanticTileType)) and attr == "valid_shape":
             return SemanticShapeType(rank=base_type.rank)
         raise TypeError(f"unsupported attribute access '{attr}' in TileLang DSL v1")
 
     def _element_type_expr(self, base: SemanticExpr) -> SemanticExpr:
         base_type = base.type
-        if isinstance(base_type, (SemanticTensorViewType, SemanticTileType)):
+        if isinstance(base_type, (SemanticTensorViewType, SemanticPartitionTensorViewType, SemanticTileType)):
             return SemanticSymbolExpr(
                 namespace="pto",
                 name=base_type.element_dtype.name,
@@ -2160,7 +2179,7 @@ class _SemanticAnalyzer:
 
     def _analyze_as_ptr_method(self, base: SemanticExpr) -> SemanticExpr:
         base_type = base.type
-        if isinstance(base_type, SemanticTensorViewType):
+        if isinstance(base_type, (SemanticTensorViewType, SemanticPartitionTensorViewType)):
             return SemanticCallExpr(
                 namespace="pto",
                 name="tensor_view_as_ptr",
@@ -2180,11 +2199,11 @@ class _SemanticAnalyzer:
                     memory_space=base_type.memory_space or "ub",
                 ),
             )
-        raise TypeError("`as_ptr()` expects a TensorView or Tile value in TileLang DSL v1")
+        raise TypeError("`as_ptr()` expects a TensorView/PartitionTensorView or Tile value in TileLang DSL v1")
 
     def _valid_shape_expr(self, base: SemanticExpr) -> SemanticExpr:
         base_type = base.type
-        if not isinstance(base_type, (SemanticTensorViewType, SemanticTileType)):
+        if not isinstance(base_type, (SemanticTensorViewType, SemanticPartitionTensorViewType, SemanticTileType)):
             raise TypeError("unsupported attribute access 'valid_shape' in TileLang DSL v1")
         shape_access = SemanticAttributeAccess(
             base=base,
@@ -2214,7 +2233,7 @@ class _SemanticAnalyzer:
 
     def _strides_expr(self, base: SemanticExpr) -> SemanticExpr:
         base_type = base.type
-        if not isinstance(base_type, SemanticTensorViewType):
+        if not isinstance(base_type, (SemanticTensorViewType, SemanticPartitionTensorViewType)):
             raise TypeError("unsupported attribute access 'strides' in TileLang DSL v1")
         stride_access = SemanticAttributeAccess(
             base=base,
@@ -2250,7 +2269,7 @@ class _SemanticAnalyzer:
                         f"shape subscript index {index.value} is out of bounds for rank {base.type.rank}"
                     )
             return SemanticIndexType()
-        if isinstance(base.type, SemanticTensorViewType):
+        if isinstance(base.type, (SemanticTensorViewType, SemanticPartitionTensorViewType)):
             if not isinstance(index, SemanticTupleExpr):
                 raise TypeError("TensorView slicing expects a tuple of slices in TileLang DSL v1")
             return self._tensor_slice_type(base.type, index)
@@ -2325,7 +2344,7 @@ class _SemanticAnalyzer:
 
     def _tensor_slice_type(
         self,
-        tensor_type: SemanticTensorViewType,
+        tensor_type: SemanticTensorViewType | SemanticPartitionTensorViewType,
         index: SemanticTupleExpr,
     ) -> SemanticTensorSliceType:
         if not 1 <= len(index.elements) <= tensor_type.rank:
@@ -3321,7 +3340,7 @@ class _SemanticAnalyzer:
                     if 0 <= index_value < len(binding_type.valid_shape):
                         return binding_type.valid_shape[index_value]
                 return None
-            if isinstance(binding_type, SemanticTensorViewType):
+            if isinstance(binding_type, (SemanticTensorViewType, SemanticPartitionTensorViewType)):
                 return None
 
         base_value = self._try_static_value(base)
@@ -3577,6 +3596,7 @@ __all__ = [
     "SemanticTensorSliceExpr",
     "SemanticTensorSliceType",
     "SemanticTensorViewType",
+    "SemanticPartitionTensorViewType",
     "SemanticTileBinding",
     "SemanticTileType",
     "SemanticTupleExpr",

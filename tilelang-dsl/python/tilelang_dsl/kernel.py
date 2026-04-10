@@ -1,3 +1,11 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
 """Kernel descriptor surface for TileLang DSL v1."""
 
 from __future__ import annotations
@@ -15,6 +23,7 @@ from typing import Any, Callable, Mapping
 from .types import (
     AnyType,
     MemorySpace,
+    PartitionTensorView,
     PointerType,
     ScalarType,
     TensorView,
@@ -392,7 +401,7 @@ class BoundKernelParameter:
 
     @property
     def element_dtype(self) -> ScalarType | None:
-        if self.kind in ("tensorview", "tile", "ptr"):
+        if self.kind in ("tensorview", "partition_tensor_view", "tile", "ptr"):
             return self.dtype
         return None
 
@@ -814,7 +823,7 @@ class VKernelDescriptor:
             if f"{spec.name}_memory_space" in attrs:
                 param_attrs.setdefault("memory_space", attrs[f"{spec.name}_memory_space"])
 
-            if spec.kind == "tensorview":
+            if spec.kind in ("tensorview", "partition_tensor_view"):
                 # TensorView authoring form is normalized to 5D in the current DSL spec.
                 param_attrs.setdefault("rank", 5)
                 param_attrs.setdefault("memory_space", "gm")
@@ -1506,6 +1515,12 @@ def _validate_parameter_spec(param: inspect.Parameter) -> KernelParameterSpec:
             kind="tensorview",
             annotation=annotation,
         )
+    if annotation is PartitionTensorView:
+        return KernelParameterSpec(
+            name=param.name,
+            kind="partition_tensor_view",
+            annotation=annotation,
+        )
     if annotation is Tile:
         return KernelParameterSpec(
             name=param.name,
@@ -1540,7 +1555,7 @@ def _default_dtype_signature(
 ) -> tuple[Any, ...]:
     defaults: list[Any] = []
     for param_spec in parameter_specs:
-        if param_spec.kind in {"tensorview", "tile"}:
+        if param_spec.kind in {"tensorview", "partition_tensor_view", "tile"}:
             defaults.append(AnyType)
             continue
         if param_spec.kind == "ptr":
@@ -1569,7 +1584,7 @@ def _bind_parameter(
     dtype: Any,
 ) -> BoundKernelParameter:
     scalar_dtype = _validate_scalar_dtype(dtype, param_spec.name)
-    if param_spec.kind == "tensorview":
+    if param_spec.kind in {"tensorview", "partition_tensor_view"}:
         return BoundKernelParameter(
             name=param_spec.name,
             kind=param_spec.kind,
