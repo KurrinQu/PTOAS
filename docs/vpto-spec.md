@@ -381,13 +381,13 @@ result = addr_of(src);
 #### `pto.castptr`
 
 - **syntax:** `%result = pto.castptr %addr : i64 -> !pto.ptr<T, space>`
-- **semantics:** Reinterpret an integer, memref base address, or existing PTO pointer as a typed PTO pointer in the target memory space.
+- **semantics:** Reinterpret a scalar address value as a typed PTO pointer in the target memory space.
 
 ```c
 result = (ptr<T, space>)addr;
 ```
 
-`pto.castptr` is a pointer-construction operation. It does not perform data movement and does not by itself imply any load/store side effect. Descriptor values such as `tensor_view` / `partition_tensor_view` are not valid direct operands; extract their address first with `pto.tensor_view_addr`.
+`pto.castptr` is a pointer-construction operation. It does not perform data movement and does not by itself imply any load/store side effect.
 
 #### `pto.addptr`
 

@@ -267,31 +267,6 @@ def GetTensorViewStrideOp : PTO_Op<"get_tensor_view_stride", [Pure]> {
   }];
 }
 
-def TensorViewAddrOp : PTO_Op<"tensor_view_addr", [Pure]> {
-  let summary = "Extract address from a tensor view.";
-  let description = [{
-    Returns the address view carried by a `tensor_view` or
-    `partition_tensor_view` value. The result may be either a memref view or a
-    typed PTO pointer, depending on the requested destination type.
-
-    In authoring-form IR this op preserves the descriptor-style surface;
-    during view-to-memref lowering it collapses to the underlying memref value
-    or to a memref-derived pointer.
-
-    This op may also accept a memref operand after earlier view lowering, in
-    which case it behaves as an identity marker and is removed by lowering.
-  }];
-
-  let arguments = (ins TensorViewLikeOrMemRef:$src);
-  let results = (outs PtrOrMemRef:$dst);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    $src attr-dict `:` qualified(type($src)) `->` type($dst)
-  }];
-}
-
 def AllocTileOp : PTO_Op<"alloc_tile", [AttrSizedOperandSegments]> {
   let summary = "Allocates a tile buffer (logical buffer).";
 
@@ -2001,28 +1976,6 @@ def SimdTileToMemrefOp : PTO_Op<"simd.tile_to_memref", [Pure]> {
 // These ops extract memref address and valid shape from tile_buf parameters.
 // After inline, FoldTileBufIntrinsics resolves them to concrete values.
 // ---------------------------------------------------------------------------
-
-def TileBufAddrOp : PTO_Op<"tile_buf_addr", [Pure]> {
-  let summary = "Extract address from a tile_buf.";
-  let description = [{
-    Returns the address view of the data region of a `tile_buf` value.
-    The result may be either a memref view or a typed PTO pointer, depending
-    on the requested destination type. Memref results use the tile's static
-    shape and address space.
-
-    This op is emitted by TileLang DSL templates and resolved by the
-    FoldTileBufIntrinsics pass after inlining.
-  }];
-
-  let arguments = (ins TileBufType:$src);
-  let results = (outs PtrOrMemRef:$dst);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    $src attr-dict `:` qualified(type($src)) `->` type($dst)
-  }];
-}
 
 def TileValidRowsOp : PTO_Op<"tile_valid_rows", [Pure]> {
   let summary = "Extract valid row count from a tile_buf.";

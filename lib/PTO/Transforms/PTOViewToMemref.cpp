@@ -442,24 +442,6 @@ static Type convertPTOTypeToMemRef(Type t) {
                            MemRefLayoutAttrInterface(), pty.getMemorySpace());
   }
 
-  // 1.5. 处理 !pto.tensor_view<...> / !pto.partition_tensor_view<...>
-  auto buildDynamicViewMemRef = [&](ArrayRef<int64_t> shape, Type elemTy) -> Type {
-    int64_t dyn = ShapedType::kDynamic;
-    SmallVector<int64_t> dynShape(shape.size(), dyn);
-    SmallVector<int64_t> dynStrides(shape.size(), dyn);
-    auto layout = StridedLayoutAttr::get(
-        t.getContext(), /*offset=*/dyn, /*strides=*/dynStrides);
-    auto gmSpace =
-        mlir::pto::AddressSpaceAttr::get(t.getContext(), mlir::pto::AddressSpace::GM);
-    return MemRefType::get(dynShape, elemTy, layout, gmSpace);
-  };
-
-  if (auto tvTy = dyn_cast<mlir::pto::TensorViewType>(t))
-    return buildDynamicViewMemRef(tvTy.getShape(), tvTy.getElementType());
-
-  if (auto partTy = dyn_cast<mlir::pto::PartitionTensorViewType>(t))
-    return buildDynamicViewMemRef(partTy.getShape(), partTy.getElementType());
-
   // 2. 处理 !pto.tile_buf<...>
   if (auto tbTy = dyn_cast<mlir::pto::TileBufType>(t)) {
     SmallVector<int64_t> strides;
@@ -964,7 +946,7 @@ struct PTOViewToMemrefPass
         Location loc = op.getLoc();
 
         Value view = op.getTensorView();
-        auto mrTy = dyn_cast<MemRefType>(view.getType());
+        auto mrTy = dyn_cast<BaseMemRefType>(view.getType());
         if (!mrTy)
           continue; // leave it to later passes if it hasn't been lowered yet
 
@@ -1014,37 +996,6 @@ struct PTOViewToMemrefPass
         auto metadata =
             rewriter.create<memref::ExtractStridedMetadataOp>(loc, view);
         rewriter.replaceOp(op, metadata.getStrides()[dimIndex]);
-      }
-
-      // ------------------------------------------------------------------
-      // Stage 1.35: Lower pto.tensor_view_addr -> underlying memref / ptr
-      // ------------------------------------------------------------------
-      SmallVector<mlir::pto::TensorViewAddrOp, 8> tvAddrs;
-      func.walk([&](mlir::pto::TensorViewAddrOp op) { tvAddrs.push_back(op); });
-
-      for (auto op : tvAddrs) {
-        Value src = op.getSrc();
-        auto srcMemRefType = dyn_cast<MemRefType>(src.getType());
-        if (!srcMemRefType)
-          continue; // wait until tensor_view/partition_view lowering materializes the memref
-
-        if (isa<MemRefType>(op.getDst().getType())) {
-          if (src.getType() != op.getDst().getType())
-            op.getDst().setType(srcMemRefType);
-          op.getDst().replaceAllUsesWith(src);
-          op.erase();
-          continue;
-        }
-
-        auto ptrType = dyn_cast<pto::PtrType>(op.getDst().getType());
-        if (!ptrType)
-          continue;
-
-        IRRewriter rewriter(ctx);
-        rewriter.setInsertionPoint(op);
-        Value ptr = rewriter.create<pto::CastPtrOp>(op.getLoc(), ptrType, src);
-        op.getDst().replaceAllUsesWith(ptr);
-        op.erase();
       }
 
       // ------------------------------------------------------------------
@@ -1239,37 +1190,6 @@ struct PTOViewToMemrefPass
         }
         
         rewriter.replaceOp(op, sv.getResult());
-      }
-
-      // ------------------------------------------------------------------
-      // Stage 2.1: Lower any remaining pto.tensor_view_addr on subviews
-      // ------------------------------------------------------------------
-      tvAddrs.clear();
-      func.walk([&](mlir::pto::TensorViewAddrOp op) { tvAddrs.push_back(op); });
-
-      for (auto op : tvAddrs) {
-        Value src = op.getSrc();
-        auto srcMemRefType = dyn_cast<MemRefType>(src.getType());
-        if (!srcMemRefType)
-          continue;
-
-        if (isa<MemRefType>(op.getDst().getType())) {
-          if (src.getType() != op.getDst().getType())
-            op.getDst().setType(srcMemRefType);
-          op.getDst().replaceAllUsesWith(src);
-          op.erase();
-          continue;
-        }
-
-        auto ptrType = dyn_cast<pto::PtrType>(op.getDst().getType());
-        if (!ptrType)
-          continue;
-
-        IRRewriter rewriter(ctx);
-        rewriter.setInsertionPoint(op);
-        Value ptr = rewriter.create<pto::CastPtrOp>(op.getLoc(), ptrType, src);
-        op.getDst().replaceAllUsesWith(ptr);
-        op.erase();
       }
 
       // ------------------------------------------------------------------
