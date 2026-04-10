@@ -1765,6 +1765,27 @@ LogicalResult TStoreOp::verify() {
         return failure();
       }
     }
+
+    // Keep TSTORE contract explicit: destination tensor partition shape must
+    // match source tile valid_shape on every statically-known dimension.
+    auto dstShape = dstPart.getShape();
+    if (dstShape.size() != srcValid.size()) {
+      emitOpError() << "expects dst rank (" << dstShape.size()
+                    << ") to match src valid_shape rank (" << srcValid.size()
+                    << ")";
+      return failure();
+    }
+    for (auto [idx, dims] : llvm::enumerate(llvm::zip(dstShape, srcValid))) {
+      auto [dstDim, srcValidDim] = dims;
+      if (dstDim == ShapedType::kDynamic || srcValidDim == ShapedType::kDynamic)
+        continue;
+      if (dstDim != srcValidDim) {
+        emitOpError() << "expects dst shape[" << idx
+                      << "] to match src valid_shape[" << idx << "] ("
+                      << srcValidDim << "), but got " << dstDim;
+        return failure();
+      }
+    }
     return std::make_pair(srcTile, dstPart);
   };
 
