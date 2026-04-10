@@ -136,10 +136,10 @@ from pto import MaskPattern as PAT
 @pto.vkernel(
     target="a5",
     op="tadd",                              # 匹配 pto.tadd
-    dtypes=[(pto.f32, pto.f32, pto.f32)],   # 操作数类型签名 (dst, src0, src1)
+    dtypes=[(pto.f32, pto.f32, pto.f32)],   # 操作数类型签名 (src0, src1, dst)
     advanced=True,                          # 启用隐式 vecscope 推断
 )
-def template_tadd(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile) -> None:
+def template_tadd(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile) -> None:
     dtype = dst.element_type                 # 编译期静态
     valid_rows, valid_cols = dst.valid_shape # 静态或动态
 
@@ -160,8 +160,10 @@ def template_tadd(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile) -> None:
   `(f32, f32, f32)`。`advanced=True` 让编译器对函数体内的 `vlds`/`vadd`/`vsts` 序列
   自动推断 `pto.vecscope`，无需显式 `with pto.vecscope():` 包裹
   （详见 DSL Guide §Implicit Scope Inference）。
-- **kernel 参数**为 3 个 `pto.Tile` 对象（1 个输出 `dst`，2 个输入 `src0` / `src1`），
+- **kernel 参数**为 3 个 `pto.Tile` 对象（2 个输入 `src0` / `src1`，1 个输出 `dst`），
   对应 VPTO IR 中的 `!pto.tile_buf` 类型，它们是实例化时被特化的 symbolic value。
+  **参数顺序必须与 PTOAS 中对应指令的操作数顺序一致**（即 `ins` 在前、`outs` 在后），
+  因为 `ExpandTileOp` 按位置索引直接传递操作数。
 - 通过 **`Tile` 属性接口**读取元素类型 `element_type` 和 `valid_shape`。参考 DSL Guide
   §Tile Attributes：`shape` / `element_type` / `memory_space` / `config` 都是编译期静态
   值，`valid_shape` 允许为静态或动态。
@@ -379,7 +381,7 @@ for i in range(0, valid_rows, 1):
                   "tmul": "vmul", "tdiv": "vdiv"},
     },
 )
-def elementwise_arithmetic(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
+def elementwise_arithmetic(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
     dtype = dst.element_type
     rows, cols = dst.valid_shape
     for row in range(0, rows, 1):
@@ -755,7 +757,7 @@ lib/TileOp/                     ← 模板库根目录
     advanced=True,                # 启用隐式 vecscope 推断
     name="template_<op_name>",
 )
-def template_xxx(dst: pto.Tile, src0: pto.Tile, ...):
+def template_xxx(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
     # 向量化实现体
     dtype = dst.element_type
     valid_rows, valid_cols = dst.valid_shape
@@ -766,6 +768,11 @@ def template_xxx(dst: pto.Tile, src0: pto.Tile, ...):
             # ... 向量操作 ...
     return None
 ```
+
+**关键约束：模板参数顺序必须与 PTOAS 中对应指令的操作数顺序严格一致。**
+`ExpandTileOp` 按位置索引将指令操作数直接传递给模板函数参数。对于 DPS 风格的
+算子，这意味着 `ins` 操作数在前、`outs` 在后。例如 `pto.tadd ins(%a, %b) outs(%c)`
+的操作数顺序为 `(src0, src1, dst)`，模板参数必须为 `(src0, src1, dst)`。
 
 `expand_helper.py` 自动扫描目录下所有 `.py` 文件，按 `op` 名称和 `dtype` 签名匹配模板。
 
@@ -822,7 +829,7 @@ def template_xxx(dst: pto.Tile, src0: pto.Tile, ...):
       target="a5",
       op="pto.tadd"
   )
-  def template_tadd(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
+  def template_tadd(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
       dtype = dst.element_type
       valid_rows, valid_cols = dst.valid_shape
 

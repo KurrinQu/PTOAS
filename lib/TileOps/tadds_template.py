@@ -6,7 +6,7 @@ import tilelang_dsl as pto
     target="a5",
     op="pto.tadds",
 )
-def template_tadds(dst: pto.Tile, src: pto.Tile, scalar: pto.AnyType):
+def template_tadds(src: pto.Tile, scalar: pto.AnyType, dst: pto.Tile):
     dtype = dst.element_type
     valid_rows, valid_cols = dst.valid_shape
 
