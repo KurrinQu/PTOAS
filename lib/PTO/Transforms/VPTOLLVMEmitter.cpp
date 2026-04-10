@@ -463,6 +463,22 @@ static bool hasPtoPtrType(TypeRange types) {
   return llvm::any_of(types, [](Type type) { return isa<pto::PtrType>(type); });
 }
 
+static bool hasVPTOControlFlowCarrierType(Type type) {
+  if (isa<pto::VRegType, pto::MaskType, pto::AlignType>(type))
+    return true;
+  if (auto fnType = dyn_cast<FunctionType>(type)) {
+    return llvm::any_of(fnType.getInputs(), hasVPTOControlFlowCarrierType) ||
+           llvm::any_of(fnType.getResults(), hasVPTOControlFlowCarrierType);
+  }
+  return false;
+}
+
+static bool hasVPTOControlFlowCarrierType(TypeRange types) {
+  return llvm::any_of(types, [](Type type) {
+    return hasVPTOControlFlowCarrierType(type);
+  });
+}
+
 static bool hasPtoMemRefMemorySpace(Type type) {
   if (auto memRefType = dyn_cast<MemRefType>(type))
     return isa<pto::AddressSpaceAttr>(memRefType.getMemorySpace());
@@ -948,6 +964,113 @@ static LogicalResult normalizePtoPtrsToLLVM(ModuleOp module, llvm::raw_ostream &
     castOp.getResult(0).replaceAllUsesWith(castOp.getOperand(0));
     castOp.erase();
   }
+
+  return success();
+}
+
+static LogicalResult normalizeVPTOControlFlowTypes(ModuleOp module,
+                                                   llvm::raw_ostream &diagOS) {
+  MLIRContext *context = module.getContext();
+  TypeConverter typeConverter;
+  typeConverter.addConversion([](Type type) { return type; });
+  typeConverter.addConversion([&](pto::VRegType type) -> Type {
+    return VectorType::get({type.getElementCount()}, type.getElementType());
+  });
+  typeConverter.addConversion(
+      [&](pto::MaskType) -> Type { return VectorType::get({256}, IntegerType::get(context, 1)); });
+  typeConverter.addConversion(
+      [&](pto::AlignType) -> Type { return VectorType::get({32}, IntegerType::get(context, 8)); });
+
+  auto materializeCast = [](OpBuilder &builder, Type resultType,
+                            ValueRange inputs, Location loc) -> Value {
+    if (inputs.size() != 1)
+      return {};
+    return builder
+        .create<UnrealizedConversionCastOp>(loc, TypeRange{resultType}, inputs)
+        .getResult(0);
+  };
+  typeConverter.addSourceMaterialization(materializeCast);
+  typeConverter.addTargetMaterialization(materializeCast);
+  typeConverter.addArgumentMaterialization(materializeCast);
+
+  ConversionTarget target(*context);
+  target.addLegalOp<ModuleOp>();
+  target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
+    return typeConverter.isSignatureLegal(op.getFunctionType()) &&
+           typeConverter.isLegal(&op.getBody());
+  });
+  target.addDynamicallyLegalOp<func::CallOp>(
+      [&](func::CallOp op) { return typeConverter.isLegal(op); });
+  target.addDynamicallyLegalOp<func::ReturnOp>(
+      [&](func::ReturnOp op) { return typeConverter.isLegal(op); });
+  target.addDynamicallyLegalOp<cf::BranchOp, cf::CondBranchOp>(
+      [&](Operation *op) {
+        return isLegalForBranchOpInterfaceTypeConversionPattern(op,
+                                                                typeConverter);
+      });
+  target.markUnknownOpDynamicallyLegal([&](Operation *op) {
+    return typeConverter.isLegal(op->getOperandTypes()) &&
+           typeConverter.isLegal(op->getResultTypes());
+  });
+
+  RewritePatternSet patterns(context);
+  scf::populateSCFStructuralTypeConversionsAndLegality(typeConverter, patterns,
+                                                       target);
+  populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(patterns,
+                                                                 typeConverter);
+  populateCallOpTypeConversionPattern(patterns, typeConverter);
+  populateBranchOpInterfaceTypeConversionPattern(patterns, typeConverter);
+  populateReturnOpTypeConversionPattern(patterns, typeConverter);
+
+  if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
+    diagOS << "VPTO LLVM emission failed: VPTO control-flow type normalization "
+              "failed\n";
+    return failure();
+  }
+
+  SmallVector<UnrealizedConversionCastOp> castsToFold;
+  module.walk([&](UnrealizedConversionCastOp castOp) {
+    if (castOp->getNumOperands() != 1 || castOp->getNumResults() != 1)
+      return;
+    if (!hasVPTOControlFlowCarrierType(castOp->getOperandTypes()) &&
+        !hasVPTOControlFlowCarrierType(castOp->getResultTypes()))
+      return;
+    Type convertedResultType = typeConverter.convertType(castOp.getResult(0).getType());
+    if (convertedResultType && convertedResultType == castOp.getOperand(0).getType())
+      castsToFold.push_back(castOp);
+  });
+  for (UnrealizedConversionCastOp castOp : castsToFold) {
+    castOp.getResult(0).replaceAllUsesWith(castOp.getOperand(0));
+    castOp.erase();
+  }
+
+  WalkResult leftover = module.walk([&](Operation *op) {
+    if (hasVPTOControlFlowCarrierType(op->getOperandTypes()) ||
+        hasVPTOControlFlowCarrierType(op->getResultTypes())) {
+      diagOS << "VPTO LLVM emission failed: residual VPTO carrier type on op "
+             << op->getName().getStringRef() << "\n";
+      op->print(diagOS);
+      diagOS << "\n";
+      return WalkResult::interrupt();
+    }
+    for (Region &region : op->getRegions()) {
+      for (Block &block : region) {
+        for (BlockArgument arg : block.getArguments()) {
+          if (!hasVPTOControlFlowCarrierType(arg.getType()))
+            continue;
+          diagOS << "VPTO LLVM emission failed: residual VPTO carrier type on "
+                    "block argument "
+                 << arg << " in op " << op->getName().getStringRef() << "\n";
+          op->print(diagOS);
+          diagOS << "\n";
+          return WalkResult::interrupt();
+        }
+      }
+    }
+    return WalkResult::advance();
+  });
+  if (leftover.wasInterrupted())
+    return failure();
 
   return success();
 }
@@ -2717,6 +2840,8 @@ buildLLVMModuleFromPreparedVPTO(ModuleOp module, llvm::LLVMContext &llvmContext,
     diagOS << "VPTO LLVM emission failed: VPTO-to-call rewriting failed\n";
     return nullptr;
   }
+  if (failed(normalizeVPTOControlFlowTypes(*cloned, diagOS)))
+    return nullptr;
   normalizeFuncSignaturesForOfficialLLVMLowering(*cloned);
 
   PassManager pm(cloned->getContext());
