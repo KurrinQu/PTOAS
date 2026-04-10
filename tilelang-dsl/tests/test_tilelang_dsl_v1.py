@@ -33,6 +33,7 @@ from tilelang_dsl.semantic import (
     SemanticBinaryExpr,
     SemanticCallExpr,
     SemanticDmaConfigStmt,
+    SemanticExprStmt,
     SemanticForStmt,
     SemanticIfStmt,
     SemanticIndexType,
@@ -3183,6 +3184,307 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             analyze_frontend_kernel(build_frontend_kernel_node(specialized))
         self.assertIn("implicit capture of 'scale' is not allowed", str(ctx.exception))
+
+
+class TileLangDSLInlineProcTests(unittest.TestCase):
+    @pto.inline_proc
+    def _inline_copy_row(dst: pto.Tile, src: pto.Tile, lane: pto.i32):
+        mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+        vec = pto.vlds(src, lane)
+        pto.vsts(vec, dst, lane, mask)
+        return None
+
+    @pto.inline_proc
+    def _inline_recur(dst: pto.Tile):
+        _inline_recur(dst)
+        return None
+
+    @pto.inline_proc
+    def _inline_capture(dst: pto.Tile):
+        pto.vlds(dst, lane)
+        return None
+
+    def test_inline_proc_exports_from_package_surface(self) -> None:
+        self.assertTrue(hasattr(pto, "inline_proc"))
+        self.assertTrue(hasattr(pto, "InlineProcDescriptor"))
+
+    def test_inline_proc_call_keeps_call_in_frontend_and_mlir_text(self) -> None:
+        @pto.vkernel(op="inline_proc_backend_call_unique", dtypes=[(pto.f32, pto.f32)])
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            _inline_copy_row(dst, src, 0)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        )
+
+        frontend_kernel = build_frontend_kernel_node(specialized)
+        self.assertEqual(len(frontend_kernel.body), 2)
+        self.assertIsInstance(frontend_kernel.body[0], FrontendExprStmt)
+        self.assertIsInstance(frontend_kernel.body[0].expr, FrontendCallExpr)
+        self.assertEqual(frontend_kernel.body[0].expr.name, "_inline_copy_row")
+        self.assertGreaterEqual(len(frontend_kernel.inline_procs), 1)
+        self.assertIn("_inline_copy_row", {proc.name for proc in frontend_kernel.inline_procs})
+
+        text = specialized.mlir_text()
+        self.assertIn("func.call", text)
+        self.assertIn("pto.tilelang.inline_proc", text)
+        self.assertRegex(text, r"func\.call @__tl_inline_")
+
+    def test_inline_proc_supports_default_parameters_and_keyword_call(self) -> None:
+        @pto.inline_proc
+        def inline_store(dst: pto.Tile, src: pto.Tile, lane: pto.i32 = 0):
+            mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+            vec = pto.vlds(src, lane)
+            pto.vsts(vec, dst, lane, mask)
+            return None
+
+        @pto.vkernel(op="inline_proc_keyword_default_unique", dtypes=[(pto.f32, pto.f32)])
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            inline_store(dst=dst, src=src)
+            return None
+
+        text = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        ).mlir_text()
+        self.assertIn("func.call", text)
+        self.assertIn("pto.tilelang.inline_proc", text)
+
+    def test_inline_proc_supports_return_expression_in_expression_position(self) -> None:
+        @pto.inline_proc
+        def inline_load(src: pto.Tile, lane: pto.i32 = 0):
+            return pto.vlds(src, lane)
+
+        @pto.vkernel(op="inline_proc_expr_return_unique", dtypes=[(pto.f32, pto.f32)])
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+            vec = inline_load(src)
+            pto.vsts(vec, dst, 0, mask)
+            return None
+
+        text = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        ).mlir_text()
+        self.assertIn("func.call", text)
+        self.assertRegex(text, r"= func\.call @__tl_inline_")
+        self.assertIn("pto.vsts", text)
+
+    def test_inline_proc_rejects_non_trailing_return(self) -> None:
+        with self.assertRaises(pto.TileLangFrontendError) as ctx:
+
+            @pto.inline_proc
+            def bad_inline(flag: pto.i32):
+                if flag:
+                    return flag
+                return flag
+
+        self.assertIn("optional trailing `return`", str(ctx.exception))
+        self.assertIn(f"{__file__}:", str(ctx.exception))
+
+    def test_inline_proc_rejects_recursive_calls(self) -> None:
+        with self.assertRaises(pto.TileLangFrontendError) as ctx:
+
+            @pto.vkernel(op="inline_proc_recursive_unique", dtypes=[(pto.f32,)])
+            def kernel(dst: pto.Tile):
+                _inline_recur(dst)
+                return None
+
+            kernel.specialize(
+                dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB)
+            ).mlir_text()
+
+        self.assertIn("recursive inline_proc call `_inline_recur` is not supported", str(ctx.exception))
+        self.assertIn(f"{__file__}:", str(ctx.exception))
+
+    def test_inline_proc_rejects_implicit_capture(self) -> None:
+        with self.assertRaises(pto.TileLangFrontendError) as ctx:
+
+            @pto.vkernel(op="inline_proc_capture_unique", dtypes=[(pto.f32,)])
+            def kernel(dst: pto.Tile):
+                lane = pto.i32(0)
+                _inline_capture(dst)
+                return None
+
+            kernel.specialize(
+                dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB)
+            ).mlir_text()
+
+        self.assertIn("implicit capture of 'lane' is not allowed in inline_proc", str(ctx.exception))
+        self.assertIn(f"{__file__}:", str(ctx.exception))
+
+    def test_inline_proc_rejects_kw_only_vararg_and_kwargs(self) -> None:
+        with self.assertRaises(pto.TileLangFrontendError) as kw_only_ctx:
+
+            @pto.inline_proc
+            def bad_kw_only(dst: pto.Tile, *, lane: pto.i32):
+                return None
+
+        self.assertIn("keyword-only parameters", str(kw_only_ctx.exception))
+
+        with self.assertRaises(pto.TileLangFrontendError) as vararg_ctx:
+
+            @pto.inline_proc
+            def bad_vararg(dst: pto.Tile, *lanes: pto.i32):
+                return None
+
+        self.assertIn("does not support *args", str(vararg_ctx.exception))
+
+        with self.assertRaises(pto.TileLangFrontendError) as kwargs_ctx:
+
+            @pto.inline_proc
+            def bad_kwargs(dst: pto.Tile, **opts: pto.i32):
+                return None
+
+        self.assertIn("does not support **kwargs", str(kwargs_ctx.exception))
+
+    def test_inline_proc_rejects_invalid_keyword_binding(self) -> None:
+        @pto.inline_proc
+        def inline_store(dst: pto.Tile, src: pto.Tile):
+            return None
+
+        with self.assertRaises(pto.TileLangFrontendError) as ctx:
+
+            @pto.vkernel(op="inline_proc_invalid_keyword_unique", dtypes=[(pto.f32, pto.f32)])
+            def kernel(dst: pto.Tile, src: pto.Tile):
+                inline_store(dst=dst, src=src, lane=0)
+                return None
+
+        self.assertIn("unexpected keyword argument 'lane'", str(ctx.exception))
+        self.assertIn(f"{__file__}:", str(ctx.exception))
+
+    def test_inline_proc_rejects_missing_required_argument(self) -> None:
+        @pto.inline_proc
+        def inline_store(dst: pto.Tile, src: pto.Tile):
+            return None
+
+        with self.assertRaises(pto.TileLangFrontendError) as ctx:
+
+            @pto.vkernel(op="inline_proc_missing_required_unique", dtypes=[(pto.f32, pto.f32)])
+            def kernel(dst: pto.Tile, src: pto.Tile):
+                inline_store(dst=dst)
+                return None
+
+        self.assertIn("missing a required argument: 'src'", str(ctx.exception))
+        self.assertIn(f"{__file__}:", str(ctx.exception))
+
+    def test_inline_proc_rejects_multiple_values_for_single_parameter(self) -> None:
+        @pto.inline_proc
+        def inline_store(dst: pto.Tile, src: pto.Tile):
+            return None
+
+        with self.assertRaises(pto.TileLangFrontendError) as ctx:
+
+            @pto.vkernel(op="inline_proc_multiple_values_unique", dtypes=[(pto.f32, pto.f32)])
+            def kernel(dst: pto.Tile, src: pto.Tile):
+                inline_store(dst, src, src=src)
+                return None
+
+        self.assertIn("multiple values for argument 'src'", str(ctx.exception))
+        self.assertIn(f"{__file__}:", str(ctx.exception))
+
+    def test_inline_proc_semantic_emits_controlled_namespace_none_call(self) -> None:
+        @pto.vkernel(op="inline_proc_semantic_call_unique", dtypes=[(pto.f32, pto.f32)])
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            _inline_copy_row(dst, src, 0)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        )
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+
+        call_stmts = [
+            stmt
+            for stmt in semantic_kernel.body
+            if isinstance(stmt, SemanticExprStmt) and isinstance(stmt.expr, SemanticCallExpr)
+        ]
+        self.assertGreaterEqual(len(call_stmts), 1)
+        inline_call = call_stmts[0].expr
+        self.assertIsNone(inline_call.namespace)
+        self.assertRegex(inline_call.name, r"^__tl_inline_")
+        self.assertGreaterEqual(len(semantic_kernel.inline_helpers), 1)
+        self.assertRegex(semantic_kernel.inline_helpers[0].symbol_name, r"^__tl_inline_")
+
+    def test_inline_proc_semantic_keeps_expression_call_return_type(self) -> None:
+        @pto.inline_proc
+        def inline_const_i32():
+            return pto.i32(1)
+
+        @pto.vkernel(op="inline_proc_semantic_expr_unique", dtypes=[(pto.f32,)])
+        def kernel(dst: pto.Tile):
+            lane = inline_const_i32()
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        )
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+
+        assign_stmt = next(
+            stmt
+            for stmt in semantic_kernel.body
+            if isinstance(stmt, SemanticAssignStmt) and isinstance(stmt.value, SemanticCallExpr)
+        )
+        self.assertIsNone(assign_stmt.value.namespace)
+        self.assertRegex(assign_stmt.value.name, r"^__tl_inline_")
+        self.assertIsInstance(assign_stmt.value.type, SemanticScalarType)
+
+    def test_inline_proc_lowering_renders_private_helpers_and_call_bindings(self) -> None:
+        @pto.inline_proc
+        def inline_const_i32():
+            return 1
+
+        @pto.inline_proc
+        def inline_store(dst: pto.Tile, src: pto.Tile):
+            lane = inline_const_i32()
+            _inline_copy_row(dst, src, lane)
+            return None
+
+        @pto.vkernel(op="inline_proc_lowering_helpers_unique", dtypes=[(pto.f32, pto.f32)])
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            lane = inline_const_i32()
+            inline_store(dst, src)
+            _inline_copy_row(dst, src, lane)
+            return None
+
+        text = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        ).mlir_text()
+        self.assertIn('sym_visibility = "private", pto.tilelang.inline_proc', text)
+        self.assertGreaterEqual(text.count("func.func"), 3)
+        self.assertGreaterEqual(text.count("pto.tilelang.inline_proc"), 2)
+        self.assertRegex(text, r"= func\.call @__tl_inline_[A-Za-z0-9_]+\(.*\) : \([^\)]*\) -> index")
+        self.assertRegex(text, r"func\.call @__tl_inline_[A-Za-z0-9_]+\(.*\) : \([^\)]*\) -> \(\)")
+
+    def test_inline_proc_rejects_mutual_recursion(self) -> None:
+        @pto.inline_proc
+        def inline_a(dst: pto.Tile):
+            inline_b(dst)
+            return None
+
+        @pto.inline_proc
+        def inline_b(dst: pto.Tile):
+            inline_a(dst)
+            return None
+
+        with self.assertRaises(pto.TileLangFrontendError) as ctx:
+
+            @pto.vkernel(op="inline_proc_mutual_recursion_unique", dtypes=[(pto.f32,)])
+            def kernel(dst: pto.Tile):
+                inline_a(dst)
+                return None
+
+            kernel.specialize(
+                dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB)
+            ).mlir_text()
+
+        self.assertIn("recursive inline_proc call", str(ctx.exception))
+        self.assertIn(f"{__file__}:", str(ctx.exception))
 
 
 class TileLangDSLDiagnosticsTests(unittest.TestCase):

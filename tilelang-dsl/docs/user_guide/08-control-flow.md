@@ -78,6 +78,38 @@ with pto.vecscope():
 - `pto.vecscope()` does not support `as (...)` bindings.
 - When any explicit `pto.vecscope()` is present in a kernel body, automatic vecscope inference is disabled for that kernel.
 
+### Inline Procedures (`@pto.inline_proc`)
+
+TileLang DSL supports reusable top-level procedures decorated with `@pto.inline_proc`.
+`inline_proc` follows function-call semantics in frontend IR and is force-inlined
+later by the VPTO backend mainline in `ptoas`.
+
+```python
+@pto.inline_proc
+def store_row(dst: pto.Tile, src: pto.Tile, row: pto.i32):
+    vec = pto.vlds(src[row, 0:])
+    mask = pto.make_mask(dst.element_type, pto.PAT.ALL)
+    pto.vsts(vec, dst[row, 0:], mask)
+    return None
+
+@pto.vkernel(op="pto.row_copy", dtypes=[(pto.f32, pto.f32, pto.i32)])
+def row_copy(dst: pto.Tile, src: pto.Tile, row: pto.i32):
+    store_row(dst, src, row)
+    return None
+```
+
+Important semantics:
+
+- Frontend preserves helper `func.func` and `func.call` in `mlir_text()` output.
+- VPTO backend mainline force-inlines helper calls before downstream lowering.
+- Helper definitions support default parameter values.
+- Helper calls support positional arguments and keyword arguments.
+- Helper calls can appear in statement and expression positions.
+- Helper definitions can use trailing `return <expr>` to return values.
+- Implicit capture is rejected; pass required values as explicit arguments.
+- Recursive/mutually-recursive helper call graphs are rejected.
+- `*args`, `**kwargs`, and keyword-only parameters are unsupported in current version.
+
 ### Loops
 
 Counted loops use Python's `range` syntax:
@@ -108,4 +140,3 @@ else:
 ```
 
 Variables defined in only one branch are local to that branch.
-

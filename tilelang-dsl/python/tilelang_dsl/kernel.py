@@ -59,6 +59,141 @@ _SUPPORTED_TEMPLATE_PTO_CALLS = frozenset(
 )
 
 
+_INLINE_PROC_REGISTRY: dict[tuple[str, str], "InlineProcDescriptor"] = {}
+
+
+@dataclass(frozen=True)
+class InlineProcDescriptor:
+    """Descriptor returned by @tilelang_dsl.inline_proc."""
+
+    name: str
+    py_fn: Callable[..., Any] = field(repr=False)
+    signature: inspect.Signature = field(repr=False)
+    source_info: "_FunctionSourceInfo | None" = field(repr=False, default=None)
+
+
+class _InlineProcValidator(ast.NodeVisitor):
+    def __init__(self, source_info: "_FunctionSourceInfo"):
+        self.source_info = source_info
+
+    def validate(self) -> None:
+        fn = self.source_info.function_def
+        args = fn.args
+        if args.posonlyargs:
+            raise self.source_info.error(args.posonlyargs[0], "inline_proc does not support positional-only parameters in TileLang DSL v1")
+        if args.vararg is not None:
+            raise self.source_info.error(args.vararg, "inline_proc does not support *args in TileLang DSL v1")
+        if args.kwarg is not None:
+            raise self.source_info.error(args.kwarg, "inline_proc does not support **kwargs in TileLang DSL v1")
+        if args.kwonlyargs:
+            raise self.source_info.error(args.kwonlyargs[0], "inline_proc does not support keyword-only parameters in TileLang DSL v1")
+        tail_return: ast.Return | None = fn.body[-1] if fn.body and isinstance(fn.body[-1], ast.Return) else None
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Return):
+                continue
+            if node is tail_return:
+                continue
+            raise self.source_info.error(
+                node,
+                "inline_proc only supports an optional trailing `return` in TileLang DSL v1",
+            )
+
+        for stmt in fn.body:
+            self.visit(stmt)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        if node is self.source_info.function_def:
+            for stmt in node.body:
+                self.visit(stmt)
+            return
+        raise self.source_info.error(node, "nested function definitions are not supported inside inline_proc in TileLang DSL v1")
+
+
+def _inline_proc_registry_key(fn: Callable[..., Any]) -> tuple[str, str]:
+    return (fn.__module__, fn.__name__)
+
+
+def _find_inline_proc(name: str, *, module_name: str | None) -> InlineProcDescriptor | None:
+    if module_name is None:
+        return None
+    return _INLINE_PROC_REGISTRY.get((module_name, name))
+
+
+def _validate_inline_proc_call_surface(
+    source_info: _FunctionSourceInfo,
+    node: ast.Call,
+    inline_proc: InlineProcDescriptor,
+) -> None:
+    if any(keyword.arg is None for keyword in node.keywords):
+        keyword = next(keyword for keyword in node.keywords if keyword.arg is None)
+        raise source_info.error(
+            keyword.value,
+            "keyword unpacking via `**` is not supported in TileLang DSL v1",
+        )
+    seen_keywords: set[str] = set()
+    for keyword in node.keywords:
+        assert keyword.arg is not None
+        if keyword.arg in seen_keywords:
+            raise source_info.error(
+                keyword.value,
+                f"duplicate keyword `{keyword.arg}` for inline_proc `{inline_proc.name}` in TileLang DSL v1",
+            )
+        seen_keywords.add(keyword.arg)
+    positional_placeholders = [object() for _ in node.args]
+    keyword_placeholders = {keyword.arg: object() for keyword in node.keywords if keyword.arg is not None}
+    try:
+        inline_proc.signature.bind(*positional_placeholders, **keyword_placeholders)
+    except TypeError as exc:
+        raise source_info.error(
+            node,
+            f"invalid inline_proc call `{inline_proc.name}` in TileLang DSL v1: {exc}",
+        ) from exc
+
+
+def _collect_inline_procs(module_name: str) -> tuple[tuple[str, InlineProcDescriptor], ...]:
+    return tuple(
+        sorted(
+            (
+                (symbol, descriptor)
+                for (registered_module, symbol), descriptor in _INLINE_PROC_REGISTRY.items()
+                if registered_module == module_name
+            ),
+            key=lambda item: item[0],
+        )
+    )
+
+
+def _register_inline_proc(descriptor: InlineProcDescriptor) -> InlineProcDescriptor:
+    _INLINE_PROC_REGISTRY[_inline_proc_registry_key(descriptor.py_fn)] = descriptor
+    return descriptor
+
+
+def inline_proc(
+    py_fn: Callable[..., Any] | None = None,
+) -> InlineProcDescriptor | Callable[[Callable[..., Any]], InlineProcDescriptor]:
+    """Register a top-level compile-time inline procedure for TileLang DSL kernels."""
+
+    def wrap(fn: Callable[..., Any]) -> InlineProcDescriptor:
+        if not callable(fn):
+            raise TypeError("@inline_proc can only decorate callables")
+        source_info = _load_function_source_info(fn)
+        if source_info is None:
+            raise TypeError("@inline_proc requires source-visible Python functions")
+        _InlineProcValidator(source_info).validate()
+        return _register_inline_proc(
+            InlineProcDescriptor(
+                name=fn.__name__,
+                py_fn=fn,
+                source_info=source_info,
+                signature=inspect.signature(fn),
+            )
+        )
+
+    if py_fn is None:
+        return wrap
+    return wrap(py_fn)
+
+
 def _validate_dtype_pattern(dtype: Any) -> ScalarType | WildcardType | TypeVariable:
     if isinstance(dtype, (ScalarType, WildcardType, TypeVariable)):
         return dtype
@@ -99,9 +234,10 @@ class _FunctionSourceInfo:
 
 
 class _KernelBodyValidator(ast.NodeVisitor):
-    def __init__(self, source_info: _FunctionSourceInfo, *, advanced_enabled: bool):
+    def __init__(self, source_info: _FunctionSourceInfo, *, advanced_enabled: bool, module_name: str | None):
         self.source_info = source_info
         self.advanced_enabled = advanced_enabled
+        self.module_name = module_name
         self._vecscope_depth = 0
 
     def validate(self) -> None:
@@ -319,6 +455,10 @@ class _KernelBodyValidator(ast.NodeVisitor):
             if node.func.id == "range":
                 self._validate_call_keywords(node)
                 return
+            inline_proc = _find_inline_proc(node.func.id, module_name=self.module_name)
+            if inline_proc is not None:
+                _validate_inline_proc_call_surface(self.source_info, node, inline_proc)
+                return
             raise self.source_info.error(
                 node,
                 f"arbitrary external call `{node.func.id}` is not supported in TileLang DSL v1",
@@ -349,12 +489,14 @@ def _validate_function_body(
     source_info: _FunctionSourceInfo | None,
     *,
     advanced_enabled: bool,
+    module_name: str | None,
 ) -> None:
     if source_info is None:
         return
     _KernelBodyValidator(
         source_info,
         advanced_enabled=advanced_enabled,
+        module_name=module_name,
     ).validate()
 
 
@@ -570,6 +712,7 @@ class VKernelDescriptor:
     constraints: tuple[Callable[[Mapping[str, Any]], Any], ...] = field(default=(), repr=False)
     priority: int = 0
     _templates: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = field(default=(), repr=False)
+    _inline_procs: tuple[tuple[str, InlineProcDescriptor], ...] = field(default=(), repr=False)
     _selected_op: str | None = None
     _selected_dtype_signature: tuple[ScalarType, ...] | None = None
     _parameters: tuple[BoundKernelParameter, ...] | None = field(default=None, repr=False)
@@ -598,6 +741,10 @@ class VKernelDescriptor:
             slot: dict(op_bindings)
             for slot, op_bindings in self._templates
         }
+
+    @property
+    def inline_procs(self) -> dict[str, InlineProcDescriptor]:
+        return {name: descriptor for name, descriptor in self._inline_procs}
 
     @property
     def dtype_signature(self) -> tuple[ScalarType, ...]:
@@ -631,6 +778,7 @@ class VKernelDescriptor:
             "constraints": self.constraints,
             "priority": self.priority,
             "templates": self.templates,
+            "inline_procs": tuple(sorted(self.inline_procs.keys())),
         }
 
     @property
@@ -671,6 +819,7 @@ class VKernelDescriptor:
             constraints=self.constraints,
             priority=self.priority,
             _templates=self._templates,
+            _inline_procs=self._inline_procs,
             _selected_op=self._selected_op,
             _selected_dtype_signature=self._selected_dtype_signature,
             _parameters=self._parameters,
@@ -696,6 +845,7 @@ class VKernelDescriptor:
             constraints=self.constraints,
             priority=self.priority,
             _templates=self._templates,
+            _inline_procs=self._inline_procs,
             _selected_op=self._selected_op,
             _selected_dtype_signature=dtype_signature,
             _parameters=bound_parameters,
@@ -724,6 +874,7 @@ class VKernelDescriptor:
             constraints=self.constraints,
             priority=self.priority,
             _templates=self._templates,
+            _inline_procs=self._inline_procs,
             _selected_op=normalized_op,
             _selected_dtype_signature=self._selected_dtype_signature,
             _parameters=self._parameters,
@@ -764,6 +915,7 @@ class VKernelDescriptor:
             constraints=self.constraints,
             priority=self.priority,
             _templates=self._templates,
+            _inline_procs=self._inline_procs,
             _selected_op=self._selected_op,
             _selected_dtype_signature=self._selected_dtype_signature,
             _parameters=self._parameters,
@@ -1656,7 +1808,12 @@ def _build_descriptor(
 
     source_info = _load_function_source_info(py_fn)
     advanced_enabled = _validate_advanced(advanced)
-    _validate_function_body(source_info, advanced_enabled=advanced_enabled)
+    inline_procs = _collect_inline_procs(py_fn.__module__)
+    _validate_function_body(
+        source_info,
+        advanced_enabled=advanced_enabled,
+        module_name=py_fn.__module__,
+    )
     match_ops = _freeze_match_ops(op=op, ops=ops)
     frozen_templates = _freeze_templates(templates, match_ops=match_ops)
     parameter_specs = _collect_parameter_specs(py_fn)
@@ -1687,6 +1844,7 @@ def _build_descriptor(
         constraints=_validate_constraints(constraints),
         priority=_validate_priority(priority),
         _templates=frozen_templates,
+        _inline_procs=inline_procs,
         _selected_op=selected_op,
         _selected_dtype_signature=selected_dtype_signature,
         _parameters=bound_parameters,
@@ -1891,10 +2049,12 @@ def vkernel(
 
 __all__ = [
     "BoundKernelParameter",
+    "InlineProcDescriptor",
     "KernelRegistry",
     "MaterializedMLIRModule",
     "TileLangFrontendError",
     "VKernelDescriptor",
+    "inline_proc",
     "select_kernel",
     "vkernel",
 ]

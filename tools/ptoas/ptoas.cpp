@@ -714,9 +714,9 @@ static void addVPTOBackendMainlinePasses(OpPassManager &pm,
     expandOpts.tilelangPath = tilelangPath;
     expandOpts.tilelangPkgPath = tilelangPkgPath;
     pm.addPass(pto::createExpandTileOpPass(expandOpts));
-
-    pm.addPass(pto::createPTOInlineLibCallPass());
-    pm.addNestedPass<mlir::func::FuncOp>(
+  
+  pm.addPass(pto::createPTOInlineLibCallPass());
+      pm.addNestedPass<mlir::func::FuncOp>(
         pto::createFoldTileBufIntrinsicsPass());
   }
 

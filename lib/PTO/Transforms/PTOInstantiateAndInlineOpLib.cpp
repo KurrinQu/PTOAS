@@ -35,12 +35,20 @@ static bool isInstanceFunc(func::FuncOp fn) {
   return fn->hasAttr(kOpLibAttrInstVariantId);
 }
 
-static bool isTilelangFunc(func::FuncOp fn) {
-  return fn->hasAttr("pto.tilelang.instance");
+static bool isTilelangInlineProcFunc(func::FuncOp fn) {
+  return fn->hasAttr("pto.tilelang.inline_proc");
+}
+
+static bool isTilelangTemplateFunc(func::FuncOp fn) {
+  return fn->hasAttr("pto.tilelang.instance") && fn.isPrivate();
 }
 
 static bool isInlineableLibFunc(func::FuncOp fn) {
-  return isInstanceFunc(fn) || isTilelangFunc(fn);
+  // Keep OP-Lib behavior unchanged while force-inlining TileLang helpers
+  // (inline_proc + private template helper).
+  if (isInstanceFunc(fn) || isTilelangInlineProcFunc(fn))
+    return true;
+  return isTilelangTemplateFunc(fn);
 }
 
 static Value maybeUnwrapCastToExpected(Value operand, Type expectedType) {
@@ -116,14 +124,17 @@ static void eraseDeadBridgeCasts(func::FuncOp func) {
 }
 
 static LogicalResult inlineCall(func::CallOp call, func::FuncOp callee) {
-  if (call.getNumResults() != 0)
-    return call.emitOpError("OP-Lib inline expects call without results");
   if (callee.isExternal())
     return call.emitOpError("callee must have a body before inlining");
 
   Block &entry = callee.getBody().front();
   if (entry.getNumArguments() != call.getNumOperands())
     return call.emitOpError("callee argument count mismatch during inlining");
+  auto returnOp = dyn_cast<func::ReturnOp>(entry.getTerminator());
+  if (!returnOp)
+    return call.emitOpError("callee must terminate with func.return");
+  if (returnOp.getNumOperands() != call.getNumResults())
+    return call.emitOpError("callee return/result arity mismatch during inlining");
 
   OpBuilder builder(call);
   IRMapping mapping;
@@ -136,6 +147,14 @@ static LogicalResult inlineCall(func::CallOp call, func::FuncOp callee) {
     for (auto [oldRes, newRes] :
          llvm::zip(op.getResults(), newOp->getResults()))
       mapping.map(oldRes, newRes);
+  }
+
+  for (auto [callResult, returnOperand] :
+       llvm::zip(call.getResults(), returnOp.getOperands())) {
+    Value mapped = mapping.lookupOrNull(returnOperand);
+    if (!mapped)
+      mapped = returnOperand;
+    callResult.replaceAllUsesWith(mapped);
   }
 
   call.erase();
@@ -156,7 +175,7 @@ struct PTOInlineLibCallPass
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
       if (func.isExternal())
         continue;
-      if (isInlineableLibFunc(func))
+      if (isInstanceFunc(func))
         continue;
       if (func.empty())
         continue;
@@ -209,6 +228,14 @@ struct PTOInlineLibCallPass
         OpBuilder builder(call);
         auto newCall = builder.create<func::CallOp>(call.getLoc(), callee,
                                                     concreteOperands);
+        if (call.getNumResults() != newCall.getNumResults()) {
+          call.emitOpError("call result arity mismatch during inline staging");
+          signalPassFailure();
+          return;
+        }
+        for (auto [oldResult, newResult] :
+             llvm::zip(call.getResults(), newCall.getResults()))
+          oldResult.replaceAllUsesWith(newResult);
         call.erase();
 
         if (failed(inlineCall(newCall, callee))) {

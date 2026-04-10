@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import inspect
 from dataclasses import dataclass
 from typing import Any
 
@@ -159,6 +160,20 @@ class FrontendStrictVecscopeStmt(FrontendStmtNode):
 
 
 @dataclass(frozen=True)
+class FrontendInlineProcParameterNode:
+    name: str
+    annotation: Any
+    default: FrontendExprNode | None
+
+
+@dataclass(frozen=True)
+class FrontendInlineProcNode:
+    name: str
+    parameters: tuple[FrontendInlineProcParameterNode, ...]
+    body: tuple[FrontendStmtNode, ...]
+
+
+@dataclass(frozen=True)
 class FrontendKernelNode:
     target: str
     op: str
@@ -169,6 +184,14 @@ class FrontendKernelNode:
     parameters: tuple[FrontendParameterNode, ...]
     tile_specializations: tuple[FrontendTileSpecializationNode, ...]
     body: tuple[FrontendStmtNode, ...]
+    inline_procs: tuple[FrontendInlineProcNode, ...] = ()
+
+
+@dataclass(frozen=True)
+class _FrontendInlineProc:
+    name: str
+    source_info: Any
+    signature: inspect.Signature
 
 
 @dataclass(frozen=True)
@@ -177,6 +200,8 @@ class _FrontendBuildContext:
     templates: dict[str, dict[str, str]]
     selected_op: str | None
     advanced_enabled: bool
+    inline_procs: dict[str, _FrontendInlineProc]
+    active_inline_proc_stack: tuple[str, ...] = ()
     vecscope_depth: int = 0
 
     def error(self, node: ast.AST, message: str) -> Exception:
@@ -190,8 +215,378 @@ class _FrontendBuildContext:
             templates=self.templates,
             selected_op=self.selected_op,
             advanced_enabled=self.advanced_enabled,
+            inline_procs=self.inline_procs,
+            active_inline_proc_stack=self.active_inline_proc_stack,
             vecscope_depth=self.vecscope_depth + 1,
         )
+
+    def enter_inline_proc(self, name: str, source_info: Any) -> "_FrontendBuildContext":
+        return _FrontendBuildContext(
+            source_info=source_info,
+            templates=self.templates,
+            selected_op=self.selected_op,
+            advanced_enabled=self.advanced_enabled,
+            inline_procs=self.inline_procs,
+            active_inline_proc_stack=(*self.active_inline_proc_stack, name),
+            vecscope_depth=self.vecscope_depth,
+        )
+
+
+def _inline_proc_param_specs(inline_proc: _FrontendInlineProc) -> tuple[tuple[str, ast.expr | None], ...]:
+    function_def = inline_proc.source_info.function_def
+    params = function_def.args.args
+    defaults = function_def.args.defaults
+    first_default = len(params) - len(defaults)
+    specs: list[tuple[str, ast.expr | None]] = []
+    for index, param in enumerate(params):
+        default_node: ast.expr | None = None
+        if index >= first_default:
+            default_node = defaults[index - first_default]
+        specs.append((param.arg, default_node))
+    return tuple(specs)
+
+
+def _bind_inline_proc_call(
+    node: ast.Call,
+    inline_proc: _FrontendInlineProc,
+    context: _FrontendBuildContext,
+) -> tuple[FrontendExprNode, ...]:
+    if any(keyword.arg is None for keyword in node.keywords):
+        raise context.error(
+            node,
+            "keyword unpacking via `**` is not supported in TileLang DSL v1",
+        )
+
+    param_specs = _inline_proc_param_specs(inline_proc)
+    param_names = tuple(param_name for param_name, _ in param_specs)
+    bound: dict[str, FrontendExprNode] = {}
+
+    if len(node.args) > len(param_specs):
+        raise context.error(
+            node,
+            f"inline_proc `{inline_proc.name}` accepts at most {len(param_specs)} positional arguments in TileLang DSL v1",
+        )
+
+    for index, arg_node in enumerate(node.args):
+        param_name = param_names[index]
+        bound[param_name] = _build_expr(arg_node, context)
+
+    seen_keywords: set[str] = set()
+    for keyword in node.keywords:
+        assert keyword.arg is not None
+        if keyword.arg in seen_keywords:
+            raise context.error(
+                keyword.value,
+                f"duplicate keyword `{keyword.arg}` for inline_proc `{inline_proc.name}` in TileLang DSL v1",
+            )
+        if keyword.arg not in param_names:
+            raise context.error(
+                keyword.value,
+                f"inline_proc `{inline_proc.name}` does not define keyword `{keyword.arg}` in TileLang DSL v1",
+            )
+        if keyword.arg in bound:
+            raise context.error(
+                keyword.value,
+                f"inline_proc `{inline_proc.name}` got multiple values for argument `{keyword.arg}` in TileLang DSL v1",
+            )
+        seen_keywords.add(keyword.arg)
+        bound[keyword.arg] = _build_expr(keyword.value, context)
+
+    ordered_args: list[FrontendExprNode] = []
+    for param_name, default_node in param_specs:
+        value = bound.get(param_name)
+        if value is None:
+            if default_node is None:
+                raise context.error(
+                    node,
+                    f"inline_proc `{inline_proc.name}` is missing required argument `{param_name}` in TileLang DSL v1",
+                )
+            value = _build_expr(default_node, context)
+        ordered_args.append(value)
+    return tuple(ordered_args)
+
+
+def _collect_name_reads(expr: FrontendExprNode) -> set[str]:
+    if isinstance(expr, FrontendNameExpr):
+        return {expr.name}
+    if isinstance(expr, (FrontendConstantExpr, FrontendSymbolExpr)):
+        return set()
+    if isinstance(expr, FrontendSliceExpr):
+        names: set[str] = set()
+        if expr.start is not None:
+            names |= _collect_name_reads(expr.start)
+        if expr.stop is not None:
+            names |= _collect_name_reads(expr.stop)
+        if expr.step is not None:
+            names |= _collect_name_reads(expr.step)
+        return names
+    if isinstance(expr, FrontendTupleExpr):
+        names: set[str] = set()
+        for element in expr.elements:
+            names |= _collect_name_reads(element)
+        return names
+    if isinstance(expr, FrontendAttributeExpr):
+        return _collect_name_reads(expr.base)
+    if isinstance(expr, FrontendSubscriptExpr):
+        return _collect_name_reads(expr.base) | _collect_name_reads(expr.index)
+    if isinstance(expr, FrontendBinaryExpr):
+        return _collect_name_reads(expr.lhs) | _collect_name_reads(expr.rhs)
+    if isinstance(expr, FrontendCallExpr):
+        names: set[str] = set()
+        for arg in expr.args:
+            names |= _collect_name_reads(arg)
+        for _, keyword_value in expr.keywords:
+            names |= _collect_name_reads(keyword_value)
+        return names
+    return set()
+
+
+def _extract_target_names(target: FrontendTargetNode) -> set[str]:
+    if isinstance(target, FrontendNameTarget):
+        return {target.name}
+    if isinstance(target, FrontendTupleTarget):
+        return {element.name for element in target.elements}
+    return set()
+
+def _validate_inline_capture(
+    stmt: FrontendStmtNode,
+    param_names: set[str],
+    assigned_names: set[str],
+    *,
+    context: _FrontendBuildContext,
+) -> None:
+    allowed = param_names | assigned_names
+    if isinstance(stmt, FrontendAssignStmt):
+        missing = _collect_name_reads(stmt.value) - allowed
+        if missing:
+            name = sorted(missing)[0]
+            raise context.error(
+                context.source_info.function_def,
+                f"implicit capture of '{name}' is not allowed in inline_proc",
+            )
+        assigned_names |= _extract_target_names(stmt.target)
+        return
+    if isinstance(stmt, FrontendExprStmt):
+        missing = _collect_name_reads(stmt.expr) - allowed
+        if missing:
+            name = sorted(missing)[0]
+            raise context.error(
+                context.source_info.function_def,
+                f"implicit capture of '{name}' is not allowed in inline_proc",
+            )
+        return
+    if isinstance(stmt, FrontendReturnStmt):
+        if stmt.value is None:
+            return
+        missing = _collect_name_reads(stmt.value) - allowed
+        if missing:
+            name = sorted(missing)[0]
+            raise context.error(
+                context.source_info.function_def,
+                f"implicit capture of '{name}' is not allowed in inline_proc",
+            )
+        return
+    if isinstance(stmt, FrontendForStmt):
+        header_reads = (
+            _collect_name_reads(stmt.lower_bound)
+            | _collect_name_reads(stmt.upper_bound)
+            | _collect_name_reads(stmt.step)
+        )
+        missing = header_reads - allowed
+        if missing:
+            name = sorted(missing)[0]
+            raise context.error(
+                context.source_info.function_def,
+                f"implicit capture of '{name}' is not allowed in inline_proc",
+            )
+
+        loop_assigned = set(assigned_names)
+        loop_assigned.add(stmt.target)
+        for child in stmt.body:
+            _validate_inline_capture(child, param_names, loop_assigned, context=context)
+        assigned_names.add(stmt.target)
+        return
+    if isinstance(stmt, FrontendIfStmt):
+        missing = _collect_name_reads(stmt.condition) - allowed
+        if missing:
+            name = sorted(missing)[0]
+            raise context.error(
+                context.source_info.function_def,
+                f"implicit capture of '{name}' is not allowed in inline_proc",
+            )
+        then_assigned = set(assigned_names)
+        else_assigned = set(assigned_names)
+        for child in stmt.then_body:
+            _validate_inline_capture(child, param_names, then_assigned, context=context)
+        for child in stmt.else_body:
+            _validate_inline_capture(child, param_names, else_assigned, context=context)
+        assigned_names |= then_assigned | else_assigned
+        return
+    if isinstance(stmt, FrontendVecscopeStmt):
+        scope_assigned = set(assigned_names)
+        for child in stmt.body:
+            _validate_inline_capture(child, param_names, scope_assigned, context=context)
+        assigned_names |= scope_assigned
+        return
+    if isinstance(stmt, FrontendStrictVecscopeStmt):
+        captures_missing = set().union(*(_collect_name_reads(capture) for capture in stmt.captures)) - allowed
+        if captures_missing:
+            name = sorted(captures_missing)[0]
+            raise context.error(
+                context.source_info.function_def,
+                f"implicit capture of '{name}' is not allowed in inline_proc",
+            )
+        scope_assigned = set(assigned_names) | set(stmt.block_arguments)
+        for child in stmt.body:
+            _validate_inline_capture(child, param_names, scope_assigned, context=context)
+        assigned_names |= scope_assigned
+
+
+def _collect_inline_proc_calls_expr(
+    expr: FrontendExprNode,
+    inline_proc_names: set[str],
+    into: set[str],
+) -> None:
+    if isinstance(expr, FrontendCallExpr):
+        if expr.namespace is None and expr.name in inline_proc_names:
+            into.add(expr.name)
+        for arg in expr.args:
+            _collect_inline_proc_calls_expr(arg, inline_proc_names, into)
+        for _, keyword_value in expr.keywords:
+            _collect_inline_proc_calls_expr(keyword_value, inline_proc_names, into)
+        return
+    if isinstance(expr, FrontendBinaryExpr):
+        _collect_inline_proc_calls_expr(expr.lhs, inline_proc_names, into)
+        _collect_inline_proc_calls_expr(expr.rhs, inline_proc_names, into)
+        return
+    if isinstance(expr, FrontendTupleExpr):
+        for element in expr.elements:
+            _collect_inline_proc_calls_expr(element, inline_proc_names, into)
+        return
+    if isinstance(expr, FrontendSliceExpr):
+        if expr.start is not None:
+            _collect_inline_proc_calls_expr(expr.start, inline_proc_names, into)
+        if expr.stop is not None:
+            _collect_inline_proc_calls_expr(expr.stop, inline_proc_names, into)
+        if expr.step is not None:
+            _collect_inline_proc_calls_expr(expr.step, inline_proc_names, into)
+        return
+    if isinstance(expr, FrontendAttributeExpr):
+        _collect_inline_proc_calls_expr(expr.base, inline_proc_names, into)
+        return
+    if isinstance(expr, FrontendSubscriptExpr):
+        _collect_inline_proc_calls_expr(expr.base, inline_proc_names, into)
+        _collect_inline_proc_calls_expr(expr.index, inline_proc_names, into)
+
+
+def _collect_inline_proc_calls_stmt(
+    stmt: FrontendStmtNode,
+    inline_proc_names: set[str],
+    into: set[str],
+) -> None:
+    if isinstance(stmt, FrontendAssignStmt):
+        _collect_inline_proc_calls_expr(stmt.value, inline_proc_names, into)
+        return
+    if isinstance(stmt, FrontendExprStmt):
+        _collect_inline_proc_calls_expr(stmt.expr, inline_proc_names, into)
+        return
+    if isinstance(stmt, FrontendReturnStmt):
+        if stmt.value is not None:
+            _collect_inline_proc_calls_expr(stmt.value, inline_proc_names, into)
+        return
+    if isinstance(stmt, FrontendForStmt):
+        _collect_inline_proc_calls_expr(stmt.lower_bound, inline_proc_names, into)
+        _collect_inline_proc_calls_expr(stmt.upper_bound, inline_proc_names, into)
+        _collect_inline_proc_calls_expr(stmt.step, inline_proc_names, into)
+        for child in stmt.body:
+            _collect_inline_proc_calls_stmt(child, inline_proc_names, into)
+        return
+    if isinstance(stmt, FrontendIfStmt):
+        _collect_inline_proc_calls_expr(stmt.condition, inline_proc_names, into)
+        for child in stmt.then_body:
+            _collect_inline_proc_calls_stmt(child, inline_proc_names, into)
+        for child in stmt.else_body:
+            _collect_inline_proc_calls_stmt(child, inline_proc_names, into)
+        return
+    if isinstance(stmt, FrontendVecscopeStmt):
+        for child in stmt.body:
+            _collect_inline_proc_calls_stmt(child, inline_proc_names, into)
+        return
+    if isinstance(stmt, FrontendStrictVecscopeStmt):
+        for capture in stmt.captures:
+            _collect_inline_proc_calls_expr(capture, inline_proc_names, into)
+        for child in stmt.body:
+            _collect_inline_proc_calls_stmt(child, inline_proc_names, into)
+
+
+def _validate_inline_proc_call_graph(
+    kernel_body: tuple[FrontendStmtNode, ...],
+    inline_proc_nodes: tuple[FrontendInlineProcNode, ...],
+    inline_proc_source_infos: dict[str, Any],
+) -> None:
+    inline_proc_names = {node.name for node in inline_proc_nodes}
+    if not inline_proc_names:
+        return
+
+    edges: dict[str, set[str]] = {node.name: set() for node in inline_proc_nodes}
+    for inline_proc_node in inline_proc_nodes:
+        callees = edges[inline_proc_node.name]
+        for stmt in inline_proc_node.body:
+            _collect_inline_proc_calls_stmt(stmt, inline_proc_names, callees)
+
+    root_callees: set[str] = set()
+    for stmt in kernel_body:
+        _collect_inline_proc_calls_stmt(stmt, inline_proc_names, root_callees)
+
+    color: dict[str, int] = {}
+
+    def dfs(name: str) -> None:
+        state = color.get(name, 0)
+        if state == 1:
+            source_info = inline_proc_source_infos.get(name)
+            if source_info is not None:
+                raise source_info.error(
+                    source_info.function_def,
+                    f"recursive inline_proc call `{name}` is not supported in TileLang DSL v1",
+                )
+            raise ValueError(f"recursive inline_proc call `{name}` is not supported in TileLang DSL v1")
+        if state == 2:
+            return
+        color[name] = 1
+        for callee in edges.get(name, ()):
+            dfs(callee)
+        color[name] = 2
+
+    for callee in sorted(root_callees):
+        dfs(callee)
+
+
+def _collect_reachable_inline_procs(
+    kernel_body: tuple[FrontendStmtNode, ...],
+    inline_proc_nodes: tuple[FrontendInlineProcNode, ...],
+) -> set[str]:
+    inline_proc_names = {node.name for node in inline_proc_nodes}
+    if not inline_proc_names:
+        return set()
+
+    edges: dict[str, set[str]] = {node.name: set() for node in inline_proc_nodes}
+    for inline_proc_node in inline_proc_nodes:
+        for stmt in inline_proc_node.body:
+            _collect_inline_proc_calls_stmt(stmt, inline_proc_names, edges[inline_proc_node.name])
+
+    roots: set[str] = set()
+    for stmt in kernel_body:
+        _collect_inline_proc_calls_stmt(stmt, inline_proc_names, roots)
+
+    reachable: set[str] = set()
+    stack = list(roots)
+    while stack:
+        name = stack.pop()
+        if name in reachable:
+            continue
+        reachable.add(name)
+        stack.extend(edges.get(name, ()))
+    return reachable
 
 
 _BINARY_OP_NAMES = {
@@ -417,6 +812,19 @@ def _build_expr(node: ast.AST, context: _FrontendBuildContext) -> FrontendExprNo
             )
         return expr
     if isinstance(node, ast.Call):
+        if isinstance(node.func, ast.Name) and node.func.id in context.inline_procs:
+            inline_proc = context.inline_procs[node.func.id]
+            if node.func.id in context.active_inline_proc_stack:
+                raise context.error(
+                    node,
+                    f"recursive inline_proc call `{node.func.id}` is not supported in TileLang DSL v1",
+                )
+            return FrontendCallExpr(
+                namespace=None,
+                name=node.func.id,
+                args=_bind_inline_proc_call(node, inline_proc, context),
+                keywords=(),
+            )
         if (
             isinstance(node.func, ast.Attribute)
             and isinstance(node.func.value, ast.Name)
@@ -515,6 +923,10 @@ def _build_target(node: ast.AST, context: _FrontendBuildContext) -> FrontendTarg
     )
 
 
+def _build_stmt_list(nodes: list[ast.stmt] | tuple[ast.stmt, ...], context: _FrontendBuildContext) -> tuple[FrontendStmtNode, ...]:
+    return tuple(_build_stmt(node, context) for node in nodes)
+
+
 def _build_stmt(node: ast.stmt, context: _FrontendBuildContext) -> FrontendStmtNode:
     if isinstance(node, ast.Assign):
         if len(node.targets) != 1:
@@ -551,7 +963,7 @@ def _build_stmt(node: ast.stmt, context: _FrontendBuildContext) -> FrontendStmtN
             lower_bound=_build_expr(node.iter.args[0], context),
             upper_bound=_build_expr(node.iter.args[1], context),
             step=_build_expr(node.iter.args[2], context),
-            body=tuple(_build_stmt(stmt, context) for stmt in node.body),
+            body=_build_stmt_list(node.body, context),
         )
     if isinstance(node, ast.If):
         is_constexpr = False
@@ -577,8 +989,8 @@ def _build_stmt(node: ast.stmt, context: _FrontendBuildContext) -> FrontendStmtN
             condition_node = node.test.args[0]
         return FrontendIfStmt(
             condition=_build_expr(condition_node, context),
-            then_body=tuple(_build_stmt(stmt, context) for stmt in node.body),
-            else_body=tuple(_build_stmt(stmt, context) for stmt in node.orelse),
+            then_body=_build_stmt_list(node.body, context),
+            else_body=_build_stmt_list(node.orelse, context),
             is_constexpr=is_constexpr,
         )
     if isinstance(node, ast.With):
@@ -606,7 +1018,7 @@ def _build_stmt(node: ast.stmt, context: _FrontendBuildContext) -> FrontendStmtN
             if item.optional_vars is not None:
                 raise context.error(item, "pto.vecscope() does not support `as` bindings in TileLang DSL v1")
             return FrontendVecscopeStmt(
-                body=tuple(_build_stmt(stmt, context.nested_vecscope()) for stmt in node.body),
+                body=_build_stmt_list(node.body, context.nested_vecscope()),
             )
         if with_name != "strict_vecscope":
             raise context.error(
@@ -628,7 +1040,7 @@ def _build_stmt(node: ast.stmt, context: _FrontendBuildContext) -> FrontendStmtN
         return FrontendStrictVecscopeStmt(
             captures=tuple(_build_expr(arg, context) for arg in item.context_expr.args),
             block_arguments=tuple(block_arguments),
-            body=tuple(_build_stmt(stmt, context.nested_vecscope()) for stmt in node.body),
+            body=_build_stmt_list(node.body, context.nested_vecscope()),
         )
     raise context.error(
         node,
@@ -659,15 +1071,107 @@ def build_frontend_kernel_node(descriptor: Any) -> FrontendKernelNode:
         for name, spec in descriptor.specializations
     )
     source_info = descriptor._source_info
+    sorted_inline_procs = tuple(sorted(descriptor.inline_procs.items(), key=lambda item: item[0]))
     context = _FrontendBuildContext(
         source_info=source_info,
         templates=descriptor.templates,
         selected_op=descriptor.selected_op,
         advanced_enabled=descriptor.advanced_enabled,
+        inline_procs={
+            name: _FrontendInlineProc(
+                name=name,
+                source_info=proc.source_info,
+                signature=proc.signature,
+            )
+            for name, proc in sorted_inline_procs
+        },
     )
     body = ()
     if source_info is not None:
-        body = tuple(_build_stmt(stmt, context) for stmt in source_info.function_def.body)
+        body = _build_stmt_list(source_info.function_def.body, context)
+
+    inline_proc_descriptors = {name: descriptor for name, descriptor in sorted_inline_procs}
+    inline_proc_names = set(inline_proc_descriptors)
+    root_inline_calls: set[str] = set()
+    for stmt in body:
+        _collect_inline_proc_calls_stmt(stmt, inline_proc_names, root_inline_calls)
+
+    inline_proc_nodes_by_name: dict[str, FrontendInlineProcNode] = {}
+    inline_proc_source_infos: dict[str, Any] = {}
+    pending = list(sorted(root_inline_calls))
+    while pending:
+        name = pending.pop()
+        if name in inline_proc_nodes_by_name:
+            continue
+        inline_proc_descriptor = inline_proc_descriptors.get(name)
+        if inline_proc_descriptor is None:
+            continue
+        inline_source = inline_proc_descriptor.source_info
+        if inline_source is None:
+            if source_info is not None:
+                raise context.error(
+                    source_info.function_def,
+                    f"inline_proc `{name}` requires source-visible Python functions",
+                )
+            raise ValueError(
+                f"inline_proc `{name}` requires source-visible Python functions"
+            )
+        inline_proc_source_infos[name] = inline_source
+        helper_context = context.enter_inline_proc(name, inline_source)
+        helper_body = _build_stmt_list(inline_source.function_def.body, helper_context)
+        parameter_specs = _inline_proc_param_specs(
+            _FrontendInlineProc(
+                name=name,
+                source_info=inline_source,
+                signature=inline_proc_descriptor.signature,
+            )
+        )
+        inline_proc_node = FrontendInlineProcNode(
+            name=name,
+            parameters=tuple(
+                FrontendInlineProcParameterNode(
+                    name=param_name,
+                    annotation=arg.annotation,
+                    default=None
+                    if default_node is None
+                    else _build_expr(default_node, helper_context),
+                )
+                for (param_name, default_node), arg in zip(parameter_specs, inline_source.function_def.args.args)
+            ),
+            body=helper_body,
+        )
+        inline_proc_nodes_by_name[name] = inline_proc_node
+        nested_calls: set[str] = set()
+        for stmt in helper_body:
+            _collect_inline_proc_calls_stmt(stmt, inline_proc_names, nested_calls)
+        for nested in sorted(nested_calls):
+            if nested not in inline_proc_nodes_by_name:
+                pending.append(nested)
+
+    reachable_inline_proc_nodes = tuple(
+        inline_proc_nodes_by_name[name]
+        for name, _ in sorted_inline_procs
+        if name in inline_proc_nodes_by_name
+    )
+    for inline_proc_node in reachable_inline_proc_nodes:
+        source = inline_proc_source_infos[inline_proc_node.name]
+        helper_context = context.enter_inline_proc(inline_proc_node.name, source)
+        assigned_names: set[str] = set()
+        param_names = {parameter.name for parameter in inline_proc_node.parameters}
+        for stmt in inline_proc_node.body:
+            _validate_inline_capture(
+                stmt,
+                param_names,
+                assigned_names,
+                context=helper_context,
+            )
+
+    _validate_inline_proc_call_graph(
+        body,
+        reachable_inline_proc_nodes,
+        inline_proc_source_infos,
+    )
+
     return FrontendKernelNode(
         target=descriptor.target,
         op=descriptor.op,
@@ -678,6 +1182,7 @@ def build_frontend_kernel_node(descriptor: Any) -> FrontendKernelNode:
         parameters=parameters,
         tile_specializations=tile_specializations,
         body=body,
+        inline_procs=reachable_inline_proc_nodes,
     )
 
 
@@ -691,6 +1196,8 @@ __all__ = [
     "FrontendExprStmt",
     "FrontendForStmt",
     "FrontendIfStmt",
+    "FrontendInlineProcNode",
+    "FrontendInlineProcParameterNode",
     "FrontendKernelNode",
     "FrontendNameExpr",
     "FrontendNameTarget",

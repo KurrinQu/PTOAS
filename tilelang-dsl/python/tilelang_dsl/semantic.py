@@ -24,6 +24,7 @@ from .frontend_ast import (
     FrontendExprStmt,
     FrontendForStmt,
     FrontendIfStmt,
+    FrontendInlineProcNode,
     FrontendKernelNode,
     FrontendNameExpr,
     FrontendNameTarget,
@@ -517,6 +518,7 @@ class SemanticKernel:
     parameters: tuple[SemanticParameter, ...]
     tile_bindings: tuple[SemanticTileBinding, ...]
     body: tuple[SemanticStmt, ...]
+    inline_helpers: tuple["SemanticKernel", ...] = ()
 
 
 class _SemanticAnalyzer:
@@ -529,6 +531,13 @@ class _SemanticAnalyzer:
             spec.name: spec for spec in node.tile_specializations
         }
         self._hidden_parameters: list[SemanticParameter] = []
+        self._inline_proc_nodes: dict[str, FrontendInlineProcNode] = {
+            inline_proc.name: inline_proc for inline_proc in node.inline_procs
+        }
+        self._inline_proc_specializations: dict[tuple[str, tuple[SemanticType, ...]], SemanticKernel] = {}
+        self._inline_proc_return_types: dict[tuple[str, tuple[SemanticType, ...]], SemanticType | None] = {}
+        self._inline_proc_order: list[tuple[str, tuple[SemanticType, ...]]] = []
+        self._inline_proc_active_stack: list[tuple[str, tuple[SemanticType, ...]]] = []
 
     def analyze(self) -> SemanticKernel:
         env: dict[str, SemanticBinding] = {}
@@ -564,6 +573,10 @@ class _SemanticAnalyzer:
             parameters=tuple(parameters),
             tile_bindings=tile_bindings,
             body=body,
+            inline_helpers=tuple(
+                self._inline_proc_specializations[key]
+                for key in self._inline_proc_order
+            ),
         )
 
     def _analyze_kernel_body(
@@ -1039,6 +1052,132 @@ class _SemanticAnalyzer:
         if isinstance(stmt, FrontendStrictVecscopeStmt):
             return self._analyze_strict_vecscope(stmt, env)
         raise ValueError(f"unsupported frontend statement {type(stmt).__name__}")
+
+    def _inline_proc_specialization_key(
+        self,
+        name: str,
+        args: tuple[SemanticExpr, ...],
+    ) -> tuple[str, tuple[SemanticType, ...]]:
+        return (name, tuple(arg.type for arg in args))
+
+    def _inline_proc_symbol_name(
+        self,
+        name: str,
+        index: int,
+    ) -> str:
+        sanitized = "".join(char if char.isalnum() else "_" for char in name)
+        return f"__tl_inline_{sanitized}_{index}"
+
+    def _collect_inline_helper_tile_bindings(
+        self,
+        parameters: tuple[SemanticParameter, ...],
+    ) -> tuple[SemanticTileBinding, ...]:
+        tile_bindings: list[SemanticTileBinding] = []
+        for parameter in parameters:
+            if not isinstance(parameter.type, SemanticTileType):
+                continue
+            if parameter.type.shape is None:
+                continue
+            tile_bindings.append(
+                SemanticTileBinding(
+                    name=parameter.name,
+                    shape=parameter.type.shape,
+                    valid_shape=parameter.type.valid_shape,
+                    memory_space=parameter.type.memory_space or "ub",
+                    config=None,
+                )
+            )
+        return tuple(tile_bindings)
+
+    def _materialize_inline_proc_specialization(
+        self,
+        name: str,
+        args: tuple[SemanticExpr, ...],
+    ) -> SemanticKernel:
+        inline_proc_node = self._inline_proc_nodes.get(name)
+        if inline_proc_node is None:
+            raise TypeError(f"inline_proc `{name}` is not registered in the current TileLang module")
+
+        key = self._inline_proc_specialization_key(name, args)
+        existing = self._inline_proc_specializations.get(key)
+        if existing is not None:
+            return existing
+        if key in self._inline_proc_active_stack:
+            raise TypeError(
+                f"recursive inline_proc call `{name}` is not supported in TileLang DSL v1"
+            )
+
+        if len(inline_proc_node.parameters) != len(args):
+            raise TypeError(
+                f"inline_proc `{name}` expects {len(inline_proc_node.parameters)} arguments in TileLang DSL v1"
+            )
+
+        helper_env: dict[str, SemanticBinding] = {}
+        helper_parameters: list[SemanticParameter] = []
+        for index, (param, arg_expr) in enumerate(zip(inline_proc_node.parameters, args)):
+            binding = SemanticBinding(
+                name=param.name,
+                ssa_name=f"%arg{index}",
+                type=arg_expr.type,
+                origin="inline_param",
+            )
+            helper_env[param.name] = binding
+            helper_parameters.append(SemanticParameter(binding=binding))
+
+        saved_hidden_parameters = self._hidden_parameters
+        self._hidden_parameters = []
+        self._inline_proc_active_stack.append(key)
+        try:
+            body, _ = self._analyze_block(
+                inline_proc_node.body,
+                helper_env,
+                allow_outer_lookup=False,
+            )
+        finally:
+            self._inline_proc_active_stack.pop()
+        helper_hidden_parameters = tuple(self._hidden_parameters)
+        self._hidden_parameters = saved_hidden_parameters
+
+        if helper_hidden_parameters:
+            raise TypeError(
+                f"inline_proc `{name}` currently does not support dynamic shape metadata captures in TileLang DSL v1"
+            )
+
+        return_type: SemanticType | None = None
+        if body and isinstance(body[-1], SemanticReturnStmt):
+            return_type = None if body[-1].value is None else body[-1].value.type
+
+        helper_index = len(self._inline_proc_order)
+        helper_kernel = SemanticKernel(
+            target=self.node.target,
+            op=self.node.op,
+            symbol_name=self._inline_proc_symbol_name(name, helper_index),
+            verify_enabled=False,
+            advanced_enabled=self.node.advanced_enabled,
+            dtype_signature=self.node.dtype_signature,
+            parameters=tuple(helper_parameters),
+            tile_bindings=self._collect_inline_helper_tile_bindings(tuple(helper_parameters)),
+            body=body,
+            inline_helpers=(),
+        )
+        self._inline_proc_specializations[key] = helper_kernel
+        self._inline_proc_return_types[key] = return_type
+        self._inline_proc_order.append(key)
+        return helper_kernel
+
+    def _analyze_inline_proc_call_expr(
+        self,
+        name: str,
+        args: tuple[SemanticExpr, ...],
+    ) -> SemanticExpr:
+        helper_kernel = self._materialize_inline_proc_specialization(name, args)
+        key = self._inline_proc_specialization_key(name, args)
+        return SemanticCallExpr(
+            namespace=None,
+            name=helper_kernel.symbol_name,
+            args=args,
+            type=self._inline_proc_return_types.get(key),
+        )
 
     def _contains_explicit_vecscope(self, statements: tuple[FrontendStmtNode, ...]) -> bool:
         for stmt in statements:
@@ -2041,6 +2180,16 @@ class _SemanticAnalyzer:
             result_type = self._binary_type(lhs, rhs, expr.op)
             return SemanticBinaryExpr(lhs=lhs, op=expr.op, rhs=rhs, type=result_type)
         if isinstance(expr, FrontendCallExpr):
+            if expr.namespace is None and expr.name in self._inline_proc_nodes:
+                if expr.keywords:
+                    raise TypeError(
+                        f"inline_proc call `{expr.name}` reached semantic analysis with unresolved keywords in TileLang DSL v1"
+                    )
+                args = tuple(
+                    self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
+                    for arg in expr.args
+                )
+                return self._analyze_inline_proc_call_expr(expr.name, args)
             if expr.namespace not in {None, "pto"} and expr.name == "as_ptr":
                 if expr.keywords:
                     raise TypeError("method call `as_ptr` does not support keyword arguments in TileLang DSL v1")
@@ -2445,6 +2594,10 @@ class _SemanticAnalyzer:
     ) -> SemanticExpr:
         if namespace is None and name == "range":
             return SemanticCallExpr(namespace=namespace, name=name, args=args, type=None)
+        if namespace is None:
+            raise TypeError(
+                f"call surface `{name}` is not supported in TileLang DSL v1"
+            )
         if namespace != "pto":
             raise TypeError(
                 f"call surface `{namespace + '.' if namespace else ''}{name}` is not supported in TileLang DSL v1 yet"

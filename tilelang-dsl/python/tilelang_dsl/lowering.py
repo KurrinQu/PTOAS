@@ -77,7 +77,61 @@ class AuthoringModule:
     kernel: SemanticKernel
 
     def render(self) -> str:
-        return _AuthoringRenderer(self.kernel).render()
+        kernel_text = _AuthoringRenderer(self.kernel).render()
+        if not self.kernel.inline_helpers:
+            return kernel_text
+
+        base_lines = kernel_text.splitlines()
+        module_close_index = max(
+            (index for index, line in enumerate(base_lines) if line == "}"),
+            default=-1,
+        )
+        if module_close_index < 0:
+            return kernel_text
+
+        merged_lines = base_lines[:module_close_index]
+        for helper in self.kernel.inline_helpers:
+            helper_lines = _extract_single_function_lines(
+                _AuthoringRenderer(helper).render()
+            )
+            if not helper_lines:
+                continue
+            helper_lines[0] = _rewrite_inline_helper_attrs(helper_lines[0])
+            merged_lines.extend(helper_lines)
+
+        merged_lines.append("}")
+        merged_lines.append("")
+        return "\n".join(merged_lines)
+
+
+def _extract_single_function_lines(rendered_text: str) -> list[str]:
+    lines = rendered_text.splitlines()
+    try:
+        function_start = next(
+            index for index, line in enumerate(lines) if line.lstrip().startswith("func.func ")
+        )
+    except StopIteration:
+        return []
+    module_close_index = max(
+        (index for index, line in enumerate(lines) if line == "}"),
+        default=-1,
+    )
+    if module_close_index <= function_start:
+        return []
+    return lines[function_start:module_close_index]
+
+
+def _rewrite_inline_helper_attrs(function_line: str) -> str:
+    kernel_attr = "attributes { pto.tilelang.instance }"
+    helper_attr = 'attributes { sym_visibility = "private", pto.tilelang.inline_proc }'
+    if kernel_attr in function_line:
+        return function_line.replace(kernel_attr, helper_attr)
+    if "attributes {" in function_line:
+        return function_line
+    if function_line.rstrip().endswith("{"):
+        stripped = function_line.rstrip()
+        return stripped[:-1] + f" {helper_attr} {{"
+    return function_line
 
 
 @dataclass(frozen=True)
@@ -311,8 +365,9 @@ class _AuthoringRenderer:
         if isinstance(stmt, SemanticAssignStmt):
             return self._render_assign(stmt, env, indent=indent)
         if isinstance(stmt, SemanticExprStmt):
-            self._lower_expr(stmt.expr, env, indent=indent)
-            return []
+            lines: list[str] = []
+            self._lower_expr(stmt.expr, env, indent=indent, into=lines)
+            return lines
         if isinstance(stmt, SemanticDmaLoadStmt):
             return self._render_dma_load(stmt, env, indent=indent)
         if isinstance(stmt, SemanticDmaStoreStmt):
@@ -336,10 +391,12 @@ class _AuthoringRenderer:
         if isinstance(stmt, SemanticLowLevelCopyStmt):
             return self._render_low_level_copy(stmt, env, indent=indent)
         if isinstance(stmt, SemanticReturnStmt):
+            lines: list[str] = []
             if stmt.value is None:
                 return [self._indent(indent) + "return"]
-            value = self._lower_expr(stmt.value, env, indent=indent)
-            return [self._indent(indent) + f"return {value.name} : {self._render_type(value.type)}"]
+            value = self._lower_expr(stmt.value, env, indent=indent, into=lines)
+            lines.append(self._indent(indent) + f"return {value.name} : {self._render_type(value.type)}")
+            return lines
         if isinstance(stmt, SemanticVecscopeStmt):
             return self._render_vecscope(stmt, env, indent=indent)
         if isinstance(stmt, SemanticStrictVecscopeStmt):
@@ -1913,6 +1970,32 @@ class _AuthoringRenderer:
         desired_name: str | None,
         into: list[str] | None,
     ) -> _RenderedValue:
+        if expr.namespace is None:
+            if into is None:
+                into = []
+            rendered_args = [
+                self._lower_expr(arg, env, indent=indent, into=into)
+                for arg in expr.args
+            ]
+            rendered_arg_names = ", ".join(arg.name for arg in rendered_args)
+            rendered_arg_types = ", ".join(self._render_type(arg.type) for arg in rendered_args)
+            if not rendered_arg_types:
+                rendered_arg_types = ""
+            if expr.type is None:
+                into.append(
+                    self._indent(indent)
+                    + f"func.call {_format_symbol_name(expr.name)}({rendered_arg_names}) : "
+                    + f"({rendered_arg_types}) -> ()"
+                )
+                return _RenderedValue(name="__void_call__", type=SemanticMetaType(kind="void"))
+            result_name = desired_name or self._new_temp()
+            into.append(
+                self._indent(indent)
+                + f"{result_name} = func.call {_format_symbol_name(expr.name)}({rendered_arg_names}) : "
+                + f"({rendered_arg_types}) -> {self._render_type(expr.type)}"
+            )
+            return _RenderedValue(name=result_name, type=expr.type)
+
         if expr.namespace != "pto":
             raise NotImplementedError(f"unsupported call namespace {expr.namespace!r}")
         if isinstance(expr.type, SemanticTupleType):

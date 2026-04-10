@@ -10,10 +10,12 @@
 
 from .kernel import (
     BoundKernelParameter,
+    InlineProcDescriptor,
     KernelRegistry,
     MaterializedMLIRModule,
     TileLangFrontendError,
     VKernelDescriptor,
+    inline_proc,
     select_kernel,
     vkernel,
 )
@@ -59,10 +61,12 @@ from .types import (
 
 __all__ = [
     "BoundKernelParameter",
+    "InlineProcDescriptor",
     "KernelRegistry",
     "MaterializedMLIRModule",
     "TileLangFrontendError",
     "VKernelDescriptor",
+    "inline_proc",
     "select_kernel",
     "vkernel",
     "ScalarType",
