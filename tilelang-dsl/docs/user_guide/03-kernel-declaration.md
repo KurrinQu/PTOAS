@@ -33,7 +33,7 @@ def matmul_fallback(a: pto.Tile, b: pto.Tile, c: pto.Tile) -> None:
 | `constraints` | `List[Callable[..., bool]]` | No | Additional selection-time predicates. Constraint arguments bind by name to kernel parameter proxy objects or `context_attrs` keys. Default: empty list. |
 | `priority` | `int` | No | Selection priority when multiple kernels match. Higher values have higher priority. Default: `0`. |
 | `name` | `str` | No | Kernel name (used for debugging and profiling). Defaults to the decorated function's name. |
-| `advanced` | `bool` | No | Enable implicit vecscope inference. When `True`, vector operations inside loops automatically infer their vecscope. Default: `False`. |
+| `advanced` | `bool` | No | Enable advanced-tier DSL surfaces (for example `strict_vecscope`, raw pointer family, and low-level DMA family). Implicit vecscope inference is available in both modes and runs only when no explicit `with pto.vecscope():` is present. Default: `False`. |
 
 #### Type Matching Rules
 
@@ -272,4 +272,3 @@ def conv2d_nhwc_f16_f32(input: pto.Tile, filter: pto.Tile, output: pto.Tile) -> 
     # Optimized for NHWC layout with static shapes
     pass
 ```
-

@@ -1633,43 +1633,102 @@ class _AuthoringRenderer:
             lines.append(self._indent(indent) + "}")
             return lines
 
-        if len(stmt.loop_carried) != 1:
-            raise NotImplementedError(
-                "TileLang DSL v1 lowering currently supports at most one loop-carried binding"
+        carried_bindings = tuple(stmt.loop_carried)
+        if len(carried_bindings) == 1:
+            carried_binding = carried_bindings[0]
+            initial_value = self._coerce_rendered_value(
+                env[carried_binding.name],
+                carried_binding.type,
+                indent=indent,
+                into=lines,
+            )
+            iter_arg_name = f"%{carried_binding.name}_iter_{self._loop_counter}"
+            self._loop_counter += 1
+            body_env[carried_binding.name] = _RenderedValue(
+                name=iter_arg_name,
+                type=carried_binding.type,
             )
 
-        carried_binding = stmt.loop_carried[0]
-        initial_value = self._coerce_rendered_value(
-            env[carried_binding.name],
-            carried_binding.type,
-            indent=indent,
-            into=lines,
-        )
-        iter_arg_name = f"%{carried_binding.name}_iter_{self._loop_counter}"
+            lines.append(
+                self._indent(indent)
+                + f"{carried_binding.ssa_name}:1 = scf.for {stmt.induction_variable.ssa_name} = "
+                f"{lower_bound.name} to {upper_bound.name} step {step.name} "
+                f"iter_args({iter_arg_name} = {initial_value.name}) -> "
+                f"({self._render_type(carried_binding.type)}) {{"
+            )
+            lines.extend(self._render_block(stmt.body, body_env, indent=indent + 2))
+            yielded_value = self._coerce_rendered_value(
+                body_env[carried_binding.name],
+                carried_binding.type,
+                indent=indent + 2,
+                into=lines,
+            )
+            lines.append(
+                self._indent(indent + 2)
+                + f"scf.yield {yielded_value.name} : {self._render_type(yielded_value.type)}"
+            )
+            lines.append(self._indent(indent) + "}")
+            env[carried_binding.name] = _RenderedValue(
+                name=carried_binding.ssa_name,
+                type=carried_binding.type,
+            )
+            return lines
+
+        loop_id = self._loop_counter
         self._loop_counter += 1
-        body_env[carried_binding.name] = _RenderedValue(
-            name=iter_arg_name,
-            type=carried_binding.type,
+
+        initial_values: list[_RenderedValue] = []
+        iter_arg_names: list[str] = []
+        for index, binding in enumerate(carried_bindings):
+            initial_values.append(
+                self._coerce_rendered_value(
+                    env[binding.name],
+                    binding.type,
+                    indent=indent,
+                    into=lines,
+                )
+            )
+            iter_arg_names.append(f"%{binding.name}_iter_{loop_id}_{index}")
+            body_env[binding.name] = _RenderedValue(
+                name=iter_arg_names[-1],
+                type=binding.type,
+            )
+
+        result_names = ", ".join(binding.ssa_name for binding in carried_bindings)
+        iter_args = ", ".join(
+            f"{iter_name} = {initial.name}"
+            for iter_name, initial in zip(iter_arg_names, initial_values)
         )
+        result_types = ", ".join(self._render_type(binding.type) for binding in carried_bindings)
 
         lines.append(
             self._indent(indent)
-            + f"{carried_binding.ssa_name}:1 = scf.for {stmt.induction_variable.ssa_name} = "
+            + f"{result_names} = scf.for {stmt.induction_variable.ssa_name} = "
             f"{lower_bound.name} to {upper_bound.name} step {step.name} "
-            f"iter_args({iter_arg_name} = {initial_value.name}) -> "
-            f"({self._render_type(carried_binding.type)}) {{"
+            f"iter_args({iter_args}) -> ({result_types}) {{"
         )
         lines.extend(self._render_block(stmt.body, body_env, indent=indent + 2))
-        yielded_value = body_env[carried_binding.name]
+        yielded_values = [
+            self._coerce_rendered_value(
+                body_env[binding.name],
+                binding.type,
+                indent=indent + 2,
+                into=lines,
+            )
+            for binding in carried_bindings
+        ]
+        yielded_names = ", ".join(value.name for value in yielded_values)
+        yielded_types = ", ".join(self._render_type(value.type) for value in yielded_values)
         lines.append(
             self._indent(indent + 2)
-            + f"scf.yield {yielded_value.name} : {self._render_type(yielded_value.type)}"
+            + f"scf.yield {yielded_names} : {yielded_types}"
         )
         lines.append(self._indent(indent) + "}")
-        env[carried_binding.name] = _RenderedValue(
-            name=carried_binding.ssa_name,
-            type=carried_binding.type,
-        )
+        for binding in carried_bindings:
+            env[binding.name] = _RenderedValue(
+                name=binding.ssa_name,
+                type=binding.type,
+            )
         return lines
 
     def _render_if(

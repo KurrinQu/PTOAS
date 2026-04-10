@@ -147,6 +147,11 @@ class FrontendIfStmt(FrontendStmtNode):
 
 
 @dataclass(frozen=True)
+class FrontendVecscopeStmt(FrontendStmtNode):
+    body: tuple[FrontendStmtNode, ...]
+
+
+@dataclass(frozen=True)
 class FrontendStrictVecscopeStmt(FrontendStmtNode):
     captures: tuple[FrontendExprNode, ...]
     block_arguments: tuple[str, ...]
@@ -586,9 +591,28 @@ def _build_stmt(node: ast.stmt, context: _FrontendBuildContext) -> FrontendStmtN
             isinstance(item.context_expr.func, ast.Attribute)
             and isinstance(item.context_expr.func.value, ast.Name)
             and item.context_expr.func.value.id == "pto"
-            and item.context_expr.func.attr == "strict_vecscope"
         ):
-            raise context.error(item.context_expr, "only pto.strict_vecscope is supported in TileLang DSL v1")
+            raise context.error(
+                item.context_expr,
+                "only pto.vecscope/pto.strict_vecscope are supported in TileLang DSL v1",
+            )
+        with_name = item.context_expr.func.attr
+        if with_name == "vecscope":
+            if item.context_expr.args or item.context_expr.keywords:
+                raise context.error(
+                    item.context_expr,
+                    "pto.vecscope() does not accept positional or keyword arguments in TileLang DSL v1",
+                )
+            if item.optional_vars is not None:
+                raise context.error(item, "pto.vecscope() does not support `as` bindings in TileLang DSL v1")
+            return FrontendVecscopeStmt(
+                body=tuple(_build_stmt(stmt, context.nested_vecscope()) for stmt in node.body),
+            )
+        if with_name != "strict_vecscope":
+            raise context.error(
+                item.context_expr,
+                "only pto.vecscope/pto.strict_vecscope are supported in TileLang DSL v1",
+            )
         if not context.advanced_enabled:
             raise context.error(
                 item.context_expr,
@@ -673,6 +697,7 @@ __all__ = [
     "FrontendParameterNode",
     "FrontendReturnStmt",
     "FrontendSliceExpr",
+    "FrontendVecscopeStmt",
     "FrontendStrictVecscopeStmt",
     "FrontendStmtNode",
     "FrontendSubscriptExpr",

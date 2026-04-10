@@ -24,6 +24,7 @@ from tilelang_dsl.frontend_ast import (
     FrontendExprStmt,
     FrontendForStmt,
     FrontendStrictVecscopeStmt,
+    FrontendVecscopeStmt,
     build_frontend_kernel_node,
 )
 from tilelang_dsl.lowering import AuthoringModule, lower_semantic_kernel
@@ -2020,6 +2021,79 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn('"POS_LOWEST"', text)
         self.assertIn('"ORDER_ASC"', text)
 
+    def test_vbr_accepts_float_literal_constant(self) -> None:
+        @pto.vkernel(
+            op="broadcast_float_literal_constant_unique",
+            dtypes=[(pto.f32, pto.f32)],
+            advanced=True,
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            all_mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+            vec0 = pto.vlds(src, 0)
+            bias = pto.vbr(0.0)
+            out = pto.vadd(vec0, bias, all_mask)
+            pto.vsts(out, dst, 0, all_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("= arith.constant 0.0 : f32", text)
+        self.assertIn("pto.vbr", text)
+
+    def test_inferred_vecscope_propagates_bindings_to_constexpr_if(self) -> None:
+        @pto.vkernel(
+            op="inferred_vecscope_binding_propagation_unique",
+            dtypes=[(pto.f32, pto.f32)],
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+            acc = pto.vbr(0.0)
+            vec = pto.vlds(src, 0)
+            acc = pto.vadd(acc, vec, mask)
+            if pto.constexpr(True):
+                pto.vsts(acc, dst, 0, mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.vadd", text)
+        self.assertIn("pto.vsts", text)
+        self.assertIn("= arith.constant 0.0 : f32", text)
+
+    def test_loop_lowering_supports_multiple_loop_carried_bindings(self) -> None:
+        @pto.vkernel(
+            op="loop_multi_carried_bindings_unique",
+            dtypes=[(pto.f32, pto.f32)],
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            remained = 64
+            acc = pto.vbr(0.0)
+            all_mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+            for col in range(0, 64, 64):
+                mask, remained = pto.make_mask(pto.f32, remained)
+                vec = pto.vlds(src, col)
+                acc = pto.vadd(acc, vec, mask)
+            pto.vsts(acc, dst, 0, all_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertRegex(text, r"%remained_\d+, %acc_\d+ = scf\.for")
+        self.assertRegex(text, r"iter_args\(%remained_iter_\d+_0 = [^,]+, %acc_iter_\d+_1 = [^)]+\)")
+        self.assertRegex(text, r"scf\.yield %remained_\d+, %acc_\d+ : i32, !pto\.vreg<64xf32>")
+
     def test_reduction_and_rearrangement_vector_ops_surface_lowers(self) -> None:
         @pto.vkernel(
             op="reduction_and_rearrangement_vector_ops_unique",
@@ -2299,6 +2373,95 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertLess(text.index("pto.vecscope {"), text.index("%boundary_"))
         self.assertLess(text.index("%boundary_"), text.index("return"))
         self.assertLess(text.index("%boundary_"), text.rindex("pto.vecscope {"))
+
+    def test_explicit_vecscope_is_supported_in_stable_mode(self) -> None:
+        @pto.vkernel(op="explicit_vecscope_stable_unique", dtypes=[(pto.f32, pto.f32)])
+        def kernel(src: pto.Tile, dst: pto.Tile):
+            mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+            with pto.vecscope():
+                vec = pto.vlds(src, 0)
+                pto.vsts(vec, dst, 0, mask)
+            return None
+
+        specialized = kernel.specialize(
+            src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        frontend_kernel = build_frontend_kernel_node(specialized)
+        self.assertIsInstance(frontend_kernel.body[1], FrontendVecscopeStmt)
+
+        semantic_kernel = analyze_frontend_kernel(frontend_kernel)
+        vecscope_stmts = [stmt for stmt in semantic_kernel.body if isinstance(stmt, SemanticVecscopeStmt)]
+        self.assertEqual(len(vecscope_stmts), 1)
+
+        text = specialized.mlir_text()
+        self.assertEqual(text.count("pto.vecscope {"), 1)
+        self.assertIn("pto.vlds", text)
+        self.assertIn("pto.vsts", text)
+
+    def test_explicit_vecscope_disables_automatic_inference(self) -> None:
+        @pto.vkernel(op="explicit_vecscope_disables_infer_unique", dtypes=[(pto.f32, pto.f32)], advanced=True)
+        def kernel(src: pto.Tile, dst: pto.Tile):
+            mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+            with pto.vecscope():
+                first = pto.vlds(src, 0)
+                pto.vsts(first, dst, 0, mask)
+            second = pto.vlds(src, 64)
+            pto.vsts(second, dst, 64, mask)
+            return None
+
+        specialized = kernel.specialize(
+            src=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+            dst=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+        )
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        vecscope_stmts = [stmt for stmt in semantic_kernel.body if isinstance(stmt, SemanticVecscopeStmt)]
+        self.assertEqual(len(vecscope_stmts), 1)
+
+        text = specialized.mlir_text()
+        self.assertEqual(text.count("pto.vecscope {"), 1)
+        self.assertIn("pto.vlds", text)
+        self.assertIn("pto.vsts", text)
+
+    def test_constexpr_if_tail_store_does_not_split_inferred_vecscope(self) -> None:
+        @pto.vkernel(op="trowsum_like_vecscope_unique", dtypes=[(pto.f32, pto.f32, pto.f32)], advanced=True)
+        def kernel(dst: pto.Tile, src: pto.Tile, tmp: pto.Tile):
+            src_dtype = src.element_type
+            valid_rows, valid_cols = src.valid_shape
+
+            for row in range(0, valid_rows, 1):
+                remained = valid_cols
+                acc = pto.vbr(0.0)
+                for col in range(0, valid_cols, pto.get_lanes(src_dtype)):
+                    mask, remained = pto.make_mask(src_dtype, remained)
+                    vec = pto.vlds(src[row, col:])
+                    reduced = pto.vcadd(vec, mask)
+                    one_mask, _ = pto.make_mask(src_dtype, 1)
+                    acc = pto.vadd(acc, reduced, one_mask)
+                out_mask, _ = pto.make_mask(src_dtype, 1)
+                if pto.constexpr(src_dtype != dst.element_type):
+                    casted = pto.vcvt(acc, out_mask, dst.element_type)
+                    pto.vsts(casted, dst[row, 0:], out_mask)
+                else:
+                    pto.vsts(acc, dst[row, 0:], out_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            tmp=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        vecscope_stmts = [stmt for stmt in semantic_kernel.body if isinstance(stmt, SemanticVecscopeStmt)]
+        self.assertEqual(len(vecscope_stmts), 1)
+
+        text = specialized.mlir_text()
+        self.assertEqual(text.count("pto.vecscope {"), 1)
+        self.assertRegex(text, r"pto\.vecscope \{\n(?:.|\n)*scf\.for %row_\d+")
+        self.assertIn("pto.vsts", text)
 
     def test_advanced_mode_control_flow_infers_vecscope_per_branch(self) -> None:
         @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f32, pto.i32)], advanced=True)

@@ -6,7 +6,7 @@ The TileLang DSL supports implicit vector scope inference, allowing developers t
 
 #### Implicit Scope Inference
 
-**Note:** The explicit `pto.vecscope()` construct is deprecated. Vector operations are automatically grouped into implicit scopes by the compiler's Scope Inference Pass.
+**Note:** `pto.vecscope()` is supported. Automatic scope inference runs only when the kernel does **not** contain explicit `with pto.vecscope():` blocks.
 
 When you write vector operations like `pto.vlds`, `pto.vadd`, `pto.vsts` directly in your code, the compiler's **Scope Inference Pass** analyzes the control flow graph and automatically creates vector scopes:
 
@@ -17,12 +17,12 @@ result = pto.vadd(vec, vec, all_mask)
 pto.vsts(result, dst_ptr, offset, all_mask)
 ```
 
-The compiler automatically groups these three operations into a single implicit vector scope because they form a data-dependent chain.
+The compiler automatically groups these three operations into a single implicit vector scope because they form a data-dependent chain (when no explicit `pto.vecscope()` appears in the kernel).
 
 **Scope boundary rules:**
 1. **Control flow boundaries**: Branches (`if`/`else`), loops (`for`/`while`), and function calls create implicit scope boundaries
 2. **Scalar operations**: Non-vector operations (e.g., scalar arithmetic, pointer arithmetic) create boundaries
-3. **Explicit strict_vecscope**: User-defined `strict_vecscope` blocks create hard boundaries
+3. **Explicit scope blocks**: User-defined `vecscope` and `strict_vecscope` blocks create hard boundaries
 
 #### Explicit Scope Boundaries with `strict_vecscope` [Advanced Tier]
 
@@ -62,6 +62,22 @@ with pto.strict_vecscope(src_ptr, dst_ptr, start, end) as (s, d, lb, ub):
 - Resource management: Control vector register allocation boundaries
 - Compatibility: Ensure deterministic scope placement for hardware constraints
 
+#### Explicit Scope Blocks with `vecscope`
+
+`pto.vecscope` provides an explicit vector-scope boundary without strict capture ABI constraints:
+
+```python
+with pto.vecscope():
+    vec = pto.vlds(src, 0)
+    vec = pto.vadd(vec, vec, mask)
+    pto.vsts(vec, dst, 0, mask)
+```
+
+**Rules**:
+- `pto.vecscope()` takes no positional/keyword arguments.
+- `pto.vecscope()` does not support `as (...)` bindings.
+- When any explicit `pto.vecscope()` is present in a kernel body, automatic vecscope inference is disabled for that kernel.
+
 ### Loops
 
 Counted loops use Python's `range` syntax:
@@ -92,5 +108,4 @@ else:
 ```
 
 Variables defined in only one branch are local to that branch.
-
 

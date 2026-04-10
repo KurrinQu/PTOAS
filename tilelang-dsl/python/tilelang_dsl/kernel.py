@@ -157,22 +157,39 @@ class _KernelBodyValidator(ast.NodeVisitor):
             isinstance(item.context_expr.func, ast.Attribute)
             and isinstance(item.context_expr.func.value, ast.Name)
             and item.context_expr.func.value.id == "pto"
-            and item.context_expr.func.attr == "strict_vecscope"
         ):
             raise self.source_info.error(
                 item.context_expr,
-                "only pto.strict_vecscope is supported as a with-context in TileLang DSL v1",
+                "only pto.vecscope/pto.strict_vecscope are supported as with-contexts in TileLang DSL v1",
             )
-        if not self.advanced_enabled:
+        with_name = item.context_expr.func.attr
+        if with_name == "vecscope":
+            if item.context_expr.args or item.context_expr.keywords:
+                raise self.source_info.error(
+                    item.context_expr,
+                    "pto.vecscope() does not accept positional or keyword arguments in TileLang DSL v1",
+                )
+            if item.optional_vars is not None:
+                raise self.source_info.error(
+                    item,
+                    "pto.vecscope() does not support `as` bindings in TileLang DSL v1",
+                )
+        elif with_name == "strict_vecscope":
+            if not self.advanced_enabled:
+                raise self.source_info.error(
+                    item.context_expr,
+                    advanced_mode_message("strict_vecscope"),
+                )
+            if not isinstance(item.optional_vars, ast.Tuple):
+                raise self.source_info.error(item, "pto.strict_vecscope requires tuple binding in 'as'")
+            for elt in item.optional_vars.elts:
+                if not isinstance(elt, ast.Name):
+                    raise self.source_info.error(elt, "pto.strict_vecscope bindings must be names")
+        else:
             raise self.source_info.error(
                 item.context_expr,
-                advanced_mode_message("strict_vecscope"),
+                "only pto.vecscope/pto.strict_vecscope are supported as with-contexts in TileLang DSL v1",
             )
-        if not isinstance(item.optional_vars, ast.Tuple):
-            raise self.source_info.error(item, "pto.strict_vecscope requires tuple binding in 'as'")
-        for elt in item.optional_vars.elts:
-            if not isinstance(elt, ast.Name):
-                raise self.source_info.error(elt, "pto.strict_vecscope bindings must be names")
         self._vecscope_depth += 1
         try:
             for stmt in node.body:

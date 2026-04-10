@@ -28,6 +28,7 @@ from .frontend_ast import (
     FrontendTargetNode,
     FrontendTupleExpr,
     FrontendTupleTarget,
+    FrontendVecscopeStmt,
 )
 from .support_matrix import (
     DEFERRED_PTO_SURFACES,
@@ -509,6 +510,7 @@ class _SemanticAnalyzer:
         self.node = node
         self._counter = 0
         self._disable_inference_depth = 0
+        self._has_explicit_vecscope = self._contains_explicit_vecscope(node.body)
         self._tile_specializations = {
             spec.name: spec for spec in node.tile_specializations
         }
@@ -679,12 +681,13 @@ class _SemanticAnalyzer:
                     end += 1
                 run = statements[index:end]
                 if self._run_contains_vector_op(run):
+                    vecscope_stmt, current_env = self._analyze_inferred_vecscope(
+                        run,
+                        current_env,
+                        allow_outer_lookup=allow_outer_lookup,
+                    )
                     semantic_statements.append(
-                        self._analyze_inferred_vecscope(
-                            run,
-                            current_env,
-                            allow_outer_lookup=allow_outer_lookup,
-                        )
+                        vecscope_stmt
                     )
                 else:
                     for stmt in run:
@@ -755,6 +758,8 @@ class _SemanticAnalyzer:
         *,
         allow_outer_lookup: bool,
     ) -> bool:
+        if self._has_explicit_vecscope:
+            return False
         if self._disable_inference_depth > 0:
             return False
         if not allow_outer_lookup:
@@ -791,12 +796,21 @@ class _SemanticAnalyzer:
         return saw_vector_activity
 
     def _frontend_stmt_is_vecscope_boundary(self, stmt: FrontendStmtNode) -> bool:
-        if isinstance(stmt, (FrontendStrictVecscopeStmt, FrontendIfStmt)):
+        if isinstance(stmt, FrontendStrictVecscopeStmt):
             return True
+        if isinstance(stmt, FrontendVecscopeStmt):
+            return True
+        if isinstance(stmt, FrontendIfStmt):
+            return not stmt.is_constexpr
         return (
             isinstance(stmt, FrontendExprStmt)
             and (self._is_dma_call(stmt.expr) or self._is_sync_call(stmt.expr))
         )
+
+    def _constexpr_if_contains_vector_activity(self, stmt: FrontendIfStmt) -> bool:
+        if not stmt.is_constexpr:
+            return False
+        return self._run_contains_vector_op(stmt.then_body) or self._run_contains_vector_op(stmt.else_body)
 
     def _frontend_stmt_can_live_in_inferred_vecscope(
         self,
@@ -804,13 +818,17 @@ class _SemanticAnalyzer:
     ) -> bool:
         if isinstance(stmt, FrontendForStmt):
             return self._block_can_live_in_inferred_vecscope(stmt.body)
+        if isinstance(stmt, FrontendIfStmt):
+            return self._constexpr_if_contains_vector_activity(stmt)
         return self._frontend_stmt_contains_vector_activity(stmt)
 
     def _frontend_stmt_is_scalar_vecscope_stmt(
         self,
         stmt: FrontendStmtNode,
     ) -> bool:
-        return isinstance(stmt, FrontendAssignStmt)
+        return isinstance(stmt, FrontendAssignStmt) or (
+            isinstance(stmt, FrontendIfStmt) and stmt.is_constexpr
+        )
 
     def _frontend_stmt_contains_vector_activity(self, stmt: FrontendStmtNode) -> bool:
         expr: FrontendExprNode | None = None
@@ -839,6 +857,14 @@ class _SemanticAnalyzer:
         for stmt in statements:
             if isinstance(stmt, FrontendForStmt) and self._block_can_live_in_inferred_vecscope(stmt.body):
                 return True
+            if isinstance(stmt, FrontendVecscopeStmt):
+                if self._run_contains_vector_op(stmt.body):
+                    return True
+                continue
+            if isinstance(stmt, FrontendIfStmt):
+                if self._constexpr_if_contains_vector_activity(stmt):
+                    return True
+                continue
             name = self._frontend_vector_call_name(stmt)
             if name is None or name == "make_mask":
                 continue
@@ -864,17 +890,17 @@ class _SemanticAnalyzer:
         env: dict[str, SemanticBinding],
         *,
         allow_outer_lookup: bool,
-    ) -> SemanticVecscopeStmt:
+    ) -> tuple[SemanticVecscopeStmt, dict[str, SemanticBinding]]:
         self._disable_inference_depth += 1
         try:
-            body, _ = self._analyze_block_without_inference(
+            body, updated_env = self._analyze_block_without_inference(
                 statements,
                 env,
                 allow_outer_lookup=allow_outer_lookup,
             )
         finally:
             self._disable_inference_depth -= 1
-        return SemanticVecscopeStmt(body=body)
+        return SemanticVecscopeStmt(body=body), updated_env
 
     def _analyze_block_without_inference(
         self,
@@ -989,9 +1015,44 @@ class _SemanticAnalyzer:
             return self._analyze_for(stmt, env, allow_outer_lookup=allow_outer_lookup)
         if isinstance(stmt, FrontendIfStmt):
             return self._analyze_if(stmt, env, allow_outer_lookup=allow_outer_lookup)
+        if isinstance(stmt, FrontendVecscopeStmt):
+            return self._analyze_explicit_vecscope(stmt, env, allow_outer_lookup=allow_outer_lookup)
         if isinstance(stmt, FrontendStrictVecscopeStmt):
             return self._analyze_strict_vecscope(stmt, env)
         raise ValueError(f"unsupported frontend statement {type(stmt).__name__}")
+
+    def _contains_explicit_vecscope(self, statements: tuple[FrontendStmtNode, ...]) -> bool:
+        for stmt in statements:
+            if isinstance(stmt, FrontendVecscopeStmt):
+                return True
+            if isinstance(stmt, FrontendForStmt):
+                if self._contains_explicit_vecscope(stmt.body):
+                    return True
+                continue
+            if isinstance(stmt, FrontendIfStmt):
+                if self._contains_explicit_vecscope(stmt.then_body):
+                    return True
+                if self._contains_explicit_vecscope(stmt.else_body):
+                    return True
+                continue
+            if isinstance(stmt, FrontendStrictVecscopeStmt):
+                if self._contains_explicit_vecscope(stmt.body):
+                    return True
+        return False
+
+    def _analyze_explicit_vecscope(
+        self,
+        stmt: FrontendVecscopeStmt,
+        env: dict[str, SemanticBinding],
+        *,
+        allow_outer_lookup: bool,
+    ) -> tuple[SemanticStmt, dict[str, SemanticBinding]]:
+        body, updated_env = self._analyze_block(
+            stmt.body,
+            dict(env),
+            allow_outer_lookup=allow_outer_lookup,
+        )
+        return SemanticVecscopeStmt(body=body), updated_env
 
     def _is_dma_call(self, expr: FrontendExprNode) -> bool:
         return (
@@ -1900,6 +1961,11 @@ class _SemanticAnalyzer:
                 return SemanticLiteralExpr(value=expr.value, type=SemanticScalarType(dtype=i1))
             if isinstance(expr.value, int):
                 return SemanticLiteralExpr(value=expr.value, type=SemanticIndexType())
+            if isinstance(expr.value, float):
+                return SemanticLiteralExpr(
+                    value=expr.value,
+                    type=SemanticScalarType(dtype=f32),
+                )
             if isinstance(expr.value, str):
                 return SemanticLiteralExpr(
                     value=expr.value,

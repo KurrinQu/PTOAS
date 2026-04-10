@@ -140,7 +140,7 @@ def elementwise_kernel(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
 | `constraints` | `List[Constraint]` | No | Additional constraints that must be satisfied for kernel selection. |
 | `priority` | `int` | No | Selection priority when multiple kernels match. Default: `0`. |
 | `name` | `str` | No | Kernel name (used for debugging and profiling). Defaults to the decorated function's name. |
-| `advanced` | `bool` | No | Enable implicit vecscope inference. Default: `False`. |
+| `advanced` | `bool` | No | Enable advanced-tier DSL surfaces (for example `strict_vecscope`, raw pointer family, and low-level DMA family). Implicit vecscope inference is mode-independent and runs only when no explicit `with pto.vecscope():` is present. Default: `False`. |
 
 **Note**:
 - Either `op` or `ops` must be provided, but not both.
@@ -330,4 +330,3 @@ The DSL operates on symbolic values, not Python runtime values:
 The DSL supports different memory spaces:
 - `MemorySpace.GM`: Global Memory
 - `MemorySpace.UB`: Unified Buffer (local storage for vector computation)
-
