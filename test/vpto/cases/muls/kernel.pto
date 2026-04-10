@@ -38,7 +38,7 @@ module attributes {pto.target_arch = "a5"} {
           %17 = arith.index_castui %16 : index to i32
           %mask, %scalar_out = pto.plt_b32 %17 : i32 -> !pto.mask, i32
           %18 = pto.vlds %0[%arg3] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
-          %19 = pto.vmuls %18, %cst : !pto.vreg<64xf32>, f32 -> !pto.vreg<64xf32>
+          %19 = pto.vmuls %18, %cst, %mask : !pto.vreg<64xf32>, f32, !pto.mask -> !pto.vreg<64xf32>
           pto.vsts %19, %7[%arg3], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask
         }
       } else {
@@ -51,7 +51,7 @@ module attributes {pto.target_arch = "a5"} {
             %18 = arith.index_castui %c32 : index to i32
             %mask, %scalar_out = pto.plt_b32 %18 : i32 -> !pto.mask, i32
             %19 = pto.vlds %0[%17] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
-            %20 = pto.vmuls %19, %cst : !pto.vreg<64xf32>, f32 -> !pto.vreg<64xf32>
+            %20 = pto.vmuls %19, %cst, %mask : !pto.vreg<64xf32>, f32, !pto.mask -> !pto.vreg<64xf32>
             pto.vsts %20, %7[%17], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask
           }
         }

@@ -778,14 +778,15 @@ def PTO_PintlvB16Op : PTO_Op<"pintlv_b16", [Pure]> {
 class PTO_VecScalarOp<string mnemonic> : PTO_Op<mnemonic, [Pure]> {
   let arguments = (ins
     PTO_VectorType:$input,
-    AnyType:$scalar
+    AnyType:$scalar,
+    PTO_MaskTypeConstraint:$mask
   );
   let results = (outs PTO_VectorType:$result);
 
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    $input `,` $scalar attr-dict `:` type($input) `,` type($scalar) `->` type($result)
+    $input `,` $scalar `,` $mask attr-dict `:` type($input) `,` type($scalar) `,` type($mask) `->` type($result)
   }];
 }
 

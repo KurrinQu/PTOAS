@@ -2044,6 +2044,84 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("= arith.constant 0.0 : f32", text)
         self.assertIn("pto.vbr", text)
 
+    def test_scalar_constructor_call_surfaces_lower(self) -> None:
+        @pto.vkernel(
+            op="scalar_constructor_call_surfaces_unique",
+            dtypes=[(pto.i32, pto.i32)],
+            advanced=True,
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            mask = pto.make_mask(pto.i32, pto.PAT.ALL)
+            base = pto.i32(1)
+            idx = pto.i16(base)
+            idx = pto.i8(idx)
+            idx = pto.i64(idx)
+            flt = pto.f16(idx)
+            flt = pto.bf16(flt)
+            flt = pto.f32(flt)
+            gate = pto.i1(flt)
+            scalar = pto.i32(gate)
+            vec = pto.vlds(src, 0)
+            out = pto.vadds(vec, scalar, mask)
+            pto.vsts(out, dst, 0, mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("arith.trunci", text)
+        self.assertIn("arith.extsi", text)
+        self.assertIn("arith.sitofp", text)
+        self.assertIn("arith.fptosi", text)
+        self.assertIn("arith.extf", text)
+        self.assertIn("arith.truncf", text)
+
+    def test_scalar_constructor_rejects_bad_arity(self) -> None:
+        @pto.vkernel(op="scalar_constructor_bad_arity_no_arg_unique", dtypes=[(pto.f32,)])
+        def kernel_no_arg(inp: pto.TensorView):
+            x = pto.i32()
+            return None
+
+        with self.assertRaises(TypeError) as no_arg_ctx:
+            kernel_no_arg.mlir_text()
+
+        self.assertIn("pto.i32 expects exactly 1 positional argument", str(no_arg_ctx.exception))
+
+        @pto.vkernel(op="scalar_constructor_bad_arity_two_arg_unique", dtypes=[(pto.f32,)])
+        def kernel_two_arg(inp: pto.TensorView):
+            x = pto.f32(1.0, 2.0)
+            return None
+
+        with self.assertRaises(TypeError) as two_arg_ctx:
+            kernel_two_arg.mlir_text()
+
+        self.assertIn("pto.f32 expects exactly 1 positional argument", str(two_arg_ctx.exception))
+
+    def test_scalar_constructor_rejects_non_scalar_operand(self) -> None:
+        @pto.vkernel(op="scalar_constructor_bad_operand_unique", dtypes=[(pto.f32,)])
+        def kernel(inp: pto.TensorView):
+            x = pto.i32(inp)
+            return None
+
+        with self.assertRaises(TypeError) as ctx:
+            kernel.mlir_text()
+
+        self.assertIn("pto.i32 value must be a scalar or index value", str(ctx.exception))
+
+    def test_scalar_constructor_rejects_out_of_range_integer_literal(self) -> None:
+        @pto.vkernel(op="scalar_constructor_oob_int_unique", dtypes=[(pto.f32,)])
+        def kernel(inp: pto.TensorView):
+            x = pto.i8(1024)
+            return None
+
+        with self.assertRaises(TypeError) as ctx:
+            kernel.mlir_text()
+
+        self.assertIn("out of range for i8", str(ctx.exception))
+
     def test_inferred_vecscope_propagates_bindings_to_constexpr_if(self) -> None:
         @pto.vkernel(
             op="inferred_vecscope_binding_propagation_unique",

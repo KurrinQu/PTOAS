@@ -1,6 +1,9 @@
 """TileLang DSL template for pto.tadds"""
 
+import sys
+from pathlib import Path
 import tilelang_dsl as pto
+
 
 @pto.vkernel(
     target="a5",
@@ -15,6 +18,6 @@ def template_tadds(src: pto.Tile, scalar: pto.AnyType, dst: pto.Tile):
         for col in range(0, valid_cols, pto.get_lanes(dtype)):
             mask, remained = pto.make_mask(dtype, remained)
             vec = pto.vlds(src[row, col:])
-            summed = pto.vadds(vec, scalar, mask)
-            pto.vsts(summed, dst[row, col:], mask)
+            result = pto.vadds(vec, scalar, mask)
+            pto.vsts(result, dst[row, col:], mask)
     return

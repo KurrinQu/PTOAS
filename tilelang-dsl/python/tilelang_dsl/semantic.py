@@ -2451,6 +2451,8 @@ class _SemanticAnalyzer:
             )
         if name in DEFERRED_PTO_SURFACES:
             raise TypeError(deferred_surface_message(name))
+        if name in _DTYPE_SYMBOLS:
+            return self._analyze_scalar_constructor(name, args)
         if name == "ptr":
             return self._analyze_ptr_type(args)
         if name == "castptr":
@@ -2524,6 +2526,59 @@ class _SemanticAnalyzer:
                     _I32_TYPE,
                 )
             ),
+        )
+
+    def _analyze_scalar_constructor(
+        self,
+        name: str,
+        args: tuple[SemanticExpr, ...],
+    ) -> SemanticExpr:
+        if len(args) != 1:
+            raise TypeError(f"pto.{name} expects exactly 1 positional argument in TileLang DSL v1")
+
+        target_dtype = _DTYPE_SYMBOLS[name]
+        value = self._require_scalar_or_index_expr(args[0], f"pto.{name} value")
+
+        if isinstance(value.type, SemanticScalarType) and value.type.dtype == target_dtype:
+            return value
+
+        if isinstance(value, SemanticLiteralExpr):
+            literal_value = value.value
+            if target_dtype == i1:
+                if isinstance(literal_value, bool):
+                    return SemanticLiteralExpr(value=literal_value, type=SemanticScalarType(dtype=i1))
+                if isinstance(literal_value, int):
+                    return SemanticLiteralExpr(value=bool(literal_value), type=SemanticScalarType(dtype=i1))
+                if isinstance(literal_value, float):
+                    return SemanticLiteralExpr(value=bool(literal_value), type=SemanticScalarType(dtype=i1))
+            elif target_dtype.name.startswith("i"):
+                if isinstance(literal_value, bool):
+                    casted = int(literal_value)
+                elif isinstance(literal_value, (int, float)):
+                    casted = int(literal_value)
+                else:
+                    casted = None
+                if casted is not None:
+                    bits = int(target_dtype.name[1:])
+                    min_value = -(1 << (bits - 1))
+                    max_value = (1 << (bits - 1)) - 1
+                    if casted < min_value or casted > max_value:
+                        raise TypeError(
+                            f"pto.{name} value {casted} is out of range for {target_dtype.name} in TileLang DSL v1"
+                        )
+                    return SemanticLiteralExpr(value=casted, type=SemanticScalarType(dtype=target_dtype))
+            else:
+                if isinstance(literal_value, (bool, int, float)):
+                    return SemanticLiteralExpr(
+                        value=float(literal_value),
+                        type=SemanticScalarType(dtype=target_dtype),
+                    )
+
+        return SemanticCallExpr(
+            namespace="pto",
+            name=name,
+            args=(value,),
+            type=SemanticScalarType(dtype=target_dtype),
         )
 
     def _analyze_ptr_type(self, args: tuple[SemanticExpr, ...]) -> SemanticExpr:

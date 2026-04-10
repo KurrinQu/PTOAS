@@ -2004,6 +2004,10 @@ class _AuthoringRenderer:
             )
             return _RenderedValue(name=result_name, type=expr.type)
 
+        if expr.name in {"i1", "i8", "i16", "i32", "i64", "f16", "bf16", "f32"}:
+            value = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+            return self._coerce_rendered_value(value, expr.type, indent=indent, into=into)
+
         if expr.name == "addptr":
             pointer = self._lower_expr(expr.args[0], env, indent=indent, into=into)
             offset = self._lower_expr(expr.args[1], env, indent=indent, into=into)
@@ -2447,6 +2451,54 @@ class _AuthoringRenderer:
                 into.append(
                     self._indent(indent)
                     + f"{cast_name} = arith.index_cast {value.name} : index to i32"
+                )
+                return _RenderedValue(name=cast_name, type=target_type)
+            if target_type.dtype.name == "i64":
+                cast_name = self._new_temp()
+                into.append(
+                    self._indent(indent)
+                    + f"{cast_name} = arith.index_castui {value.name} : index to i64"
+                )
+                return _RenderedValue(name=cast_name, type=target_type)
+            if target_type.dtype.name in {"f16", "bf16", "f32"}:
+                cast_name = self._new_temp()
+                into.append(
+                    self._indent(indent)
+                    + f"{cast_name} = arith.uitofp {value.name} : index to {target_type.dtype.name}"
+                )
+                return _RenderedValue(name=cast_name, type=target_type)
+        if isinstance(value.type, SemanticScalarType) and isinstance(target_type, SemanticScalarType):
+            src = value.type.dtype.name
+            dst = target_type.dtype.name
+            if src == dst:
+                return value
+            cast_name = self._new_temp()
+            if src.startswith("i") and dst.startswith("i"):
+                src_bits = int(src[1:])
+                dst_bits = int(dst[1:])
+                op = "arith.extsi" if src_bits < dst_bits else "arith.trunci"
+                into.append(
+                    self._indent(indent)
+                    + f"{cast_name} = {op} {value.name} : {src} to {dst}"
+                )
+                return _RenderedValue(name=cast_name, type=target_type)
+            if src.startswith("i") and dst in {"f16", "bf16", "f32"}:
+                into.append(
+                    self._indent(indent)
+                    + f"{cast_name} = arith.sitofp {value.name} : {src} to {dst}"
+                )
+                return _RenderedValue(name=cast_name, type=target_type)
+            if src in {"f16", "bf16", "f32"} and dst.startswith("i"):
+                into.append(
+                    self._indent(indent)
+                    + f"{cast_name} = arith.fptosi {value.name} : {src} to {dst}"
+                )
+                return _RenderedValue(name=cast_name, type=target_type)
+            if src in {"f16", "bf16", "f32"} and dst in {"f16", "bf16", "f32"}:
+                op = "arith.extf" if src in {"f16", "bf16"} and dst == "f32" else "arith.truncf"
+                into.append(
+                    self._indent(indent)
+                    + f"{cast_name} = {op} {value.name} : {src} to {dst}"
                 )
                 return _RenderedValue(name=cast_name, type=target_type)
         raise NotImplementedError(

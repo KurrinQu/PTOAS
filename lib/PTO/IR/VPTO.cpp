@@ -1069,6 +1069,8 @@ static LogicalResult verifyVecScalarOpLike(OpTy op) {
     return op.emitOpError("input and result vector types must match");
   if (op.getScalar().getType() != inputType.getElementType())
     return op.emitOpError("scalar type must match vector element type");
+  if (failed(verifyMaskTypeLike(op, op.getMask().getType(), "mask type")))
+    return failure();
   return success();
 }
 

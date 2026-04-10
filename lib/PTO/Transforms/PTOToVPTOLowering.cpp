@@ -3533,17 +3533,22 @@ LogicalResult buildScalarUnaryVecScope(StringRef family,
   OpBuilder::InsertionGuard aivGuard(rewriter);
   rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
   auto emit1DBody = [&]() -> LogicalResult {
-    auto emitComputed = [&](Value loadedVec) -> FailureOr<Value> {
+    auto emitComputed = [&](Value loadedVec, Value predicateMask) -> FailureOr<Value> {
       if (family == "adds")
-        return rewriter.create<pto::VaddsOp>(loc, vecType, loadedVec, scalar).getResult();
+        return rewriter.create<pto::VaddsOp>(loc, vecType, loadedVec, scalar,
+                                             predicateMask).getResult();
       if (family == "maxs")
-        return rewriter.create<pto::VmaxsOp>(loc, vecType, loadedVec, scalar).getResult();
+        return rewriter.create<pto::VmaxsOp>(loc, vecType, loadedVec, scalar,
+                                             predicateMask).getResult();
       if (family == "mins")
-        return rewriter.create<pto::VminsOp>(loc, vecType, loadedVec, scalar).getResult();
+        return rewriter.create<pto::VminsOp>(loc, vecType, loadedVec, scalar,
+                                             predicateMask).getResult();
       if (family == "muls")
-        return rewriter.create<pto::VmulsOp>(loc, vecType, loadedVec, scalar).getResult();
+        return rewriter.create<pto::VmulsOp>(loc, vecType, loadedVec, scalar,
+                                             predicateMask).getResult();
       if (family == "lrelu")
-        return rewriter.create<pto::VlreluOp>(loc, vecType, loadedVec, scalar).getResult();
+        return rewriter.create<pto::VlreluOp>(loc, vecType, loadedVec, scalar,
+                                              predicateMask).getResult();
       return failure();
     };
 
@@ -3559,7 +3564,7 @@ LogicalResult buildScalarUnaryVecScope(StringRef family,
           rewriter, loc, contract.elementType, activeLanes);
       auto loaded =
           rewriter.create<pto::VldsOp>(loc, vecType, srcBuffer, offset, StringAttr());
-      FailureOr<Value> computed = emitComputed(loaded.getResult());
+      FailureOr<Value> computed = emitComputed(loaded.getResult(), predicate);
       if (failed(computed))
         return emitError(loc) << "unsupported VPTO scalar-unary family: " << family;
       rewriter.create<pto::VstsOp>(loc, *computed, dstBuffer, offset, StringAttr(),
@@ -3578,7 +3583,8 @@ LogicalResult buildScalarUnaryVecScope(StringRef family,
           rewriter, loc, contract.elementType, remaining);
       auto loaded = rewriter.create<pto::VldsPostOp>(loc, vecType, srcPtr.getType(), srcPtr,
                                                       vectorStepValue, StringAttr());
-      FailureOr<Value> computed = emitComputed(loaded.getResult());
+      FailureOr<Value> computed = emitComputed(loaded.getResult(),
+                                               predicateState.mask);
       if (failed(computed))
         return emitError(loc) << "unsupported VPTO scalar-unary family: " << family;
       auto vsts = rewriter.create<pto::VstsPostOp>(loc, dstPtr.getType(), *computed, dstPtr,
@@ -3622,15 +3628,20 @@ LogicalResult buildScalarUnaryVecScope(StringRef family,
         rewriter.create<pto::VldsOp>(loc, vecType, srcBuffer, srcOffset, StringAttr());
     Value computed;
     if (family == "adds")
-      computed = rewriter.create<pto::VaddsOp>(loc, vecType, loaded.getResult(), scalar);
+      computed = rewriter.create<pto::VaddsOp>(loc, vecType, loaded.getResult(),
+                                               scalar, predicate);
     else if (family == "maxs")
-      computed = rewriter.create<pto::VmaxsOp>(loc, vecType, loaded.getResult(), scalar);
+      computed = rewriter.create<pto::VmaxsOp>(loc, vecType, loaded.getResult(),
+                                               scalar, predicate);
     else if (family == "mins")
-      computed = rewriter.create<pto::VminsOp>(loc, vecType, loaded.getResult(), scalar);
+      computed = rewriter.create<pto::VminsOp>(loc, vecType, loaded.getResult(),
+                                               scalar, predicate);
     else if (family == "muls")
-      computed = rewriter.create<pto::VmulsOp>(loc, vecType, loaded.getResult(), scalar);
+      computed = rewriter.create<pto::VmulsOp>(loc, vecType, loaded.getResult(),
+                                               scalar, predicate);
     else if (family == "lrelu")
-      computed = rewriter.create<pto::VlreluOp>(loc, vecType, loaded.getResult(), scalar);
+      computed = rewriter.create<pto::VlreluOp>(loc, vecType, loaded.getResult(),
+                                                scalar, predicate);
     else
       return emitError(loc) << "unsupported VPTO scalar-unary family: " << family;
     rewriter.create<pto::VstsOp>(loc, computed, dstBuffer, dstOffset,
@@ -3787,7 +3798,8 @@ LogicalResult buildScalarDivVecScope(const VPTOUnaryContract &contract,
           loc, contract.elementType,
           rewriter.getFloatAttr(contract.elementType, 1.0));
       Value reciprocal = rewriter.create<arith::DivFOp>(loc, one, scalar);
-      return rewriter.create<pto::VmulsOp>(loc, vecType, loaded, reciprocal).getResult();
+      return rewriter.create<pto::VmulsOp>(loc, vecType, loaded, reciprocal,
+                                           predicate).getResult();
     }
     if (contract.elementType.isF16()) {
       Value scalarVec = rewriter.create<pto::VdupOp>(
@@ -5382,10 +5394,13 @@ LogicalResult lowerTTRANS(TTransOp op, PatternRewriter &rewriter) {
   auto indices =
       rewriter.create<pto::VciOp>(op.getLoc(), indexVecType, chunkBaseI32,
                                    rewriter.getStringAttr("INC_ORDER"));
+  Value fullMask = buildAllPredicateMask(rewriter, op.getLoc(), indexElemType);
   auto scaled = rewriter.create<pto::VmulsOp>(op.getLoc(), indexVecType,
-                                               indices.getResult(), srcStrideI32);
+                                               indices.getResult(), srcStrideI32,
+                                               fullMask);
   auto offsets = rewriter.create<pto::VaddsOp>(op.getLoc(), indexVecType,
-                                                scaled.getResult(), colI32);
+                                                scaled.getResult(), colI32,
+                                                fullMask);
   Value fullActiveLanes =
       rewriter.create<arith::ConstantIndexOp>(op.getLoc(),
                                               dataVecType.getElementCount());

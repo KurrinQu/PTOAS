@@ -111,14 +111,9 @@ implemented:
 
 ### Scalar Constants And Literal Typing
 
-The guide describes:
+The guide describes automatic `float -> pto.f32` literal typing.
 
-- `pto.i32(1024)` / `pto.f32(0.0)` style constructors
-- automatic `float -> pto.f32` literal typing
-
-The current implementation does not support those forms. Scalar dtype objects
-such as `pto.i32` and `pto.f32` are type markers, not callable constructors.
-Literal support is currently limited to:
+Literal support currently includes:
 
 - `bool`
 - `int`

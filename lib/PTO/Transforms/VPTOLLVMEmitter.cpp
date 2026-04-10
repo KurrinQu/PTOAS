@@ -1765,18 +1765,15 @@ static LogicalResult rewriteVPTOOp(Operation *op, ModuleOp module,
     callArgs.append(op->operand_begin(), op->operand_end());
   } else if (isa<pto::VmulsOp, pto::VaddsOp, pto::VmaxsOp, pto::VminsOp,
                  pto::VlreluOp>(op)) {
-    callArgs.push_back(op->getOperand(0));
-    callArgs.push_back(op->getOperand(1));
-    auto laneCount = getElementCountFromVectorLike(op->getResult(0).getType());
-    if (!laneCount) {
-      diagOS << "VPTO LLVM emission failed: could not determine lane count for "
-             << op->getName().getStringRef() << "\n";
+    if (op->getNumOperands() != 3) {
+      diagOS << "VPTO LLVM emission failed: "
+             << op->getName().getStringRef()
+             << " requires (input, scalar, mask)\n";
       return failure();
     }
-    auto mask = buildPltB32Mask(builder, module, loc, *laneCount, diagOS);
-    if (failed(mask))
-      return failure();
-    callArgs.push_back(*mask);
+    callArgs.push_back(op->getOperand(0));
+    callArgs.push_back(op->getOperand(1));
+    callArgs.push_back(op->getOperand(2));
   } else if (isa<pto::VcaddOp, pto::VcmaxOp, pto::VcminOp>(op)) {
     callArgs.push_back(op->getOperand(0));
     callArgs.push_back(op->getOperand(1));
