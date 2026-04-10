@@ -545,6 +545,24 @@ class _AuthoringRenderer:
             env[high_target.name] = _RenderedValue(name=high_target.ssa_name, type=high_type)
             return lines
 
+        if stmt.value.name == "vmull":
+            lines = []
+            lhs = self._lower_expr(stmt.value.args[0], env, indent=indent, into=lines)
+            rhs = self._lower_expr(stmt.value.args[1], env, indent=indent, into=lines)
+            mask = self._lower_expr(stmt.value.args[2], env, indent=indent, into=lines)
+            low_target, high_target = stmt.targets
+            low_type, high_type = stmt.value.type.elements
+            lines.append(
+                self._indent(indent)
+                + f"{low_target.ssa_name}, {high_target.ssa_name} = pto.vmull "
+                + f"{lhs.name}, {rhs.name}, {mask.name} : "
+                + f"{self._render_type(lhs.type)}, {self._render_type(rhs.type)}, {self._render_type(mask.type)} "
+                + f"-> {self._render_type(low_type)}, {self._render_type(high_type)}"
+            )
+            env[low_target.name] = _RenderedValue(name=low_target.ssa_name, type=low_type)
+            env[high_target.name] = _RenderedValue(name=high_target.ssa_name, type=high_type)
+            return lines
+
         raise NotImplementedError(
             f"multi-result assignment for `pto.{stmt.value.name}` is not supported in TileLang DSL v1"
         )
@@ -1860,6 +1878,35 @@ class _AuthoringRenderer:
             )
             return _RenderedValue(name=result_name, type=expr.type)
 
+        if expr.name == "vbr":
+            scalar = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+            into.append(
+                self._indent(indent)
+                + f"{result_name} = pto.vbr {scalar.name} : "
+                + f"{self._render_type(scalar.type)} -> {self._render_type(expr.type)}"
+            )
+            return _RenderedValue(name=result_name, type=expr.type)
+
+        if expr.name == "vdup":
+            value = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+            position = self._render_string_literal(expr.args[1])
+            into.append(
+                self._indent(indent)
+                + f"{result_name} = pto.vdup {value.name}, {position} : "
+                + f"{self._render_type(value.type)} -> {self._render_type(expr.type)}"
+            )
+            return _RenderedValue(name=result_name, type=expr.type)
+
+        if expr.name == "vci":
+            index = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+            order = self._render_string_literal(expr.args[1])
+            into.append(
+                self._indent(indent)
+                + f"{result_name} = pto.vci {index.name}, {order} : "
+                + f"{self._render_type(index.type)} -> {self._render_type(expr.type)}"
+            )
+            return _RenderedValue(name=result_name, type=expr.type)
+
         if expr.name == "tensor_view_as_ptr":
             source = self._lower_expr(expr.args[0], env, indent=indent, into=into)
             into.append(
@@ -1990,7 +2037,60 @@ class _AuthoringRenderer:
             )
             return _RenderedValue(name=result_name, type=expr.type)
 
-        if expr.name in {"vabs", "vrelu", "vexp", "vnot"}:
+        if expr.name == "vcvt":
+            value = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+            target_dtype = self._render_dtype_symbol(expr.args[1], context="pto.vcvt to_type")
+            mask = self._lower_expr(expr.args[2], env, indent=indent, into=into)
+            into.append(
+                self._indent(indent)
+                + f"{result_name} = pto.vcvt {value.name}, {target_dtype}, {mask.name} : "
+                + f"{self._render_type(value.type)}, {self._render_type(mask.type)} -> {self._render_type(expr.type)}"
+            )
+            return _RenderedValue(name=result_name, type=expr.type)
+
+        if expr.name == "vmrgsort4":
+            vec0 = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+            vec1 = self._lower_expr(expr.args[1], env, indent=indent, into=into)
+            vec2 = self._lower_expr(expr.args[2], env, indent=indent, into=into)
+            vec3 = self._lower_expr(expr.args[3], env, indent=indent, into=into)
+            mask = self._lower_expr(expr.args[4], env, indent=indent, into=into)
+            into.append(
+                self._indent(indent)
+                + f"{result_name} = pto.vmrgsort4 {vec0.name}, {vec1.name}, {vec2.name}, {vec3.name}, {mask.name} : "
+                + f"{self._render_type(vec0.type)}, {self._render_type(vec1.type)}, {self._render_type(vec2.type)}, "
+                + f"{self._render_type(vec3.type)}, {self._render_type(mask.type)} -> {self._render_type(expr.type)}"
+            )
+            return _RenderedValue(name=result_name, type=expr.type)
+
+        if expr.name in {
+            "vabs",
+            "vrelu",
+            "vexp",
+            "vln",
+            "vsqrt",
+            "vrec",
+            "vnot",
+            "vcadd",
+            "vcmax",
+            "vbcnt",
+            "vneg",
+            "vcls",
+            "vcmin",
+            "vrsqrt",
+            "vmov",
+            "vsunpack",
+            "vzunpack",
+            "vusqz",
+            "vsqz",
+            "vexpdiff",
+            "vtrc",
+            "vbitsort",
+            "vcgadd",
+            "vcgmax",
+            "vcgmin",
+            "vcpadd",
+            "vsort32",
+        }:
             value = self._lower_expr(expr.args[0], env, indent=indent, into=into)
             mask = self._lower_expr(expr.args[1], env, indent=indent, into=into)
             into.append(
@@ -2000,7 +2100,27 @@ class _AuthoringRenderer:
             )
             return _RenderedValue(name=result_name, type=expr.type)
 
-        if expr.name in {"vadd", "vsub", "vmul", "vdiv", "vmax", "vmin", "vand", "vor", "vxor"}:
+        if expr.name in {
+            "vadd",
+            "vsub",
+            "vmul",
+            "vdiv",
+            "vmax",
+            "vmin",
+            "vand",
+            "vor",
+            "vxor",
+            "vaddrelu",
+            "vaddreluconv",
+            "vsubrelu",
+            "vmulconv",
+            "vshl",
+            "vshr",
+            "vprelu",
+            "vpack",
+            "vperm",
+            "vmrgsort",
+        }:
             lhs = self._lower_expr(expr.args[0], env, indent=indent, into=into)
             rhs = self._lower_expr(expr.args[1], env, indent=indent, into=into)
             mask = self._lower_expr(expr.args[2], env, indent=indent, into=into)
@@ -2012,7 +2132,19 @@ class _AuthoringRenderer:
             )
             return _RenderedValue(name=result_name, type=expr.type)
 
-        if expr.name in {"vadds", "vsubs", "vmuls", "vdivs", "vmaxs", "vmins"}:
+        if expr.name in {"vshift", "vslide"}:
+            vector = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+            immediate = self._lower_expr(expr.args[1], env, indent=indent, into=into)
+            mask = self._lower_expr(expr.args[2], env, indent=indent, into=into)
+            into.append(
+                self._indent(indent)
+                + f"{result_name} = pto.{expr.name} {vector.name}, {immediate.name}, {mask.name} : "
+                + f"{self._render_type(vector.type)}, {self._render_type(immediate.type)}, {self._render_type(mask.type)} "
+                + f"-> {self._render_type(expr.type)}"
+            )
+            return _RenderedValue(name=result_name, type=expr.type)
+
+        if expr.name in {"vadds", "vsubs", "vmuls", "vdivs", "vmaxs", "vmins", "vlrelu", "vshls", "vshrs", "vands", "vors", "vxors"}:
             value = self._lower_expr(expr.args[0], env, indent=indent, into=into)
             scalar = self._lower_expr(expr.args[1], env, indent=indent, into=into)
             mask = self._lower_expr(expr.args[2], env, indent=indent, into=into)
@@ -2020,6 +2152,19 @@ class _AuthoringRenderer:
                 self._indent(indent)
                 + f"{result_name} = pto.{expr.name} {value.name}, {scalar.name}, {mask.name} : "
                 + f"{self._render_type(value.type)}, {self._render_type(scalar.type)}, {self._render_type(mask.type)} "
+                + f"-> {self._render_type(expr.type)}"
+            )
+            return _RenderedValue(name=result_name, type=expr.type)
+
+        if expr.name in {"vaxpy", "vmula"}:
+            vec0 = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+            vec1 = self._lower_expr(expr.args[1], env, indent=indent, into=into)
+            vec2 = self._lower_expr(expr.args[2], env, indent=indent, into=into)
+            mask = self._lower_expr(expr.args[3], env, indent=indent, into=into)
+            into.append(
+                self._indent(indent)
+                + f"{result_name} = pto.{expr.name} {vec0.name}, {vec1.name}, {vec2.name}, {mask.name} : "
+                + f"{self._render_type(vec0.type)}, {self._render_type(vec1.type)}, {self._render_type(vec2.type)}, {self._render_type(mask.type)} "
                 + f"-> {self._render_type(expr.type)}"
             )
             return _RenderedValue(name=result_name, type=expr.type)
@@ -2116,6 +2261,18 @@ class _AuthoringRenderer:
             escaped = expr.binding.value.replace("\\", "\\\\").replace('"', '\\"')
             return f'"{escaped}"'
         raise NotImplementedError("expected a string literal for TileLang DSL advanced-family lowering")
+
+    def _render_dtype_symbol(self, expr: SemanticExpr, *, context: str) -> str:
+        if isinstance(expr, SemanticSymbolExpr) and isinstance(expr.value, ScalarType):
+            return expr.value.name
+        if (
+            isinstance(expr, SemanticBindingRef)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "dtype"
+            and isinstance(expr.binding.value, ScalarType)
+        ):
+            return expr.binding.value.name
+        raise NotImplementedError(f"{context} expects a dtype symbol in TileLang DSL v1 lowering")
 
     def _lower_to_i1(
         self,

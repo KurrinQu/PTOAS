@@ -88,31 +88,11 @@ of the supported authoring surface:
 - `pto.pge_b8(...)`, `pto.pge_b16(...)`, `pto.pge_b32(...)`
 - `pto.plt_b8(...)`, `pto.plt_b16(...)`, `pto.plt_b32(...)`
 
-### Missing Unary/Conversion/Special Vector Ops
+### Missing Extended Vector Arithmetic Families
 
-The current package supports only a small subset of the unary/conversion
-families. These guide-documented ops are still unsupported:
-
-- `pto.vln(...)`
-- `pto.vsqrt(...)`
-- `pto.vrec(...)`
-- `pto.vcadd(...)`
-- `pto.vcmax(...)`
-- `pto.vbcnt(...)`
-- `pto.vtrc(...)`
-- `pto.vcvt(...)`
-- `pto.vbitsort(...)`
-- `pto.vmrgsort4(...)`
-
-### Missing Shift/Leaky-ReLU Vector Ops
-
-These documented ops are not currently supported:
-
-- `pto.vshl(...)`
-- `pto.vshr(...)`
-- `pto.vlrelu(...)`
-- `pto.vshls(...)`
-- `pto.vshrs(...)`
+The previously missing `13-vector-arithmetic-operations.md` gap list is now
+implemented in the current package surface (including fused ops, broadcast/index
+generation, reduction-flavored ops, and rearrangement/sort groups).
 
 ### Missing Predicate Rearrangement Shorthands
 

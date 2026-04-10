@@ -87,6 +87,14 @@ class PadMode(str, Enum):
     PadValue = "PadValue"
 
 
+class PositionMode(str, Enum):
+    LOWEST = "POS_LOWEST"
+
+
+class OrderMode(str, Enum):
+    ASC = "ORDER_ASC"
+
+
 @dataclass(frozen=True)
 class TileConfig:
     fields: tuple[tuple[str, Any], ...] = ()
@@ -156,6 +164,10 @@ def get_lanes(dtype: ScalarType) -> int:
     return 256 // bytewidth(dtype)
 
 
+def elements_per_vreg(dtype: ScalarType) -> int:
+    return get_lanes(dtype)
+
+
 def constexpr(value: bool) -> bool:
     return value
 
@@ -177,6 +189,8 @@ __all__ = [
     "MaskPattern",
     "PAT",
     "PadMode",
+    "PositionMode",
+    "OrderMode",
     "TileConfig",
     "TileSpecialization",
     "i1",
@@ -194,4 +208,5 @@ __all__ = [
     "constexpr",
     "bytewidth",
     "get_lanes",
+    "elements_per_vreg",
 ]

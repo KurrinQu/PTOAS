@@ -66,13 +66,18 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertTrue(hasattr(pto, "constexpr"))
         self.assertTrue(hasattr(pto, "bytewidth"))
         self.assertTrue(hasattr(pto, "get_lanes"))
+        self.assertTrue(hasattr(pto, "elements_per_vreg"))
         self.assertTrue(hasattr(pto, "PAT"))
         self.assertTrue(hasattr(pto, "PadMode"))
+        self.assertTrue(hasattr(pto, "PositionMode"))
+        self.assertTrue(hasattr(pto, "OrderMode"))
         self.assertTrue(hasattr(pto, "PIPE"))
         self.assertTrue(hasattr(pto, "EVENT"))
         self.assertEqual(pto.PadMode.PadNull.value, "PadNull")
         self.assertEqual(pto.PadMode.PadFirstElem.value, "PadFirstElem")
         self.assertEqual(pto.PadMode.PadValue.value, "PadValue")
+        self.assertEqual(pto.PositionMode.LOWEST.value, "POS_LOWEST")
+        self.assertEqual(pto.OrderMode.ASC.value, "ORDER_ASC")
 
 
 class TileLangDSLSupportMatrixTests(unittest.TestCase):
@@ -98,9 +103,19 @@ class TileLangDSLSupportMatrixTests(unittest.TestCase):
         self.assertEqual(get_feature_tier("pto.vsts"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.vadd"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.vmuls"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.vaddrelu"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.vaxpy"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.vmull"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.vands"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.vbr"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.vdup"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.vci"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.vpack"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.vsort32"), BASIC_TIER)
         self.assertEqual(get_feature_tier("PadMode"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.bytewidth"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.get_lanes"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.elements_per_vreg"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.constexpr"), BASIC_TIER)
         self.assertEqual(get_feature_tier("constexpr"), BASIC_TIER)
         self.assertEqual(get_feature_tier("tile[start:]"), BASIC_TIER)
@@ -1772,6 +1787,262 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("= arith.constant 4 : index", text)
         self.assertRegex(text, r"scf\.for %col_\d+ = %c0 to %cols_\d+ step %elem_bytes_\d+")
         self.assertIn("pto.tile_valid_cols %arg0", text)
+
+    def test_elements_per_vreg_alias_surface_lowers_to_constant_index(self) -> None:
+        @pto.vkernel(op="elements_per_vreg_query_unique", dtypes=[(pto.f32,)], advanced=True)
+        def kernel(dst: pto.Tile):
+            lanes = pto.elements_per_vreg(dst.element_type)
+            rows, cols = dst.valid_shape
+            for col in range(0, cols, lanes):
+                current = col
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("= arith.constant 64 : index", text)
+        self.assertRegex(text, r"scf\.for %col_\d+ = %c0 to %cols_\d+ step %lanes_\d+")
+        self.assertIn("pto.tile_valid_cols %arg0", text)
+
+    def test_extended_float_vector_ops_surface_lowers(self) -> None:
+        @pto.vkernel(
+            op="extended_float_vector_ops_unique",
+            dtypes=[(pto.f32, pto.f32, pto.f32)],
+            advanced=True,
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile, alpha: pto.f32):
+            all_mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+            vec0 = pto.vlds(src, 0)
+            vec1 = pto.vlds(src, 64)
+            vec2 = pto.vlds(src, 128)
+            vec3 = pto.vlds(src, 192)
+
+            out = pto.vln(vec0, all_mask)
+            out = pto.vsqrt(out, all_mask)
+            out = pto.vrec(out, all_mask)
+            out = pto.vrsqrt(out, all_mask)
+            out = pto.vexpdiff(out, all_mask)
+            out = pto.vcadd(out, all_mask)
+            out = pto.vcmax(out, all_mask)
+            out = pto.vcmin(out, all_mask)
+            out = pto.vmov(out, all_mask)
+            out = pto.vtrc(out, all_mask)
+            out = pto.vbitsort(out, all_mask)
+            out = pto.vprelu(out, vec1, all_mask)
+            out = pto.vlrelu(out, alpha, all_mask)
+            out = pto.vcvt(out, pto.f32, all_mask)
+            out = pto.vmrgsort4(out, vec1, vec2, vec3, all_mask)
+            pto.vsts(out, dst, 0, all_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 256), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 256), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.vln", text)
+        self.assertIn("pto.vsqrt", text)
+        self.assertIn("pto.vrec", text)
+        self.assertIn("pto.vrsqrt", text)
+        self.assertIn("pto.vexpdiff", text)
+        self.assertIn("pto.vcadd", text)
+        self.assertIn("pto.vcmax", text)
+        self.assertIn("pto.vcmin", text)
+        self.assertIn("pto.vmov", text)
+        self.assertIn("pto.vtrc", text)
+        self.assertIn("pto.vbitsort", text)
+        self.assertIn("pto.vprelu", text)
+        self.assertIn("pto.vlrelu", text)
+        self.assertIn("pto.vcvt", text)
+        self.assertIn("pto.vmrgsort4", text)
+
+    def test_extended_integer_vector_ops_surface_lowers(self) -> None:
+        @pto.vkernel(
+            op="extended_integer_vector_ops_unique",
+            dtypes=[(pto.i32, pto.i32, pto.i32)],
+            advanced=True,
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile, shift: pto.i32):
+            all_mask = pto.make_mask(pto.i32, pto.PAT.ALL)
+            vec0 = pto.vlds(src, 0)
+            vec1 = pto.vlds(src, 64)
+
+            out = pto.vbcnt(vec0, all_mask)
+            out = pto.vneg(out, all_mask)
+            out = pto.vcls(out, all_mask)
+            out = pto.vsunpack(out, all_mask)
+            out = pto.vzunpack(out, all_mask)
+            out = pto.vusqz(out, all_mask)
+            out = pto.vsqz(out, all_mask)
+            out = pto.vshl(out, vec1, all_mask)
+            out = pto.vshr(out, vec1, all_mask)
+            out = pto.vshls(out, shift, all_mask)
+            out = pto.vshrs(out, shift, all_mask)
+            pto.vsts(out, dst, 0, all_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.vbcnt", text)
+        self.assertIn("pto.vneg", text)
+        self.assertIn("pto.vcls", text)
+        self.assertIn("pto.vsunpack", text)
+        self.assertIn("pto.vzunpack", text)
+        self.assertIn("pto.vusqz", text)
+        self.assertIn("pto.vsqz", text)
+        self.assertIn("pto.vshl", text)
+        self.assertIn("pto.vshr", text)
+        self.assertIn("pto.vshls", text)
+        self.assertIn("pto.vshrs", text)
+
+    def test_fused_vector_ops_surface_lowers(self) -> None:
+        @pto.vkernel(
+            op="fused_vector_ops_unique",
+            dtypes=[(pto.f32, pto.f32)],
+            advanced=True,
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            all_mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+            vec0 = pto.vlds(src, 0)
+            vec1 = pto.vlds(src, 64)
+            vec2 = pto.vlds(src, 128)
+            vec3 = pto.vlds(src, 192)
+
+            out = pto.vaddrelu(vec0, vec1, all_mask)
+            out = pto.vaddreluconv(out, vec2, all_mask)
+            out = pto.vsubrelu(out, vec3, all_mask)
+            out = pto.vmulconv(out, vec1, all_mask)
+            out = pto.vaxpy(vec1, out, vec2, all_mask)
+            out = pto.vmula(vec1, vec2, out, all_mask)
+            pto.vsts(out, dst, 0, all_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 256), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 256), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.vaddrelu", text)
+        self.assertIn("pto.vaddreluconv", text)
+        self.assertIn("pto.vsubrelu", text)
+        self.assertIn("pto.vmulconv", text)
+        self.assertIn("pto.vaxpy", text)
+        self.assertIn("pto.vmula", text)
+
+    def test_vmull_and_vector_scalar_bitwise_surface_lowers(self) -> None:
+        @pto.vkernel(
+            op="vmull_and_scalar_bitwise_unique",
+            dtypes=[(pto.i32, pto.i32, pto.i32)],
+            advanced=True,
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile, scalar: pto.i32):
+            all_mask = pto.make_mask(pto.i32, pto.PAT.ALL)
+            vec0 = pto.vlds(src, 0)
+            vec1 = pto.vlds(src, 64)
+
+            low, high = pto.vmull(vec0, vec1, all_mask)
+            out = pto.vadd(low, high, all_mask)
+            out = pto.vands(out, scalar, all_mask)
+            out = pto.vors(out, scalar, all_mask)
+            out = pto.vxors(out, scalar, all_mask)
+            pto.vsts(out, dst, 0, all_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.vmull", text)
+        self.assertIn("pto.vands", text)
+        self.assertIn("pto.vors", text)
+        self.assertIn("pto.vxors", text)
+
+    def test_broadcast_and_index_vector_ops_surface_lowers(self) -> None:
+        @pto.vkernel(
+            op="broadcast_and_index_vector_ops_unique",
+            dtypes=[(pto.i32, pto.i32, pto.i32)],
+            advanced=True,
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile, seed: pto.i32):
+            all_mask = pto.make_mask(pto.i32, pto.PAT.ALL)
+            vec0 = pto.vlds(src, 0)
+
+            broadcast = pto.vbr(seed)
+            dup_from_vec = pto.vdup(vec0)
+            dup_from_scalar = pto.vdup(seed, pto.PositionMode.LOWEST)
+            idx0 = pto.vci(seed)
+            idx1 = pto.vci(seed, pto.OrderMode.ASC)
+
+            out = pto.vadd(broadcast, dup_from_vec, all_mask)
+            out = pto.vadd(out, dup_from_scalar, all_mask)
+            out = pto.vadd(out, idx0, all_mask)
+            out = pto.vadd(out, idx1, all_mask)
+            pto.vsts(out, dst, 0, all_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.vbr", text)
+        self.assertIn("pto.vdup", text)
+        self.assertIn("pto.vci", text)
+        self.assertIn('"POS_LOWEST"', text)
+        self.assertIn('"ORDER_ASC"', text)
+
+    def test_reduction_and_rearrangement_vector_ops_surface_lowers(self) -> None:
+        @pto.vkernel(
+            op="reduction_and_rearrangement_vector_ops_unique",
+            dtypes=[(pto.i32, pto.i32, pto.i32)],
+            advanced=True,
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile, shift: pto.i32):
+            all_mask = pto.make_mask(pto.i32, pto.PAT.ALL)
+            vec0 = pto.vlds(src, 0)
+            vec1 = pto.vlds(src, 64)
+            indices = pto.vci(shift, pto.OrderMode.ASC)
+
+            out = pto.vcgadd(vec0, all_mask)
+            out = pto.vcgmax(out, all_mask)
+            out = pto.vcgmin(out, all_mask)
+            out = pto.vcpadd(out, all_mask)
+            out = pto.vpack(out, vec1, all_mask)
+            out = pto.vperm(out, indices, all_mask)
+            out = pto.vshift(out, shift, all_mask)
+            out = pto.vslide(out, shift, all_mask)
+            out = pto.vsort32(out, all_mask)
+            out = pto.vmrgsort(out, vec1, all_mask)
+            pto.vsts(out, dst, 0, all_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.vcgadd", text)
+        self.assertIn("pto.vcgmax", text)
+        self.assertIn("pto.vcgmin", text)
+        self.assertIn("pto.vcpadd", text)
+        self.assertIn("pto.vpack", text)
+        self.assertIn("pto.vperm", text)
+        self.assertIn("pto.vshift", text)
+        self.assertIn("pto.vslide", text)
+        self.assertIn("pto.vsort32", text)
+        self.assertIn("pto.vmrgsort", text)
 
     def test_scalar_loop_prologue_does_not_force_vecscope_into_inner_loop(self) -> None:
         @pto.vkernel(op="tadd_outer_scope_unique", dtypes=[(pto.f32, pto.f32, pto.f32)])
