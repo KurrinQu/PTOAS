@@ -713,6 +713,13 @@ class _SemanticAnalyzer:
         *,
         allow_outer_lookup: bool,
     ) -> tuple[tuple[SemanticStmt, ...], dict[str, SemanticBinding]]:
+        if (
+            isinstance(stmt, FrontendExprStmt)
+            and isinstance(stmt.expr, FrontendConstantExpr)
+            and isinstance(stmt.expr.value, str)
+        ):
+            # Treat Python docstring-style string expression statements as no-op.
+            return tuple(), dict(env)
         if isinstance(stmt, FrontendIfStmt) and stmt.is_constexpr:
             return self._analyze_constexpr_if(
                 stmt,

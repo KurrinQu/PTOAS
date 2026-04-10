@@ -978,6 +978,24 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertEqual(authoring_module.render(), specialized.mlir_text())
         self.assertIn("return", authoring_module.render())
 
+    def test_descriptor_pipeline_ignores_kernel_docstring_expression(self) -> None:
+        @pto.vkernel(op="docstring_passthrough_unique", dtypes=[(pto.f32,)])
+        def kernel(inp: pto.TensorView):
+            """This docstring should be ignored as a no-op expression statement."""
+            return None
+
+        frontend_kernel = build_frontend_kernel_node(kernel)
+        self.assertEqual(len(frontend_kernel.body), 2)
+        self.assertIsInstance(frontend_kernel.body[0], FrontendExprStmt)
+
+        semantic_kernel = analyze_frontend_kernel(frontend_kernel)
+        self.assertEqual(len(semantic_kernel.body), 1)
+
+        text = lower_semantic_kernel(semantic_kernel).render()
+        self.assertIn("// tilelang.op = docstring_passthrough_unique", text)
+        self.assertIn("func.func @kernel", text)
+        self.assertIn("return", text)
+
     def test_frontend_rejects_hidden_dma_load_surface(self) -> None:
         with self.assertRaises(pto.TileLangFrontendError) as ctx:
 
