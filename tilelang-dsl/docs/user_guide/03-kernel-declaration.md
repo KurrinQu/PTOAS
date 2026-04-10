@@ -9,7 +9,7 @@ Kernels are defined using the `@pto.vkernel` decorator with enhanced matching ca
 ```python
 @pto.vkernel(
     target="a5",                     # Target architecture
-    op="matmul",                    # PTO operation name to match
+    op="pto.matmul ins(a, b) -> outs(c)",  # PTO op + operand schema
     dtypes=[(pto.f16, pto.f16, pto.f32)],  # Type signatures
     constraints=[                    # Additional constraints
         lambda a, b: a.shape[1] == b.shape[0],
@@ -26,14 +26,52 @@ def matmul_fallback(a: pto.Tile, b: pto.Tile, c: pto.Tile) -> None:
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `target` | `str` | Yes | Target hardware architecture (e.g., `"a5"` for Ascend 950). |
-| `op` | `str` | No* | Name of the PTO operation to match (e.g., `"matmul"`, `"conv2d"`, `"add"`). **Mutually exclusive with `ops`**. |
-| `ops` | `List[str]` | No* | List of PTO operation names to match. **Mutually exclusive with `op`**. Use this when one descriptor should match multiple concrete ops. |
+| `op` | `str` | No* | PTO operation matcher. Preferred form is schema mode: `"pto.op_name ins(in0, in1, ...) -> outs(out0, out1, ...)"`. Legacy bare-op form (`"pto.op_name"`) is still accepted for compatibility. **Mutually exclusive with `ops`**. |
+| `ops` | `List[str]` | No* | List of PTO operation names to match. **Mutually exclusive with `op`**. Use this when one descriptor should match multiple concrete ops (schema mode is currently only supported in `op`). |
 | `dtypes` | `List[Tuple[Type, ...]]` | Yes | List of type signatures. Each tuple specifies the expected data types for the operation's operands (inputs and outputs) in order. |
 | `templates` | `Dict[str, Dict[str, str]]` | No | Static template-slot mappings. Each slot maps concrete matcher ops to real `pto.*` op names. Required when the kernel body uses `pto.tpl(...)`. |
 | `constraints` | `List[Callable[..., bool]]` | No | Additional selection-time predicates. Constraint arguments bind by name to kernel parameter proxy objects or `context_attrs` keys. Default: empty list. |
 | `priority` | `int` | No | Selection priority when multiple kernels match. Higher values have higher priority. Default: `0`. |
 | `name` | `str` | No | Kernel name (used for debugging and profiling). Defaults to the decorated function's name. |
 | `advanced` | `bool` | No | Enable advanced-tier DSL surfaces (for example `strict_vecscope`, raw pointer family, and low-level DMA family). Implicit vecscope inference is available in both modes and runs only when no explicit `with pto.vecscope():` is present. Default: `False`. |
+
+#### Operation Schema in `op` (ins/outs)
+
+`op` supports a schema string that declares how kernel parameter names map to PTO op operands:
+
+```python
+op="pto.tadds ins(src, scalar) -> outs(dst)"
+```
+
+Schema form:
+
+```text
+<op-name> ins(<in-arg-0>, <in-arg-1>, ...) -> outs(<out-arg-0>, <out-arg-1>, ...)
+```
+
+Rules:
+
+1. `ins(...)` and `outs(...)` are both required in schema mode.
+2. Names in `ins` and `outs` must be valid, unique Python identifiers.
+3. The decorated function parameter list must exactly match `ins + outs` by both count and name.
+4. MLIR function argument ordering is defined by schema order (`ins` first, then `outs`).
+5. Constraint binding keeps using parameter names; schema mode makes these names explicit and stable.
+6. Schema mode applies to `op=...` (single matcher op). `ops=[...]` remains bare-op matching.
+
+Example:
+
+```python
+@pto.vkernel(
+    target="a5",
+    op="pto.tadds ins(src, scalar) -> outs(dst)",
+    dtypes=[(pto.f32, pto.f32, pto.f32)],
+)
+def template_tadds(src: pto.Tile, scalar: pto.f32, dst: pto.Tile):
+    return None
+```
+
+If names or order do not match, descriptor construction fails early with a schema mismatch error.
+
 
 #### Type Matching Rules
 
@@ -114,8 +152,8 @@ def large_batch(min_batch: int):
 
 @pto.vkernel(
     target="a5",
-    op="matmul",
-    dtypes=[(pto.AnyFloat, pto.AnyFloat, pto.AnyFloat)],
+    op="pto.matmul ins(a, b) -> outs(c)",
+    dtypes=[(pto.f16, pto.f16, pto.f32)],
     constraints=[large_batch(1024)]
 )
 def large_batch_matmul(a: pto.Tile, b: pto.Tile, c: pto.Tile) -> None:
@@ -171,6 +209,7 @@ When a PTO operation needs implementation, the system performs the following mat
 1. **Target Filtering**: Select kernels with matching `target` architecture.
 2. **Operation Filtering**: Select kernels whose matcher metadata covers the concrete query op:
    - `op="foo"` requires exact match
+   - `op="foo ins(...) -> outs(...)"` still matches by op name `foo`; `ins/outs` additionally defines parameter naming/order contract for descriptor validation and materialization
    - `ops=[...]` requires the concrete query op to appear in that list
 3. **Type Matching**: For each kernel's `dtypes` list, check if any signature matches the operation's operand types:
    - Concrete types must match exactly.
@@ -210,7 +249,7 @@ def k_aligned_64(k=0):
 
 @pto.vkernel(
     target="a5",
-    op="matmul",
+    op="pto.matmul ins(a, b) -> outs(c)",
     dtypes=[(pto.f16, pto.f16, pto.f32)],
     constraints=[k_aligned_64],
     priority=200
@@ -222,7 +261,7 @@ def matmul_aligned_k(a: pto.Tile, b: pto.Tile, c: pto.Tile) -> None:
 # General-purpose fallback
 @pto.vkernel(
     target="a5",
-    op="matmul",
+    op="pto.matmul ins(a, b) -> outs(c)",
     dtypes=[(pto.AnyFloat, pto.AnyFloat, pto.AnyFloat)],
     constraints=[],
     priority=100
@@ -240,7 +279,7 @@ def same_shape(a, b, out):
 
 @pto.vkernel(
     target="a5",
-    op="add",
+    op="pto.add ins(a, b) -> outs(out)",
     dtypes=[
         (pto.AnyFloat, pto.AnyFloat, pto.AnyFloat),
         (pto.AnyInt, pto.AnyInt, pto.AnyInt)
@@ -263,7 +302,7 @@ def prefer_static_nhwc(src, weight):
 
 @pto.vkernel(
     target="a5",
-    op="conv2d",
+    op="pto.conv2d ins(input, filter) -> outs(output)",
     dtypes=[(pto.f16, pto.f16, pto.f32)],
     constraints=[prefer_static_nhwc],
     priority=150
