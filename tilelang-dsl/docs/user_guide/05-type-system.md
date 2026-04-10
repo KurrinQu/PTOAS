@@ -24,6 +24,33 @@ x = pto.i32(1024)      # Explicit i32 constant
 y: pto.i32 = 1024      # Type annotation
 ```
 
+### Floating-Point Literal Forms
+
+`pto.f16(...)`, `pto.bf16(...)`, and `pto.f32(...)` accept multiple literal forms.
+
+```python
+# Signed numeric literals
+a = pto.f16(-1.5)
+b = pto.bf16(+2.5)
+c = pto.f32(-3.5)
+
+# Special floating-point values
+pos_inf = pto.f32("inf")
+neg_inf = pto.f32("-inf")
+qnan = pto.f32("nan")
+
+# Bit-pattern form (hex string, interpreted by target dtype)
+f16_neg_inf = pto.f16("0xFC00")
+bf16_neg_inf = pto.bf16("0xFF80")
+f32_neg_inf = pto.f32("0xFF800000")
+```
+
+Notes:
+- Prefer dtype constructors for reduction seeds and boundary values (for example rowmax initialization).
+- For float bit-pattern constants, pass a **string** hex literal to the matching dtype constructor.
+- Avoid passing raw integer bit-patterns directly into vector broadcast/dup APIs when a floating vector is expected.
+- `float(...)` function calls are not part of the TileLang DSL public call surface; use constructor forms above.
+
 ### Vector Types
 
 Vector registers have fixed 256-byte width:
@@ -102,5 +129,4 @@ buf2d = pto.memref((256, 128), pto.f32, MemorySpace.UB)   # 2D: 256x128 f32 buff
 - **Multi-dimensional shapes**: Use a tuple (e.g., `(256, 128)`)
 
 MemRefs are used for stateless load/store operations that accept `buf_like` operands in VPTO.
-
 

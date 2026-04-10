@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import ast
+import struct
 from dataclasses import dataclass
 from typing import Any
 
@@ -2690,6 +2691,18 @@ class _SemanticAnalyzer:
             raise TypeError(f"pto.{name} expects exactly 1 positional argument in TileLang DSL v1")
 
         target_dtype = _DTYPE_SYMBOLS[name]
+        if (
+            target_dtype.name in {"f16", "bf16", "f32"}
+            and isinstance(args[0], SemanticLiteralExpr)
+            and isinstance(args[0].type, SemanticMetaType)
+            and args[0].type.kind == "string"
+        ):
+            parsed = self._parse_float_literal_string(args[0].value, target_dtype, f"pto.{name} value")
+            return SemanticLiteralExpr(
+                value=parsed,
+                type=SemanticScalarType(dtype=target_dtype),
+            )
+
         value = self._require_scalar_or_index_expr(args[0], f"pto.{name} value")
 
         if isinstance(value.type, SemanticScalarType) and value.type.dtype == target_dtype:
@@ -2733,6 +2746,58 @@ class _SemanticAnalyzer:
             args=(value,),
             type=SemanticScalarType(dtype=target_dtype),
         )
+
+    def _parse_float_literal_string(
+        self,
+        literal: str,
+        target_dtype: ScalarType,
+        context: str,
+    ) -> float:
+        text = literal.strip().lower()
+        if text in {"inf", "+inf", "infinity", "+infinity"}:
+            return float("inf")
+        if text in {"-inf", "-infinity"}:
+            return float("-inf")
+        if text in {"nan", "+nan", "-nan"}:
+            return float("nan")
+
+        if text.startswith("0x"):
+            try:
+                bit_pattern = int(text, 16)
+            except ValueError as exc:
+                raise TypeError(
+                    f"{context} string literal {literal!r} is not a valid hex bit-pattern"
+                ) from exc
+            return self._float_from_bit_pattern(bit_pattern, target_dtype, context=context)
+
+        try:
+            return float(text)
+        except ValueError as exc:
+            raise TypeError(
+                f"{context} string literal {literal!r} is not a valid float literal"
+            ) from exc
+
+    def _float_from_bit_pattern(
+        self,
+        bit_pattern: int,
+        target_dtype: ScalarType,
+        *,
+        context: str,
+    ) -> float:
+        if target_dtype.name == "f16":
+            if bit_pattern < 0 or bit_pattern > 0xFFFF:
+                raise TypeError(f"{context} f16 bit-pattern must be in [0x0, 0xFFFF]")
+            return float(struct.unpack(">e", struct.pack(">H", bit_pattern))[0])
+        if target_dtype.name == "bf16":
+            if bit_pattern < 0 or bit_pattern > 0xFFFF:
+                raise TypeError(f"{context} bf16 bit-pattern must be in [0x0, 0xFFFF]")
+            widened = bit_pattern << 16
+            return float(struct.unpack(">f", struct.pack(">I", widened))[0])
+        if target_dtype.name == "f32":
+            if bit_pattern < 0 or bit_pattern > 0xFFFFFFFF:
+                raise TypeError(f"{context} f32 bit-pattern must be in [0x0, 0xFFFFFFFF]")
+            return float(struct.unpack(">f", struct.pack(">I", bit_pattern))[0])
+        raise TypeError(f"{context} bit-pattern literals are not supported for dtype {target_dtype.name}")
 
     def _analyze_ptr_type(self, args: tuple[SemanticExpr, ...]) -> SemanticExpr:
         if len(args) != 2:

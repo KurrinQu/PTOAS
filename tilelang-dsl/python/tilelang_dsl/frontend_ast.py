@@ -743,6 +743,28 @@ def _build_expr(node: ast.AST, context: _FrontendBuildContext) -> FrontendExprNo
         return FrontendNameExpr(name=node.id)
     if isinstance(node, ast.Constant):
         return FrontendConstantExpr(value=node.value)
+    if isinstance(node, ast.UnaryOp):
+        if isinstance(node.op, ast.UAdd):
+            sign = 1
+        elif isinstance(node.op, ast.USub):
+            sign = -1
+        else:
+            raise context.error(
+                node,
+                f"unsupported unary operator `{type(node.op).__name__}` in TileLang DSL v1",
+            )
+        if not isinstance(node.operand, ast.Constant) or isinstance(node.operand.value, bool):
+            raise context.error(
+                node,
+                "unary +/- currently only supports numeric literals in TileLang DSL v1",
+            )
+        literal = node.operand.value
+        if not isinstance(literal, (int, float)):
+            raise context.error(
+                node,
+                "unary +/- currently only supports numeric literals in TileLang DSL v1",
+            )
+        return FrontendConstantExpr(value=literal if sign > 0 else -literal)
     if isinstance(node, ast.Slice):
         start = None if node.lower is None else _build_expr(node.lower, context)
         stop = None if node.upper is None else _build_expr(node.upper, context)

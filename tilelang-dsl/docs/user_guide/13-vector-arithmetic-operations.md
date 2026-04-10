@@ -887,6 +887,10 @@ scaled = pto.vmuls(vec_f32, pto.f32(2.0), mask32)
 # Broadcast scalar constant to vector
 zero_vec = pto.vbr(0.0)
 one_vec = pto.vbr(1.0)
+
+# Reduction seed with explicit floating dtype
+rowmax_seed_f32 = pto.vbr(pto.f32("-inf"))
+rowmax_seed_f16 = pto.vbr(pto.f16("0xFC00"))
 ```
 
 **Position Mode Enum**: The `PositionMode` enum provides type-safe position selection for `pto.vdup` operations. Currently only `LOWEST` (selects the lowest-index element) is supported, with more position options planned for future releases.
@@ -917,6 +921,10 @@ one_vec = pto.vbr(1.0)
 # Broadcast scalar to vector (similar to pto.vbr)
 broadcast = pto.vdup(3.14)  # position defaults to "POS_LOWEST"
 
+# Use dtype constructor when the semantic value is floating-point special value
+seed = pto.vdup(pto.f32("-inf"))
+seed_f16 = pto.vdup(pto.f16("0xFC00"))
+
 # Duplicate lowest element of vector to all lanes
 vec = pto.vreg_f32(64)  # 64-element vector
 dup_lowest = pto.vdup(vec)  # position defaults to "POS_LOWEST"
@@ -924,6 +932,10 @@ dup_lowest = pto.vdup(vec)  # position defaults to "POS_LOWEST"
 # Explicit position specification
 dup_explicit = pto.vdup(vec, position=PositionMode.LOWEST)
 ```
+
+**Type Safety Note**:
+- For floating-point seeds, prefer `pto.f16(...)` / `pto.bf16(...)` / `pto.f32(...)` constructors.
+- Do not pass integer bit-pattern literals directly (for example `0xFF800000`) when a floating vector type is intended.
 
 ### Carry & Select Operations
 

@@ -2080,6 +2080,37 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("arith.extf", text)
         self.assertIn("arith.truncf", text)
 
+    def test_scalar_constructor_accepts_signed_float_literals(self) -> None:
+        @pto.vkernel(op="scalar_constructor_signed_float_literals_unique", dtypes=[(pto.f32,)])
+        def kernel(inp: pto.TensorView):
+            a = pto.f16(-1.5)
+            b = pto.bf16(+2.5)
+            c = pto.f32(-3.5)
+            return None
+
+        text = kernel.mlir_text()
+        self.assertIn("= arith.constant -1.5 : f16", text)
+        self.assertIn("= arith.constant 2.5 : bf16", text)
+        self.assertIn("= arith.constant -3.5 : f32", text)
+
+    def test_scalar_constructor_accepts_special_float_string_literals(self) -> None:
+        @pto.vkernel(op="scalar_constructor_special_float_literals_unique", dtypes=[(pto.f32,)])
+        def kernel(inp: pto.TensorView):
+            a = pto.f16("-inf")
+            b = pto.bf16("inf")
+            c = pto.f32("nan")
+            d = pto.f16("0xFC00")
+            e = pto.bf16("0xFF80")
+            f = pto.f32("0xFF800000")
+            return None
+
+        text = kernel.mlir_text()
+        self.assertIn("= arith.constant -inf : f16", text)
+        self.assertIn("= arith.constant inf : bf16", text)
+        self.assertIn("= arith.constant nan : f32", text)
+        self.assertIn("= arith.constant -inf : bf16", text)
+        self.assertIn("= arith.constant -inf : f32", text)
+
     def test_scalar_constructor_rejects_bad_arity(self) -> None:
         @pto.vkernel(op="scalar_constructor_bad_arity_no_arg_unique", dtypes=[(pto.f32,)])
         def kernel_no_arg(inp: pto.TensorView):
