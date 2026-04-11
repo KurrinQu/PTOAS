@@ -3499,11 +3499,12 @@ class _AuthoringRenderer:
         valid_shape = ty.valid_shape or ty.shape
         v_row = valid_shape[0]
         v_col = 1 if ty.rank == 1 else valid_shape[1]
+        config = ty.config or TileConfig()
         return (
             f"!pto.tile_buf<loc={self._render_tile_buf_loc(ty.memory_space or 'ub')}, "
             f"dtype={ty.element_dtype.name}, rows={rows}, cols={cols}, "
             f"v_row={self._render_tile_buf_dim(v_row)}, v_col={self._render_tile_buf_dim(v_col)}, "
-            "blayout=row_major, slayout=none_box, fractal=512, pad=0>"
+            f"blayout={config.b_layout.value}, slayout=none_box, fractal=512, pad=0>"
         )
 
     def _render_tile_buf_loc(self, memory_space: str) -> str:

@@ -2974,11 +2974,33 @@ class _SemanticAnalyzer:
         if tile_type.rank != 2 or tile_type.shape is None:
             raise TypeError(f"{context} currently only supports statically specialized rank-1 or rank-2 Tiles")
         if not isinstance(index_expr, FrontendTupleExpr) or len(index_expr.elements) != 2:
-            raise TypeError(f"{context} expects Tile[row, col:] syntax for rank-2 Tile values")
+            raise TypeError(
+                f"{context} expects {self._tile_vector_rank2_syntax(tile_type)} syntax for rank-2 Tile values"
+            )
 
         row_expr, col_expr = index_expr.elements
-        if not isinstance(col_expr, FrontendSliceExpr):
-            raise TypeError(f"{context} expects Tile[row, col:] syntax for rank-2 Tile values")
+        if self._tile_b_layout(tile_type) == BLayout.COL_MAJOR:
+            if not isinstance(row_expr, FrontendSliceExpr) or isinstance(col_expr, FrontendSliceExpr):
+                raise TypeError(
+                    f"{context} expects {self._tile_vector_rank2_syntax(tile_type)} syntax for rank-2 Tile values"
+                )
+            if row_expr.stop is not None:
+                raise TypeError(f"{context} does not support explicit slice stop in TileLang DSL advanced mode")
+            if row_expr.step is not None:
+                raise TypeError(f"{context} does not support stepped Tile vector slices in TileLang DSL advanced mode")
+            if row_expr.start is None:
+                row = SemanticLiteralExpr(value=0, type=SemanticIndexType())
+            else:
+                row = self._analyze_expr(row_expr.start, env, allow_outer_lookup=allow_outer_lookup)
+                self._require_index_typed_expr(row)
+            col = self._analyze_expr(col_expr, env, allow_outer_lookup=allow_outer_lookup)
+            self._require_index_typed_expr(col)
+            return (row, col)
+
+        if not isinstance(col_expr, FrontendSliceExpr) or isinstance(row_expr, FrontendSliceExpr):
+            raise TypeError(
+                f"{context} expects {self._tile_vector_rank2_syntax(tile_type)} syntax for rank-2 Tile values"
+            )
         if col_expr.stop is not None:
             raise TypeError(f"{context} does not support explicit slice stop in TileLang DSL advanced mode")
         if col_expr.step is not None:
@@ -2992,6 +3014,15 @@ class _SemanticAnalyzer:
             col = self._analyze_expr(col_expr.start, env, allow_outer_lookup=allow_outer_lookup)
             self._require_index_typed_expr(col)
         return (row, col)
+
+    def _tile_b_layout(self, tile_type: SemanticTileType) -> BLayout:
+        config = TileConfig() if tile_type.config is None else tile_type.config
+        return config.b_layout
+
+    def _tile_vector_rank2_syntax(self, tile_type: SemanticTileType) -> str:
+        if self._tile_b_layout(tile_type) == BLayout.COL_MAJOR:
+            return "Tile[row_start:, col_index]"
+        return "Tile[row, col:]"
 
     def _tile_scalar_indices(
         self,

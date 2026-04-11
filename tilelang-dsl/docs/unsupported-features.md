@@ -58,21 +58,12 @@ These documented surfaces are not accepted by the current frontend:
 
 ### Missing Vector Load/Store Families
 
-Only `pto.vlds(...)` and `pto.vsts(...)` are implemented from the guide's
-load/store families. The following documented ops are still unsupported:
-
-- `pto.vldas(...)`
-- `pto.vldus(...)`
-- `pto.vldx2(...)`
-- `pto.vsld(...)`
-- `pto.psts(...)`
-- `pto.vsst(...)`
-- `pto.vstx2(...)`
-- `pto.vsta(...)`
-- `pto.pstu(...)`
-- `pto.vstu(...)`
-- `pto.vstus(...)`
-- `pto.vstur(...)`
+The previously missing vector-memory surfaces
+`pto.vldas(...)`, `pto.vldus(...)`, `pto.vldx2(...)`, `pto.vsld(...)`,
+`pto.psts(...)`, `pto.vsst(...)`, `pto.vstx2(...)`, `pto.vsta(...)`,
+`pto.pstu(...)`, `pto.vstu(...)`, `pto.vstus(...)`, and `pto.vstur(...)`
+are now implemented. Remaining guide gaps are concentrated in the wider
+indexed/flush families that are still not wired through this DSL package.
 
 ### Missing Direct Predicate Constructor/Compare APIs
 
@@ -190,16 +181,14 @@ Currently supported:
 
 - rank-1: `tile[start:]`
 - rank-2: `tile[row, col:]`
-- only for `pto.vlds(...)` and `pto.vsts(...)`
+- rank-2 column-major: `tile[row_start:, col_index]`
+- available across the current basic vector-memory tile-indexing family
 
 Not currently supported from the guide's broader indexing model:
 
-- column-major syntax such as `tile[row_start:, col_index]`
 - single-element syntax such as `tile[row, col]` and `tile[pos]`
 - explicit slice `stop`
 - stepped tile vector slices
-- the guide's wider indexed op family (`vldas`, `vldus`, `vldx2`,
-  `vsld`, `psts`, `vsst`, `vstx2`, `vsta`)
 
 ### Control-Flow Result Merging
 
