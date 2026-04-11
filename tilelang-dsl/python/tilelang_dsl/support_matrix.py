@@ -225,6 +225,7 @@ BASIC_TILE_INDEXING_SURFACES = frozenset(
     {
         "tile[start:]",
         "tile[row, col:]",
+        "tile[row_start:, col_index]",
     }
 )
 
@@ -328,6 +329,7 @@ LANGUAGE_CONSTRUCT_TIERS = {
     "pto.constexpr": BASIC_TIER,
     "tile[start:]": BASIC_TIER,
     "tile[row, col:]": BASIC_TIER,
+    "tile[row_start:, col_index]": BASIC_TIER,
     # Advanced tier constructs
     "ptr": ADVANCED_TIER,  # raw pointer constructor
     "strict_vecscope": ADVANCED_TIER,  # explicit vecscope management
