@@ -56,11 +56,31 @@ Notes:
 Vector registers have fixed 256-byte width:
 
 ```python
-v64_f32 = pto.vreg(64, pto.f32)    # 64 lanes of f32 (64 * 32b = 2048b)
-v128_f16 = pto.vreg(128, pto.f16)  # 128 lanes of f16 (128 * 16b = 2048b)
+v_f32 = pto.vreg(pto.f32)  # !pto.vreg<64xf32>
+v_f16 = pto.vreg(pto.f16)  # !pto.vreg<128xf16>
+v_i8 = pto.vreg(pto.i8)    # !pto.vreg<256xi8>
 ```
 
-Constraint: `lanes × bitwidth(element_type) = 2048`
+`pto.vreg(dtype)` only takes the element type. The frontend infers the element count automatically from the fixed 256-byte register width:
+
+- `pto.f32` → `!pto.vreg<64xf32>`
+- `pto.f16` → `!pto.vreg<128xf16>`
+- `pto.bf16` → `!pto.vreg<128xbf16>`
+- `pto.i32` → `!pto.vreg<64xi32>`
+- `pto.i16` → `!pto.vreg<128xi16>`
+- `pto.i8` → `!pto.vreg<256xi8>`
+
+Constraint: `element_count × bitwidth(element_type) = 2048`
+
+Use `pto.elements_per_vreg(dtype)` when you need the inferred element count explicitly:
+
+```python
+v_dtype = pto.vreg(pto.f32)
+lanes0 = v_dtype.elements_per_vreg       # 64
+lanes1 = pto.elements_per_vreg(pto.f32)  # 64
+```
+
+Current TileLang DSL v1 vector lowering supports `i8`, `i16`, `i32`, `f16`, `bf16`, and `f32` element types.
 
 ### Typed Masks
 
@@ -129,4 +149,3 @@ buf2d = pto.memref((256, 128), pto.f32, MemorySpace.UB)   # 2D: 256x128 f32 buff
 - **Multi-dimensional shapes**: Use a tuple (e.g., `(256, 128)`)
 
 MemRefs are used for stateless load/store operations that accept `buf_like` operands in VPTO.
-

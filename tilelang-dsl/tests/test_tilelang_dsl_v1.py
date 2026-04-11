@@ -49,6 +49,7 @@ from tilelang_dsl.semantic import (
     SemanticTileType,
     SemanticVecscopeStmt,
     SemanticVectorStoreStmt,
+    SemanticVRegType,
     SemanticWaitFlagStmt,
     analyze_frontend_kernel,
 )
@@ -64,7 +65,9 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertTrue(hasattr(pto, "Tile"))
         self.assertTrue(hasattr(pto, "TileSpecialization"))
         self.assertTrue(hasattr(pto, "PointerType"))
+        self.assertTrue(hasattr(pto, "VRegType"))
         self.assertTrue(hasattr(pto, "ptr"))
+        self.assertTrue(hasattr(pto, "vreg"))
         self.assertTrue(hasattr(pto, "constexpr"))
         self.assertTrue(hasattr(pto, "bytewidth"))
         self.assertTrue(hasattr(pto, "get_lanes"))
@@ -115,6 +118,8 @@ class TileLangDSLSupportMatrixTests(unittest.TestCase):
         self.assertEqual(get_feature_tier("pto.vpack"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.vsort32"), BASIC_TIER)
         self.assertEqual(get_feature_tier("PadMode"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("VRegType"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.vreg"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.bytewidth"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.get_lanes"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.elements_per_vreg"), BASIC_TIER)
@@ -837,6 +842,13 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertEqual(kernel.parameters[0].dtype, pto.f32)
         self.assertEqual(kernel.parameters[0].annotation, pto.ptr(pto.f32, pto.MemorySpace.UB))
         self.assertEqual(kernel.parameters[0].element_dtype, pto.f32)
+
+    def test_vreg_type_constructor_exposes_inferred_lane_count(self) -> None:
+        vec_type = pto.vreg(pto.f32)
+        self.assertIsInstance(vec_type, pto.VRegType)
+        self.assertEqual(vec_type.element_dtype, pto.f32)
+        self.assertEqual(vec_type.lanes, 64)
+        self.assertEqual(repr(vec_type), "vreg(f32)")
 
     def test_specialization_enables_materialization_apis(self) -> None:
         @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f16)])
@@ -1825,6 +1837,46 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("= arith.constant 64 : index", text)
         self.assertRegex(text, r"scf\.for %col_\d+ = %c0 to %cols_\d+ step %lanes_\d+")
         self.assertIn("pto.tile_valid_cols %arg0", text)
+
+    def test_vreg_type_constructor_and_annotation_match_vector_value(self) -> None:
+        @pto.vkernel(op="vreg_type_annotation_unique", dtypes=[(pto.f32,)], advanced=True)
+        def kernel(dst: pto.Tile):
+            dtype = dst.element_type
+            vec_ty = pto.vreg(dtype)
+            mask = pto.make_mask(dtype, pto.PAT.ALL)
+            vec: pto.vreg(dtype) = pto.vlds(dst, 0)
+            pto.vsts(vec, dst, 0, mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        vecscope = next(
+            stmt for stmt in semantic_kernel.body if isinstance(stmt, SemanticVecscopeStmt)
+        )
+        self.assertIsInstance(vecscope, SemanticVecscopeStmt)
+        vec_assign = next(
+            stmt
+            for stmt in vecscope.body
+            if isinstance(stmt, SemanticAssignStmt)
+            and stmt.targets[0].name == "vec"
+        )
+        self.assertIsInstance(vec_assign.targets[0].type, SemanticVRegType)
+        self.assertEqual(vec_assign.targets[0].type.element_dtype, pto.f32)
+        self.assertEqual(vec_assign.targets[0].type.lanes, 64)
+        self.assertTrue(
+            any(
+                isinstance(stmt, SemanticAssignStmt)
+                and stmt.targets[0].name == "vec_ty"
+                for stmt in semantic_kernel.body
+            )
+        )
+
+        text = specialized.mlir_text()
+        self.assertRegex(text, r"%vec_\d+ = pto\.vlds %tmp_\d+\[%c0\] : memref<8x64xf32, #pto\.address_space<vec>> -> !pto\.vreg<64xf32>")
+        self.assertRegex(text, r"pto\.vsts %vec_\d+, %tmp_\d+\[%c0\], %mask_\d+ : !pto\.vreg<64xf32>, memref<8x64xf32, #pto\.address_space<vec>>, !pto\.mask<b32>")
 
     def test_extended_float_vector_ops_surface_lowers(self) -> None:
         @pto.vkernel(
@@ -3551,6 +3603,20 @@ class TileLangDSLDiagnosticsTests(unittest.TestCase):
 
         self.assertIn("unsupported Python syntax `while`", str(ctx.exception))
         self.assertIn(f"{__file__}:", str(ctx.exception))
+
+    def test_vreg_annotated_assignment_rejects_mismatched_dtype(self) -> None:
+        with self.assertRaises(TypeError) as ctx:
+
+            @pto.vkernel(op="vreg_annotation_mismatch_unique", dtypes=[(pto.f32,)], advanced=True)
+            def kernel(dst: pto.Tile):
+                vec: pto.vreg(pto.f16) = pto.vlds(dst, 0)
+                return None
+
+            kernel.specialize(
+                dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            ).mlir_text()
+
+        self.assertIn("annotated vector type `vreg(f16)` does not match inferred !pto.vreg<64xf32>", str(ctx.exception))
 
     def test_arbitrary_external_call_reports_source_location(self) -> None:
         def helper():

@@ -32,7 +32,6 @@ the current package:
 
 - `pto.tile(...)`
 - `pto.memref(...)`
-- `pto.vreg(...)`
 - `pto.mask_b8`, `pto.mask_b16`, `pto.mask_b32`
 - `BLayout`, `SLayout`, `PadValue`
 - `SyncOpType`

@@ -55,8 +55,9 @@ The package currently exports:
 - `TileLangFrontendError`
 - `TensorView`
 - `Tile`
+- `VRegType`
 - scalar dtypes such as `f16`, `bf16`, `f32`, `i8`, `i16`, `i32`, `i64`
-- Tile specialization helpers: `MemorySpace`, `TileConfig`, `TileSpecialization`
+- type helpers such as `vreg(...)`, `ptr(...)`, `MemorySpace`, `TileConfig`, `TileSpecialization`
 
 ## v1 Decorator Surface
 

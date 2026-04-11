@@ -45,6 +45,15 @@ class PointerType:
 
 
 @dataclass(frozen=True)
+class VRegType:
+    element_dtype: ScalarType
+    lanes: int
+
+    def __repr__(self) -> str:
+        return f"vreg({self.element_dtype!r})"
+
+
+@dataclass(frozen=True)
 class WildcardType:
     name: str
 
@@ -155,6 +164,12 @@ def ptr(dtype: ScalarType, memory_space: MemorySpace) -> PointerType:
     return PointerType(element_dtype=dtype, memory_space=memory_space)
 
 
+def vreg(dtype: ScalarType) -> VRegType:
+    if not isinstance(dtype, ScalarType):
+        raise TypeError("vreg() expects a TileLang scalar dtype")
+    return VRegType(element_dtype=dtype, lanes=get_lanes(dtype))
+
+
 def bytewidth(dtype: ScalarType) -> int:
     if not isinstance(dtype, ScalarType):
         raise TypeError("bytewidth expects a TileLang scalar dtype")
@@ -193,7 +208,9 @@ __all__ = [
     "PartitionTensorView",
     "Tile",
     "PointerType",
+    "VRegType",
     "ptr",
+    "vreg",
     "MemorySpace",
     "Pipe",
     "Event",

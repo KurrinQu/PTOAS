@@ -56,6 +56,7 @@ from .types import (
     PositionMode,
     PointerType,
     ScalarType,
+    VRegType,
     bf16,
     bytewidth,
     f16,
@@ -1847,7 +1848,7 @@ class _SemanticAnalyzer:
         if isinstance(target, FrontendNameTarget):
             if isinstance(value.type, SemanticTupleType):
                 raise ValueError("multi-result call assignment requires tuple binding in TileLang DSL v1")
-            annotated_type = self._annotation_type(annotation, value.type)
+            annotated_type = self._annotation_type(annotation, value.type, env)
             binding = self._make_binding(
                 target.name,
                 annotated_type if annotated_type is not None else value.type,
@@ -1912,17 +1913,90 @@ class _SemanticAnalyzer:
         self,
         annotation: Any | None,
         inferred_type: SemanticType | None,
+        env: dict[str, SemanticBinding],
     ) -> SemanticType | None:
         if annotation is None:
             return inferred_type
-        if isinstance(annotation, ast.Attribute) and isinstance(annotation.value, ast.Name):
-            if annotation.value.id == "pto" and isinstance(inferred_type, SemanticScalarType):
-                if inferred_type.dtype.name != annotation.attr:
+        annotation_expr = self._analyze_annotation_expr(annotation, env)
+        if isinstance(annotation_expr.type, SemanticMetaType):
+            if annotation_expr.type.kind == "dtype" and isinstance(inferred_type, SemanticScalarType):
+                dtype = self._require_dtype_symbol(annotation_expr, "annotated scalar type")
+                if inferred_type.dtype != dtype:
                     raise TypeError(
-                        f"annotated scalar type `pto.{annotation.attr}` does not match inferred {inferred_type.dtype!r}"
+                        f"annotated scalar type `{dtype!r}` does not match inferred {inferred_type.dtype!r}"
+                    )
+                return inferred_type
+            if annotation_expr.type.kind == "ptr_type" and isinstance(inferred_type, SemanticPtrType):
+                ptr_type = self._require_ptr_type_expr(annotation_expr, "annotated pointer type")
+                if inferred_type.element_dtype != ptr_type.element_dtype:
+                    raise TypeError(
+                        f"annotated pointer type `{ptr_type!r}` does not match inferred pointer element type {inferred_type.element_dtype!r}"
+                    )
+                if inferred_type.memory_space != ptr_type.memory_space.value:
+                    raise TypeError(
+                        f"annotated pointer type `{ptr_type!r}` does not match inferred pointer memory space `{inferred_type.memory_space}`"
+                    )
+                return inferred_type
+            if annotation_expr.type.kind == "vreg_type" and isinstance(inferred_type, SemanticVRegType):
+                vreg_type = self._require_vreg_type_expr(annotation_expr, "annotated vector type")
+                if inferred_type.element_dtype != vreg_type.element_dtype or inferred_type.lanes != vreg_type.lanes:
+                    raise TypeError(
+                        f"annotated vector type `{vreg_type!r}` does not match inferred !pto.vreg<{inferred_type.lanes}x{inferred_type.element_dtype.name}>"
                     )
                 return inferred_type
         raise TypeError("unsupported annotated assignment type in TileLang DSL v1")
+
+    def _analyze_annotation_expr(
+        self,
+        annotation: ast.AST,
+        env: dict[str, SemanticBinding],
+    ) -> SemanticExpr:
+        frontend_expr = self._build_frontend_annotation_expr(annotation)
+        return self._analyze_expr(frontend_expr, env, allow_outer_lookup=True)
+
+    def _build_frontend_annotation_expr(self, node: ast.AST) -> FrontendExprNode:
+        if isinstance(node, ast.Name):
+            return FrontendNameExpr(name=node.id)
+        if isinstance(node, ast.Constant):
+            return FrontendConstantExpr(value=node.value)
+        if isinstance(node, ast.Attribute):
+            path = self._annotation_attribute_path(node)
+            if path is not None and path[0] in {"pto", "PAT", "PIPE", "EVENT"} and len(path) >= 2:
+                return FrontendSymbolExpr(namespace=".".join(path[:-1]), name=path[-1])
+            return FrontendAttributeExpr(
+                base=self._build_frontend_annotation_expr(node.value),
+                attr=node.attr,
+            )
+        if isinstance(node, ast.Call):
+            if any(keyword.arg is None for keyword in node.keywords):
+                raise TypeError("annotated assignment type does not support keyword unpacking in TileLang DSL v1")
+            if node.keywords:
+                raise TypeError("annotated assignment type does not support keyword arguments in TileLang DSL v1")
+            if isinstance(node.func, ast.Name):
+                return FrontendCallExpr(
+                    namespace=None,
+                    name=node.func.id,
+                    args=tuple(self._build_frontend_annotation_expr(arg) for arg in node.args),
+                    keywords=(),
+                )
+            if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+                return FrontendCallExpr(
+                    namespace=node.func.value.id,
+                    name=node.func.attr,
+                    args=tuple(self._build_frontend_annotation_expr(arg) for arg in node.args),
+                    keywords=(),
+                )
+        raise TypeError("unsupported annotated assignment type in TileLang DSL v1")
+
+    def _annotation_attribute_path(self, node: ast.AST) -> tuple[str, ...] | None:
+        if isinstance(node, ast.Name):
+            return (node.id,)
+        if isinstance(node, ast.Attribute):
+            base_path = self._annotation_attribute_path(node.value)
+            if base_path is None:
+                return None
+            return base_path + (node.attr,)
+        return None
 
     def _analyze_for(
         self,
@@ -2609,6 +2683,8 @@ class _SemanticAnalyzer:
             return self._analyze_scalar_constructor(name, args)
         if name == "ptr":
             return self._analyze_ptr_type(args)
+        if name == "vreg":
+            return self._analyze_vreg_type(args)
         if name == "castptr":
             return self._analyze_castptr(args)
         if name == "addptr":
@@ -2807,6 +2883,16 @@ class _SemanticAnalyzer:
         return SemanticLiteralExpr(
             value=PointerType(element_dtype=dtype, memory_space=memory_space),
             type=SemanticMetaType(kind="ptr_type"),
+        )
+
+    def _analyze_vreg_type(self, args: tuple[SemanticExpr, ...]) -> SemanticExpr:
+        if len(args) != 1:
+            raise TypeError("pto.vreg expects exactly 1 positional argument in TileLang DSL v1")
+        dtype = self._require_dtype_symbol(args[0], "pto.vreg element type")
+        vreg_type = self._vreg_type_for_dtype(dtype)
+        return SemanticLiteralExpr(
+            value=VRegType(element_dtype=dtype, lanes=vreg_type.lanes),
+            type=SemanticMetaType(kind="vreg_type"),
         )
 
     def _analyze_castptr(self, args: tuple[SemanticExpr, ...]) -> SemanticExpr:
@@ -3247,6 +3333,23 @@ class _SemanticAnalyzer:
         ):
             return expr.binding.value
         raise TypeError(f"{context} must be a pointer type constructed with pto.ptr(...)")
+
+    def _require_vreg_type_expr(self, expr: SemanticExpr, context: str) -> VRegType:
+        if (
+            isinstance(expr, SemanticLiteralExpr)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "vreg_type"
+            and isinstance(expr.value, VRegType)
+        ):
+            return expr.value
+        if (
+            isinstance(expr, SemanticBindingRef)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "vreg_type"
+            and isinstance(expr.binding.value, VRegType)
+        ):
+            return expr.binding.value
+        raise TypeError(f"{context} must be a vector type constructed with pto.vreg(...)")
 
     def _require_cast_target_type(self, expr: SemanticExpr) -> SemanticType:
         if self._is_i64_dtype_expr(expr):

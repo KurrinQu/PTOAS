@@ -43,6 +43,7 @@ from .types import (
     TileSpecialization,
     TypeVar,
     TypeVariable,
+    VRegType,
     WildcardType,
     bf16,
     constexpr,
@@ -57,6 +58,7 @@ from .types import (
     i32,
     i64,
     ptr,
+    vreg,
 )
 
 __all__ = [
@@ -77,7 +79,9 @@ __all__ = [
     "PartitionTensorView",
     "Tile",
     "PointerType",
+    "VRegType",
     "ptr",
+    "vreg",
     "MemorySpace",
     "Pipe",
     "Event",
