@@ -2972,6 +2972,61 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             r"pto\.copy_ubuf_to_gm %ub_ptr_\d+, %gm_ptr_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+, %tmp_\d+",
         )
 
+    def test_copy_ubuf_to_ubuf_guide_surface_lowers_in_advanced_mode(self) -> None:
+        @pto.vkernel(
+            op="ub_to_ub_dma_guide_unique",
+            dtypes=[(pto.f32, pto.f32, pto.i64, pto.i64)],
+            advanced=True,
+        )
+        def kernel(src: pto.Tile, dst: pto.Tile, src_offset: pto.i64, dst_offset: pto.i64):
+            src_ptr = src.as_ptr()
+            dst_ptr = dst.as_ptr()
+
+            pto.copy_ubuf_to_ubuf(src_ptr, dst_ptr, src_offset, 32, 128, dst_offset, 160, 192)
+            pto.copy_ubuf_to_ubuf(
+                src=src_ptr,
+                dst=dst_ptr,
+                src_offset=src_offset,
+                src_stride0=16,
+                src_stride1=64,
+                dst_offset=dst_offset,
+                dst_stride0=96,
+                dst_stride1=128,
+            )
+            return None
+
+        specialized = kernel.specialize(
+            src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        low_level_copies = [stmt for stmt in semantic_kernel.body if isinstance(stmt, SemanticLowLevelCopyStmt)]
+        self.assertEqual(len(low_level_copies), 2)
+        self.assertTrue(all(isinstance(stmt.source, SemanticCallExpr) for stmt in low_level_copies))
+        self.assertTrue(all(isinstance(stmt.destination, SemanticCallExpr) for stmt in low_level_copies))
+        self.assertTrue(all(stmt.source.name == "addptr" for stmt in low_level_copies))
+        self.assertTrue(all(stmt.destination.name == "addptr" for stmt in low_level_copies))
+
+        text = specialized.mlir_text()
+        self.assertRegex(
+            text,
+            r"%src_ptr_\d+ = pto\.tile_buf_addr %arg0 : !pto\.tile_buf<loc=vec, dtype=f32, rows=8, cols=64, v_row=8, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0> -> !pto\.ptr<f32, ub>",
+        )
+        self.assertRegex(
+            text,
+            r"%dst_ptr_\d+ = pto\.tile_buf_addr %arg1 : !pto\.tile_buf<loc=vec, dtype=f32, rows=8, cols=64, v_row=8, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0> -> !pto\.ptr<f32, ub>",
+        )
+        self.assertRegex(
+            text,
+            r"%tmp_\d+ = pto\.addptr %src_ptr_\d+, %arg2 : !pto\.ptr<f32, ub> -> !pto\.ptr<f32, ub>",
+        )
+        self.assertRegex(
+            text,
+            r"%tmp_\d+ = pto\.addptr %dst_ptr_\d+, %arg3 : !pto\.ptr<f32, ub> -> !pto\.ptr<f32, ub>",
+        )
+        self.assertEqual(text.count("pto.copy_ubuf_to_ubuf "), 2)
+
     def test_castptr_rejects_tensorview_or_tile_inputs_in_advanced_mode(self) -> None:
         @pto.vkernel(op="castptr_tensorview_reject_unique", dtypes=[(pto.f32,)], advanced=True)
         def tensorview_kernel(inp: pto.TensorView):
