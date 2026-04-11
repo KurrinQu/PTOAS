@@ -51,7 +51,7 @@ Notes:
 - Avoid passing raw integer bit-patterns directly into vector broadcast/dup APIs when a floating vector is expected.
 - `float(...)` function calls are not part of the TileLang DSL public call surface; use constructor forms above.
 
-### Vector Types
+### Vector Register Type
 
 Vector registers have fixed 256-byte width:
 
@@ -91,6 +91,11 @@ Masks are typed by their bit granularity:
 | `pto.mask_b8` | `!pto.mask<b8>` | 8-bit granularity mask |
 | `pto.mask_b16` | `!pto.mask<b16>` | 16-bit granularity mask |
 | `pto.mask_b32` | `!pto.mask<b32>` | 32-bit granularity mask |
+
+```python
+mask_ty = pto.mask_b32
+mask: pto.mask_b32 = pto.make_mask(pto.f32, PAT.ALL)
+```
 
 Mask operations must match the vector element family:
 - `f32` vectors use `mask_b32`
@@ -135,17 +140,3 @@ For clarity in API documentation, the following type alias is used:
 | Alias | Equivalent Type | Description |
 |-------|----------------|-------------|
 | `Tile` | `pto.tile(...)` | Tile buffer with layout and configuration |
-
-### MemRef Types
-
-For buffer-like authoring, use memref types:
-
-```python
-buf1d = pto.memref(256, pto.f32, MemorySpace.UB)          # 1D: 256-element f32 buffer in UB
-buf2d = pto.memref((256, 128), pto.f32, MemorySpace.UB)   # 2D: 256x128 f32 buffer in UB
-```
-
-- **1D shapes**: Use a scalar integer (e.g., `256`)
-- **Multi-dimensional shapes**: Use a tuple (e.g., `(256, 128)`)
-
-MemRefs are used for stateless load/store operations that accept `buf_like` operands in VPTO.

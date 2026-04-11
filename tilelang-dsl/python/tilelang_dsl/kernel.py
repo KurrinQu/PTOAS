@@ -21,7 +21,9 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .types import (
+    AnyMask,
     AnyType,
+    MaskType,
     MemorySpace,
     PartitionTensorView,
     PointerType,
@@ -194,8 +196,8 @@ def inline_proc(
     return wrap(py_fn)
 
 
-def _validate_dtype_pattern(dtype: Any) -> ScalarType | WildcardType | TypeVariable:
-    if isinstance(dtype, (ScalarType, WildcardType, TypeVariable)):
+def _validate_dtype_pattern(dtype: Any) -> ScalarType | MaskType | WildcardType | TypeVariable:
+    if isinstance(dtype, (ScalarType, MaskType, WildcardType, TypeVariable)):
         return dtype
     raise TypeError(f"unsupported dtype pattern {dtype!r}")
 
@@ -539,7 +541,7 @@ class BoundKernelParameter:
     name: str
     kind: str
     annotation: Any
-    dtype: ScalarType
+    dtype: Any
 
     @property
     def element_dtype(self) -> ScalarType | None:
@@ -714,7 +716,7 @@ class VKernelDescriptor:
     _templates: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = field(default=(), repr=False)
     _inline_procs: tuple[tuple[str, InlineProcDescriptor], ...] = field(default=(), repr=False)
     _selected_op: str | None = None
-    _selected_dtype_signature: tuple[ScalarType, ...] | None = None
+    _selected_dtype_signature: tuple[ScalarType | MaskType, ...] | None = None
     _parameters: tuple[BoundKernelParameter, ...] | None = field(default=None, repr=False)
     _constraint_context_attrs: tuple[tuple[str, Any], ...] = field(default=(), repr=False)
 
@@ -747,7 +749,7 @@ class VKernelDescriptor:
         return {name: descriptor for name, descriptor in self._inline_procs}
 
     @property
-    def dtype_signature(self) -> tuple[ScalarType, ...]:
+    def dtype_signature(self) -> tuple[ScalarType | MaskType, ...]:
         if self._selected_dtype_signature is None:
             raise ValueError(
                 "descriptor requires pto.select_kernel(...) to choose a concrete dtype signature "
@@ -828,7 +830,7 @@ class VKernelDescriptor:
 
     def _bind_selected_dtype_signature(
         self,
-        dtype_signature: tuple[ScalarType, ...],
+        dtype_signature: tuple[ScalarType | MaskType, ...],
     ) -> "VKernelDescriptor":
         bound_parameters = _bind_parameters(self._parameter_specs, dtype_signature)
         return VKernelDescriptor(
@@ -1564,37 +1566,37 @@ def _coerce_tile_specialization(
     )
 
 
-def _validate_scalar_dtype(dtype: Any, param_name: str) -> ScalarType:
-    if not isinstance(dtype, ScalarType):
+def _validate_leaf_dtype(dtype: Any, param_name: str) -> ScalarType | MaskType:
+    if not isinstance(dtype, (ScalarType, MaskType)):
         raise TypeError(
-            f"dtypes entry for parameter '{param_name}' must be a TileLang scalar dtype"
+            f"dtypes entry for parameter '{param_name}' must be a TileLang scalar or mask dtype"
         )
     return dtype
 
 
-def _freeze_operand_types(operand_types: Any) -> tuple[ScalarType, ...]:
+def _freeze_operand_types(operand_types: Any) -> tuple[ScalarType | MaskType, ...]:
     if not isinstance(operand_types, (list, tuple)):
-        raise TypeError("operand_types must be a sequence of TileLang scalar dtypes")
-    return tuple(_validate_scalar_dtype(dtype, f"operand_types[{index}]") for index, dtype in enumerate(operand_types))
+        raise TypeError("operand_types must be a sequence of TileLang scalar or mask dtypes")
+    return tuple(_validate_leaf_dtype(dtype, f"operand_types[{index}]") for index, dtype in enumerate(operand_types))
 
 
-def _matches_wildcard(pattern: WildcardType, actual: ScalarType) -> bool:
+def _matches_wildcard(pattern: WildcardType, actual: ScalarType | MaskType) -> bool:
     if pattern.name == "AnyType":
-        return True
+        return isinstance(actual, ScalarType)
     if pattern.name == "AnyFloat":
-        return actual.name in {"f16", "bf16", "f32"}
+        return isinstance(actual, ScalarType) and actual.name in {"f16", "bf16", "f32"}
     if pattern.name == "AnyInt":
-        return actual.name.startswith("i")
+        return isinstance(actual, ScalarType) and actual.name.startswith("i")
     if pattern.name == "AnyMask":
-        return actual.name == "i1"
+        return isinstance(actual, MaskType)
     raise TypeError(f"unsupported wildcard matcher {pattern.name!r}")
 
 
 def _matches_scalar_annotation(
-    annotation: ScalarType | WildcardType | TypeVariable,
-    actual: ScalarType,
+    annotation: ScalarType | MaskType | WildcardType | TypeVariable,
+    actual: ScalarType | MaskType,
 ) -> bool:
-    if isinstance(annotation, ScalarType):
+    if isinstance(annotation, (ScalarType, MaskType)):
         return annotation == actual
     if isinstance(annotation, WildcardType):
         return _matches_wildcard(annotation, actual)
@@ -1605,14 +1607,14 @@ def _matches_scalar_annotation(
 
 def _match_dtype_signature(
     dtype_signature: tuple[Any, ...],
-    operand_types: tuple[ScalarType, ...],
-) -> tuple[ScalarType, ...] | None:
+    operand_types: tuple[ScalarType | MaskType, ...],
+) -> tuple[ScalarType | MaskType, ...] | None:
     if len(dtype_signature) != len(operand_types):
         return None
 
-    typevar_bindings: dict[str, ScalarType] = {}
+    typevar_bindings: dict[str, ScalarType | MaskType] = {}
     for pattern, actual in zip(dtype_signature, operand_types):
-        if isinstance(pattern, ScalarType):
+        if isinstance(pattern, (ScalarType, MaskType)):
             if pattern != actual:
                 return None
             continue
@@ -1634,8 +1636,8 @@ def _match_dtype_signature(
 
 def _match_descriptor_dtype_signature(
     descriptor: VKernelDescriptor,
-    operand_types: tuple[ScalarType, ...],
-) -> tuple[ScalarType, ...] | None:
+    operand_types: tuple[ScalarType | MaskType, ...],
+) -> tuple[ScalarType | MaskType, ...] | None:
     for dtype_signature in descriptor.dtypes:
         matched = _match_dtype_signature(dtype_signature, operand_types)
         if matched is not None:
@@ -1685,6 +1687,18 @@ def _validate_parameter_spec(param: inspect.Parameter) -> KernelParameterSpec:
             kind="ptr",
             annotation=annotation,
         )
+    if isinstance(annotation, MaskType):
+        return KernelParameterSpec(
+            name=param.name,
+            kind="mask",
+            annotation=annotation,
+        )
+    if isinstance(annotation, WildcardType) and annotation.name == "AnyMask":
+        return KernelParameterSpec(
+            name=param.name,
+            kind="mask",
+            annotation=annotation,
+        )
     if isinstance(annotation, (ScalarType, WildcardType, TypeVariable)):
         return KernelParameterSpec(
             name=param.name,
@@ -1713,6 +1727,9 @@ def _default_dtype_signature(
         if param_spec.kind == "ptr":
             defaults.append(param_spec.annotation.element_dtype)
             continue
+        if param_spec.kind == "mask":
+            defaults.append(param_spec.annotation if isinstance(param_spec.annotation, MaskType) else AnyMask)
+            continue
         if isinstance(param_spec.annotation, (WildcardType, TypeVariable)):
             defaults.append(AnyType)
             continue
@@ -1735,49 +1752,71 @@ def _bind_parameter(
     param_spec: KernelParameterSpec,
     dtype: Any,
 ) -> BoundKernelParameter:
-    scalar_dtype = _validate_scalar_dtype(dtype, param_spec.name)
+    bound_dtype = _validate_leaf_dtype(dtype, param_spec.name)
     if param_spec.kind in {"tensorview", "partition_tensor_view"}:
         return BoundKernelParameter(
             name=param_spec.name,
             kind=param_spec.kind,
             annotation=param_spec.annotation,
-            dtype=scalar_dtype,
+            dtype=bound_dtype,
         )
     if param_spec.kind == "tile":
         return BoundKernelParameter(
             name=param_spec.name,
             kind=param_spec.kind,
             annotation=param_spec.annotation,
-            dtype=scalar_dtype,
+            dtype=bound_dtype,
         )
     if param_spec.kind == "ptr":
-        if param_spec.annotation.element_dtype != scalar_dtype:
+        if param_spec.annotation.element_dtype != bound_dtype:
             raise TypeError(
                 f"pointer parameter '{param_spec.name}' annotation {param_spec.annotation!r} "
-                f"does not match selected dtype {scalar_dtype!r}"
+                f"does not match selected dtype {bound_dtype!r}"
             )
         return BoundKernelParameter(
             name=param_spec.name,
             kind=param_spec.kind,
             annotation=param_spec.annotation,
-            dtype=scalar_dtype,
+            dtype=bound_dtype,
         )
-    if not _matches_scalar_annotation(param_spec.annotation, scalar_dtype):
+    if param_spec.kind == "mask":
+        if not isinstance(bound_dtype, MaskType):
+            raise TypeError(
+                f"mask parameter '{param_spec.name}' annotation {param_spec.annotation!r} "
+                f"does not match selected dtype {bound_dtype!r}"
+            )
+        if isinstance(param_spec.annotation, MaskType) and param_spec.annotation != bound_dtype:
+            raise TypeError(
+                f"mask parameter '{param_spec.name}' annotation {param_spec.annotation!r} "
+                f"does not match selected dtype {bound_dtype!r}"
+            )
+        if isinstance(param_spec.annotation, WildcardType) and not _matches_wildcard(param_spec.annotation, bound_dtype):
+            raise TypeError(
+                f"mask parameter '{param_spec.name}' annotation {param_spec.annotation!r} "
+                f"does not match selected dtype {bound_dtype!r}"
+            )
+        return BoundKernelParameter(
+            name=param_spec.name,
+            kind=param_spec.kind,
+            annotation=param_spec.annotation,
+            dtype=bound_dtype,
+        )
+    if not _matches_scalar_annotation(param_spec.annotation, bound_dtype):
         raise TypeError(
             f"scalar parameter '{param_spec.name}' annotation {param_spec.annotation!r} "
-            f"does not match selected dtype {scalar_dtype!r}"
+            f"does not match selected dtype {bound_dtype!r}"
         )
     return BoundKernelParameter(
         name=param_spec.name,
         kind=param_spec.kind,
         annotation=param_spec.annotation,
-        dtype=scalar_dtype,
+        dtype=bound_dtype,
     )
 
 
 def _bind_parameters(
     parameter_specs: tuple[KernelParameterSpec, ...],
-    dtype_signature: tuple[ScalarType, ...],
+    dtype_signature: tuple[ScalarType | MaskType, ...],
 ) -> tuple[BoundKernelParameter, ...]:
     if len(dtype_signature) != len(parameter_specs):
         raise ValueError(
@@ -1823,11 +1862,11 @@ def _build_descriptor(
     _validate_dtype_arity(parameter_specs, frozen_dtypes)
 
     selected_op: str | None = None
-    selected_dtype_signature: tuple[ScalarType, ...] | None = None
+    selected_dtype_signature: tuple[ScalarType | MaskType, ...] | None = None
     bound_parameters: tuple[BoundKernelParameter, ...] | None = None
     if len(match_ops) == 1:
         selected_op = match_ops[0]
-    if len(frozen_dtypes) == 1 and all(isinstance(dtype, ScalarType) for dtype in frozen_dtypes[0]):
+    if len(frozen_dtypes) == 1 and all(isinstance(dtype, (ScalarType, MaskType)) for dtype in frozen_dtypes[0]):
         selected_dtype_signature = tuple(frozen_dtypes[0])
         bound_parameters = _bind_parameters(parameter_specs, selected_dtype_signature)
 
@@ -1915,7 +1954,7 @@ def _match_descriptor_query(
     *,
     target: str,
     op: str,
-    operand_types: tuple[ScalarType, ...],
+    operand_types: tuple[ScalarType | MaskType, ...],
 ) -> VKernelDescriptor | None:
     if descriptor.target != target:
         return None

@@ -48,6 +48,7 @@ from .support_matrix import (
 )
 from .types import (
     Event,
+    MaskType,
     MaskPattern,
     MemorySpace,
     OrderMode,
@@ -78,6 +79,11 @@ _DTYPE_SYMBOLS = {
     "f16": f16,
     "bf16": bf16,
     "f32": f32,
+}
+_MASK_TYPE_SYMBOLS = {
+    "mask_b8": MaskType("b8"),
+    "mask_b16": MaskType("b16"),
+    "mask_b32": MaskType("b32"),
 }
 _PATTERN_SYMBOLS = {pattern.name: pattern for pattern in MaskPattern}
 _PIPE_SYMBOLS = {pipe.name: pipe for pipe in Pipe}
@@ -619,6 +625,8 @@ class _SemanticAnalyzer:
                 element_dtype=param.dtype,
                 memory_space=memory_space,
             )
+        if param.kind == "mask":
+            return SemanticMaskType(granularity=param.dtype.granularity)
         if param.kind == "scalar":
             return SemanticScalarType(dtype=param.dtype)
         raise ValueError(f"unsupported parameter kind {param.kind!r}")
@@ -1944,6 +1952,13 @@ class _SemanticAnalyzer:
                         f"annotated vector type `{vreg_type!r}` does not match inferred !pto.vreg<{inferred_type.lanes}x{inferred_type.element_dtype.name}>"
                     )
                 return inferred_type
+            if annotation_expr.type.kind == "mask_type" and isinstance(inferred_type, SemanticMaskType):
+                mask_type = self._require_mask_type_expr(annotation_expr, "annotated mask type")
+                if inferred_type.granularity != mask_type.granularity:
+                    raise TypeError(
+                        f"annotated mask type `{mask_type!r}` does not match inferred !pto.mask<{inferred_type.granularity}>"
+                    )
+                return inferred_type
         raise TypeError("unsupported annotated assignment type in TileLang DSL v1")
 
     def _analyze_annotation_expr(
@@ -2307,6 +2322,14 @@ class _SemanticAnalyzer:
                     name=expr.name,
                     value=dtype,
                     type=SemanticMetaType(kind="dtype"),
+                )
+            mask_type = _MASK_TYPE_SYMBOLS.get(expr.name)
+            if mask_type is not None:
+                return SemanticSymbolExpr(
+                    namespace=expr.namespace,
+                    name=expr.name,
+                    value=mask_type,
+                    type=SemanticMetaType(kind="mask_type"),
                 )
         if expr.namespace in {"PAT", "pto.PAT", "pto.MaskPattern"}:
             pattern = _PATTERN_SYMBOLS.get(expr.name)
@@ -3350,6 +3373,23 @@ class _SemanticAnalyzer:
         ):
             return expr.binding.value
         raise TypeError(f"{context} must be a vector type constructed with pto.vreg(...)")
+
+    def _require_mask_type_expr(self, expr: SemanticExpr, context: str) -> MaskType:
+        if (
+            isinstance(expr, SemanticSymbolExpr)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "mask_type"
+            and isinstance(expr.value, MaskType)
+        ):
+            return expr.value
+        if (
+            isinstance(expr, SemanticBindingRef)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "mask_type"
+            and isinstance(expr.binding.value, MaskType)
+        ):
+            return expr.binding.value
+        raise TypeError(f"{context} must be a mask type such as pto.mask_b32")
 
     def _require_cast_target_type(self, expr: SemanticExpr) -> SemanticType:
         if self._is_i64_dtype_expr(expr):

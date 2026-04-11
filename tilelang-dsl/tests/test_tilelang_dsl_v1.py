@@ -66,8 +66,12 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertTrue(hasattr(pto, "TileSpecialization"))
         self.assertTrue(hasattr(pto, "PointerType"))
         self.assertTrue(hasattr(pto, "VRegType"))
+        self.assertTrue(hasattr(pto, "MaskType"))
         self.assertTrue(hasattr(pto, "ptr"))
         self.assertTrue(hasattr(pto, "vreg"))
+        self.assertTrue(hasattr(pto, "mask_b8"))
+        self.assertTrue(hasattr(pto, "mask_b16"))
+        self.assertTrue(hasattr(pto, "mask_b32"))
         self.assertTrue(hasattr(pto, "constexpr"))
         self.assertTrue(hasattr(pto, "bytewidth"))
         self.assertTrue(hasattr(pto, "get_lanes"))
@@ -119,7 +123,11 @@ class TileLangDSLSupportMatrixTests(unittest.TestCase):
         self.assertEqual(get_feature_tier("pto.vsort32"), BASIC_TIER)
         self.assertEqual(get_feature_tier("PadMode"), BASIC_TIER)
         self.assertEqual(get_feature_tier("VRegType"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("MaskType"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.vreg"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.mask_b8"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.mask_b16"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.mask_b32"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.bytewidth"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.get_lanes"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.elements_per_vreg"), BASIC_TIER)
@@ -158,8 +166,6 @@ class TileLangDSLSupportMatrixTests(unittest.TestCase):
             get_feature_tier("pto.dma_copy")
         with self.assertRaises(KeyError):
             get_feature_tier("pto.vreduce")
-        with self.assertRaises(KeyError):
-            get_feature_tier("pto.mask_b32")
 
 
 class TileLangDSLMatcherEntryTests(unittest.TestCase):
@@ -849,6 +855,25 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertEqual(vec_type.element_dtype, pto.f32)
         self.assertEqual(vec_type.lanes, 64)
         self.assertEqual(repr(vec_type), "vreg(f32)")
+
+    def test_mask_type_constants_expose_granularity(self) -> None:
+        self.assertIsInstance(pto.mask_b8, pto.MaskType)
+        self.assertIsInstance(pto.mask_b16, pto.MaskType)
+        self.assertIsInstance(pto.mask_b32, pto.MaskType)
+        self.assertEqual(pto.mask_b8.granularity, "b8")
+        self.assertEqual(pto.mask_b16.granularity, "b16")
+        self.assertEqual(pto.mask_b32.granularity, "b32")
+        self.assertEqual(repr(pto.mask_b32), "mask_b32")
+
+    def test_mask_parameter_annotation_binds_as_mask_kind(self) -> None:
+        @pto.vkernel(op="mask_surface", dtypes=[(pto.mask_b32, pto.f32)], advanced=True)
+        def kernel(mask: pto.mask_b32, dst: pto.Tile):
+            return None
+
+        self.assertEqual(kernel.parameters[0].kind, "mask")
+        self.assertEqual(kernel.parameters[0].dtype, pto.mask_b32)
+        self.assertEqual(kernel.parameters[0].annotation, pto.mask_b32)
+        self.assertIsNone(kernel.parameters[0].element_dtype)
 
     def test_specialization_enables_materialization_apis(self) -> None:
         @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f16)])
@@ -1877,6 +1902,24 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         text = specialized.mlir_text()
         self.assertRegex(text, r"%vec_\d+ = pto\.vlds %tmp_\d+\[%c0\] : memref<8x64xf32, #pto\.address_space<vec>> -> !pto\.vreg<64xf32>")
         self.assertRegex(text, r"pto\.vsts %vec_\d+, %tmp_\d+\[%c0\], %mask_\d+ : !pto\.vreg<64xf32>, memref<8x64xf32, #pto\.address_space<vec>>, !pto\.mask<b32>")
+
+    def test_mask_type_annotation_matches_make_mask_result(self) -> None:
+        @pto.vkernel(op="mask_type_annotation_unique", dtypes=[(pto.f32,)], advanced=True)
+        def kernel(dst: pto.Tile):
+            mask_ty = pto.mask_b32
+            mask: pto.mask_b32 = pto.make_mask(pto.f32, pto.PAT.ALL)
+            alias_mask: mask_ty = mask
+            vec: pto.vreg(pto.f32) = pto.vlds(dst, 0)
+            pto.vsts(vec, dst, 0, alias_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertRegex(text, r'%mask_\d+ = pto\.pset_b32 "PAT_ALL" : !pto\.mask<b32>')
+        self.assertRegex(text, r"pto\.vsts %vec_\d+, %tmp_\d+\[%c0\], %\w+ : !pto\.vreg<64xf32>, memref<8x64xf32, #pto\.address_space<vec>>, !pto\.mask<b32>")
 
     def test_extended_float_vector_ops_surface_lowers(self) -> None:
         @pto.vkernel(
@@ -3617,6 +3660,20 @@ class TileLangDSLDiagnosticsTests(unittest.TestCase):
             ).mlir_text()
 
         self.assertIn("annotated vector type `vreg(f16)` does not match inferred !pto.vreg<64xf32>", str(ctx.exception))
+
+    def test_mask_annotated_assignment_rejects_mismatched_granularity(self) -> None:
+        with self.assertRaises(TypeError) as ctx:
+
+            @pto.vkernel(op="mask_annotation_mismatch_unique", dtypes=[(pto.f32,)], advanced=True)
+            def kernel(dst: pto.Tile):
+                mask: pto.mask_b16 = pto.make_mask(pto.f32, pto.PAT.ALL)
+                return None
+
+            kernel.specialize(
+                dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            ).mlir_text()
+
+        self.assertIn("annotated mask type `mask_b16` does not match inferred !pto.mask<b32>", str(ctx.exception))
 
     def test_arbitrary_external_call_reports_source_location(self) -> None:
         def helper():

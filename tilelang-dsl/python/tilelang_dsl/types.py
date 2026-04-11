@@ -54,6 +54,14 @@ class VRegType:
 
 
 @dataclass(frozen=True)
+class MaskType:
+    granularity: str
+
+    def __repr__(self) -> str:
+        return f"mask_{self.granularity}"
+
+
+@dataclass(frozen=True)
 class WildcardType:
     name: str
 
@@ -148,6 +156,9 @@ AnyFloat = WildcardType("AnyFloat")
 AnyInt = WildcardType("AnyInt")
 AnyType = WildcardType("AnyType")
 AnyMask = WildcardType("AnyMask")
+mask_b8 = MaskType("b8")
+mask_b16 = MaskType("b16")
+mask_b32 = MaskType("b32")
 
 
 def TypeVar(name: str) -> TypeVariable:
@@ -209,6 +220,7 @@ __all__ = [
     "Tile",
     "PointerType",
     "VRegType",
+    "MaskType",
     "ptr",
     "vreg",
     "MemorySpace",
@@ -235,6 +247,9 @@ __all__ = [
     "AnyInt",
     "AnyType",
     "AnyMask",
+    "mask_b8",
+    "mask_b16",
+    "mask_b32",
     "constexpr",
     "bytewidth",
     "get_lanes",

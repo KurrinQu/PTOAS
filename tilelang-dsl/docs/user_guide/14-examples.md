@@ -106,9 +106,8 @@ selected = pto.select_kernel("a5", "tadd", (ptype, ptype, ptype))
 
 ```python
 @pto.vkernel(...)
-def vector_copy(src: pto.memref(256, pto.f32, MemorySpace.UB),
-                dst: pto.memref(256, pto.f32, MemorySpace.UB)):
-    all_mask = pto.make_mask(pto.f32, PAT.ALL)
+def vector_copy(src: pto.Tile, dst: pto.Tile):
+    all_mask: pto.mask_b32 = pto.make_mask(pto.f32, PAT.ALL)
     for offset in range(0, 256, 64):
         vec = pto.vlds(src, offset)
         pto.vsts(vec, dst, offset, all_mask)
@@ -153,4 +152,3 @@ def prefix_sum(src: pto.ptr(pto.i32, MemorySpace.UB),
         result, carry = pto.vaddcs(vec, vec, carry, all_mask)
         pto.vsts(result, dst, i, all_mask)
 ```
-

@@ -31,8 +31,6 @@ The guide documents a richer type-construction surface that is not exported by
 the current package:
 
 - `pto.tile(...)`
-- `pto.memref(...)`
-- `pto.mask_b8`, `pto.mask_b16`, `pto.mask_b32`
 - `BLayout`, `SLayout`, `PadValue`
 - `SyncOpType`
 
