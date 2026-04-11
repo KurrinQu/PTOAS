@@ -2114,8 +2114,22 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("pto.vbr", text)
         self.assertIn("pto.vdup", text)
         self.assertIn("pto.vci", text)
-        self.assertIn('"POS_LOWEST"', text)
-        self.assertIn('"ORDER_ASC"', text)
+        self.assertRegex(
+            text,
+            r'pto\.vdup\s+%[^\s]+\s+\{position = "POS_LOWEST"\}\s+:',
+        )
+        self.assertNotRegex(
+            text,
+            r'pto\.vdup\s+%[^\s]+,\s*"POS_LOWEST"\s+:',
+        )
+        self.assertRegex(
+            text,
+            r'pto\.vci\s+%[^\s]+\s+\{order = "ORDER_ASC"\}\s+:',
+        )
+        self.assertNotRegex(
+            text,
+            r'pto\.vci\s+%[^\s]+,\s*"ORDER_ASC"\s+:',
+        )
 
     def test_vbr_accepts_float_literal_constant(self) -> None:
         @pto.vkernel(

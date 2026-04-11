@@ -56,8 +56,12 @@ The package currently exports:
 - `TensorView`
 - `Tile`
 - `VRegType`
+- `MaskType`
 - scalar dtypes such as `f16`, `bf16`, `f32`, `i8`, `i16`, `i32`, `i64`
-- type helpers such as `vreg(...)`, `ptr(...)`, `MemorySpace`, `TileConfig`, `TileSpecialization`
+- type helpers such as `vreg(...)`, `ptr(...)`, `mask_b8`, `mask_b16`, `mask_b32`, `MemorySpace`, `TileConfig`, `TileSpecialization`
+
+The package does not expose a DSL-level `pto.memref(...)` constructor. MemRef
+only appears in generated/lowered IR, not in the public authoring type surface.
 
 ## v1 Decorator Surface
 

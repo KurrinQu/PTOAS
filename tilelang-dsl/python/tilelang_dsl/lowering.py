@@ -2043,7 +2043,7 @@ class _AuthoringRenderer:
             position = self._render_string_literal(expr.args[1])
             into.append(
                 self._indent(indent)
-                + f"{result_name} = pto.vdup {value.name}, {position} : "
+                + f"{result_name} = pto.vdup {value.name} {{position = {position}}} : "
                 + f"{self._render_type(value.type)} -> {self._render_type(expr.type)}"
             )
             return _RenderedValue(name=result_name, type=expr.type)
@@ -2053,7 +2053,7 @@ class _AuthoringRenderer:
             order = self._render_string_literal(expr.args[1])
             into.append(
                 self._indent(indent)
-                + f"{result_name} = pto.vci {index.name}, {order} : "
+                + f"{result_name} = pto.vci {index.name} {{order = {order}}} : "
                 + f"{self._render_type(index.type)} -> {self._render_type(expr.type)}"
             )
             return _RenderedValue(name=result_name, type=expr.type)
