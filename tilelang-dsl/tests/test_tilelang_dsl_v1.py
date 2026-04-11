@@ -129,6 +129,7 @@ class TileLangDSLSupportMatrixTests(unittest.TestCase):
         self.assertIn("pto.vmuls", AUTHORING_TIER_SURFACE_GROUPS["base_vector_ops"])
         self.assertIn("tile[start:]", BASIC_TILE_INDEXING_SURFACES)
         self.assertIn("tile[row, col:]", BASIC_TILE_INDEXING_SURFACES)
+        self.assertIn("tile[row_start:, col_index]", BASIC_TILE_INDEXING_SURFACES)
 
         self.assertEqual(get_feature_tier("TensorView"), BASIC_TIER)
         self.assertEqual(get_feature_tier("Tile"), BASIC_TIER)
@@ -174,6 +175,7 @@ class TileLangDSLSupportMatrixTests(unittest.TestCase):
         self.assertEqual(get_feature_tier("PadValue"), BASIC_TIER)
         self.assertEqual(get_feature_tier("tile[start:]"), BASIC_TIER)
         self.assertEqual(get_feature_tier("tile[row, col:]"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("tile[row_start:, col_index]"), BASIC_TIER)
 
     def test_non_stable_surface_groups_keep_advanced_boundaries(self) -> None:
         self.assertEqual(get_surface_group_tier("strict_vecscope"), ADVANCED_TIER)
@@ -1702,6 +1704,63 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("pto.vstx2", text)
         self.assertIn('"INTLV_B32"', text)
         self.assertIn("pto.vsta", text)
+
+    def test_col_major_tile_vector_indexing_lowers_with_column_major_layout(self) -> None:
+        @pto.vkernel(op="vector_memory_col_major_unique", dtypes=[(pto.f32, pto.f32)])
+        def kernel(src: pto.Tile, dst: pto.Tile):
+            align = pto.vldas(src[2:, 3])
+            streamed, next_align, base_out = pto.vldus(src[2:, 3], align)
+            mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+            vec = pto.vlds(src[2:, 3])
+            pto.vsts(vec, dst[2:, 3], mask)
+            pto.vsta(next_align, dst[2:, 3])
+            return None
+
+        col_major = pto.TileConfig.from_mapping({"layout": "col_major"})
+        specialized = kernel.specialize(
+            src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB, config=col_major),
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB, config=col_major),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("blayout=col_major", text)
+        self.assertRegex(text, r"pto\.vlds %tmp_\d+\[%c2, %c3\] : memref<8x64xf32, #pto\.address_space<vec>> -> !pto\.vreg<64xf32>")
+        self.assertRegex(text, r"%tmp_\d+ = arith\.muli %c3, %c8 : index")
+        self.assertIn("pto.addptr", text)
+        self.assertIn("pto.vldus", text)
+        self.assertIn("pto.vsta", text)
+
+    def test_row_major_tile_rejects_column_major_vector_indexing_syntax(self) -> None:
+        @pto.vkernel(op="row_major_rejects_col_major_index_unique", dtypes=[(pto.f32,)])
+        def kernel(src: pto.Tile):
+            pto.vlds(src[1:, 2])
+            return None
+
+        specialized = kernel.specialize(
+            src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        with self.assertRaises(TypeError) as ctx:
+            analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        self.assertIn("Tile[row, col:]", str(ctx.exception))
+
+    def test_col_major_tile_rejects_row_major_vector_indexing_syntax(self) -> None:
+        @pto.vkernel(op="col_major_rejects_row_major_index_unique", dtypes=[(pto.f32,)])
+        def kernel(src: pto.Tile):
+            pto.vlds(src[1, 2:])
+            return None
+
+        specialized = kernel.specialize(
+            src=pto.TileSpecialization(
+                shape=(8, 64),
+                memory_space=pto.MemorySpace.UB,
+                config=pto.TileConfig.from_mapping({"layout": "col_major"}),
+            ),
+        )
+
+        with self.assertRaises(TypeError) as ctx:
+            analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        self.assertIn("Tile[row_start:, col_index]", str(ctx.exception))
 
     def test_advanced_stateful_vector_memory_surfaces_lower_with_pointer_state(self) -> None:
         @pto.vkernel(op="vector_memory_stateful_unique", dtypes=[(pto.f32, pto.f32)], advanced=True)
