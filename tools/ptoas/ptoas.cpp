@@ -1129,16 +1129,22 @@ static LogicalResult lowerPTOToVPTOBackend(ModuleOp module) {
     //   3. InlineLibCall: inline template function bodies
     //   4. FoldTileBufIntrinsics: fold tile_buf_addr / tile_valid_rows /
     //      tile_valid_cols to concrete memref/constant values
-    backendPM.addPass(pto::createMemrefToTileBufPass());
+    pm.addPass(pto::createMemrefToTileBufPass());
 
     pto::ExpandTileOpOptions expandOpts;
     expandOpts.tilelangPath = tilelangPath;
     expandOpts.tilelangPkgPath = tilelangPkgPath;
-    backendPM.addPass(pto::createExpandTileOpPass(expandOpts));
-  
-    backendPM.addPass(pto::createPTOInlineLibCallPass());
-    backendPM.addNestedPass<mlir::func::FuncOp>(
+    pm.addPass(pto::createExpandTileOpPass(expandOpts));
+
+    pm.addPass(pto::createPTOInlineLibCallPass());
+    pm.addNestedPass<mlir::func::FuncOp>(
         pto::createFoldTileBufIntrinsicsPass());
+    // FoldTileBufIntrinsics materializes many constant branch conditions.
+    // Clean them up immediately on the TileOp expansion path before the
+    // authoring-stage VPTO verifier and let the existing CSE passes remove the
+    // resulting dead values later in the pipeline.
+    pm.addPass(mlir::createSCCPPass());
+    pm.addPass(mlir::createCanonicalizerPass());
   }
   if (failed(backendPM.run(module))) {
     llvm::errs() << "Error: backend lowering pass execution failed.\n";
