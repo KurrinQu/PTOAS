@@ -692,6 +692,7 @@ static void addVPTOBackendMainlinePasses(OpPassManager &pm,
   // Keep the A5 backend lowering boundary explicit:
   //   FusionRegionGen -> shared pre-backend normalization
   //   -> PTOVPTOVersionSelection -> PTOToVPTO
+  //   -> (TileOp path only) FoldTileBufIntrinsics -> SCCP -> Canonicalize
   //   -> PTOValidateVPTOIR
   //   -> PTOVPTOIfCanonicalize
   //   -> PTOFusionMergeVecScope
@@ -718,6 +719,12 @@ static void addVPTOBackendMainlinePasses(OpPassManager &pm,
     pm.addPass(pto::createPTOInlineLibCallPass());
     pm.addNestedPass<mlir::func::FuncOp>(
         pto::createFoldTileBufIntrinsicsPass());
+    // FoldTileBufIntrinsics materializes many constant branch conditions.
+    // Clean them up immediately on the TileOp expansion path before the
+    // authoring-stage VPTO verifier and let the existing CSE passes remove the
+    // resulting dead values later in the pipeline.
+    pm.addPass(mlir::createSCCPPass());
+    pm.addPass(mlir::createCanonicalizerPass());
   }
 
   pm.addPass(pto::createPTOValidateVPTOIRPass());
