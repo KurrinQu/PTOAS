@@ -1519,10 +1519,13 @@ class _SemanticAnalyzer:
                 f"pto.{expr.name} does not support mixing positional and keyword operands in TileLang DSL v1"
             )
         if not expr.keywords:
-            return tuple(
+            args = tuple(
                 self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
                 for arg in expr.args
             )
+            if expr.name == "copy_ubuf_to_ubuf" and len(args) == 8:
+                return self._normalize_copy_ubuf_to_ubuf_guide_operands(args)
+            return args
 
         analyzed_keywords: dict[str, SemanticExpr] = {
             name: self._analyze_expr(value, env, allow_outer_lookup=allow_outer_lookup)
@@ -1596,8 +1599,54 @@ class _SemanticAnalyzer:
                     analyzed_keywords["ub_stride"],
                 ),
             )
+        if expr.name == "copy_ubuf_to_ubuf":
+            return self._normalize_copy_ubuf_to_ubuf_guide_operands(
+                (
+                    analyzed_keywords["src"],
+                    analyzed_keywords["dst"],
+                    analyzed_keywords["src_offset"],
+                    analyzed_keywords["src_stride0"],
+                    analyzed_keywords["src_stride1"],
+                    analyzed_keywords["dst_offset"],
+                    analyzed_keywords["dst_stride0"],
+                    analyzed_keywords["dst_stride1"],
+                )
+            )
         raise TypeError(
             f"pto.{expr.name} keyword form is not implemented in TileLang DSL v1"
+        )
+
+    def _normalize_copy_ubuf_to_ubuf_guide_operands(
+        self,
+        args: tuple[SemanticExpr, ...],
+    ) -> tuple[SemanticExpr, ...]:
+        if len(args) != 8:
+            raise TypeError(
+                "pto.copy_ubuf_to_ubuf guide form expects exactly 8 operands in TileLang DSL"
+            )
+        source = self._require_pointer_expr(args[0], "pto.copy_ubuf_to_ubuf source", memory_space="ub")
+        destination = self._require_pointer_expr(
+            args[1],
+            "pto.copy_ubuf_to_ubuf destination",
+            memory_space="ub",
+        )
+        self._require_i64_like_expr(args[2], "pto.copy_ubuf_to_ubuf src_offset")
+        self._require_i64_like_expr(args[3], "pto.copy_ubuf_to_ubuf src_stride0")
+        self._require_i64_like_expr(args[4], "pto.copy_ubuf_to_ubuf src_stride1")
+        self._require_i64_like_expr(args[5], "pto.copy_ubuf_to_ubuf dst_offset")
+        self._require_i64_like_expr(args[6], "pto.copy_ubuf_to_ubuf dst_stride0")
+        self._require_i64_like_expr(args[7], "pto.copy_ubuf_to_ubuf dst_stride1")
+        zero_sid = SemanticLiteralExpr(value=0, type=SemanticIndexType())
+        # The guide-level surface rewrites offsets into the base pointers, then
+        # lowers the remaining four integers to the existing VPTO UB->UB copy ABI.
+        return (
+            SemanticCallExpr(namespace="pto", name="addptr", args=(source, args[2]), type=source.type),
+            SemanticCallExpr(namespace="pto", name="addptr", args=(destination, args[5]), type=destination.type),
+            zero_sid,
+            args[3],
+            args[4],
+            args[6],
+            args[7],
         )
 
     def _require_tensor_slice(
@@ -3012,7 +3061,7 @@ class _SemanticAnalyzer:
             raise TypeError("pto.addptr expects exactly 2 positional arguments in TileLang DSL")
         pointer, offset = args
         ptr = self._require_pointer_expr(pointer, "pto.addptr pointer")
-        self._require_index_typed_expr(offset)
+        self._require_i64_like_expr(offset, "pto.addptr offset")
         return SemanticCallExpr(namespace="pto", name="addptr", args=(ptr, offset), type=ptr.type)
 
     def _analyze_get_lanes(

@@ -645,6 +645,18 @@ _DMA_CALL_KEYWORDS: dict[str, frozenset[str]] = {
             "ub_stride",
         }
     ),
+    "copy_ubuf_to_ubuf": frozenset(
+        {
+            "src",
+            "dst",
+            "src_offset",
+            "src_stride0",
+            "src_stride1",
+            "dst_offset",
+            "dst_stride0",
+            "dst_stride1",
+        }
+    ),
 }
 
 
