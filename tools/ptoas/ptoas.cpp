@@ -331,7 +331,7 @@ static llvm::cl::opt<std::string> ptoBuildLevel(
 static llvm::cl::opt<std::string> ptoBackend(
     "pto-backend",
     llvm::cl::desc("Final PTOAS backend: emitc or vpto (default: emitc)"),
-    llvm::cl::value_desc("emitc|vpto"), llvm::cl::init("emitc"));
+    llvm::cl::value_desc("emitc|vpto"), llvm::cl::init("vpto"));
 
 static llvm::cl::opt<bool> emitVPTO(
     "emit-vpto",
@@ -369,7 +369,7 @@ static llvm::cl::opt<bool> vptoEmitHIVMOfficialLLVM(
     "vpto-emit-hivm-llvm",
     llvm::cl::desc("After lowering to VPTO IR, emit textual LLVM/HIVM via "
                    "the official LLVM dialect export path"),
-    llvm::cl::init(false));
+    llvm::cl::init(true));
 
 static llvm::cl::opt<bool> vptoEmitHIVMOfficialBitcode(
     "vpto-emit-hivm-bc",
