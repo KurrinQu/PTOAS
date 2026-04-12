@@ -18,18 +18,25 @@ include "mlir/Interfaces/DataLayoutInterfaces.td"
 include "PTO/IR/PTODialect.td"
 include "PTO/IR/PTOAttrs.td"
 
-// ---- !pto.ptr<elem> ----
+// ---- !pto.ptr<elem, gm|ub> ----
 def PtrType : TypeDef<PTO_Dialect, "Ptr"> {
   let mnemonic = "ptr";
   let parameters = (ins
-    "mlir::Type":$elementType
+    "mlir::Type":$elementType,
+    "mlir::pto::AddressSpaceAttr":$memorySpace
   );
-  let assemblyFormat = "`<` $elementType `>`";
+  let hasCustomAssemblyFormat = 1;
 
   let skipDefaultBuilders = 1;
   let builders = [
     TypeBuilder<(ins "Type":$elementType), [{
-      return Base::get($_ctxt, elementType);
+      return Base::get($_ctxt, elementType,
+                       mlir::pto::AddressSpaceAttr::get($_ctxt,
+                                                        mlir::pto::AddressSpace::GM));
+    }]>,
+    TypeBuilder<(ins "Type":$elementType,
+                     "mlir::pto::AddressSpaceAttr":$memorySpace), [{
+      return Base::get($_ctxt, elementType, memorySpace);
     }]>
   ];
 }
@@ -275,3 +282,5 @@ def F4E2M1x2Type : TypeDef<PTO_Dialect, "F4E2M1x2", [
       "Packed pair of FP4 values (E2M1 format, 2-per-byte). "
       "tile_buf shape counts pairs; each pair occupies 1 byte.";
 }
+
+include "PTO/IR/VPTOTypeDefs.td"

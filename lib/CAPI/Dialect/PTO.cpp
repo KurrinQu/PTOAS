@@ -60,6 +60,14 @@ MlirType mlirPTOPtrTypeGet(MlirContext ctx, MlirType elementType) {
   return wrap(mlir::pto::PtrType::get(c, elem));
 }
 
+MlirType mlirPTOPtrTypeGetWithMemorySpace(MlirContext ctx, MlirType elementType,
+                                          MlirAttribute memorySpace) {
+  auto c = unwrap(ctx);
+  auto elem = unwrap(elementType);
+  auto space = mlir::cast<mlir::pto::AddressSpaceAttr>(unwrap(memorySpace));
+  return wrap(mlir::pto::PtrType::get(c, elem, space));
+}
+
 MlirType mlirPTOPtrTypeGetElementType(MlirType type) {
   auto t = cast<mlir::pto::PtrType>(unwrap(type));;
   return wrap(t.getElementType());
@@ -103,6 +111,11 @@ bool mlirPTOTypeIsAF4E2M1x2Type(MlirType type) {
 
 MlirType mlirPTOF4E2M1x2TypeGet(MlirContext ctx) {
   return wrap(mlir::pto::F4E2M1x2Type::get(unwrap(ctx)));
+}
+
+MlirAttribute mlirPTOPtrTypeGetMemorySpace(MlirType type) {
+  auto t = cast<mlir::pto::PtrType>(unwrap(type));
+  return wrap(t.getMemorySpace());
 }
 
 bool mlirPTOAttrIsAAddressSpaceAttr(MlirAttribute attr) {
