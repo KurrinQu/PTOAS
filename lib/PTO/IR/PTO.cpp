@@ -3102,7 +3102,7 @@ LogicalResult pto::TColArgMaxOp::verify() {
         failed(verifyVecTileCommon(*this, tmpTy, "tmp")) ||
         failed(verifyColArgReductionDstLayout(*this, dstTy, "dst")))
       return failure();
-    if (failed(verifyTileBufSameShapeAndElem(*this, srcTy, tmpTy, "src", "tmp")) ||
+    if (failed(verifyTileBufSameElemType(*this, srcTy, tmpTy, "src", "tmp")) ||
         failed(verifyTileBufSameValidShape(*this, srcTy, tmpTy, "src", "tmp")))
       return failure();
     if (failed(verifyColReductionValidRegion(*this, srcTy, dstTy,
@@ -3169,7 +3169,7 @@ LogicalResult pto::TColArgMinOp::verify() {
         failed(verifyVecTileCommon(*this, tmpTy, "tmp")) ||
         failed(verifyColArgReductionDstLayout(*this, dstTy, "dst")))
       return failure();
-    if (failed(verifyTileBufSameShapeAndElem(*this, srcTy, tmpTy, "src", "tmp")) ||
+    if (failed(verifyTileBufSameElemType(*this, srcTy, tmpTy, "src", "tmp")) ||
         failed(verifyTileBufSameValidShape(*this, srcTy, tmpTy, "src", "tmp")))
       return failure();
     if (failed(verifyColReductionValidRegion(*this, srcTy, dstTy,
@@ -7405,7 +7405,7 @@ mlir::LogicalResult mlir::pto::TRowArgMaxOp::verify() {
         failed(verifyVecTileCommon(*this, tmpTy, "tmp")) ||
         failed(verifyRowReductionDstLayout(*this, dstTy, "dst")))
       return failure();
-    if (failed(verifyTileBufSameShapeAndElem(*this, srcTy, tmpTy, "src", "tmp")) ||
+    if (failed(verifyTileBufSameElemType(*this, srcTy, tmpTy, "src", "tmp")) ||
         failed(verifyTileBufSameValidShape(*this, srcTy, tmpTy, "src", "tmp")))
       return failure();
     if (failed(verifyRowReductionValidRegion(*this, srcTy, dstTy)))
@@ -7479,7 +7479,7 @@ mlir::LogicalResult mlir::pto::TRowArgMinOp::verify() {
         failed(verifyVecTileCommon(*this, tmpTy, "tmp")) ||
         failed(verifyRowReductionDstLayout(*this, dstTy, "dst")))
       return failure();
-    if (failed(verifyTileBufSameShapeAndElem(*this, srcTy, tmpTy, "src", "tmp")) ||
+    if (failed(verifyTileBufSameElemType(*this, srcTy, tmpTy, "src", "tmp")) ||
         failed(verifyTileBufSameValidShape(*this, srcTy, tmpTy, "src", "tmp")))
       return failure();
     if (failed(verifyRowReductionValidRegion(*this, srcTy, dstTy)))
