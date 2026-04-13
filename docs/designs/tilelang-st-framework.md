@@ -106,13 +106,15 @@ test/tilelang_st/
                 ├── CMakeLists.txt
                 ├── run_ptoas_to_file.cmake
                 ├── repack_tilelang_kernel.sh
+                ├── st_common.py
+                ├── compare.py
                 └── tadd/
                     ├── CMakeLists.txt
+                    ├── cases.py
                     ├── tadd.pto
                     ├── launch.cpp
                     ├── main.cpp
-                    ├── gen_data.py
-                    └── compare.py
+                    └── gen_data.py
 ```
 
 各文件职责如下：
@@ -124,11 +126,13 @@ test/tilelang_st/
 | `testcase/CMakeLists.txt` | 定义 `pto_tilelang_vec_st()` 宏，并注册所有 testcase |
 | `testcase/run_ptoas_to_file.cmake` | 封装 `ptoas` 调用，把 `.pto` 编译成 LLVM IR |
 | `testcase/repack_tilelang_kernel.sh` | 把 device-only `.o` 包装成 host 可链接的 fatobj |
+| `testcase/st_common.py` | 所有 testcase 共享的 Python 公共模块（case 校验、数据生成辅助、精度比较、终端着色） |
+| `testcase/compare.py` | 公共比较脚本，所有 testcase 共享，从 per-testcase 的 `cases.py` 导入 `CASES` 后调用 `st_common.run_compare()` |
+| `testcase/<op>/cases.py` | **case 定义的单一来源**，`gen_data.py` 和 `compare.py` 均从此导入 |
 | `testcase/<op>/<op>.pto` | testcase 的 kernel 描述，通常一个文件中放多个 case 对应的函数 |
 | `testcase/<op>/launch.cpp` | kernel 声明和 launch wrapper |
-| `testcase/<op>/main.cpp` | host driver，负责分配内存、launch kernel、回写 output |
-| `testcase/<op>/gen_data.py` | 生成 input 与 golden |
-| `testcase/<op>/compare.py` | 比较 output 与 golden，并给出 pass/fail |
+| `testcase/<op>/main.cpp` | host driver，负责分配内存、launch kernel、回写 output（`ACL_CHECK` 宏由公共头 `test_common.h` 提供） |
+| `testcase/<op>/gen_data.py` | 生成 input 与 golden，从 `cases.py` 读取 case 列表 |
 
 ## 5. 日常使用方式
 
@@ -229,18 +233,20 @@ build/testcase/tadd/
 
 | 文件 | 是否新增/修改 | 说明 |
 |---|---|---|
-| `test/tilelang_st/npu/a5/src/st/testcase/tsub/CMakeLists.txt` | 新增 | 一般只有一行 `pto_tilelang_vec_st(tsub)` |
-| `test/tilelang_st/npu/a5/src/st/testcase/tsub/tsub.pto` | 新增 | 定义一个或多个 case 的 kernel 函数 |
-| `test/tilelang_st/npu/a5/src/st/testcase/tsub/launch.cpp` | 新增 | 为每个 kernel 函数声明 entry 并提供 launch wrapper |
-| `test/tilelang_st/npu/a5/src/st/testcase/tsub/main.cpp` | 新增 | host driver，负责 case table、内存拷贝、launch 和 output 落盘 |
-| `test/tilelang_st/npu/a5/src/st/testcase/tsub/gen_data.py` | 新增 | 生成每个 case 的输入和 golden |
-| `test/tilelang_st/npu/a5/src/st/testcase/tsub/compare.py` | 新增 | 逐 case 比较 golden 和 output |
-| `test/tilelang_st/npu/a5/src/st/testcase/CMakeLists.txt` | 修改 | 把 `tsub` 加入 `ALL_TESTCASES` |
+| `testcase/tsub/CMakeLists.txt` | 新增 | 一般只有一行 `pto_tilelang_vec_st(tsub)` |
+| `testcase/tsub/cases.py` | 新增 | **case 定义的单一来源**：每个 case 必须指定 `name`/`dtype`/`shape`/`valid_shape`/`eps` |
+| `testcase/tsub/tsub.pto` | 新增 | 定义一个或多个 case 的 kernel 函数 |
+| `testcase/tsub/launch.cpp` | 新增 | 为每个 kernel 函数声明 entry 并提供 launch wrapper |
+| `testcase/tsub/main.cpp` | 新增 | host driver，负责 case table、内存拷贝、launch 和 output 落盘 |
+| `testcase/tsub/gen_data.py` | 新增 | 生成每个 case 的输入和 golden，从 `cases.py` 导入 `CASES` |
+| `testcase/CMakeLists.txt` | 修改 | 把 `tsub` 加入 `ALL_TESTCASES` |
 
 通常不需要修改：
 
 - `script/run_st.py`
 - `src/st/CMakeLists.txt`
+- `testcase/st_common.py`
+- `testcase/compare.py`（公共脚本，所有 testcase 共享）
 - `testcase/run_ptoas_to_file.cmake`
 - `testcase/repack_tilelang_kernel.sh`
 
@@ -326,7 +332,7 @@ void LaunchTADD_f32_16x64(float *a, float *b, float *c, void *stream) {
 你需要做的事主要有三类：
 
 1. 声明所有 `LaunchTADD_*` wrapper
-2. 在 `kCases[]` 中列出每个 case 的名字、launch 函数、shape、元素大小
+2. 在 `kCases[]` 中列出每个 case 的名字、launch 函数、shape、valid shape、元素大小
 3. 在 `RunCase()` 中完成：
    - 从 `./<case>/input*.bin` 读取输入
    - `aclrtMemcpy` 把输入拷到 device
@@ -338,62 +344,100 @@ void LaunchTADD_f32_16x64(float *a, float *b, float *c, void *stream) {
 当前 `tadd/main.cpp` 的 case table 形式如下：
 
 ```cpp
+struct TestCase {
+    const char *name;
+    LaunchFn    launch;
+    size_t      rows;       // allocated tile rows
+    size_t      cols;       // allocated tile cols
+    size_t      validRows;  // effective computation rows  (<= rows)
+    size_t      validCols;  // effective computation cols  (<= cols)
+    size_t      elemSize;
+};
+
 static const TestCase kCases[] = {
-    {"f32_16x64", LaunchTADD_f32_16x64, 16, 64, sizeof(float)},
-    {"f32_32x32", LaunchTADD_f32_32x32, 32, 32, sizeof(float)},
+    {"f32_16x64", LaunchTADD_f32_16x64, 16, 64, 16, 64, sizeof(float)},
+    {"f32_32x32", LaunchTADD_f32_32x32, 32, 32, 32, 32, sizeof(float)},
 };
 ```
 
-你在新增 case 时，必须同步更新这个表。
+注意：`ACL_CHECK` 宏已移至公共头文件 `test_common.h`（需在 `acl/acl.h` 之后包含），不需要在每个 testcase 的 `main.cpp` 中重复定义。
 
-### 7.5 `testcase/tadd/gen_data.py`
+你在新增 case 时，必须同步更新这个表，字段需与 `cases.py` 中的 `shape` / `valid_shape` 保持一致。
 
-这个文件负责为每个 case 生成输入和 golden。
+### 7.5 `testcase/tadd/cases.py`
 
-以 `pto.tadd` 为例，golden 就是：
+这是 case 定义的**单一来源**，`gen_data.py` 和 `compare.py` 均从此导入 `CASES`。
+
+每个 case 必须包含以下字段：
 
 ```python
-golden = input1 + input2
+CASES = [
+    {
+        "name": "f32_16x64",          # case 标识，对应运行时子目录和 main.cpp kCases[] 中的 name
+        "dtype": np.float32,           # numpy dtype
+        "shape": (16, 64),             # 分配的 tile 维度 (rows, cols)
+        "valid_shape": (16, 64),       # 有效计算区域 (valid_rows, valid_cols)
+        "eps": 1e-6,                   # numpy.allclose 容差
+    },
+]
 ```
 
-关键约束只有两个：
+`valid_shape` 为必填字段。当 valid shape 等于 tile shape 时也必须显式写出。
 
-1. `CASES` 里的 `name` 必须和 `main.cpp` 里的 case 名一致
-2. `shape` / `dtype` 必须和 `.pto` 中对应 kernel 的语义一致
+### 7.6 `testcase/tadd/gen_data.py`
 
-### 7.6 `testcase/tadd/compare.py`
+这个文件负责为每个 case 生成输入和 golden。从 `cases.py` 导入 `CASES`，
+从 `st_common.py` 导入辅助函数（`setup_case_rng`、`save_case_data`）。
 
-这个文件负责最终精度判定。
+以 `pto.tadd` 为例，每个 case 的核心逻辑：
 
-它会按 case 遍历：
-
-```text
-<case>/golden.bin
-<case>/output.bin
+```python
+golden = np.zeros(shape, dtype=dtype)
+vr, vc = case["valid_shape"]
+golden[:vr, :vc] = (input1[:vr, :vc] + input2[:vr, :vc]).astype(dtype, copy=False)
 ```
 
-然后做：
+golden 只在 `valid_shape` 区域内计算，区域外保持零值。
 
-- shape 一致性检查
-- `np.allclose(...)`
-- 打印粗体绿色 pass / 粗体红色 fail
+每个 case 使用独立的随机 seed（`setup_case_rng` 基于 `hash(case["name"])`），
+新增或调整 case 顺序不会影响已有 case 的测试数据。
 
-你在新增 case 时，同样要把它加入 `CASES` 列表。
+### 7.7 `testcase/compare.py`（公共，无需 per-testcase 修改）
+
+`compare.py` 位于 `testcase/` 公共目录，所有 testcase 共享同一份：
+
+```python
+from cases import CASES
+from st_common import run_compare
+
+if __name__ == "__main__":
+    run_compare(CASES)
+```
+
+`run_st.py` 运行时会将它和 per-testcase 的 `cases.py` 一起拷贝到 build 目录，
+`compare.py` 通过 `from cases import CASES` 获取当前 testcase 的 case 列表。
+
+`run_compare()` 会：
+- 校验所有 case 必填字段
+- 只在 `valid_shape` 区域内比较 `golden.bin` 与 `output.bin`
+- 支持 `argv[1]` 作为 case filter
+- exit code 2 表示失败
 
 ## 8. 如果只是在已有 `tadd` 下新增一个 case
 
-如果 `tadd` testcase 已经存在，而你只是想加一个新 case，例如 `f32_8x128`，则通常只需要同步修改 5 个文件：
+如果 `tadd` testcase 已经存在，而你只是想加一个新 case，例如 `f32_8x128`，则通常只需要同步修改 4 个文件：
 
 | 文件 | 必须修改的内容 |
 |---|---|
+| `testcase/tadd/cases.py` | 在 `CASES` 中加入新条目（含 `name`/`dtype`/`shape`/`valid_shape`/`eps`） |
 | `testcase/tadd/tadd.pto` | 新增一个 `func.func @TADD_f32_8x128(...)` |
 | `testcase/tadd/launch.cpp` | 新增 `extern "C"` kernel 声明和 `LaunchTADD_f32_8x128` |
-| `testcase/tadd/main.cpp` | 在 `kCases[]` 中加入 `{"f32_8x128", ...}` |
-| `testcase/tadd/gen_data.py` | 在 `CASES` 中加入 `{"name": "f32_8x128", ...}` 并定义对应 golden |
-| `testcase/tadd/compare.py` | 在 `CASES` 中加入 `{"name": "f32_8x128", ...}` 和阈值 |
+| `testcase/tadd/main.cpp` | 在 `kCases[]` 中加入 `{"f32_8x128", LaunchTADD_f32_8x128, 8, 128, 8, 128, sizeof(float)}` |
 
 不需要改：
 
+- `testcase/tadd/gen_data.py`（自动从 `cases.py` 读取）
+- `testcase/tadd/compare.py`（自动从 `cases.py` 读取）
 - `testcase/tadd/CMakeLists.txt`
 - `testcase/CMakeLists.txt`
 - `run_st.py`
@@ -420,9 +464,10 @@ golden = input1 + input2
 `.pto` 里 kernel 的参数顺序、`launch.cpp` 声明顺序、`main.cpp` 里 launch wrapper 的参数顺序必须一致。  
 如果 `tadd` 的语义是 `(a, b) -> c`，那 host 侧和 compare 也都要按这个顺序组织。
 
-### 9.3 shape 和 dtype 一致
+### 9.3 shape、valid_shape 和 dtype 一致
 
-`.pto` 中声明的 tile shape、`main.cpp` 中的 `rows/cols`、`gen_data.py` 里的 `shape`、`compare.py` 里的 `dtype` 必须一致。  
+`cases.py` 中的 `shape`/`valid_shape`/`dtype` 是 Python 侧的单一来源，`gen_data.py` 和 `compare.py` 自动从中读取。
+但 C++ 侧的 `main.cpp` `kCases[]`（`rows`/`cols`/`validRows`/`validCols`/`elemSize`）和 `.pto` 中的 tile shape 仍需手动与 `cases.py` 保持一致。
 否则运行能成功，结果也可能是错误的，且定位会很耗时。
 
 ## 10. 建议的开发验证节奏
@@ -481,10 +526,12 @@ python3 test/tilelang_st/script/run_st.py -r sim -v a5 -t tadd -c f32_16x64 -w
 
 如果你想验证的是 `pto.tadd`，最重要的是把下面几处保持同步：
 
-- `tadd.pto` 中的 kernel 语义
+- `cases.py` 中的 case 定义（name/dtype/shape/valid_shape/eps）—— Python 侧的单一来源
+- `tadd.pto` 中的 kernel 函数名和 tile shape
 - `launch.cpp` 中的 kernel 声明与 wrapper
-- `main.cpp` 中的 `kCases[]`
-- `gen_data.py` 中的 oracle
-- `compare.py` 中的比较阈值
+- `main.cpp` 中的 `kCases[]`（rows/cols/validRows/validCols 需与 `cases.py` 一致）
+- `gen_data.py` 中的 golden 计算逻辑（op 语义相关，如加法/减法）
 
-这几处一致，框架就能帮助你把 TileLang 库实现的“端到端正确性”稳定地跑起来。
+`compare.py` 和 `gen_data.py` 的 case 列表、比较阈值均自动从 `cases.py` 读取，不需要单独维护。
+
+这几处一致，框架就能帮助你把 TileLang 库实现的”端到端正确性”稳定地跑起来。
