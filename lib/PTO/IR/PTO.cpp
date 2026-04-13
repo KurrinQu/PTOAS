@@ -37,6 +37,7 @@
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 
 #include <algorithm>
+#include <limits>
 #include <numeric>
 #include <optional>
 #include <tuple>
@@ -1760,6 +1761,33 @@ LogicalResult TStoreOp::verify() {
         emitOpError() << "expects src valid_shape[" << idx << "] to be positive";
         return failure();
       }
+    }
+
+    // Keep TSTORE contract explicit while preserving existing legal layout
+    // reinterpretation paths (e.g. 1x1024 <-> 32x32, 5D partition views).
+    // When both sides are fully static, require equal element counts between
+    // dst shape and src valid_shape.
+    auto getStaticElemCount = [](ArrayRef<int64_t> shape) -> std::optional<int64_t> {
+      int64_t total = 1;
+      for (int64_t dim : shape) {
+        if (dim == ShapedType::kDynamic)
+          return std::nullopt;
+        if (dim <= 0)
+          return std::nullopt;
+        if (total > std::numeric_limits<int64_t>::max() / dim)
+          return std::nullopt;
+        total *= dim;
+      }
+      return total;
+    };
+
+    auto dstElemCount = getStaticElemCount(dstPart.getShape());
+    auto srcValidElemCount = getStaticElemCount(srcValid);
+    if (dstElemCount && srcValidElemCount && *dstElemCount != *srcValidElemCount) {
+      emitOpError() << "expects dst static element count (" << *dstElemCount
+                    << ") to match src valid_shape static element count ("
+                    << *srcValidElemCount << ")";
+      return failure();
     }
     return std::make_pair(srcTile, dstPart);
   };
