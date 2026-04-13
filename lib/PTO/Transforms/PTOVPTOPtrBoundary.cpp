@@ -3,6 +3,7 @@
 #include "PTO/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/PatternMatch.h"
@@ -113,6 +114,100 @@ static bool isSupportedVPTOBufferLikeBoundaryOp(Operation *op) {
              pto::VsstbOp, pto::VstaOp, pto::VstasOp, pto::VstarOp>(op);
 }
 
+static FailureOr<Value> linearizeSubviewBaseOffset(memref::SubViewOp subview,
+                                                   PatternRewriter &rewriter,
+                                                   Location loc,
+                                                   llvm::raw_ostream *diagOS) {
+  auto sourceType = dyn_cast<MemRefType>(subview.getSource().getType());
+  if (!sourceType) {
+    if (diagOS) {
+      *diagOS << "VPTO emission-boundary ptr rewrite failed: memref.subview "
+                 "source must be a ranked memref, got "
+              << subview.getSource().getType() << "\n";
+    }
+    return failure();
+  }
+
+  SmallVector<int64_t> strides;
+  int64_t offset = ShapedType::kDynamic;
+  if (failed(getStridesAndOffset(sourceType, strides, offset))) {
+    if (diagOS) {
+      *diagOS << "VPTO emission-boundary ptr rewrite failed: memref.subview "
+                 "source requires a strided layout: ";
+      subview.print(*diagOS);
+      *diagOS << "\n";
+    }
+    return failure();
+  }
+
+  auto mixedOffsets = subview.getMixedOffsets();
+  if (mixedOffsets.size() != strides.size()) {
+    if (diagOS) {
+      *diagOS << "VPTO emission-boundary ptr rewrite failed: memref.subview "
+                 "offset rank mismatch: ";
+      subview.print(*diagOS);
+      *diagOS << "\n";
+    }
+    return failure();
+  }
+
+  Value totalOffset = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  for (auto [mixedOffset, stride] : llvm::zip(mixedOffsets, strides)) {
+    if (stride == ShapedType::kDynamic) {
+      if (diagOS) {
+        *diagOS << "VPTO emission-boundary ptr rewrite failed: memref.subview "
+                   "source has dynamic stride: ";
+        subview.print(*diagOS);
+        *diagOS << "\n";
+      }
+      return failure();
+    }
+
+    Value offsetValue =
+        getValueOrCreateConstantIndexOp(rewriter, loc, mixedOffset);
+    Value term = offsetValue;
+    if (stride != 1) {
+      Value strideValue = rewriter.create<arith::ConstantIndexOp>(loc, stride);
+      term = rewriter.create<arith::MulIOp>(loc, offsetValue, strideValue);
+    }
+    totalOffset = rewriter.create<arith::AddIOp>(loc, totalOffset, term);
+  }
+
+  return totalOffset;
+}
+
+static Value materializeBoundaryPointer(Value value, Type elementType,
+                                        Attribute memorySpace,
+                                        PatternRewriter &rewriter, Location loc,
+                                        llvm::raw_ostream *diagOS) {
+  if (!value)
+    return {};
+
+  if (auto subview = value.getDefiningOp<memref::SubViewOp>()) {
+    Value basePtr = materializeBoundaryPointer(subview.getSource(), elementType,
+                                               memorySpace, rewriter, loc,
+                                               diagOS);
+    if (!basePtr)
+      return {};
+    FailureOr<Value> subviewOffset =
+        linearizeSubviewBaseOffset(subview, rewriter, loc, diagOS);
+    if (failed(subviewOffset))
+      return {};
+    if (matchPattern(*subviewOffset, m_Zero()))
+      return basePtr;
+    return rewriter
+        .create<pto::AddPtrOp>(loc, basePtr.getType(), basePtr, *subviewOffset)
+        .getResult();
+  }
+
+  return pto::materializeBufferPointer(value, elementType, memorySpace, rewriter,
+                                       loc);
+}
+
+static bool boundaryPointerAlreadyCoversMemRefLayoutOffset(Value buffer) {
+  return buffer.getDefiningOp<memref::SubViewOp>() != nullptr;
+}
+
 static FailureOr<Value> linearizeMemRefIndices(PatternRewriter &rewriter,
                                                Location loc, Value buffer,
                                                ValueRange indices,
@@ -156,7 +251,8 @@ static FailureOr<Value> linearizeMemRefIndices(PatternRewriter &rewriter,
     }
     return failure();
   }
-  if (offset == ShapedType::kDynamic) {
+  bool ignoreLayoutOffset = boundaryPointerAlreadyCoversMemRefLayoutOffset(buffer);
+  if (!ignoreLayoutOffset && offset == ShapedType::kDynamic) {
     if (diagOS) {
       *diagOS << "VPTO emission-boundary ptr rewrite failed: " << opName
               << " does not support dynamic memref layout offsets\n";
@@ -175,7 +271,7 @@ static FailureOr<Value> linearizeMemRefIndices(PatternRewriter &rewriter,
                      ? rewriter.create<arith::AddIOp>(loc, linearized, term)
                      : term;
   }
-  if (offset != 0) {
+  if (!ignoreLayoutOffset && offset != 0) {
     Value offsetValue = rewriter.create<arith::ConstantIndexOp>(loc, offset);
     linearized = linearized
                      ? rewriter.create<arith::AddIOp>(loc, linearized, offsetValue)
@@ -205,9 +301,9 @@ static LogicalResult canonicalizeBoundaryCastPtrOps(ModuleOp module,
       continue;
 
     rewriter.setInsertionPoint(castOp);
-    Value ptrValue = pto::materializeBufferPointer(
+    Value ptrValue = materializeBoundaryPointer(
         castOp.getInput(), resultType.getElementType(),
-        resultType.getMemorySpace(), rewriter, castOp.getLoc());
+        resultType.getMemorySpace(), rewriter, castOp.getLoc(), diagOS);
     if (!ptrValue) {
       if (diagOS) {
         *diagOS << "VPTO emission-boundary ptr rewrite failed: could not "
@@ -242,9 +338,9 @@ static LogicalResult canonicalizeSupportedVPTOBufferLikeOps(
       Attribute memorySpace = getVPTOBufferMemorySpace(source);
       if (!elementType || !memorySpace)
         return failure();
-      Value ptrValue = pto::materializeBufferPointer(source, elementType,
-                                                     memorySpace, rewriter,
-                                                     vlds.getLoc());
+      Value ptrValue = materializeBoundaryPointer(source, elementType,
+                                                  memorySpace, rewriter,
+                                                  vlds.getLoc(), diagOS);
       if (!ptrValue)
         return failure();
       auto linearized = linearizeMemRefIndices(
@@ -271,9 +367,9 @@ static LogicalResult canonicalizeSupportedVPTOBufferLikeOps(
       Attribute memorySpace = getVPTOBufferMemorySpace(destination);
       if (!elementType || !memorySpace)
         return failure();
-      Value ptrValue = pto::materializeBufferPointer(destination, elementType,
-                                                     memorySpace, rewriter,
-                                                     vsts.getLoc());
+      Value ptrValue = materializeBoundaryPointer(destination, elementType,
+                                                  memorySpace, rewriter,
+                                                  vsts.getLoc(), diagOS);
       if (!ptrValue)
         return failure();
       auto linearized = linearizeMemRefIndices(rewriter, vsts.getLoc(),
@@ -318,9 +414,9 @@ static LogicalResult canonicalizeSupportedVPTOBufferLikeOps(
         return failure();
       }
 
-      Value ptrValue = pto::materializeBufferPointer(operand, elementType,
-                                                     memorySpace, rewriter,
-                                                     op->getLoc());
+      Value ptrValue = materializeBoundaryPointer(operand, elementType,
+                                                  memorySpace, rewriter,
+                                                  op->getLoc(), diagOS);
       if (!ptrValue) {
         if (diagOS) {
           *diagOS << "VPTO emission-boundary ptr rewrite failed: could not "
