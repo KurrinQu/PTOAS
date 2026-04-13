@@ -111,6 +111,10 @@ static LogicalResult verifyTileBufSameShapeAndElem(Operation *op, Type lhs, Type
                                                    StringRef rhsName);
 static LogicalResult verifyTileBufSameValidShape(Operation *op, Type lhs, Type rhs,
                                                  StringRef lhsName, StringRef rhsName);
+static LogicalResult verifyScaleTileMatchesOperand(Operation *op, Type scaleTy,
+                                                   Type operandTy,
+                                                   StringRef scaleName,
+                                                   StringRef operandName);
 static LogicalResult verifyVecTileCommon(Operation *op, Type ty, StringRef name);
 static LogicalResult verifyVecTileCommonA2A3(Operation *op, Type ty,
                                              StringRef name);
@@ -2065,6 +2069,46 @@ static LogicalResult verifyTileBufSameValidShape(Operation *op, Type lhs, Type r
   if (lhsValid.size() != rhsValid.size())
     return op->emitOpError() << "expects " << lhsName << " and " << rhsName
                              << " to have the same valid_shape";
+  return success();
+}
+
+static LogicalResult verifyScaleTileMatchesOperand(Operation *op, Type scaleTy,
+                                                   Type operandTy,
+                                                   StringRef scaleName,
+                                                   StringRef operandName) {
+  if (failed(verifyTileBufCommon(op, scaleTy, scaleName)))
+    return failure();
+  auto scaleSpace = getPTOMemorySpaceEnum(scaleTy);
+  if (!scaleSpace || *scaleSpace != pto::AddressSpace::SCALING)
+    return op->emitOpError() << "expects " << scaleName
+                             << " to be in the scaling address space";
+
+  auto scaleShape = getShapeVec(scaleTy);
+  auto operandShape = getShapeVec(operandTy);
+  if (scaleShape.size() != operandShape.size())
+    return op->emitOpError() << "expects " << scaleName << " and "
+                             << operandName << " to have the same rank";
+  for (size_t i = 0; i < scaleShape.size(); ++i) {
+    if (scaleShape[i] != ShapedType::kDynamic &&
+        operandShape[i] != ShapedType::kDynamic &&
+        scaleShape[i] != operandShape[i])
+      return op->emitOpError() << "expects " << scaleName << " and "
+                               << operandName << " to have the same shape";
+  }
+
+  auto scaleValid = getValidShapeVec(scaleTy);
+  auto operandValid = getValidShapeVec(operandTy);
+  if (scaleValid.size() != operandValid.size())
+    return op->emitOpError() << "expects " << scaleName << " and "
+                             << operandName << " to have the same valid_shape";
+  for (size_t i = 0; i < scaleValid.size(); ++i) {
+    if (scaleValid[i] != ShapedType::kDynamic &&
+        operandValid[i] != ShapedType::kDynamic &&
+        scaleValid[i] != operandValid[i])
+      return op->emitOpError() << "expects " << scaleName << " and "
+                               << operandName
+                               << " to have the same valid_shape";
+  }
   return success();
 }
 
