@@ -108,6 +108,10 @@ static LogicalResult verifyTileBufSameShapeAndElem(Operation *op, Type lhs, Type
                                                    StringRef rhsName);
 static LogicalResult verifyTileBufSameValidShape(Operation *op, Type lhs, Type rhs,
                                                  StringRef lhsName, StringRef rhsName);
+static LogicalResult verifyScaleTileMatchesOperand(Operation *op, Type scaleTy,
+                                                   Type operandTy,
+                                                   StringRef scaleName,
+                                                   StringRef operandName);
 static LogicalResult verifyVecTileCommon(Operation *op, Type ty, StringRef name);
 static LogicalResult verifyVecTileCommonA2A3(Operation *op, Type ty,
                                              StringRef name);
