@@ -1169,10 +1169,16 @@ static LogicalResult lowerPTOToVPTOBackend(ModuleOp module) {
     expandOpts.tilelangPath = tilelangPath;
     expandOpts.tilelangPkgPath = tilelangPkgPath;
     backendPM.addPass(pto::createExpandTileOpPass(expandOpts));
-  
+
     backendPM.addPass(pto::createPTOInlineLibCallPass());
     backendPM.addNestedPass<mlir::func::FuncOp>(
         pto::createFoldTileBufIntrinsicsPass());
+    // FoldTileBufIntrinsics materializes many constant branch conditions.
+    // Clean them up immediately on the TileOp expansion path before the
+    // authoring-stage VPTO verifier and let the existing CSE passes remove the
+    // resulting dead values later in the pipeline.
+    backendPM.addPass(mlir::createSCCPPass());
+    backendPM.addPass(mlir::createCanonicalizerPass());
   }
   if (failed(backendPM.run(module))) {
     llvm::errs() << "Error: backend lowering pass execution failed.\n";
