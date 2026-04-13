@@ -1097,6 +1097,20 @@ static LogicalResult verifyColReductionValidRegion(Operation *op, Type srcTy,
   return success();
 }
 
+static LogicalResult verifyColArgReductionDstLayout(Operation *op, Type ty,
+                                                    StringRef name) {
+  if (failed(verifyNDStyleVecTile(op, ty, name)))
+    return failure();
+  auto valid = getValidShapeVec(ty);
+  if (valid.size() != 2)
+    return op->emitOpError() << "expects " << name
+                             << " to have rank-2 valid_shape";
+  if (valid[0] != ShapedType::kDynamic && valid[0] != 1)
+    return op->emitOpError() << "expects " << name
+                             << " valid_shape[0] to be 1";
+  return success();
+}
+
 static std::optional<int64_t> getConstantIntegerValue(Value value) {
   if (!value)
     return std::nullopt;
@@ -2781,6 +2795,63 @@ LogicalResult pto::TAddSOp::verify() {
   };
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
+
+LogicalResult pto::TAxpyOp::verify() {
+  auto verifyCommon = [&]() -> LogicalResult {
+    Type srcTy = getSrc().getType();
+    Type dstTy = getDst().getType();
+    if (failed(verifyVecTileCommon(*this, srcTy, "src")) ||
+        failed(verifyVecTileCommon(*this, dstTy, "dst")))
+      return failure();
+    if (failed(verifyTileBufSameValidShape(*this, srcTy, dstTy, "src", "dst")))
+      return failure();
+
+    Type scalarTy = getScalar().getType();
+    Type srcElem = getElemTy(srcTy);
+    if (scalarTy != srcElem)
+      return emitOpError("expects scalar type to match src element type");
+    if (getShapeVec(srcTy) != getShapeVec(dstTy))
+      return emitOpError("expects src and dst to have the same shape");
+    return success();
+  };
+
+  auto verifyA2A3 = [&]() -> LogicalResult {
+    if (failed(verifyCommon()))
+      return failure();
+    Type srcElem = getElemTy(getSrc().getType());
+    Type dstElem = getElemTy(getDst().getType());
+    bool sameType = srcElem == dstElem;
+    bool widenF16ToF32 = srcElem.isF16() && dstElem.isF32();
+    if (!(sameType || widenF16ToF32))
+      return emitOpError(
+          "expects dst/src element types to match, or dst=f32 and src=f16");
+    if (!(dstElem.isF16() || dstElem.isF32()))
+      return emitOpError("expects A2/A3 taxpy dst element type to be f16/f32");
+    if (!(srcElem.isF16() || srcElem.isF32()))
+      return emitOpError("expects A2/A3 taxpy src element type to be f16/f32");
+    return success();
+  };
+
+  auto verifyA5 = [&]() -> LogicalResult {
+    if (failed(verifyCommon()))
+      return failure();
+    Type srcElem = getElemTy(getSrc().getType());
+    Type dstElem = getElemTy(getDst().getType());
+    bool sameType = srcElem == dstElem;
+    bool widenF16ToF32 = srcElem.isF16() && dstElem.isF32();
+    if (!(sameType || widenF16ToF32))
+      return emitOpError(
+          "expects dst/src element types to match, or dst=f32 and src=f16");
+    if (!(dstElem.isF16() || dstElem.isF32() || dstElem.isBF16()))
+      return emitOpError("expects A5 taxpy dst element type to be f16/bf16/f32");
+    if (!(srcElem.isF16() || srcElem.isF32() || srcElem.isBF16()))
+      return emitOpError("expects A5 taxpy src element type to be f16/bf16/f32");
+    return success();
+  };
+
+  return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
+}
+
 LogicalResult pto::TAddSCOp::verify() {
   if (shouldBypassDecodedMemrefVerifier(getOperation()))
     return success();
@@ -3326,6 +3397,37 @@ LogicalResult pto::TColMaxOp::verify() {
   };
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
+
+LogicalResult pto::TColArgMaxOp::verify() {
+  auto verifyByArch = [&]() -> LogicalResult {
+    Type srcTy = getSrc().getType();
+    Type tmpTy = getTmp().getType();
+    Type dstTy = getDst().getType();
+    if (failed(verifyNDStyleVecTile(*this, srcTy, "src")) ||
+        failed(verifyVecTileCommon(*this, tmpTy, "tmp")) ||
+        failed(verifyColArgReductionDstLayout(*this, dstTy, "dst")))
+      return failure();
+    if (failed(verifyTileBufSameShapeAndElem(*this, srcTy, tmpTy, "src", "tmp")) ||
+        failed(verifyTileBufSameValidShape(*this, srcTy, tmpTy, "src", "tmp")))
+      return failure();
+    if (failed(verifyColReductionValidRegion(*this, srcTy, dstTy,
+                                             /*requireNonZeroSrc=*/true)))
+      return failure();
+
+    auto srcElem = getElemTy(srcTy).dyn_cast<mlir::FloatType>();
+    if (!srcElem || (!srcElem.isF16() && !srcElem.isF32()))
+      return emitOpError("expects src element type to be f16 or f32");
+
+    auto dstInt = dyn_cast<IntegerType>(getElemTy(dstTy));
+    if (!dstInt || dstInt.getWidth() != 32 ||
+        (!dstInt.isSignless() && !dstInt.isUnsigned()))
+      return emitOpError("expects dst element type to be i32 or ui32");
+    return success();
+  };
+
+  return dispatchVerifierByArch(getOperation(), verifyByArch, verifyByArch);
+}
+
 LogicalResult pto::TColMinOp::verify() {
   auto verifyA2A3 = [&]() -> LogicalResult {
     Type srcTy = getSrc().getType();
@@ -3361,6 +3463,36 @@ LogicalResult pto::TColMinOp::verify() {
     return success();
   };
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
+}
+
+LogicalResult pto::TColArgMinOp::verify() {
+  auto verifyByArch = [&]() -> LogicalResult {
+    Type srcTy = getSrc().getType();
+    Type tmpTy = getTmp().getType();
+    Type dstTy = getDst().getType();
+    if (failed(verifyNDStyleVecTile(*this, srcTy, "src")) ||
+        failed(verifyVecTileCommon(*this, tmpTy, "tmp")) ||
+        failed(verifyColArgReductionDstLayout(*this, dstTy, "dst")))
+      return failure();
+    if (failed(verifyTileBufSameShapeAndElem(*this, srcTy, tmpTy, "src", "tmp")) ||
+        failed(verifyTileBufSameValidShape(*this, srcTy, tmpTy, "src", "tmp")))
+      return failure();
+    if (failed(verifyColReductionValidRegion(*this, srcTy, dstTy,
+                                             /*requireNonZeroSrc=*/true)))
+      return failure();
+
+    auto srcElem = getElemTy(srcTy).dyn_cast<mlir::FloatType>();
+    if (!srcElem || (!srcElem.isF16() && !srcElem.isF32()))
+      return emitOpError("expects src element type to be f16 or f32");
+
+    auto dstInt = dyn_cast<IntegerType>(getElemTy(dstTy));
+    if (!dstInt || dstInt.getWidth() != 32 ||
+        (!dstInt.isSignless() && !dstInt.isUnsigned()))
+      return emitOpError("expects dst element type to be i32 or ui32");
+    return success();
+  };
+
+  return dispatchVerifierByArch(getOperation(), verifyByArch, verifyByArch);
 }
 
 
@@ -5671,6 +5803,104 @@ LogicalResult TGetValOp::verify() {
   return success();
 }
 
+LogicalResult THistogramOp::verify() {
+  auto isSignlessOrUnsignedInt = [](Type ty, unsigned width) {
+    auto it = dyn_cast<IntegerType>(ty);
+    return it && it.getWidth() == width && (it.isSignless() || it.isUnsigned());
+  };
+
+  auto verifyA2A3 = [&]() -> LogicalResult {
+    return emitOpError("thistogram is only supported on A5");
+  };
+  auto verifyA5 = [&]() -> LogicalResult {
+    Type srcTy = getSrc().getType();
+    Type idxTy = getIdx().getType();
+    Type dstTy = getDst().getType();
+    if (failed(verifyTileBufCommon(*this, srcTy, "src")) ||
+        failed(verifyTileBufCommon(*this, idxTy, "idx")) ||
+        failed(verifyTileBufCommon(*this, dstTy, "dst")))
+      return failure();
+
+    auto srcSpace = getPTOMemorySpaceEnum(srcTy);
+    auto idxSpace = getPTOMemorySpaceEnum(idxTy);
+    auto dstSpace = getPTOMemorySpaceEnum(dstTy);
+    if (!srcSpace || *srcSpace != pto::AddressSpace::VEC)
+      return emitOpError("expects src to be in the vec address space");
+    if (!idxSpace || *idxSpace != pto::AddressSpace::VEC)
+      return emitOpError("expects idx to be in the vec address space");
+    if (!dstSpace || *dstSpace != pto::AddressSpace::VEC)
+      return emitOpError("expects dst to be in the vec address space");
+
+    auto srcTB = dyn_cast<pto::TileBufType>(srcTy);
+    auto idxTB = dyn_cast<pto::TileBufType>(idxTy);
+    auto dstTB = dyn_cast<pto::TileBufType>(dstTy);
+    if (!srcTB || !idxTB || !dstTB)
+      return emitOpError("expects src, idx, and dst to be tile_buf types");
+
+    if (srcTB.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) ||
+        srcTB.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::NoneBox))
+      return emitOpError("expects src to use row_major + none_box layout");
+    if (dstTB.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) ||
+        dstTB.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::NoneBox))
+      return emitOpError("expects dst to use row_major + none_box layout");
+    if (idxTB.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::ColMajor) ||
+        idxTB.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::NoneBox))
+      return emitOpError(
+          "expects idx to use DN layout (col_major + none_box)");
+
+    if (!isSignlessOrUnsignedInt(getElemTy(srcTy), 16))
+      return emitOpError("expects src element type to be ui16");
+    if (!isSignlessOrUnsignedInt(getElemTy(idxTy), 8))
+      return emitOpError("expects idx element type to be ui8");
+    if (!isSignlessOrUnsignedInt(getElemTy(dstTy), 32))
+      return emitOpError("expects dst element type to be ui32");
+
+    auto srcShape = getShapeVec(srcTy);
+    auto idxShape = getShapeVec(idxTy);
+    auto dstShape = getShapeVec(dstTy);
+    auto srcValid = getValidShapeVec(srcTy);
+    auto idxValid = getValidShapeVec(idxTy);
+    auto dstValid = getValidShapeVec(dstTy);
+    if (srcShape.size() != 2 || idxShape.size() != 2 || dstShape.size() != 2 ||
+        srcValid.size() != 2 || idxValid.size() != 2 || dstValid.size() != 2)
+      return emitOpError(
+          "expects src, idx, and dst to have rank-2 shape and valid_shape");
+
+    if (!hasCompatibleKnownExtent(srcShape[0], idxShape[0]) ||
+        !hasCompatibleKnownExtent(srcValid[0], idxValid[0]))
+      return emitOpError("expects idx rows and valid rows to match src");
+    if (!hasCompatibleKnownExtent(srcShape[0], dstShape[0]) ||
+        !hasCompatibleKnownExtent(srcValid[0], dstValid[0]))
+      return emitOpError("expects dst rows and valid rows to match src");
+
+    if (!isKnownUnitExtent(idxShape[1]) || !isKnownUnitExtent(idxValid[1]))
+      return emitOpError("expects idx to have exactly one column");
+    if (dstShape[1] != ShapedType::kDynamic && dstShape[1] < 256)
+      return emitOpError("expects dst shape[1] to be at least 256");
+    if (dstValid[1] != ShapedType::kDynamic && dstValid[1] < 256)
+      return emitOpError("expects dst valid_shape[1] to be at least 256");
+    return success();
+  };
+
+  return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
+}
+
+LogicalResult TGetScaleAddrOp::verify() {
+  auto verifyA2A3 = [&]() -> LogicalResult {
+    return emitOpError("tget_scale_addr is only supported on A5");
+  };
+  auto verifyA5 = [&]() -> LogicalResult {
+    Type srcTy = getSrc().getType();
+    Type dstTy = getDst().getType();
+    if (failed(verifyTileBufCommon(*this, srcTy, "src")))
+      return failure();
+    if (failed(verifyScaleTileMatchesOperand(*this, dstTy, srcTy, "dst", "src")))
+      return failure();
+    return success();
+  };
+  return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
+}
+
 // ---- MScatterOp ----
 LogicalResult MScatterOp::verify() {
   if (shouldBypassDecodedMemrefVerifier(getOperation()))
@@ -7761,6 +7991,35 @@ mlir::LogicalResult mlir::pto::TRowMaxOp::verify() {
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
+mlir::LogicalResult mlir::pto::TRowArgMaxOp::verify() {
+  auto verifyByArch = [&]() -> LogicalResult {
+    Type srcTy = getSrc().getType();
+    Type tmpTy = getTmp().getType();
+    Type dstTy = getDst().getType();
+    if (failed(verifyRowReductionSrcLayout(*this, srcTy, "src")) ||
+        failed(verifyVecTileCommon(*this, tmpTy, "tmp")) ||
+        failed(verifyRowReductionDstLayout(*this, dstTy, "dst")))
+      return failure();
+    if (failed(verifyTileBufSameShapeAndElem(*this, srcTy, tmpTy, "src", "tmp")) ||
+        failed(verifyTileBufSameValidShape(*this, srcTy, tmpTy, "src", "tmp")))
+      return failure();
+    if (failed(verifyRowReductionValidRegion(*this, srcTy, dstTy)))
+      return failure();
+
+    auto srcElem = getElemTy(srcTy).dyn_cast<mlir::FloatType>();
+    if (!srcElem || (!srcElem.isF16() && !srcElem.isF32()))
+      return emitOpError("expects src element type to be f16 or f32");
+
+    auto dstInt = dyn_cast<IntegerType>(getElemTy(dstTy));
+    if (!dstInt || dstInt.getWidth() != 32 ||
+        (!dstInt.isSignless() && !dstInt.isUnsigned()))
+      return emitOpError("expects dst element type to be i32 or ui32");
+    return success();
+  };
+
+  return dispatchVerifierByArch(getOperation(), verifyByArch, verifyByArch);
+}
+
 
 mlir::LogicalResult mlir::pto::TRowMinOp::verify() {
   auto verifyA2A3 = [&]() -> LogicalResult {
@@ -7804,6 +8063,35 @@ mlir::LogicalResult mlir::pto::TRowMinOp::verify() {
     return mlir::success();
   };
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
+}
+
+mlir::LogicalResult mlir::pto::TRowArgMinOp::verify() {
+  auto verifyByArch = [&]() -> LogicalResult {
+    Type srcTy = getSrc().getType();
+    Type tmpTy = getTmp().getType();
+    Type dstTy = getDst().getType();
+    if (failed(verifyRowReductionSrcLayout(*this, srcTy, "src")) ||
+        failed(verifyVecTileCommon(*this, tmpTy, "tmp")) ||
+        failed(verifyRowReductionDstLayout(*this, dstTy, "dst")))
+      return failure();
+    if (failed(verifyTileBufSameShapeAndElem(*this, srcTy, tmpTy, "src", "tmp")) ||
+        failed(verifyTileBufSameValidShape(*this, srcTy, tmpTy, "src", "tmp")))
+      return failure();
+    if (failed(verifyRowReductionValidRegion(*this, srcTy, dstTy)))
+      return failure();
+
+    auto srcElem = getElemTy(srcTy).dyn_cast<mlir::FloatType>();
+    if (!srcElem || (!srcElem.isF16() && !srcElem.isF32()))
+      return emitOpError("expects src element type to be f16 or f32");
+
+    auto dstInt = dyn_cast<IntegerType>(getElemTy(dstTy));
+    if (!dstInt || dstInt.getWidth() != 32 ||
+        (!dstInt.isSignless() && !dstInt.isUnsigned()))
+      return emitOpError("expects dst element type to be i32 or ui32");
+    return success();
+  };
+
+  return dispatchVerifierByArch(getOperation(), verifyByArch, verifyByArch);
 }
 
 
@@ -9704,6 +9992,19 @@ void TGetValOp::getEffects(
   PTO_ADD_READ(getSrcMutable());
 }
 
+void THistogramOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getSrcMutable());
+  PTO_ADD_READ(getIdxMutable());
+  PTO_ADD_WRITE(getDstMutable());
+}
+
+void TGetScaleAddrOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getSrcMutable());
+  PTO_ADD_WRITE(getDstMutable());
+}
+
 // TSETVAL: Write(dst) (single element update)
 void TSetValOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
@@ -9721,6 +10022,12 @@ PTO_DEFINE_BINARY_EFFECTS(TAddOp, getSrc0Mutable(), getSrc1Mutable(), getDstMuta
 PTO_DEFINE_TERNARY_EFFECTS(TAddCOp, getSrc0Mutable(), getSrc1Mutable(), getSrc2Mutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TAddSOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TAddSCOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
+void TAxpyOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getSrcMutable());
+  PTO_ADD_READ(getScalarMutable());
+  PTO_ADD_WRITE(getDstMutable());
+}
 
 PTO_DEFINE_BINARY_EFFECTS(TAndOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TConcatOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
@@ -9752,6 +10059,20 @@ PTO_DEFINE_BINARY_EFFECTS(TColExpandMinOp, getSrc0Mutable(), getSrc1Mutable(), g
 PTO_DEFINE_UNARY_EFFECTS(TColMaxOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TColMinOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TColProdOp, getSrcMutable(), getDstMutable())
+
+void TColArgMaxOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getSrcMutable());
+  PTO_ADD_WRITE(getTmpMutable());
+  PTO_ADD_WRITE(getDstMutable());
+}
+
+void TColArgMinOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getSrcMutable());
+  PTO_ADD_WRITE(getTmpMutable());
+  PTO_ADD_WRITE(getDstMutable());
+}
 
 void TColSumOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
@@ -9973,7 +10294,21 @@ void TRowMaxOp::getEffects(
   PTO_ADD_WRITE(getDstMutable());
 }
 
+void TRowArgMaxOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getSrcMutable());
+  PTO_ADD_WRITE(getTmpMutable());
+  PTO_ADD_WRITE(getDstMutable());
+}
+
 void TRowMinOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getSrcMutable());
+  PTO_ADD_WRITE(getTmpMutable());
+  PTO_ADD_WRITE(getDstMutable());
+}
+
+void TRowArgMinOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_READ(getSrcMutable());
   PTO_ADD_WRITE(getTmpMutable());
