@@ -2257,6 +2257,18 @@ static LogicalResult verifyTileBufCommon(Operation *op, Type ty, StringRef name)
   return success();
 }
 
+static LogicalResult verifyTileBufSameElemType(Operation *op, Type lhs, Type rhs,
+                                               StringRef lhsName,
+                                               StringRef rhsName) {
+  if (!isTileLikeType(lhs) || !isTileLikeType(rhs))
+    return op->emitOpError() << "expects " << lhsName << " and " << rhsName
+                             << " to be !pto.tile_buf or memref";
+  if (getElemTy(lhs) != getElemTy(rhs))
+    return op->emitOpError() << "expects " << lhsName << " and " << rhsName
+                             << " to have the same element type";
+  return success();
+}
+
 static LogicalResult verifyTileBufSameShapeAndElem(Operation *op, Type lhs, Type rhs,
                                                    StringRef lhsName,
                                                    StringRef rhsName) {
