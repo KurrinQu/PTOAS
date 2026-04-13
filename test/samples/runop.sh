@@ -180,6 +180,7 @@ process_one_dir() {
 
   local target_arch="a3"
   local has_pto_arch_override=0
+  local has_pto_level_override=0
   if ((${#ptoas_flags[@]})); then
     for ((idx=0; idx<${#ptoas_flags[@]}; ++idx)); do
       if [[ "${ptoas_flags[idx]}" == "--pto-arch" && $((idx + 1)) -lt ${#ptoas_flags[@]} ]]; then
@@ -188,12 +189,21 @@ process_one_dir() {
       elif [[ "${ptoas_flags[idx]}" == --pto-arch=* ]]; then
         target_arch="${ptoas_flags[idx]#--pto-arch=}"
         has_pto_arch_override=1
+      elif [[ "${ptoas_flags[idx]}" == "--pto-level" && $((idx + 1)) -lt ${#ptoas_flags[@]} ]]; then
+        has_pto_level_override=1
+      elif [[ "${ptoas_flags[idx]}" == --pto-level=* ]]; then
+        has_pto_level_override=1
       fi
     done
   fi
-  if [[ "$A" == "Qwen3Tilelet" && $has_pto_arch_override -eq 0 ]]; then
-    ptoas_flags+=(--pto-arch a5 --pto-level=level3)
-    target_arch="a5"
+  if [[ "$A" == "Qwen3Tilelet" ]]; then
+    if [[ $has_pto_arch_override -eq 0 ]]; then
+      ptoas_flags+=(--pto-arch a5)
+      target_arch="a5"
+    fi
+    if [[ $has_pto_level_override -eq 0 ]]; then
+      ptoas_flags+=(--pto-level=level3)
+    fi
   fi
   local expected_vec_barrier="pipe_barrier(PIPE_V)"
   local skip_vec_barrier=0
