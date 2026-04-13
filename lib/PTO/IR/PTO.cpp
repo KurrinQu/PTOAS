@@ -37,6 +37,7 @@
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 
 #include <algorithm>
+#include <limits>
 #include <numeric>
 #include <optional>
 #include <tuple>
@@ -1766,25 +1767,31 @@ LogicalResult TStoreOp::verify() {
       }
     }
 
-    // Keep TSTORE contract explicit: destination tensor partition shape must
-    // match source tile valid_shape on every statically-known dimension.
-    auto dstShape = dstPart.getShape();
-    if (dstShape.size() != srcValid.size()) {
-      emitOpError() << "expects dst rank (" << dstShape.size()
-                    << ") to match src valid_shape rank (" << srcValid.size()
-                    << ")";
-      return failure();
-    }
-    for (auto [idx, dims] : llvm::enumerate(llvm::zip(dstShape, srcValid))) {
-      auto [dstDim, srcValidDim] = dims;
-      if (dstDim == ShapedType::kDynamic || srcValidDim == ShapedType::kDynamic)
-        continue;
-      if (dstDim != srcValidDim) {
-        emitOpError() << "expects dst shape[" << idx
-                      << "] to match src valid_shape[" << idx << "] ("
-                      << srcValidDim << "), but got " << dstDim;
-        return failure();
+    // Keep TSTORE contract explicit while preserving existing legal layout
+    // reinterpretation paths (e.g. 1x1024 <-> 32x32, 5D partition views).
+    // When both sides are fully static, require equal element counts between
+    // dst shape and src valid_shape.
+    auto getStaticElemCount = [](ArrayRef<int64_t> shape) -> std::optional<int64_t> {
+      int64_t total = 1;
+      for (int64_t dim : shape) {
+        if (dim == ShapedType::kDynamic)
+          return std::nullopt;
+        if (dim <= 0)
+          return std::nullopt;
+        if (total > std::numeric_limits<int64_t>::max() / dim)
+          return std::nullopt;
+        total *= dim;
       }
+      return total;
+    };
+
+    auto dstElemCount = getStaticElemCount(dstPart.getShape());
+    auto srcValidElemCount = getStaticElemCount(srcValid);
+    if (dstElemCount && srcValidElemCount && *dstElemCount != *srcValidElemCount) {
+      emitOpError() << "expects dst static element count (" << *dstElemCount
+                    << ") to match src valid_shape static element count ("
+                    << *srcValidElemCount << ")";
+      return failure();
     }
     return std::make_pair(srcTile, dstPart);
   };
