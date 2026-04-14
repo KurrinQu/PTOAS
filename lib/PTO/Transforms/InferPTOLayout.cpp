@@ -534,6 +534,12 @@ struct InferPTOLayoutPass
     : public mlir::pto::impl::InferPTOLayoutBase<InferPTOLayoutPass> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(InferPTOLayoutPass)
 
+  StringRef getArgument() const final { return "pto-infer-layout"; }
+
+  StringRef getDescription() const final {
+    return "Infer GlobalTensor layout (ND/DN/NZ) for make_tensor_view";
+  }
+
   void runOnOperation() override {
     func::FuncOp func = getOperation();
     // ------------------------------------------------------------------

@@ -59,6 +59,16 @@ static void printPTOASVersion(llvm::raw_ostream &os) {
   os << "ptoas " << PTOAS_RELEASE_VERSION << "\n";
 }
 
+static LogicalResult applyConfiguredPassManagerCLOptions(
+    PassManager &pm, llvm::StringRef pipelineName,
+    llvm::raw_ostream &diagOS = llvm::errs()) {
+  if (succeeded(mlir::applyPassManagerCLOptions(pm)))
+    return success();
+  diagOS << "Error: failed to apply MLIR pass manager command-line options for "
+         << pipelineName << ".\n";
+  return failure();
+}
+
 static LogicalResult reorderEmitCFunctions(ModuleOp module) {
   SmallVector<emitc::FuncOp> declarations;
   SmallVector<emitc::FuncOp> definitions;
@@ -1091,6 +1101,8 @@ static LogicalResult prepareVPTOForEmission(ModuleOp module) {
   cleanupPM.enableVerifier();
   cleanupPM.addPass(createCanonicalizerPass());
   cleanupPM.addPass(createCSEPass());
+  if (failed(applyConfiguredPassManagerCLOptions(cleanupPM, "VPTO cleanup")))
+    return failure();
   if (failed(cleanupPM.run(module))) {
     llvm::errs() << "Error: VPTO pre-emission cleanup failed.\n";
     return failure();
@@ -1101,6 +1113,9 @@ static LogicalResult prepareVPTOForEmission(ModuleOp module) {
   boundaryPM.addPass(pto::createVPTOPtrNormalizePass());
   boundaryPM.addPass(pto::createVPTOPtrCastCleanupPass());
   boundaryPM.addPass(createReconcileUnrealizedCastsPass());
+  if (failed(applyConfiguredPassManagerCLOptions(boundaryPM,
+                                                 "VPTO ptr normalization")))
+    return failure();
   if (failed(boundaryPM.run(module))) {
     llvm::errs() << "Error: VPTO ptr normalization failed.\n";
     return failure();
@@ -1111,6 +1126,9 @@ static LogicalResult prepareVPTOForEmission(ModuleOp module) {
   prepPM.addNestedPass<func::FuncOp>(createPTOVPTOExpandBridgeOpsPass());
   prepPM.addPass(createCSEPass());
   prepPM.addPass(pto::createPTOValidateVPTOEmissionIRPass());
+  if (failed(applyConfiguredPassManagerCLOptions(prepPM,
+                                                 "VPTO emission preparation")))
+    return failure();
   if (failed(prepPM.run(module))) {
     llvm::errs() << "Error: VPTO emission preparation failed.\n";
     return failure();
@@ -1146,6 +1164,9 @@ static LogicalResult lowerPTOToVPTOBackend(ModuleOp module) {
     backendPM.addPass(mlir::createSCCPPass());
     backendPM.addPass(mlir::createCanonicalizerPass());
   }
+  if (failed(applyConfiguredPassManagerCLOptions(backendPM,
+                                                 "VPTO backend lowering")))
+    return failure();
   if (failed(backendPM.run(module))) {
     llvm::errs() << "Error: backend lowering pass execution failed.\n";
     return failure();
@@ -1221,6 +1242,8 @@ int main(int argc, char **argv) {
   registry.insert<emitc::EmitCDialect>();
   registry.insert<mlir::LLVM::LLVMDialect>();
   mlir::registerAllPasses();
+  ::registerPTOPasses();
+  mlir::pto::registerPTOViewToMemrefPass();
   ::registerPTOInlineLibCall();
   ::registerFoldTileBufIntrinsics();
   ::registerExpandTileOp();
@@ -1497,6 +1520,8 @@ int main(int argc, char **argv) {
   }
 
   pm.addPass(createCSEPass());
+  if (failed(applyConfiguredPassManagerCLOptions(pm, "main PTOAS pipeline")))
+    return 1;
 
   module->getOperation()->setAttr("pto.target_arch",
                                   mlir::StringAttr::get(&context, arch));

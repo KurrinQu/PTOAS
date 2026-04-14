@@ -4873,6 +4873,11 @@ static LogicalResult runPipeline(ModuleOp module, llvm::raw_ostream &diagOS,
   pm.addPass(createConvertFuncToLLVMPass());
   pm.addPass(createConvertControlFlowToLLVMPass());
   pm.addPass(createReconcileUnrealizedCastsPass());
+  if (failed(mlir::applyPassManagerCLOptions(pm))) {
+    diagOS << "VPTO LLVM emission failed: unable to apply MLIR pass manager "
+              "command-line options\n";
+    return failure();
+  }
   if (failed(pm.run(clonedModule))) {
     diagOS << "VPTO LLVM emission failed: official lowering pipeline failed\n";
     return failure();
