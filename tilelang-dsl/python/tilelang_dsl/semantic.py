@@ -3419,7 +3419,7 @@ class _SemanticAnalyzer:
         rhs: SemanticExpr,
         op: str,
     ) -> SemanticType:
-        if op in {"add", "sub", "mul", "floordiv"}:
+        if op in {"add", "sub", "mul", "mod", "floordiv"}:
             if isinstance(lhs.type, SemanticIndexType) and isinstance(rhs.type, SemanticIndexType):
                 return SemanticIndexType()
             raise TypeError("binary expressions currently only support index-typed operands")
@@ -5046,6 +5046,12 @@ class _SemanticAnalyzer:
             if expr.op == "mul":
                 if isinstance(lhs, int) and isinstance(rhs, int):
                     return lhs * rhs
+                return None
+            if expr.op == "mod":
+                if isinstance(lhs, int) and isinstance(rhs, int):
+                    if rhs == 0:
+                        return None
+                    return lhs % rhs
                 return None
             if expr.op == "floordiv":
                 if isinstance(lhs, int) and isinstance(rhs, int):
