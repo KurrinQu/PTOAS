@@ -3428,6 +3428,10 @@ class _AuthoringRenderer:
                 return "arith.subi"
             if op == "mul":
                 return "arith.muli"
+            if op == "mod":
+                if isinstance(ty, SemanticIndexType):
+                    return "arith.remui"
+                return "arith.remsi"
             if op == "floordiv":
                 return "arith.floordivsi"
         raise NotImplementedError(f"unsupported binary op '{op}' for type {ty!r}")
