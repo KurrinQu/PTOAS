@@ -620,6 +620,7 @@ _BINARY_OP_NAMES = {
     ast.Add: "add",
     ast.Sub: "sub",
     ast.Mult: "mul",
+    ast.Mod: "mod",
     ast.FloorDiv: "floordiv",
 }
 _COMPARE_OP_NAMES = {
