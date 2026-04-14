@@ -43,6 +43,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -92,11 +93,12 @@ struct OperandTypeInfo {
 
   // --- Tile-only (TileBufType) ---
   SmallVector<int64_t, 2> tileShape;
+  SmallVector<int64_t, 2> tileValidShape;
   std::string tileMemorySpace; // "ub" or "gm"
   int32_t blayout = 0;
   int32_t slayout = 0;
   int32_t fractal = 0;
-  int32_t pad = 0;
+  uint64_t pad = 0;
 
   // --- View-only (MemRefType) — for JSON / constraint checking only ---
   SmallVector<int64_t> viewShape;
@@ -109,6 +111,7 @@ struct OperandTypeInfo {
       return false;
     if (kind == OperandKind::Tile)
       return tileShape == rhs.tileShape &&
+             tileValidShape == rhs.tileValidShape &&
              tileMemorySpace == rhs.tileMemorySpace &&
              blayout == rhs.blayout && slayout == rhs.slayout &&
              fractal == rhs.fractal && pad == rhs.pad;
@@ -138,8 +141,10 @@ struct SpecKeyInfo : public llvm::DenseMapInfo<SpecKey> {
       h = llvm::hash_combine(h, static_cast<int>(op.kind), op.dtype);
       if (op.kind == OperandKind::Tile) {
         h = llvm::hash_combine(h, op.tileMemorySpace, op.blayout,
-                                op.slayout, op.fractal, op.pad);
+                               op.slayout, op.fractal, op.pad);
         for (int64_t d : op.tileShape)
+          h = llvm::hash_combine(h, d);
+        for (int64_t d : op.tileValidShape)
           h = llvm::hash_combine(h, d);
       }
       // View/Scalar: only kind + dtype contribute to hash.
@@ -184,6 +189,20 @@ static std::string getMemorySpaceString(MemRefType mrTy) {
   return "ub";
 }
 
+static std::string getBLayoutString(int32_t blayout) {
+  if (blayout == static_cast<int32_t>(pto::BLayout::ColMajor))
+    return "col_major";
+  return "row_major";
+}
+
+static std::string getSLayoutString(int32_t slayout) {
+  if (slayout == static_cast<int32_t>(pto::SLayout::RowMajor))
+    return "row_major";
+  if (slayout == static_cast<int32_t>(pto::SLayout::ColMajor))
+    return "col_major";
+  return "none_box";
+}
+
 static std::optional<OperandTypeInfo> buildOperandTypeInfo(Type ty) {
   // Tile operand — from TileBufType.
   if (auto tbTy = dyn_cast<pto::TileBufType>(ty)) {
@@ -193,6 +212,11 @@ static std::optional<OperandTypeInfo> buildOperandTypeInfo(Type ty) {
     if (info.dtype.empty())
       return std::nullopt;
     info.tileShape.assign(tbTy.getShape().begin(), tbTy.getShape().end());
+    auto validShape = tbTy.getValidShape();
+    if (validShape.empty())
+      info.tileValidShape.assign(tbTy.getShape().begin(), tbTy.getShape().end());
+    else
+      info.tileValidShape.assign(validShape.begin(), validShape.end());
     info.tileMemorySpace = getMemorySpaceString(tbTy);
     if (auto config = tbTy.getConfigAttr()) {
       info.blayout = static_cast<int32_t>(config.getBLayout().getValue());
@@ -200,7 +224,7 @@ static std::optional<OperandTypeInfo> buildOperandTypeInfo(Type ty) {
       info.fractal = config.getSFractalSize()
                          ? static_cast<int32_t>(config.getSFractalSize().getInt())
                          : 0;
-      info.pad = static_cast<int32_t>(config.getPad().getValue());
+      info.pad = static_cast<uint64_t>(config.getPad().getValue());
     }
     return info;
   }
@@ -295,7 +319,20 @@ static std::string buildOperandSpecsJson(const SpecKey &key) {
     if (op.kind == OperandKind::Tile) {
       json += "{\"kind\":\"tile\",\"dtype\":\"" + op.dtype + "\",\"shape\":";
       appendJsonIntArray(json, op.tileShape);
-      json += ",\"memory_space\":\"" + op.tileMemorySpace + "\"}";
+      json += ",\"valid_shape\":";
+      appendJsonIntArray(json, op.tileValidShape);
+      json += ",\"memory_space\":\"";
+      json += op.tileMemorySpace;
+      json += "\",\"config\":{";
+      json += "\"b_layout\":\"";
+      json += getBLayoutString(op.blayout);
+      json += "\",\"s_layout\":\"";
+      json += getSLayoutString(op.slayout);
+      json += "\",\"s_fractal_size\":";
+      json += std::to_string(op.fractal);
+      json += ",\"pad_value\":\"0x";
+      json += llvm::utohexstr(op.pad, /*LowerCase=*/false);
+      json += "\"}}";
       continue;
     }
 
@@ -470,6 +507,12 @@ func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
     if (op.kind == OperandKind::Tile) {
       for (int64_t d : op.tileShape)
         uniqueName += "_" + std::to_string(d);
+      for (int64_t d : op.tileValidShape)
+        uniqueName += "_v" + std::to_string(d);
+      uniqueName += "_bl" + std::to_string(op.blayout);
+      uniqueName += "_sl" + std::to_string(op.slayout);
+      uniqueName += "_fr" + std::to_string(op.fractal);
+      uniqueName += "_pd" + llvm::utohexstr(op.pad, /*LowerCase=*/false);
     }
   }
 

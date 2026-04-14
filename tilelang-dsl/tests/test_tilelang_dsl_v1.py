@@ -5,6 +5,7 @@ from importlib import util
 from pathlib import Path
 
 import tilelang_dsl as pto
+import tilelang_dsl.expand_helper as expand_helper
 import tilelang_dsl.kernel as kernel_impl
 from tilelang_dsl.support_matrix import (
     ADVANCED_EXPLICIT_VECSCOPE_SURFACES,
@@ -187,6 +188,92 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertEqual(pto.PadValue.MAX.materialize_scalar(pto.i16), 0x7FFF)
         self.assertEqual(pto.PadValue.MIN.materialize_scalar(pto.i16), -0x8000)
         self.assertIsNone(pto.PadValue.NULL.materialize_scalar(pto.f16))
+
+
+class TileLangDSLExpandHelperTests(unittest.TestCase):
+    def test_operand_specs_preserve_tile_valid_shape_and_pad_value(self) -> None:
+        source = """
+import tilelang_dsl as pto
+
+@pto.vkernel(op="pto.expand_helper_tile_config_unique", dtypes=[(pto.f32, pto.f32)])
+def kernel(src: pto.Tile, dst: pto.Tile):
+    rows, cols = src.valid_shape
+    pad = dst.pad_value
+    if pto.constexpr(pad != pto.PadValue.NULL):
+        scalar = pad.value
+    return None
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_path = Path(tmpdir) / "expand_helper_tile_config_unique.py"
+            module_path.write_text(source, encoding="utf-8")
+
+            mod = expand_helper._import_py_file(module_path)
+            self.assertIsNotNone(mod)
+            descriptors = expand_helper._find_descriptors(mod)
+            self.assertTrue(descriptors)
+
+            operand_specs = expand_helper._parse_operand_specs(
+                """
+[
+  {
+    "kind": "tile",
+    "dtype": "f32",
+    "shape": [16, 64],
+    "valid_shape": [8, 48],
+    "memory_space": "ub",
+    "config": {
+      "b_layout": "row_major",
+      "s_layout": "none_box",
+      "s_fractal_size": 512,
+      "pad_value": "0x0"
+    }
+  },
+  {
+    "kind": "tile",
+    "dtype": "f32",
+    "shape": [16, 64],
+    "valid_shape": [8, 48],
+    "memory_space": "ub",
+    "config": {
+      "b_layout": "row_major",
+      "s_layout": "none_box",
+      "s_fractal_size": 512,
+      "pad_value": "0x1"
+    }
+  }
+]
+"""
+            )
+            desc = expand_helper._match_descriptor(
+                descriptors,
+                "pto.expand_helper_tile_config_unique",
+                tuple(spec["dtype"] for spec in operand_specs),
+            )
+            self.assertIsNotNone(desc)
+
+            tile_specs = {}
+            for param, operand_spec in zip(desc.parameters, operand_specs):
+                self.assertEqual(param.kind, "tile")
+                tile_specs[param.name] = pto.TileSpecialization(
+                    shape=operand_spec["shape"],
+                    memory_space=operand_spec["memory_space"],
+                    config=operand_spec["config"],
+                    valid_shape=operand_spec["valid_shape"],
+                )
+
+            mlir_text = desc.specialize(**tile_specs).mlir_text()
+
+        self.assertIn("valid_shape=(8, 48)", mlir_text)
+        self.assertIn(
+            "!pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=8, v_col=48, "
+            "blayout=row_major, slayout=none_box, fractal=512, pad=0>",
+            mlir_text,
+        )
+        self.assertIn(
+            "!pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=8, v_col=48, "
+            "blayout=row_major, slayout=none_box, fractal=512, pad=1>",
+            mlir_text,
+        )
 
 
 class TileLangDSLSupportMatrixTests(unittest.TestCase):

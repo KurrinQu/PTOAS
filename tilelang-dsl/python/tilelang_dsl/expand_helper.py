@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 from .kernel import VKernelDescriptor, _match_descriptor_dtype_signature
-from .types import MemorySpace, ScalarType, TileSpecialization
+from .types import MemorySpace, ScalarType, TileConfig, TileSpecialization
 
 
 _DTYPE_MAP: dict[str, ScalarType] = {}
@@ -129,16 +129,32 @@ def _parse_operand_specs(spec_text: str) -> list[dict]:
             shape = raw.get("shape")
             if not isinstance(shape, list) or not shape:
                 raise ValueError(f"operand-specs[{index}] tile shape must be a non-empty list")
+            valid_shape = raw.get("valid_shape")
+            if valid_shape is not None and (not isinstance(valid_shape, list) or not valid_shape):
+                raise ValueError(f"operand-specs[{index}] tile valid_shape must be a non-empty list")
             memory_space = _MEMSPACE_MAP.get(raw.get("memory_space"))
             if memory_space is None:
                 raise ValueError(
                     f"operand-specs[{index}] has unknown memory-space {raw.get('memory_space')!r}"
                 )
+            config_raw = raw.get("config")
+            config = None
+            if config_raw is not None:
+                if not isinstance(config_raw, dict):
+                    raise ValueError(f"operand-specs[{index}] tile config must be an object")
+                try:
+                    config = TileConfig.from_mapping(config_raw)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"operand-specs[{index}] has invalid tile config: {exc}"
+                    ) from exc
             specs.append(
                 {
                     "kind": "tile",
                     "dtype": dtype,
                     "shape": tuple(int(dim) for dim in shape),
+                    "valid_shape": None if valid_shape is None else tuple(int(dim) for dim in valid_shape),
+                    "config": config,
                     "memory_space": memory_space,
                 }
             )
@@ -262,6 +278,8 @@ def main(argv: list[str] | None = None) -> int:
             tile_specs[param.name] = TileSpecialization(
                 shape=operand_spec["shape"],
                 memory_space=operand_spec["memory_space"],
+                config=operand_spec.get("config"),
+                valid_shape=operand_spec.get("valid_shape"),
             )
             continue
         if param.kind in ("tensorview", "partition_tensor_view"):
