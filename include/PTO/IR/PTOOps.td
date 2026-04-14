@@ -2215,7 +2215,7 @@ def TSetValOp : PTO_TOp<"tsetval", [
 
   let extraClassDeclaration = [{
     static StringRef getIntrinsicName() { return "SETVAL"; }
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_S; }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
 }
@@ -2245,7 +2245,7 @@ def TGetValOp : PTO_TOp<"tgetval", [
 
   let extraClassDeclaration = [{
     static StringRef getIntrinsicName() { return "GETVAL"; }
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_S; }
   }];
 }
 
