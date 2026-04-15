@@ -155,11 +155,12 @@ This replaces string literals (`MemorySpace.GM`/`MemorySpace.UB`) with compile-t
 
 ### Public Buffer Types
 
-TileLang uses two public buffer-facing type names in kernel signatures:
+TileLang uses three public buffer-facing type names in kernel signatures:
 
 | Public Type | Description |
 |-------------|-------------|
 | `pto.TensorView` | GM-facing tensor view descriptor used for DMA-oriented data access |
+| `pto.PartitionTensorView` | Logical GM partition (slice) descriptor, corresponding to `!pto.partition_tensor_view<...>` |
 | `pto.Tile` | UB-facing tile buffer value used for tiled compute |
 
 ### TensorView Types
@@ -243,7 +244,7 @@ partition_5d = tensor_view[
 ```
 
 Constraints:
-- Slicing returns a new TensorView representing the logical partition.
+- Slicing returns a new `pto.PartitionTensorView` representing the logical partition.
 - The partition must be within the original tensor bounds.
 - When fewer than 5 slice axes are written, they are right-aligned to the trailing physical axes of the 5D descriptor.
 - `stop` must be explicit on all dimensions.
@@ -251,6 +252,40 @@ Constraints:
 - `step` must be a static positive integer.
 - Dimension 0 may use `step > 1`.
 - Dimension 1 must keep `step == 1` in the current DMA-oriented implementation.
+
+### PartitionTensorView Types
+
+`pto.PartitionTensorView` models a logical partition of GM tensor data and maps to
+`!pto.partition_tensor_view<d0xd1x...xelementType>` in PTO IR.
+Like `TensorView`, it is a descriptor type and does not own storage.
+
+#### PartitionTensorView Type Definition
+
+```python
+@pto.vkernel(target="a5", op="custom_partition", dtypes=[(pto.f32, pto.f32)])
+def kernel(inp: pto.TensorView, out: pto.TensorView):
+    part: pto.PartitionTensorView = inp[0:16, 0:16]
+    p_rows, p_cols = part.shape
+    s_row, s_col = part.strides
+    return None
+```
+
+Important notes:
+- A `PartitionTensorView` carries partition `shape` and `strides` metadata in element units.
+- Element dtype is inherited from the source tensor view.
+- Memory space remains GM.
+- Rank handling follows the same right-aligned 5D contract as `TensorView`.
+- `PartitionTensorView` can be used where DMA-oriented TensorView-like descriptors are accepted.
+- Prefer direct indexing or tuple unpacking for `shape`/`strides` metadata values in current DSL v1 lowering.
+
+#### PartitionTensorView Attributes
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `shape` | `tuple[int, ...]` | Partition dimensions |
+| `element_type` | `Type` | Element data type inherited from source tensor view |
+| `strides` | `tuple[int, ...]` | Stride in elements for each dimension |
+| `offset` | `pto.i64` | Byte offset from the base tensor pointer (internal) |
 
 ### Tile Types
 
