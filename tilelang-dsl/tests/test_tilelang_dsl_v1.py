@@ -48,6 +48,7 @@ from tilelang_dsl.semantic import (
     SemanticLowLevelCopyStmt,
     SemanticMaskType,
     SemanticPadValueType,
+    SemanticPartitionTensorViewType,
     SemanticPipeBarrierStmt,
     SemanticPtrType,
     SemanticPredicateStoreStmt,
@@ -1886,6 +1887,46 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertEqual(slice_assign.value.type.rank, 2)
         self.assertEqual(slice_assign.value.type.extents, (16, 32))
         self.assertEqual(slice_assign.value.type.physical_axes, (3, 4))
+
+    def test_tensorview_slice_binding_lowers_to_partition_tensor_view_descriptor(self) -> None:
+        @pto.vkernel(op="tensorview_slice_partition_binding_unique", dtypes=[(pto.f32,)])
+        def kernel(inp: pto.TensorView):
+            part = inp[0:16, 0:32]
+            rows, cols = part.shape
+            s0, s1 = part.strides
+            if rows != 0 and cols != 0:
+                rows = s0 + s1
+            return None
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(kernel))
+        slice_assign = semantic_kernel.body[0]
+        self.assertIsInstance(slice_assign, SemanticAssignStmt)
+        self.assertIsInstance(slice_assign.targets[0].type, SemanticPartitionTensorViewType)
+        self.assertEqual(slice_assign.targets[0].type.rank, 2)
+
+        text = kernel.mlir_text()
+        self.assertIn(" = pto.partition_view %arg0, offsets = [%c0, %c0], sizes = [%c16, %c32] : ", text)
+        self.assertIn("-> !pto.partition_tensor_view<16x32xf32>", text)
+        self.assertEqual(text.count("pto.get_tensor_view_dim"), 2)
+        self.assertEqual(text.count("pto.get_tensor_view_stride"), 2)
+
+    def test_partition_tensor_view_annotation_accepts_tensorview_slice_binding(self) -> None:
+        @pto.vkernel(op="partition_tensor_view_annotation_unique", dtypes=[(pto.f32,)])
+        def kernel(inp: pto.TensorView):
+            part: pto.PartitionTensorView = inp[0:8, 0:8]
+            r0, r1 = part.shape
+            return None
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(kernel))
+        slice_assign = semantic_kernel.body[0]
+        self.assertIsInstance(slice_assign, SemanticAssignStmt)
+        self.assertIsInstance(slice_assign.targets[0].type, SemanticPartitionTensorViewType)
+        self.assertEqual(slice_assign.targets[0].type.rank, 2)
+
+        text = kernel.mlir_text()
+        self.assertIn(" = pto.partition_view %arg0, offsets = [%c0, %c0], sizes = [%c8, %c8] : ", text)
+        self.assertIn("-> !pto.partition_tensor_view<8x8xf32>", text)
+        self.assertEqual(text.count("pto.get_tensor_view_dim"), 2)
 
     def test_dynamic_tensorview_shape_profile_supports_runtime_bound_without_high_level_dma(self) -> None:
         @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f32)])

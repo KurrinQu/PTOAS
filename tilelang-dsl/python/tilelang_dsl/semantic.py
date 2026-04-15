@@ -2442,10 +2442,17 @@ class _SemanticAnalyzer:
         if isinstance(target, FrontendNameTarget):
             if isinstance(value.type, SemanticTupleType):
                 raise ValueError("multi-result call assignment requires tuple binding in TileLang DSL v1")
-            annotated_type = self._annotation_type(annotation, value.type, env)
+            inferred_type: SemanticType = value.type
+            if isinstance(value.type, SemanticTensorSliceType):
+                # Tensor slicing materializes a logical partition descriptor value in IR.
+                inferred_type = SemanticPartitionTensorViewType(
+                    element_dtype=value.type.element_dtype,
+                    rank=value.type.rank,
+                )
+            annotated_type = self._annotation_type(annotation, inferred_type, env)
             binding = self._make_binding(
                 target.name,
-                annotated_type if annotated_type is not None else value.type,
+                annotated_type if annotated_type is not None else inferred_type,
                 "ssa",
                 value=self._binding_value_for_expr(value),
             )
@@ -2546,6 +2553,11 @@ class _SemanticAnalyzer:
                     )
                 return inferred_type
             if annotation_expr.type.kind == "align_type" and isinstance(inferred_type, SemanticAlignType):
+                return inferred_type
+            if (
+                annotation_expr.type.kind == "partition_tensor_view_type"
+                and isinstance(inferred_type, SemanticPartitionTensorViewType)
+            ):
                 return inferred_type
         raise TypeError("unsupported annotated assignment type in TileLang DSL v1")
 
@@ -3048,6 +3060,13 @@ class _SemanticAnalyzer:
                     name=expr.name,
                     value=align,
                     type=SemanticMetaType(kind="align_type"),
+                )
+            if expr.name == "PartitionTensorView":
+                return SemanticSymbolExpr(
+                    namespace=expr.namespace,
+                    name=expr.name,
+                    value=expr.name,
+                    type=SemanticMetaType(kind="partition_tensor_view_type"),
                 )
         if expr.namespace in {"PAT", "pto.PAT", "pto.MaskPattern"}:
             pattern = _PATTERN_SYMBOLS.get(expr.name)

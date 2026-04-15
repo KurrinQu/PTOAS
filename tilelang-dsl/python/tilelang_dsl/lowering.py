@@ -1178,6 +1178,99 @@ class _AuthoringRenderer:
             raise NotImplementedError("TileLang DSL v1 DMA lowering currently only supports rank-2 TensorView slices")
         return expr.type.extents
 
+    def _materialize_tensor_slice_axis_size(
+        self,
+        slice_axis: object,
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+        into: list[str],
+    ) -> _RenderedValue:
+        if slice_axis.extent is not None:
+            return _RenderedValue(
+                name=self._materialize_constant(slice_axis.extent, SemanticIndexType()),
+                type=SemanticIndexType(),
+            )
+        distance = self._emit_binary_value(
+            "sub",
+            self._lower_expr(slice_axis.stop, env, indent=indent, into=into),
+            self._lower_expr(slice_axis.start, env, indent=indent, into=into),
+            SemanticIndexType(),
+            indent=indent,
+            into=into,
+        )
+        step_value = self._static_expr_value(slice_axis.step, default=1)
+        if not isinstance(step_value, int) or step_value <= 0:
+            raise NotImplementedError(
+                "partition_view lowering currently expects a static positive slice step in TileLang DSL v1"
+            )
+        if step_value == 1:
+            return distance
+        numerator = self._emit_binary_value(
+            "add",
+            distance,
+            _RenderedValue(
+                name=self._materialize_constant(step_value - 1, SemanticIndexType()),
+                type=SemanticIndexType(),
+            ),
+            SemanticIndexType(),
+            indent=indent,
+            into=into,
+        )
+        return self._emit_binary_value(
+            "floordiv",
+            numerator,
+            _RenderedValue(
+                name=self._materialize_constant(step_value, SemanticIndexType()),
+                type=SemanticIndexType(),
+            ),
+            SemanticIndexType(),
+            indent=indent,
+            into=into,
+        )
+
+    def _lower_tensor_slice_expr(
+        self,
+        expr: SemanticTensorSliceExpr,
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+        desired_name: str | None,
+        into: list[str] | None,
+    ) -> _RenderedValue:
+        if into is None:
+            into = []
+        tensor_base = self._lower_expr(expr.base, env, indent=indent, into=into)
+        if not isinstance(tensor_base.type, (SemanticTensorViewType, SemanticPartitionTensorViewType)):
+            raise NotImplementedError("partition_view lowering expects a TensorView/PartitionTensorView source")
+
+        offsets: list[_RenderedValue] = []
+        sizes: list[_RenderedValue] = []
+        for axis_slice in expr.slices:
+            offsets.append(self._lower_expr(axis_slice.start, env, indent=indent, into=into))
+            sizes.append(
+                self._materialize_tensor_slice_axis_size(
+                    axis_slice,
+                    env,
+                    indent=indent,
+                    into=into,
+                )
+            )
+
+        result_name = desired_name or self._new_temp()
+        result_type_text = self._render_partition_tensor_view_type(
+            element_dtype=expr.type.element_dtype.name,
+            shape=tuple("?" if dim is None else dim for dim in expr.type.extents),
+        )
+        into.append(
+            self._indent(indent)
+            + f"{result_name} = pto.partition_view {tensor_base.name}, "
+            + f"offsets = [{', '.join(value.name for value in offsets)}], "
+            + f"sizes = [{', '.join(value.name for value in sizes)}] : "
+            + f"{self._render_type(tensor_base.type)} -> {result_type_text}"
+        )
+        return _RenderedValue(name=result_name, type=_RenderedTextualType(result_type_text))
+
     def _resolve_dma_load_padding_profile(self, options: object) -> _DmaLoadPaddingProfile:
         pad_mode_name = self._static_pad_mode_name(getattr(options, "pad_mode", None)) or "PadNull"
         left_padding = self._static_expr_value(getattr(options, "left_padding", None), default=0)
@@ -2365,7 +2458,13 @@ class _AuthoringRenderer:
         if isinstance(expr, SemanticAttributeAccess):
             raise NotImplementedError("bare shape attribute values are not materialized directly")
         if isinstance(expr, SemanticTensorSliceExpr):
-            raise NotImplementedError("TensorView slices are only lowered through DMA statements in TileLang DSL v1")
+            return self._lower_tensor_slice_expr(
+                expr,
+                env,
+                indent=indent,
+                desired_name=desired_name,
+                into=into,
+            )
         if isinstance(expr, SemanticSymbolExpr):
             raise NotImplementedError("symbol expressions are only lowered through specialized TileLang DSL ops")
         raise NotImplementedError(f"unsupported semantic expression {type(expr).__name__}")
