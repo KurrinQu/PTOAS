@@ -204,6 +204,8 @@ jobs:
       - name: Run sample tests (py -> pto -> cpp)
         shell: bash
         env:
+          CI_EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_SOC_VERSION: ${{ github.event.inputs.soc_version || 'Ascend910' }}
           PTOAS_BIN: ${{ github.workspace }}/build/tools/ptoas/ptoas
           PYTHON_BIN: /usr/bin/python3
           MLIR_PYTHON_ROOT: ${{ env.MLIR_PYTHONPATH }}
@@ -213,7 +215,15 @@ jobs:
           export PYTHONPATH="${MLIR_PYTHON_ROOT}:${PTO_PYTHON_ROOT}:${PYTHONPATH:-}"
           export LD_LIBRARY_PATH="${LLVM_DIR}/lib:${PTO_INSTALL_DIR}/lib:${LD_LIBRARY_PATH:-}"
           export PTOAS_OUT_DIR="${PAYLOAD_DIR}/test/samples"
-          bash test/samples/runop.sh --enablebc all
+          if [[ "${CI_EVENT_NAME}" == "workflow_dispatch" || "${CI_EVENT_NAME}" == "schedule" ]]; then
+            # Board-validation payloads must only contain the arch-matching
+            # direct .pto samples. Some A3/A5 qwen decode cases intentionally
+            # share the same testcase basename, so SKIP_CASES cannot
+            # distinguish them later once the payload is built.
+            SOC_VERSION="${WORKFLOW_SOC_VERSION}" bash test/samples/runop.sh --enablebc all
+          else
+            bash test/samples/runop.sh --enablebc all
+          fi
 
       - name: Build payload artifact
         if: >-
