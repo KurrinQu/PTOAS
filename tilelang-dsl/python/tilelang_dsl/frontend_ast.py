@@ -208,6 +208,8 @@ class _FrontendBuildContext:
     selected_op: str | None
     advanced_enabled: bool
     inline_procs: dict[str, _FrontendInlineProc]
+    global_literal_constants: dict[str, Any]
+    local_bindings: frozenset[str]
     active_inline_proc_stack: tuple[str, ...] = ()
     vecscope_depth: int = 0
 
@@ -223,6 +225,8 @@ class _FrontendBuildContext:
             selected_op=self.selected_op,
             advanced_enabled=self.advanced_enabled,
             inline_procs=self.inline_procs,
+            global_literal_constants=self.global_literal_constants,
+            local_bindings=self.local_bindings,
             active_inline_proc_stack=self.active_inline_proc_stack,
             vecscope_depth=self.vecscope_depth + 1,
         )
@@ -234,9 +238,123 @@ class _FrontendBuildContext:
             selected_op=self.selected_op,
             advanced_enabled=self.advanced_enabled,
             inline_procs=self.inline_procs,
+            global_literal_constants=self.global_literal_constants,
+            local_bindings=_collect_source_local_bindings(source_info),
             active_inline_proc_stack=(*self.active_inline_proc_stack, name),
             vecscope_depth=self.vecscope_depth,
         )
+
+
+_UNSUPPORTED_GLOBAL_LITERAL = object()
+_LOCAL_BINDINGS_CACHE: dict[tuple[str, int, str], frozenset[str]] = {}
+_GLOBAL_NAME_READS_CACHE: dict[tuple[str, int, str], frozenset[str]] = {}
+
+
+def _iter_target_names(node: ast.AST) -> tuple[str, ...]:
+    if isinstance(node, ast.Name):
+        return (node.id,)
+    if isinstance(node, (ast.Tuple, ast.List)):
+        names: list[str] = []
+        for elt in node.elts:
+            names.extend(_iter_target_names(elt))
+        return tuple(names)
+    return ()
+
+
+def _collect_source_global_name_reads(
+    source_info: Any,
+    local_bindings: frozenset[str],
+) -> frozenset[str]:
+    if source_info is None:
+        return frozenset()
+    function_def = source_info.function_def
+    cache_key = (
+        source_info.path,
+        source_info.start_line,
+        function_def.name,
+    )
+    cached = _GLOBAL_NAME_READS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    global_reads: set[str] = set()
+    for node in ast.walk(function_def):
+        if not isinstance(node, ast.Name) or not isinstance(node.ctx, ast.Load):
+            continue
+        if node.id in local_bindings:
+            continue
+        if node.id.startswith("__"):
+            continue
+        global_reads.add(node.id)
+
+    frozen = frozenset(global_reads)
+    _GLOBAL_NAME_READS_CACHE[cache_key] = frozen
+    return frozen
+
+
+def _collect_function_local_bindings(function_def: ast.FunctionDef) -> set[str]:
+    bindings: set[str] = set()
+    for arg in function_def.args.posonlyargs:
+        bindings.add(arg.arg)
+    for arg in function_def.args.args:
+        bindings.add(arg.arg)
+    for arg in function_def.args.kwonlyargs:
+        bindings.add(arg.arg)
+    if function_def.args.vararg is not None:
+        bindings.add(function_def.args.vararg.arg)
+    if function_def.args.kwarg is not None:
+        bindings.add(function_def.args.kwarg.arg)
+
+    for node in ast.walk(function_def):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                bindings.update(_iter_target_names(target))
+            continue
+        if isinstance(node, ast.AnnAssign):
+            bindings.update(_iter_target_names(node.target))
+            continue
+        if isinstance(node, ast.For):
+            bindings.update(_iter_target_names(node.target))
+            continue
+        if isinstance(node, ast.With):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    bindings.update(_iter_target_names(item.optional_vars))
+            continue
+    return bindings
+
+
+def _collect_source_local_bindings(source_info: Any) -> frozenset[str]:
+    if source_info is None:
+        return frozenset()
+    function_def = source_info.function_def
+    cache_key = (
+        source_info.path,
+        source_info.start_line,
+        function_def.name,
+    )
+    cached = _LOCAL_BINDINGS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    collected = frozenset(_collect_function_local_bindings(function_def))
+    _LOCAL_BINDINGS_CACHE[cache_key] = collected
+    return collected
+
+
+def _collect_module_literal_constants(
+    source_info: Any,
+    *,
+    module_globals: dict[str, Any] | None,
+    local_bindings: frozenset[str],
+) -> dict[str, Any]:
+    if source_info is None or module_globals is None:
+        return {}
+    literal_constants: dict[str, Any] = {}
+    for name in _collect_source_global_name_reads(source_info, local_bindings):
+        value = module_globals.get(name, _UNSUPPORTED_GLOBAL_LITERAL)
+        if isinstance(value, (bool, int, float, str)):
+            literal_constants[name] = value
+    return literal_constants
 
 
 def _attach_source_location(
@@ -774,6 +892,15 @@ def _build_call_keywords(
 
 def _build_expr(node: ast.AST, context: _FrontendBuildContext) -> FrontendExprNode:
     if isinstance(node, ast.Name):
+        if (
+            node.id in context.global_literal_constants
+            and node.id not in context.local_bindings
+        ):
+            return _attach_source_location(
+                FrontendConstantExpr(value=context.global_literal_constants[node.id]),
+                node,
+                context,
+            )
         return _attach_source_location(FrontendNameExpr(name=node.id), node, context)
     if isinstance(node, ast.Constant):
         return _attach_source_location(FrontendConstantExpr(value=node.value), node, context)
@@ -1241,6 +1368,12 @@ def build_frontend_kernel_node(descriptor: Any) -> FrontendKernelNode:
         for name, spec in descriptor.specializations
     )
     source_info = descriptor._source_info
+    local_bindings = _collect_source_local_bindings(source_info)
+    global_literal_constants = _collect_module_literal_constants(
+        source_info,
+        module_globals=getattr(descriptor._py_fn, "__globals__", None),
+        local_bindings=local_bindings,
+    )
     sorted_inline_procs = tuple(sorted(descriptor.inline_procs.items(), key=lambda item: item[0]))
     context = _FrontendBuildContext(
         source_info=source_info,
@@ -1255,6 +1388,8 @@ def build_frontend_kernel_node(descriptor: Any) -> FrontendKernelNode:
             )
             for name, proc in sorted_inline_procs
         },
+        global_literal_constants=global_literal_constants,
+        local_bindings=local_bindings,
     )
     body = ()
     if source_info is not None:
