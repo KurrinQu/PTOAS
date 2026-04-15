@@ -71,6 +71,8 @@ from tilelang_dsl.semantic import (
     analyze_frontend_kernel,
 )
 
+GLOBAL_TILELANG_LITERAL_BLOCK_SIZE = 32
+
 
 class TileLangDSLPackageTests(unittest.TestCase):
     def test_package_exports_surface(self) -> None:
@@ -2987,6 +2989,28 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         text = specialized.mlir_text()
         self.assertIn("= arith.constant 0.0 : f32", text)
         self.assertIn("pto.vbr", text)
+
+    def test_kernel_accepts_module_level_literal_constant_reference(self) -> None:
+        @pto.vkernel(
+            op="module_level_literal_constant_reference_unique",
+            dtypes=[(pto.f32, pto.f32)],
+            advanced=True,
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            all_mask, _ = pto.make_mask(pto.f32, GLOBAL_TILELANG_LITERAL_BLOCK_SIZE)
+            vec = pto.vlds(src, 0)
+            out = pto.vadds(vec, pto.f32(0.0), all_mask)
+            pto.vsts(out, dst, 0, all_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertRegex(text, r"arith\.constant 32 : (index|i64)")
+        self.assertIn("pto.plt_b32", text)
 
     def test_scalar_constructor_call_surfaces_lower(self) -> None:
         @pto.vkernel(
