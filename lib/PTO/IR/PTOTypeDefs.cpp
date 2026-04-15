@@ -14,31 +14,50 @@
 //===- PTOTypeDefs.cpp --------------------------------------------*- C++ -*-===//
 #include "PTO/IR/PTO.h"
 #include "mlir/IR/DialectImplementation.h"
+#include <mutex>
+#include <unordered_map>
 
 using namespace mlir;
 using namespace mlir::pto;
 
 namespace {
-thread_local PTOParserTargetArch currentParserTargetArch =
-    PTOParserTargetArch::Unspecified;
+std::mutex parserTargetArchMutex;
+std::unordered_map<const MLIRContext *, PTOParserTargetArch>
+    parserTargetArchByContext;
 }
 
-void mlir::pto::setPTOParserTargetArch(PTOParserTargetArch arch) {
-  currentParserTargetArch = arch;
+void mlir::pto::setPTOParserTargetArch(MLIRContext *context,
+                                       PTOParserTargetArch arch) {
+  if (!context)
+    return;
+
+  std::lock_guard<std::mutex> lock(parserTargetArchMutex);
+  if (arch == PTOParserTargetArch::Unspecified) {
+    parserTargetArchByContext.erase(context);
+    return;
+  }
+  parserTargetArchByContext[context] = arch;
 }
 
-PTOParserTargetArch mlir::pto::getPTOParserTargetArch() {
-  return currentParserTargetArch;
+PTOParserTargetArch mlir::pto::getPTOParserTargetArch(MLIRContext *context) {
+  if (!context)
+    return PTOParserTargetArch::Unspecified;
+
+  std::lock_guard<std::mutex> lock(parserTargetArchMutex);
+  auto it = parserTargetArchByContext.find(context);
+  if (it == parserTargetArchByContext.end())
+    return PTOParserTargetArch::Unspecified;
+  return it->second;
 }
 
 mlir::pto::ScopedPTOParserTargetArch::ScopedPTOParserTargetArch(
-    PTOParserTargetArch arch)
-    : previousArch(getPTOParserTargetArch()) {
-  setPTOParserTargetArch(arch);
+    MLIRContext *context, PTOParserTargetArch arch)
+    : context(context), previousArch(getPTOParserTargetArch(context)) {
+  setPTOParserTargetArch(context, arch);
 }
 
 mlir::pto::ScopedPTOParserTargetArch::~ScopedPTOParserTargetArch() {
-  setPTOParserTargetArch(previousArch);
+  setPTOParserTargetArch(context, previousArch);
 }
 
 static SmallVector<int64_t, 4> canonicalizeTileBufValidShape(ArrayRef<int64_t> validShape) {
@@ -419,7 +438,7 @@ static Type buildTileBufType(AsmParser &parser,
     if (memorySpace != AddressSpace::LEFT)
       return parsedBLayout;
 
-    switch (getPTOParserTargetArch()) {
+    switch (getPTOParserTargetArch(parser.getContext())) {
     case PTOParserTargetArch::A3:
       return BLayout::RowMajor;
     case PTOParserTargetArch::A5:
