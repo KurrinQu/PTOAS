@@ -19,7 +19,7 @@ PYTHON_BIN="${PYTHON_BIN:-}"
 PTOAS_OUT_DIR="${PTOAS_OUT_DIR:-}"
 PTOAS_ENABLE_INSERT_SYNC="${PTOAS_ENABLE_INSERT_SYNC:-1}"
 PTOAS_FLAGS="${PTOAS_FLAGS:-}"
-PTO_PTO_DIRS="${PTO_PTO_DIRS:-Sync}"
+PTO_PTO_DIRS="${PTO_PTO_DIRS:-Sync Qwen3DecodeA3 Qwen3DecodeA5}"
 ENABLE_BC=0
 
 usage() {
@@ -36,7 +36,7 @@ Env:
   PTOAS_OUT_DIR  # where generated *.mlir/*.cpp go (optional; defaults to a temp dir)
   PTOAS_FLAGS  # extra flags passed to ptoas (e.g. --enable-insert-sync)
   PTOAS_ENABLE_INSERT_SYNC  # 1 to append --enable-insert-sync to PTOAS_FLAGS (default: 1)
-  PTO_PTO_DIRS  # space-separated dirs to run .pto directly (default: Sync)
+  PTO_PTO_DIRS  # space-separated dirs to run .pto directly (default: Sync Qwen3DecodeA3 Qwen3DecodeA5)
 
 Flags:
   --enablebc  # enable: python -> .pto -> ptobc -> .pto -> ptoas
@@ -197,7 +197,7 @@ copy_validation_assets() {
     cp -f "${BASE_DIR}/validation_runtime.py" "${out_root}/validation_runtime.py"
   fi
 
-  for asset in "${sample_dir}"/*_golden.py "${sample_dir}"/*_compare.py; do
+  for asset in "${sample_dir}"/*_golden.py "${sample_dir}"/*_compare.py "${sample_dir}"/*_golden_*.py; do
     [[ -f "$asset" ]] || continue
     cp -f "$asset" "${out_sample_dir}/"
   done
@@ -227,6 +227,9 @@ process_one_dir() {
   if [[ "${ENABLE_BC}" == "1" ]]; then
     use_ptobc_roundtrip=1
   fi
+  if [[ "$A" == "Qwen3DecodeA3" || "$A" == "Qwen3DecodeA5" ]]; then
+    use_ptobc_roundtrip=0
+  fi
   local -a ptoas_flags=()
   if [[ -n "${PTOAS_FLAGS}" ]]; then
     # shellcheck disable=SC2206
@@ -248,18 +251,42 @@ process_one_dir() {
   local user_target_arch
   user_target_arch="$(detect_ptoas_arch "${ptoas_flags[@]}" || true)"
   local target_arch="a3"
+  local has_pto_arch_override=0
+  local has_pto_level_override=0
   if ((${#ptoas_flags[@]})); then
     for ((idx=0; idx<${#ptoas_flags[@]}; ++idx)); do
       if [[ "${ptoas_flags[idx]}" == "--pto-arch" && $((idx + 1)) -lt ${#ptoas_flags[@]} ]]; then
         target_arch="${ptoas_flags[idx + 1]}"
+        has_pto_arch_override=1
       elif [[ "${ptoas_flags[idx]}" == --pto-arch=* ]]; then
         target_arch="${ptoas_flags[idx]#--pto-arch=}"
+        has_pto_arch_override=1
+      elif [[ "${ptoas_flags[idx]}" == "--pto-level" && $((idx + 1)) -lt ${#ptoas_flags[@]} ]]; then
+        has_pto_level_override=1
+      elif [[ "${ptoas_flags[idx]}" == --pto-level=* ]]; then
+        has_pto_level_override=1
       fi
     done
   fi
+  if [[ "$A" == "Qwen3DecodeA5" ]]; then
+    if [[ $has_pto_arch_override -eq 0 ]]; then
+      ptoas_flags+=(--pto-arch a5)
+      target_arch="a5"
+    fi
+    if [[ $has_pto_level_override -eq 0 ]]; then
+      ptoas_flags+=(--pto-level=level3)
+    fi
+  elif [[ "$A" == "Qwen3DecodeA3" ]]; then
+    if [[ $has_pto_level_override -eq 0 ]]; then
+      ptoas_flags+=(--pto-level=level3)
+    fi
+  fi
+
+  local target_arch_lc
+  target_arch_lc="$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')"
   local expected_vec_barrier="pipe_barrier(PIPE_V)"
   local skip_vec_barrier=0
-  if [[ "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" == "a5" ]]; then
+  if [[ "${target_arch_lc}" == "a5" ]]; then
     skip_vec_barrier=1
   fi
 
@@ -284,13 +311,59 @@ process_one_dir() {
     echo -e "${A}\tSKIP\tMissing dir: $dir"
     return 0
   fi
+  local soc_lc="${SOC_VERSION:-}"
+  soc_lc="$(printf '%s' "${soc_lc}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$A" == "Qwen3DecodeA3" && "${target_arch_lc}" != "a3" ]]; then
+    local qwen_case
+    for qwen_case in "$dir"/*.pto; do
+      [[ -f "$qwen_case" ]] || continue
+      case "$qwen_case" in
+        *-pto-ir.pto) continue ;;
+      esac
+      echo -e "${A}($(basename "$qwen_case"))\tSKIP\trequires --pto-arch=a3"
+    done
+    return 0
+  fi
+  if [[ "$A" == "Qwen3DecodeA3" && -n "${soc_lc}" && ( "${soc_lc}" == *"a5"* || "${soc_lc}" == *"950"* ) ]]; then
+    local qwen_case
+    for qwen_case in "$dir"/*.pto; do
+      [[ -f "$qwen_case" ]] || continue
+      case "$qwen_case" in
+        *-pto-ir.pto) continue ;;
+      esac
+      echo -e "${A}($(basename "$qwen_case"))\tSKIP\trequires A3 target SOC"
+    done
+    return 0
+  fi
+  if [[ "$A" == "Qwen3DecodeA5" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a5" ]]; then
+    local qwen_case
+    for qwen_case in "$dir"/*.pto; do
+      [[ -f "$qwen_case" ]] || continue
+      case "$qwen_case" in
+        *-pto-ir.pto) continue ;;
+      esac
+      echo -e "${A}($(basename "$qwen_case"))\tSKIP\trequires --pto-arch=a5"
+    done
+    return 0
+  fi
+  if [[ "$A" == "Qwen3DecodeA5" && -n "${soc_lc}" && "${soc_lc}" != *"a5"* && "${soc_lc}" != *"950"* ]]; then
+    local qwen_case
+    for qwen_case in "$dir"/*.pto; do
+      [[ -f "$qwen_case" ]] || continue
+      case "$qwen_case" in
+        *-pto-ir.pto) continue ;;
+      esac
+      echo -e "${A}($(basename "$qwen_case"))\tSKIP\trequires A5 target SOC"
+    done
+    return 0
+  fi
 
   # Run every .py file in this directory (no requirement that name matches folder).
   local f mlir ptobc_file decoded_pto cpp base overall=0
   for f in "$dir"/*.py; do
     [[ -f "$f" ]] || continue
     case "$(basename "$f")" in
-      *_golden.py|*_compare.py)
+      *_golden.py|*_compare.py|*_golden_*.py)
         continue
         ;;
     esac
@@ -311,7 +384,6 @@ process_one_dir() {
         continue
       fi
     fi
-
     # Inter-core sync regression samples are arch-specific.
     if [[ "$base" == "test_intercore_sync_a5" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a5" ]]; then
       echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a5"
@@ -329,6 +401,10 @@ process_one_dir() {
       echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a5"
       continue
     fi
+    if [[ "$base" == "gemvmx" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a5" ]]; then
+      echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a5"
+      continue
+    fi
     if [[ "$base" == "test_intercore_sync_a3" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a3" ]]; then
       echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a3"
       continue
@@ -343,6 +419,14 @@ process_one_dir() {
     fi
     if [[ "$base" == "test_intercore_sync_a3_missing_setffts" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a3" ]]; then
       echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a3"
+      continue
+    fi
+    if [[ ( "$base" == "test_tmov_col_major_16x1_align_a5" || \
+            "$base" == "test_tmov_row_major_1x16_control_a5" || \
+            "$base" == "decode_projection_incore_0" || \
+            "$base" == "rmsnorm_incore_0" ) && \
+          "${target_arch_lc}" != "a5" ]]; then
+      echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a5"
       continue
     fi
 
@@ -371,6 +455,10 @@ process_one_dir() {
     if [[ "$base" == "test_intercore_sync_a3_missing_setffts" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" == "a3" ]]; then
       expect_fail=1
     fi
+    if [[ ("$base" == "mgather" || "$base" == "mscatter") && \
+          "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" == "a3" ]]; then
+      expect_fail=1
+    fi
     mlir="${out_subdir}/${base}-pto-ir.pto"
     cpp="${out_subdir}/${base}-pto.cpp"
 
@@ -387,7 +475,17 @@ process_one_dir() {
     local pto_input="$mlir"
     ptobc_file="${out_subdir}/${base}.ptobc"
     decoded_pto="${out_subdir}/${base}-roundtrip.pto"
-    if [[ $use_ptobc_roundtrip -eq 1 ]]; then
+    local sample_use_ptobc_roundtrip="$use_ptobc_roundtrip"
+    # TODO(ptobc): alloc_tile addr operand is required by ptoas level3 for
+    # these A5 repro/control samples, but ptobc v0 currently rejects this
+    # form with "operand count mismatch for op: pto.alloc_tile".
+    if [[ "$base" == "test_tmov_col_major_16x1_align_a5" || \
+          "$base" == "test_tmov_row_major_1x16_control_a5" || \
+          "$base" == "decode_projection_incore_0" || \
+          "$base" == "rmsnorm_incore_0" ]]; then
+      sample_use_ptobc_roundtrip=0
+    fi
+    if [[ $sample_use_ptobc_roundtrip -eq 1 ]]; then
       # Allow generic escape for ops that are not yet in the compact v0 opcode table.
       if ! PTOBC_ALLOW_GENERIC=1 "$ptobc" encode "$mlir" -o "$ptobc_file" >/dev/null 2>&1; then
         if [[ $expect_fail -eq 1 ]]; then
@@ -418,6 +516,14 @@ process_one_dir() {
         if [[ "$base" == "test_intercore_sync_a3_missing_setffts" ]]; then
           if ! grep -Eq "A3 inter-core sync requires explicit .*pto.set_ffts" "${ptoas_log}"; then
             echo -e "${A}(${base}.py)\tFAIL\texpected missing-set_ffts diagnostic not found"
+            overall=1
+            continue
+          fi
+        fi
+        if [[ ("$base" == "mgather" || "$base" == "mscatter") && \
+              "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" == "a3" ]]; then
+          if ! grep -Eq "pto\\.m(gather|scatter) is only supported on A5 targets" "${ptoas_log}"; then
+            echo -e "${A}(${base}.py)\tFAIL\texpected A5-only diagnostic not found"
             overall=1
             continue
           fi
@@ -703,6 +809,58 @@ process_one_dir() {
       fi
     fi
 
+    # A5 TMOV alignment repro/control samples:
+    # - col_major 16x1 should be normalized into TRESHAPE + TMOV(row_major)
+    # - row_major 1x16 control should keep direct TMOV path without reshape
+    if [[ "$base" == "test_tmov_col_major_16x1_align_a5" ]]; then
+      if ! grep -Eq "\\bTMOV\\(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TMOV() in col_major repro sample"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "TRESHAPE(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TRESHAPE() normalization in col_major repro sample"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "Tile<TileType::Vec, float, 1, 16, BLayout::RowMajor" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing 1x16 RowMajor reinterpret tile in col_major repro sample"
+        overall=1
+        continue
+      fi
+    fi
+    if [[ "$base" == "test_tmov_row_major_1x16_control_a5" ]]; then
+      if ! grep -Eq "\\bTMOV\\(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TMOV() in row_major control sample"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "Tile<TileType::Vec, float, 1, 16, BLayout::RowMajor" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing 1x16 RowMajor tile in row_major control sample"
+        overall=1
+        continue
+      fi
+      if grep -Fq "TRESHAPE(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tunexpected TRESHAPE() in row_major control sample"
+        overall=1
+        continue
+      fi
+    fi
+    # A5 regressions from real kernels (decode/rmsnorm):
+    # dangerous vec->vec col_major TMOV should be normalized into TRESHAPE + TMOV(row_major).
+    if [[ "$base" == "decode_projection_incore_0" || "$base" == "rmsnorm_incore_0" ]]; then
+      if ! grep -Fq "TRESHAPE(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TRESHAPE() normalization for col_major vec TMOV"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "Tile<TileType::Vec, float, 1, 16, BLayout::RowMajor" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing 1x16 RowMajor reinterpret tile after TMOV normalization"
+        overall=1
+        continue
+      fi
+    fi
+
     # Regression guard for issue #185: barrier_sync must support op types
     # beyond TMATMUL/TVEC and lower to the expected per-pipe barrier.
     if [[ "$base" == "test_barrier_sync" ]]; then
@@ -906,6 +1064,35 @@ PY
       fi
     fi
 
+    if [[ "$base" == "fillpad_inplace" ]]; then
+      if ! grep -Fq "TFILLPAD_INPLACE(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TFILLPAD_INPLACE() lowering for pto.tfillpad_inplace"
+        overall=1
+        continue
+      fi
+      if grep -Fq "TFILLPAD_EXPAND(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tpto.tfillpad_inplace should not lower via TFILLPAD_EXPAND()"
+        overall=1
+        continue
+      fi
+    fi
+
+    if [[ "$base" == "extract_fp" ]]; then
+      if ! grep -Fq "TEXTRACT_FP(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TEXTRACT_FP() lowering for pto.textract_fp"
+        overall=1
+        continue
+      fi
+    fi
+
+    if [[ "$base" == "tinsert_fp" ]]; then
+      if ! grep -Fq "TINSERT_FP(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TINSERT_FP() lowering for pto.tinsert_fp"
+        overall=1
+        continue
+      fi
+    fi
+
 	    # Regression guard for Issue #190:
 	    # Infer layout for a 2D column-vector view (16 x 1) should prefer DN.
 	    if [[ "$base" == "tensor_view_infer_layout_dn" ]]; then
@@ -919,7 +1106,7 @@ PY
     # Regression guard for row-reduction kernels:
     # (32 x 1) row-major outputs are minor-2D ambiguous; layout must align with
     # row-major tiles (ND), otherwise pto-isa can hit layout/tile static_assert.
-    if [[ "$base" == "rowmin" || "$base" == "rowsum" || "$base" == "rowmax" ]]; then
+    if [[ "$base" == "rowmin" || "$base" == "rowsum" || "$base" == "rowmax" || "$base" == "rowprod" ]]; then
       if ! grep -Eq "pto::Shape<1, 1, 1, 32, 1>.*pto::Layout::ND" "$cpp"; then
         echo -e "${A}(${base}.py)\tFAIL\texpected pto::Layout::ND for shape (32 x 1) GlobalTensor"
         overall=1
@@ -963,10 +1150,21 @@ PY
         *-pto-ir.pto) continue ;;
       esac
       base="$(basename "$f" .pto)"
+      if [[ ( "$base" == "test_tmov_col_major_16x1_align_a5" || \
+              "$base" == "test_tmov_row_major_1x16_control_a5" || \
+              "$base" == "decode_projection_incore_0" || \
+              "$base" == "rmsnorm_incore_0" ) && \
+            "${target_arch_lc}" != "a5" ]]; then
+        echo -e "${A}(${base}.pto)\tSKIP\trequires --pto-arch=a5"
+        continue
+      fi
       local pto_input="$f"
       ptobc_file="${out_subdir}/${base}.ptobc"
       decoded_pto="${out_subdir}/${base}-roundtrip.pto"
       cpp="${out_subdir}/${base}.cpp"
+      if [[ "$A" == "Qwen3DecodeA3" || "$A" == "Qwen3DecodeA5" ]]; then
+        cpp="${out_subdir}/${base}-pto.cpp"
+      fi
       local sample_use_ptobc_roundtrip="$use_ptobc_roundtrip"
       local -a sample_ptoas_flags=("${ptoas_flags[@]}")
       local sample_run_line=""
@@ -1031,11 +1229,13 @@ PY
         sample_ptoas_cmd_base+=("${sample_ptoas_flags[@]}")
       fi
 
-      # TODO(ptobc): decode of this regression currently fails with
-      # "operand value_id out of range" when scf.if returns tile-like values.
-      # Keep ptoas regression coverage here, and re-enable roundtrip once
-      # ptobc supports this pattern.
-      if [[ "$base" == "test_if_else_tile_result" ]]; then
+      # TODO(ptobc): Keep ptoas regression coverage for patterns that are not
+      # yet supported by ptobc roundtrip; re-enable once ptobc catches up.
+      if [[ "$base" == "test_if_else_tile_result" || \
+            "$base" == "test_tmov_col_major_16x1_align_a5" || \
+            "$base" == "test_tmov_row_major_1x16_control_a5" || \
+            "$base" == "decode_projection_incore_0" || \
+            "$base" == "rmsnorm_incore_0" ]]; then
         sample_use_ptobc_roundtrip=0
       fi
 
@@ -1045,7 +1245,6 @@ PY
       if [[ "$A" == "TPushTPop/test4" || "$A" == "TPushTPop/test5" ]]; then
         sample_use_ptobc_roundtrip=0
       fi
-
       if [[ $sample_use_ptobc_roundtrip -eq 1 ]]; then
         # Allow generic escape for ops that are not yet in the compact v0 opcode table.
         if ! PTOBC_ALLOW_GENERIC=1 "$ptobc" encode "$f" -o "$ptobc_file" >/dev/null 2>&1; then

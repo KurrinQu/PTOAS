@@ -167,6 +167,18 @@ static bool readSLayoutI32(Attribute attr, int32_t &out) {
   return false;
 }
 
+static bool readCompactModeI32(Attribute attr, int32_t &out) {
+  if (auto a = dyn_cast<CompactModeAttr>(attr)) {
+    out = (int32_t)a.getValue();
+    return true;
+  }
+  if (auto a = dyn_cast<IntegerAttr>(attr)) {
+    out = (int32_t)a.getInt();
+    return true;
+  }
+  return false;
+}
+
 static bool getConstIndexValue(Value v, int64_t &out) {
   if (auto cOp = v.getDefiningOp<arith::ConstantIndexOp>()) {
     out = cOp.value();
@@ -206,9 +218,20 @@ static bool computeTileLayoutInfo(mlir::pto::TileBufConfigAttr cfg, Type elemTy,
   int32_t bl = 0; // RowMajor
   int32_t sl = 0; // NoneBox
   int32_t fr = 512;
+  int32_t compact = 0; // Null
   (void)readBLayoutI32(cfg.getBLayout(), bl);
   (void)readSLayoutI32(cfg.getSLayout(), sl);
   if (auto attr = dyn_cast<IntegerAttr>(cfg.getSFractalSize())) fr = (int32_t)attr.getInt();
+  (void)readCompactModeI32(cfg.getCompactMode(), compact);
+
+  // CompactMode::RowPlusOne means adding one padded element in the major-stride
+  // dimension (the physically contiguous "row pitch" in row-major, or "column
+  // pitch" in col-major) to reduce bank conflicts on some vector paths.
+  auto applyCompactToMajorStride = [&](int64_t majorStride) -> int64_t {
+    if (compact == 2) // CompactMode::RowPlusOne
+      return majorStride + 1;
+    return majorStride;
+  };
 
   // Inner shape
   if (sl == 0) {
@@ -244,9 +267,9 @@ static bool computeTileLayoutInfo(mlir::pto::TileBufConfigAttr cfg, Type elemTy,
   if (sl == 0) {
     if (bl == 1) {
       info.rowStride = 1;
-      info.colStride = rows;
+      info.colStride = applyCompactToMajorStride(rows);
     } else {
-      info.rowStride = cols;
+      info.rowStride = applyCompactToMajorStride(cols);
       info.colStride = 1;
     }
   } else {
@@ -254,10 +277,10 @@ static bool computeTileLayoutInfo(mlir::pto::TileBufConfigAttr cfg, Type elemTy,
       // ColMajor + InnerRowMajor (NZ) is supported. InnerColMajor is unsupported.
       if (sl != 1) return false;
       info.rowStride = info.innerCols;
-      info.colStride = rows;
+      info.colStride = applyCompactToMajorStride(rows);
     } else {
       // RowMajor (ZZ/ZN)
-      info.rowStride = cols;
+      info.rowStride = applyCompactToMajorStride(cols);
       info.colStride = info.innerRows;
     }
   }
@@ -881,6 +904,59 @@ struct PTOViewToMemrefPass
         }
       }
 
+      // ------------------------------------------------------------------
+      // Stage 1.75: Fold addptr used by initialize_l2g2l_pipe(gm_addr).
+      // This keeps IR well-typed after function arguments are rewritten from
+      // !pto.ptr<T> to memref<?xT>.
+      // ------------------------------------------------------------------
+      bool foldedPipeInitAddPtr = true;
+      while (foldedPipeInitAddPtr) {
+        foldedPipeInitAddPtr = false;
+        SmallVector<mlir::pto::AddPtrOp, 8> addPtrsForPipeInit;
+        func.walk([&](mlir::pto::AddPtrOp op) {
+          bool eligible = !op->use_empty();
+          for (Operation *user : op->getUsers()) {
+            auto init = dyn_cast<mlir::pto::InitializeL2G2LPipeOp>(user);
+            if (!init || init.getGmAddr() != op.getResult()) {
+              eligible = false;
+              break;
+            }
+          }
+          if (eligible)
+            addPtrsForPipeInit.push_back(op);
+        });
+
+        for (auto op : addPtrsForPipeInit) {
+          IRRewriter rewriter(ctx);
+          rewriter.setInsertionPoint(op);
+          Location loc = op.getLoc();
+
+          Value base = op.getPtr();
+          Value totalOffset = ensureIndex(rewriter, loc, op.getOffset(), op);
+          while (auto add = base.getDefiningOp<mlir::pto::AddPtrOp>()) {
+            Value off = ensureIndex(rewriter, loc, add.getOffset(), add);
+            totalOffset = rewriter.create<arith::AddIOp>(loc, totalOffset, off);
+            base = add.getPtr();
+          }
+
+          auto baseMrTy = dyn_cast<MemRefType>(base.getType());
+          if (!baseMrTy || baseMrTy.getRank() != 1)
+            continue;
+
+          int64_t dyn = ShapedType::kDynamic;
+          auto layout = StridedLayoutAttr::get(ctx, dyn, {dyn});
+          auto targetTy = MemRefType::get({dyn}, baseMrTy.getElementType(), layout,
+                                          baseMrTy.getMemorySpace());
+          SmallVector<OpFoldResult, 1> sizes{rewriter.getIndexAttr(1)};
+          SmallVector<OpFoldResult, 1> strides{rewriter.getIndexAttr(1)};
+          auto rc = rewriter.create<memref::ReinterpretCastOp>(
+              loc, targetTy, base, OpFoldResult(totalOffset), sizes, strides);
+          rc->setAttr("pto.addptr_trace", rewriter.getUnitAttr());
+          rewriter.replaceOp(op, rc.getResult());
+          foldedPipeInitAddPtr = true;
+        }
+      }
+
       // Clean up: addptr should be folded into make_tensor_view.
       SmallVector<Operation *, 8> addPtrs;
       func.walk([&](mlir::pto::AddPtrOp op) { addPtrs.push_back(op.getOperation()); });
@@ -900,7 +976,7 @@ struct PTOViewToMemrefPass
       for (auto *op : addPtrs) {
         if (!op)
           continue;
-        op->emitError("addptr must feed make_tensor_view or load/store_scalar for lowering");
+        op->emitError("addptr must feed make_tensor_view,  initialize_l2g2l_pipe(gm_addr) or load/store_scalar for lowering");
         signalPassFailure();
         return;
       }
@@ -1338,9 +1414,16 @@ struct PTOViewToMemrefPass
 
         Value src = op->getOperand(0); 
         Value dst = op->getOperand(1);
+        Value preQuant = op.getPreQuantScalar();
 
-        auto newOp = rewriter.create<pto::TStoreOp>(op.getLoc(), TypeRange{},
-                                                    src, dst);
+        pto::TStoreOp newOp;
+        if (preQuant) {
+          newOp = rewriter.create<pto::TStoreOp>(op.getLoc(), TypeRange{},
+                                                 src, dst, preQuant);
+        } else {
+          newOp = rewriter.create<pto::TStoreOp>(op.getLoc(), TypeRange{},
+                                                 src, dst, Value{});
+        }
         newOp->setAttrs(op->getAttrs());
         rewriter.replaceOp(op, newOp->getResults());
       }
@@ -1509,6 +1592,41 @@ struct PTOViewToMemrefPass
           op->getOperand(0), op->getOperand(1), op->getOperand(2), op->getOperand(3));
       }
 
+      // --- TGemvMxOp [A, AScale, B, BScale, Dst] ---
+      SmallVector<mlir::pto::TGemvMxOp , 8> gemvMxs;
+      func.walk([&](mlir::pto::TGemvMxOp  op) { gemvMxs.push_back(op); });
+      for (auto op : gemvMxs) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+        rewriter.replaceOpWithNewOp<pto::TGemvMxOp>(
+          op, TypeRange{},
+          op->getOperand(0), op->getOperand(1), op->getOperand(2), op->getOperand(3), op->getOperand(4));
+      }
+
+      // --- TGemvMxAccOp [CIn, A, AScale, B, BScale, Dst] ---
+      SmallVector<mlir::pto::TGemvMxAccOp , 8> gemvMxAccs;
+      func.walk([&](mlir::pto::TGemvMxAccOp  op) { gemvMxAccs.push_back(op); });
+      for (auto op : gemvMxAccs) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+        rewriter.replaceOpWithNewOp<pto::TGemvMxAccOp>(
+          op, TypeRange{},
+          op->getOperand(0), op->getOperand(1), op->getOperand(2),
+          op->getOperand(3), op->getOperand(4), op->getOperand(5));
+      }
+
+      // --- TGemvMxBiasOp [A, AScale, B, BScale, Bias, Dst] ---
+      SmallVector<mlir::pto::TGemvMxBiasOp , 8> gemvMxBiass;
+      func.walk([&](mlir::pto::TGemvMxBiasOp  op) { gemvMxBiass.push_back(op); });
+      for (auto op : gemvMxBiass) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+        rewriter.replaceOpWithNewOp<pto::TGemvMxBiasOp>(
+          op, TypeRange{},
+          op->getOperand(0), op->getOperand(1), op->getOperand(2),
+          op->getOperand(3), op->getOperand(4), op->getOperand(5));
+      }
+
       // --- TMovOp [Src, Dst] ---
       SmallVector<mlir::pto::TMovOp , 8> movs;
       func.walk([&](mlir::pto::TMovOp  op) { movs.push_back(op); });
@@ -1516,7 +1634,9 @@ struct PTOViewToMemrefPass
         IRRewriter rewriter(ctx);
         rewriter.setInsertionPoint(op);
         rewriter.replaceOpWithNewOp<pto::TMovOp>(
-            op, TypeRange{}, op->getOperand(0), op->getOperand(1));
+            op, TypeRange{}, op.getSrc(), op.getDst(), op.getFp(),
+            op.getPreQuantScalar(), op.getAccToVecModeAttr(),
+            op.getReluPreModeAttr());
       }
 
       SmallVector<mlir::pto::TAbsOp, 8> abseops;
@@ -2247,6 +2367,32 @@ struct PTOViewToMemrefPass
             dst);
       }
 
+      SmallVector<mlir::pto::TFillPadInplaceOp, 8> fillpadInplaceOps;
+      func.walk(
+          [&](mlir::pto::TFillPadInplaceOp op) { fillpadInplaceOps.push_back(op); });
+
+      for (auto op : fillpadInplaceOps) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+
+        Value src = op.getSrc();
+        Value dst = op.getDst();
+
+        auto srcTy = dyn_cast<MemRefType>(src.getType());
+        auto dstTy = dyn_cast<MemRefType>(dst.getType());
+        if (!srcTy || !dstTy) {
+          op.emitError("ins/outs are not memref yet");
+          signalPassFailure();
+          return;
+        }
+
+        rewriter.replaceOpWithNewOp<pto::TFillPadInplaceOp>(
+            op,
+            TypeRange{},
+            src,
+            dst);
+      }
+
       // --- TSetValOp [Dst, Offset, Val] ---
       // Lower tile-world scalar write to memref-world SETVAL DPS op.
       SmallVector<mlir::pto::TSetValOp, 8> tsetvalops;
@@ -2853,6 +2999,33 @@ struct PTOViewToMemrefPass
         }
 
         rewriter.replaceOpWithNewOp<pto::TPartAddOp>(
+            op,
+            src0,
+            src1,
+            dst);
+      }
+
+      SmallVector<mlir::pto::TPartMulOp, 8> partmulops;
+      func.walk([&](mlir::pto::TPartMulOp op) { partmulops.push_back(op); });
+
+      for (auto op : partmulops) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+
+        Value src0 = op.getSrc0();
+        Value src1 = op.getSrc1();
+        Value dst = op.getDst();
+
+        auto src0Ty = dyn_cast<MemRefType>(src0.getType());
+        auto src1Ty = dyn_cast<MemRefType>(src1.getType());
+        auto dstTy = dyn_cast<MemRefType>(dst.getType());
+        if (!src0Ty || !src1Ty || !dstTy) {
+          op.emitError("ins/outs are not memref yet");
+          signalPassFailure();
+          return;
+        }
+
+        rewriter.replaceOpWithNewOp<pto::TPartMulOp>(
             op,
             src0,
             src1,
