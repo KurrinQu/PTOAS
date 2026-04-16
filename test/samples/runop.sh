@@ -287,7 +287,7 @@ process_one_dir() {
   for f in "$dir"/*.py; do
     [[ -f "$f" ]] || continue
     case "$(basename "$f")" in
-      *_golden.py|*_compare.py)
+      *_golden.py|*_compare.py|*_golden_*.py)
         continue
         ;;
     esac
