@@ -399,18 +399,36 @@ void Encoder::encodeKnownOpImmediates(
     return;
   }
   case 0x08: {
-    auto at = llvm::dyn_cast<mlir::pto::AllocTileOp>(&op);
-    if (!at)
-      throw std::runtime_error(
-          "imm_kind=alloc_tile but op is not pto.alloc_tile");
     uint8_t mask = 0;
-    if (at.getValidRow())
-      mask |= 0x1;
-    if (at.getValidCol())
-      mask |= 0x2;
-    out.appendU8(mask);
-    imms.push_back(mask);
-    return;
+    if (auto at = llvm::dyn_cast<mlir::pto::AllocTileOp>(&op)) {
+      if (at.getValidRow())
+        mask |= 0x1;
+      if (at.getValidCol())
+        mask |= 0x2;
+      out.appendU8(mask);
+      imms.push_back(mask);
+      return;
+    }
+    if (auto pop = llvm::dyn_cast<mlir::pto::TPopFromAicOp>(&op)) {
+      if (pop.getValidRow())
+        mask |= 0x1;
+      if (pop.getValidCol())
+        mask |= 0x2;
+      out.appendU8(mask);
+      imms.push_back(mask);
+      return;
+    }
+    if (auto pop = llvm::dyn_cast<mlir::pto::TPopFromAivOp>(&op)) {
+      if (pop.getValidRow())
+        mask |= 0x1;
+      if (pop.getValidCol())
+        mask |= 0x2;
+      out.appendU8(mask);
+      imms.push_back(mask);
+      return;
+    }
+    throw std::runtime_error(
+        "imm_kind=opt_mask but op is not pto.alloc_tile or frontend tpop");
   }
   default:
     (void)variantInfo;
