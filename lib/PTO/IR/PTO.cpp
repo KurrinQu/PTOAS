@@ -9518,12 +9518,39 @@ LogicalResult SubViewOp::inferReturnTypes(
   SmallVector<int64_t> validShape;
   constexpr int64_t kDynamicValidDim = -1;
   int64_t rank = static_cast<int64_t>(subviewShape.size());
-  size_t expectedWithoutValid = static_cast<size_t>(1 + rank);
   Value explicitVRow;
   Value explicitVCol;
-  if (rank == 2 && operands.size() >= expectedWithoutValid + 2) {
-    explicitVRow = operands[expectedWithoutValid];
-    explicitVCol = operands[expectedWithoutValid + 1];
+
+  // Robustly decode optional valid operands using AttrSizedOperandSegments:
+  //   [source, offsets..., valid_row?, valid_col?]
+  if (attributes) {
+    if (auto segAttr =
+            attributes.getAs<DenseI32ArrayAttr>("operandSegmentSizes")) {
+      ArrayRef<int32_t> segs = segAttr.asArrayRef();
+      if (segs.size() == 4) {
+        int32_t srcSeg = segs[0];
+        int32_t offSeg = segs[1];
+        int32_t vRowSeg = segs[2];
+        int32_t vColSeg = segs[3];
+        if (srcSeg == 1 && offSeg >= 0 && (vRowSeg == 0 || vRowSeg == 1) &&
+            (vColSeg == 0 || vColSeg == 1)) {
+          size_t idx = static_cast<size_t>(srcSeg + offSeg);
+          if (vRowSeg == 1 && idx < operands.size())
+            explicitVRow = operands[idx++];
+          if (vColSeg == 1 && idx < operands.size())
+            explicitVCol = operands[idx];
+        }
+      }
+    }
+  }
+
+  // Fallback for legacy callers that may not provide operandSegmentSizes.
+  if (!explicitVRow && !explicitVCol && rank == 2) {
+    size_t expectedWithoutValid = static_cast<size_t>(1 + rank);
+    if (operands.size() >= expectedWithoutValid + 2) {
+      explicitVRow = operands[expectedWithoutValid];
+      explicitVCol = operands[expectedWithoutValid + 1];
+    }
   }
 
   for (size_t i = 0, e = subviewShape.size(); i < e; ++i) {
