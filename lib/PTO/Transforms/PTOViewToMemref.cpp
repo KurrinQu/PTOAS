@@ -13,6 +13,7 @@
 // metadata through binding ops and SSA backtracking.
 
 #include "PTO/IR/PTO.h"
+#include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -139,16 +140,8 @@ struct TileLayoutConfig {
 };
 
 static int64_t getElemBytes(Type elemTy) {
-  if (auto ft = elemTy.dyn_cast<FloatType>()) {
-    if (ft.isF16() || ft.isBF16()) return 2;
-    if (ft.isF32()) return 4;
-    if (ft.isF64()) return 8;
-  }
-  if (auto it = elemTy.dyn_cast<IntegerType>()) {
-    int64_t bytes = it.getWidth() / 8;
-    return bytes > 0 ? bytes : 1;
-  }
-  return -1;
+  unsigned bytes = getPTOStorageElemByteSize(elemTy);
+  return bytes == 0 ? -1 : static_cast<int64_t>(bytes);
 }
 
 static bool readBLayoutI32(Attribute attr, int32_t &out) {
