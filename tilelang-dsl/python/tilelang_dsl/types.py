@@ -428,11 +428,7 @@ class PositionMode(str, Enum):
 
 
 class OrderMode(str, Enum):
-    # The serialized value is emitted into the MLIR `order` attribute of
-    # `pto.vci` and must match the canonical spelling documented by the VPTO
-    # spec (see `docs/vpto_spec/vpto-spec-current.md`). Hand-written VPTO IR
-    # and `VPTOLLVMEmitter::parseOrderImmediate` also use this short form.
-    ASC = "ASC"
+    ASC = "ORDER_ASC"
 
 
 class VcvtRoundMode(str, Enum):
@@ -674,6 +670,12 @@ def constexpr(value: bool) -> bool:
     return value
 
 
+def get_op_attr(name: str, default: Any = None) -> Any:
+    if not isinstance(name, str) or not name:
+        raise TypeError("get_op_attr expects a non-empty string attribute name")
+    return default
+
+
 __all__ = [
     "ScalarType",
     "WildcardType",
@@ -733,6 +735,7 @@ __all__ = [
     "mask_b16",
     "mask_b32",
     "constexpr",
+    "get_op_attr",
     "bytewidth",
     "get_lanes",
     "elements_per_vreg",
