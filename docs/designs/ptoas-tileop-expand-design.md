@@ -837,7 +837,7 @@ def template_xxx(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
 
 | 工作项 | 说明 |
 |--------|------|
-| `@pto.tile_template` 装饰器 | 标记模板函数，指定对应的 Tile op 和 target |
+| `.vkernel` 装饰器 | 标记模板函数，指定对应的 Tile op 和 target |
 | `pto.Tile` 属性接口 | 支持 `shape`、`valid_shape`、`element_type`、`element_size` 等属性访问 |
 | `Tile` 下标访问 | 支持 `tile[i, j]` 语法用于 `vlds`/`vsts` 的地址计算 |
 | 动态循环边界 | 当 `valid_shape` 为运行时动态值时，`range` 生成 `scf.for` |
@@ -898,7 +898,7 @@ def template_xxx(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
 
   @pto.vkernel(
       target="a5",
-      op="pto.tadd"
+      op="tadd"
   )
   def template_tadd(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
       dtype = dst.element_type
