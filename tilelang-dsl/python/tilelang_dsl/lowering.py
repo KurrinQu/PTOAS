@@ -1815,7 +1815,7 @@ class _AuthoringRenderer:
 
     def _mask_granularity_for_dtype(self, dtype: ScalarType) -> str:
         int_bits = integer_bitwidth(dtype)
-        if dtype.name == "f32" or int_bits == 32:
+        if dtype.name == "f32" or int_bits in {32, 64}:
             return "b32"
         if dtype.name in {"f16", "bf16"} or int_bits == 16:
             return "b16"

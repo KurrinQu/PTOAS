@@ -5813,7 +5813,7 @@ class _SemanticAnalyzer:
 
     def _mask_granularity_for_dtype(self, dtype: ScalarType) -> str:
         int_bits = integer_bitwidth(dtype)
-        if dtype.name == "f32" or int_bits == 32:
+        if dtype.name == "f32" or int_bits in {32, 64}:
             return "b32"
         if dtype.name in {"f16", "bf16"} or int_bits == 16:
             return "b16"
@@ -5823,7 +5823,7 @@ class _SemanticAnalyzer:
 
     def _vreg_type_for_dtype(self, dtype: ScalarType) -> SemanticVRegType:
         width = bytewidth(dtype)
-        if width not in {1, 2, 4}:
+        if width not in {1, 2, 4, 8}:
             raise TypeError(f"dtype `{dtype.name}` is not supported by vlds/vsts in TileLang DSL v1")
         return SemanticVRegType(element_dtype=dtype, lanes=256 // width)
 

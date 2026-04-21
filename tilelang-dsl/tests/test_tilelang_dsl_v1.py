@@ -175,6 +175,7 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertEqual(pto.bytewidth(pto.si16), 2)
         self.assertEqual(pto.bytewidth(pto.ui64), 8)
         self.assertEqual(pto.get_lanes(pto.ui32), 64)
+        self.assertEqual(pto.get_lanes(pto.i64), 32)
         self.assertEqual(pto.elements_per_vreg(pto.si8), 256)
         self.assertEqual(repr(pto.align), "align")
 
@@ -2932,6 +2933,43 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             text,
             r"= pto\.vcvt %[^,\s]+(?: \{[^}]+\})? : !pto\.vreg<[^>]+> -> !pto\.vreg<[^>]+>",
         )
+
+    def test_vcvt_i32_to_i64_reuses_b32_mask_and_emits_i64_vreg(self) -> None:
+        @pto.vkernel(
+            op="vcvt_i32_to_i64_unique",
+            dtypes=[(pto.i64, pto.i32)],
+            advanced=True,
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            src_mask = pto.make_mask(pto.i32, pto.PAT.ALL)
+            dst_mask = pto.make_mask(pto.i64, pto.PAT.ALL)
+            vec = pto.vlds(src, 0, dist="UNPK_B32")
+            out = pto.vcvt(
+                vec,
+                pto.i64,
+                src_mask,
+                part=pto.VcvtPartMode.EVEN,
+            )
+            pto.vsts(out, dst, 0, dst_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 32), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        vecscope = next(stmt for stmt in semantic_kernel.body if isinstance(stmt, SemanticVecscopeStmt))
+        store_stmt = next(stmt for stmt in vecscope.body if isinstance(stmt, SemanticVectorStoreStmt))
+        self.assertIsInstance(store_stmt.mask.type, SemanticMaskType)
+        self.assertEqual(store_stmt.mask.type.granularity, "b32")
+
+        text = specialized.mlir_text()
+        self.assertIn("!pto.mask<b32>", text)
+        self.assertIn('dist = "UNPK_B32"', text)
+        self.assertRegex(text, r"!pto\.vreg<32xi64>")
+        self.assertIn('part = "EVEN"', text)
+        self.assertIn("pto.vsts", text)
 
     def test_vtrc_defaults_to_round_nearest(self) -> None:
         @pto.vkernel(
