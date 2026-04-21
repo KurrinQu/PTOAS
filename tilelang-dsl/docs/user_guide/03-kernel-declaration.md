@@ -79,6 +79,8 @@ The `dtypes` parameter supports flexible type matching:
 
 1. **Concrete Types**: Exact type matches using DSL scalar types:
    - `pto.f16`, `pto.f32`, `pto.bf16`
+   - `pto.f8e4m3`, `pto.f8e5m2`, `pto.hif8`
+   - `pto.f4e1m2x2`, `pto.f4e2m1x2`
    - `pto.i8`, `pto.si8`, `pto.ui8`
    - `pto.i16`, `pto.si16`, `pto.ui16`
    - `pto.i32`, `pto.si32`, `pto.ui32`
@@ -284,6 +286,28 @@ that pass constraint evaluation.
 - On materialization failure such as missing `specialize()` bindings, the
   candidate carries `mlir_error`.
 - Use `include_mlir=False` to skip this extra materialization attempt.
+
+#### Low-Precision Template Signatures
+
+Low-precision dtypes can appear directly in `dtypes=[...]` and in kernel body
+type expressions:
+
+```python
+@pto.vkernel(
+    target="a5",
+    op="pto.tcvt",
+    dtypes=[(pto.f8e4m3, pto.f32)],
+    advanced=True,
+)
+def tcvt_f32_to_f8(dst: pto.Tile, src: pto.Tile):
+    return None
+```
+
+Notes:
+- `f4e1m2x2` and `f4e2m1x2` use packed-pair storage, so Tile shape counts packed pairs.
+- The example above only shows the declaration shape for a `pto.tcvt` template kernel. Low-precision dtypes can also be used in `ptr(...)`, `vreg(...)`, `vcvt`, and `vbitcast` type expressions.
+- Low-precision dtypes are intended for storage, load/store, gather/scatter, `vcvt`, and `vbitcast`.
+- Arithmetic ops such as `vadd`, `vmul`, `vexp`, and `vrelu` still require `f16`, `bf16`, `f32`, or the existing integer families.
 
 #### Examples
 

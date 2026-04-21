@@ -60,10 +60,23 @@ _FLOAT_DTYPE_WIDTHS = {
     "f32": 32,
 }
 
+_LOW_PRECISION_DTYPE_WIDTHS = {
+    "f8e4m3": 8,
+    "f8e5m2": 8,
+    "hif8": 8,
+    "f4e1m2x2": 8,
+    "f4e2m1x2": 8,
+}
+
+_PACKED_DTYPE_NAMES = frozenset({"f4e1m2x2", "f4e2m1x2"})
+
 _DTYPE_BYTE_WIDTHS = {
     name: bits // 8 for name, bits in _INTEGER_DTYPE_WIDTHS.items()
 }
 _DTYPE_BYTE_WIDTHS.update({name: bits // 8 for name, bits in _FLOAT_DTYPE_WIDTHS.items()})
+_DTYPE_BYTE_WIDTHS.update(
+    {name: bits // 8 for name, bits in _LOW_PRECISION_DTYPE_WIDTHS.items()}
+)
 
 
 class TensorView:
@@ -320,6 +333,12 @@ class PadValue:
         if self == PadValue.ZERO:
             return 0.0 if is_float_dtype(dtype) else 0
         if self == PadValue.MAX:
+            if is_low_precision_dtype(dtype):
+                raise TypeError(
+                    f"PadValue.{self.name} is not supported for low-precision dtype "
+                    f"'{dtype.name}'; use PadValue.NULL, PadValue.ZERO, or "
+                    "PadValue.custom_f32(...) instead"
+                )
             if is_float_dtype(dtype):
                 return _FLOAT_DTYPE_MAX[dtype.name]
             width = integer_bitwidth(dtype)
@@ -330,6 +349,12 @@ class PadValue:
                 return (1 << width) - 1
             return (1 << (width - 1)) - 1
         if self == PadValue.MIN:
+            if is_low_precision_dtype(dtype):
+                raise TypeError(
+                    f"PadValue.{self.name} is not supported for low-precision dtype "
+                    f"'{dtype.name}'; use PadValue.NULL, PadValue.ZERO, or "
+                    "PadValue.custom_f32(...) instead"
+                )
             if is_float_dtype(dtype):
                 return _FLOAT_DTYPE_MIN[dtype.name]
             width = integer_bitwidth(dtype)
@@ -340,9 +365,10 @@ class PadValue:
                 return 0
             return -(1 << (width - 1))
         if self.is_custom:
-            if not is_float_dtype(dtype):
+            if not (is_float_dtype(dtype) or is_low_precision_dtype(dtype)):
                 raise TypeError(
-                    "custom Tile pad_value currently only materializes for floating Tile element dtypes"
+                    "custom Tile pad_value currently only materializes for floating "
+                    "or low-precision Tile element dtypes"
                 )
             return self.as_float32()
         raise TypeError(f"unsupported PadValue payload {self!r}")
@@ -596,6 +622,13 @@ ui64 = ScalarType("ui64")
 f16 = ScalarType("f16")
 bf16 = ScalarType("bf16")
 f32 = ScalarType("f32")
+# FP8 uses one byte per element.
+f8e4m3 = ScalarType("f8e4m3")
+f8e5m2 = ScalarType("f8e5m2")
+hif8 = ScalarType("hif8")
+# FP4 packed dtypes use one byte per logical pair.
+f4e1m2x2 = ScalarType("f4e1m2x2")
+f4e2m1x2 = ScalarType("f4e2m1x2")
 PIPE = Pipe
 EVENT = Event
 PAT = MaskPattern
@@ -649,7 +682,17 @@ def is_float_dtype(dtype: ScalarType) -> bool:
     return isinstance(dtype, ScalarType) and dtype.name in _FLOAT_DTYPE_WIDTHS
 
 
+def is_low_precision_dtype(dtype: ScalarType) -> bool:
+    return isinstance(dtype, ScalarType) and dtype.name in _LOW_PRECISION_DTYPE_WIDTHS
+
+
+def is_packed_dtype(dtype: ScalarType) -> bool:
+    return isinstance(dtype, ScalarType) and dtype.name in _PACKED_DTYPE_NAMES
+
+
 def bytewidth(dtype: ScalarType) -> int:
+    """Return storage byte width for one scalar or one packed pair."""
+
     if not isinstance(dtype, ScalarType):
         raise TypeError("bytewidth expects a TileLang scalar dtype")
     width = _DTYPE_BYTE_WIDTHS.get(dtype.name)
@@ -659,10 +702,14 @@ def bytewidth(dtype: ScalarType) -> int:
 
 
 def get_lanes(dtype: ScalarType) -> int:
+    """Return the physical vector lane count for the dtype storage width."""
+
     return 256 // bytewidth(dtype)
 
 
 def elements_per_vreg(dtype: ScalarType) -> int:
+    """Return the physical element count stored in one vreg."""
+
     return get_lanes(dtype)
 
 
@@ -727,6 +774,11 @@ __all__ = [
     "f16",
     "bf16",
     "f32",
+    "f8e4m3",
+    "f8e5m2",
+    "hif8",
+    "f4e1m2x2",
+    "f4e2m1x2",
     "AnyFloat",
     "AnyInt",
     "AnyType",
@@ -739,4 +791,6 @@ __all__ = [
     "bytewidth",
     "get_lanes",
     "elements_per_vreg",
+    "is_low_precision_dtype",
+    "is_packed_dtype",
 ]

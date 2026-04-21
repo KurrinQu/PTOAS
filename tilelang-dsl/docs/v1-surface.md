@@ -57,7 +57,7 @@ The package currently exports:
 - `Tile`
 - `VRegType`
 - `MaskType`
-- scalar dtypes such as `f16`, `bf16`, `f32`, `i8`, `i16`, `i32`, `i64`
+- scalar dtypes such as `f16`, `bf16`, `f32`, `f8e4m3`, `f8e5m2`, `hif8`, `f4e1m2x2`, `f4e2m1x2`, `i8`, `i16`, `i32`, `i64`
 - type helpers such as `vreg(...)`, `ptr(...)`, `mask_b8`, `mask_b16`, `mask_b32`, `MemorySpace`, `TileConfig`, `TileSpecialization`
 
 The package does not expose a DSL-level `pto.memref(...)` constructor. MemRef
@@ -128,6 +128,27 @@ In this example:
 - `tmp` binds to `bf16`
 - `scale` binds to `i32`
 
+## Low-Precision Dtypes
+
+TileLang DSL v1 also accepts these low-precision scalar dtypes:
+
+| DSL name | Lowered MLIR type | Storage width | Notes |
+|----------|-------------------|---------------|-------|
+| `f8e4m3` | `f8E4M3FN` | 1 byte / element | FP8 FN variant exposed by the DSL |
+| `f8e5m2` | `f8E5M2` | 1 byte / element | MLIR builtin FP8 |
+| `hif8` | `!pto.hif8` | 1 byte / element | PTO dialect FP8 |
+| `f4e1m2x2` | `!pto.f4E1M2x2` | 1 byte / packed pair | Tile and vreg shape counts packed pairs |
+| `f4e2m1x2` | `!pto.f4E2M1x2` | 1 byte / packed pair | Tile and vreg shape counts packed pairs |
+
+These dtypes are supported for:
+- `Tile` / `TensorView` / `PartitionTensorView` element annotations
+- `ptr(...)`, `vreg(...)`, `bytewidth(...)`, `get_lanes(...)`, `elements_per_vreg(...)`
+- `tload` / `tstore` / `mgather` / `mscatter` / `vcvt` / `vbitcast` template signatures
+
+These dtypes are not accepted by vector arithmetic families such as `vadd`,
+`vsub`, `vmul`, `vexp`, or `vrelu`. Convert through `pto.vcvt(...)` to `f16`,
+`bf16`, or `f32` before arithmetic.
+
 ## Tile Specialization
 
 Bare `Tile` parameters are incomplete until descriptor-level specialization is
@@ -151,6 +172,7 @@ Current v1 Tile profile rules:
 - Tile rank must be 1D or 2D
 - Tile memory space must be `MemorySpace.UB`
 - `config` may be omitted, provided as `TileConfig`, or built from a dict
+- for packed FP4 dtypes (`f4e1m2x2`, `f4e2m1x2`), Tile shape and valid-shape dimensions count packed pairs rather than logical scalar values
 
 Before all bare `Tile` parameters are specialized, the descriptor must reject:
 - `mlir_text()`

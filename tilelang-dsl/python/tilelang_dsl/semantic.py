@@ -77,8 +77,13 @@ from .types import (
     VRegType,
     bf16,
     bytewidth,
+    f4e1m2x2,
+    f4e2m1x2,
     f16,
     f32,
+    f8e4m3,
+    f8e5m2,
+    hif8,
     i1,
     i8,
     i16,
@@ -88,6 +93,7 @@ from .types import (
     integer_signedness,
     is_float_dtype,
     is_integer_dtype,
+    is_low_precision_dtype,
     si8,
     si16,
     si32,
@@ -117,6 +123,11 @@ _DTYPE_SYMBOLS = {
     "f16": f16,
     "bf16": bf16,
     "f32": f32,
+    "f8e4m3": f8e4m3,
+    "f8e5m2": f8e5m2,
+    "hif8": hif8,
+    "f4e1m2x2": f4e1m2x2,
+    "f4e2m1x2": f4e2m1x2,
 }
 _MASK_TYPE_SYMBOLS = {
     "mask_b8": MaskType("b8"),
@@ -148,6 +159,9 @@ _VCVT_PART_MODE_SYMBOLS = {mode.name: mode for mode in VcvtPartMode}
 _POST_UPDATE_MODE_SYMBOLS = {mode.name: mode for mode in PostUpdateMode}
 _VCVT_ATTR_CONTRACTS: dict[tuple[str, str], tuple[bool, bool, bool]] = {
     # (src_kind, dst_kind): (requires_rnd, requires_sat, requires_part)
+    # Low-precision pairs are intentionally left out here for now. The TileLib
+    # tcvt helpers still need to land the exact attr contracts, and a missing
+    # entry keeps the current "no forced attr check" behavior in place.
     ("f32", "f16"): (True, True, True),
     ("f32", "bf16"): (True, True, True),
     ("f32", "s16"): (True, True, True),
@@ -194,6 +208,16 @@ def _classify_vcvt_elem_kind(dtype: ScalarType) -> str | None:
         return "bf16"
     if dtype == f32:
         return "f32"
+    if dtype == f8e4m3:
+        return "f8e4m3"
+    if dtype == f8e5m2:
+        return "f8e5m2"
+    if dtype == hif8:
+        return "h8"
+    if dtype == f4e1m2x2:
+        return "f4e1m2x2"
+    if dtype == f4e2m1x2:
+        return "f4e2m1x2"
     if not is_integer_dtype(dtype):
         return None
     width = integer_bitwidth(dtype)
@@ -5845,7 +5869,7 @@ class _SemanticAnalyzer:
             return "b32"
         if dtype.name in {"f16", "bf16"} or int_bits == 16:
             return "b16"
-        if int_bits == 8:
+        if int_bits == 8 or is_low_precision_dtype(dtype):
             return "b8"
         raise TypeError(f"dtype `{dtype.name}` is not supported by make_mask/vector lowering in TileLang DSL v1")
 
