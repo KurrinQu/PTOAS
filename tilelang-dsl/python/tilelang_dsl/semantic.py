@@ -597,6 +597,14 @@ class SemanticVectorPairStoreStmt(SemanticStmt):
 
 
 @dataclass(frozen=True)
+class SemanticVScatterStmt(SemanticStmt):
+    value: SemanticExpr
+    destination: SemanticExpr
+    offsets: SemanticExpr
+    active_lanes: SemanticExpr
+
+
+@dataclass(frozen=True)
 class SemanticPredicateStoreStmt(SemanticStmt):
     op_name: str
     value: SemanticExpr
@@ -1166,6 +1174,7 @@ class _SemanticAnalyzer:
                 "vsta",
                 "vstas",
                 "vstar",
+                "vscatter",
                 "vsts",
                 "vstsx2",
                 "vstus",
@@ -1266,6 +1275,7 @@ class _SemanticAnalyzer:
                     "vsta",
                     "vstas",
                     "vstar",
+                    "vscatter",
                     "vsts",
                     "vstsx2",
                     "vstus",
@@ -1364,6 +1374,8 @@ class _SemanticAnalyzer:
             if isinstance(stmt, SemanticDmaStoreStmt):
                 return True
             if isinstance(stmt, SemanticVectorStoreStmt):
+                return True
+            if isinstance(stmt, SemanticVScatterStmt):
                 return True
             if isinstance(stmt, SemanticPredicateStoreStmt):
                 return True
@@ -1640,7 +1652,7 @@ class _SemanticAnalyzer:
         return (
             isinstance(expr, FrontendCallExpr)
             and expr.namespace == "pto"
-            and expr.name in {"psts", "pst", "psti", "vsst", "vsta", "vstas", "vstar", "vsts", "vstsx2"}
+            and expr.name in {"psts", "pst", "psti", "vsst", "vsta", "vstas", "vstar", "vscatter", "vsts", "vstsx2"}
         )
 
     def _is_scalar_store_call(self, expr: FrontendExprNode) -> bool:
@@ -1885,6 +1897,35 @@ class _SemanticAnalyzer:
                     destination=destination,
                     indices=indices,
                     offset=offset,
+                ),
+                dict(env),
+            )
+
+        if expr.name == "vscatter":
+            args = tuple(
+                self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
+                for arg in expr.args
+            )
+            if len(args) != 4:
+                raise TypeError("pto.vscatter expects exactly 4 positional arguments in TileLang DSL v1")
+            value, destination, offsets, active_lanes = args
+            value_type = self._require_vreg_expr(value, "pto.vscatter value")
+            self._require_vector_pointer_expr(destination, "pto.vscatter destination")
+            offsets_type = self._require_vreg_expr(offsets, "pto.vscatter offsets")
+            if not is_integer_dtype(offsets_type.element_dtype):
+                raise TypeError("pto.vscatter offsets must use an integer vector type in TileLang DSL v1")
+            if integer_bitwidth(offsets_type.element_dtype) != 32:
+                raise TypeError("pto.vscatter currently requires i32 offset vectors in TileLang DSL v1")
+            if value_type.lanes != offsets_type.lanes:
+                raise TypeError("pto.vscatter value and offsets must use the same lane count in TileLang DSL v1")
+            self._require_i32_like_expr(active_lanes, "pto.vscatter active_lanes")
+            self._require_matching_vector_pointer(value_type, destination.type, "pto.vscatter")
+            return (
+                SemanticVScatterStmt(
+                    value=value,
+                    destination=destination,
+                    offsets=offsets,
+                    active_lanes=active_lanes,
                 ),
                 dict(env),
             )
@@ -6448,6 +6489,7 @@ __all__ = [
     "SemanticTupleType",
     "SemanticType",
     "SemanticVRegType",
+    "SemanticVScatterStmt",
     "SemanticVectorPairStoreStmt",
     "SemanticVectorStoreStmt",
     "SemanticWaitFlagDevStmt",

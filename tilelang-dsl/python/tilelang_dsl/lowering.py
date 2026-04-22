@@ -65,6 +65,7 @@ from .semantic import (
     SemanticType,
     SemanticTupleExpr,
     SemanticTupleType,
+    SemanticVScatterStmt,
     SemanticVRegType,
     SemanticVectorPairStoreStmt,
     SemanticVectorStoreStmt,
@@ -313,6 +314,12 @@ class _AuthoringRenderer:
                 self._collect_used_tile_buffers_from_expr(index, used)
             self._collect_used_tile_buffers_from_expr(stmt.mask, used)
             return
+        if isinstance(stmt, SemanticVScatterStmt):
+            self._collect_used_tile_buffers_from_expr(stmt.value, used)
+            self._record_tile_buffer_use(stmt.destination, used)
+            self._collect_used_tile_buffers_from_expr(stmt.offsets, used)
+            self._collect_used_tile_buffers_from_expr(stmt.active_lanes, used)
+            return
         if isinstance(stmt, SemanticPredicateStoreStmt):
             self._collect_used_tile_buffers_from_expr(stmt.value, used)
             self._record_tile_buffer_use(stmt.destination, used)
@@ -432,6 +439,8 @@ class _AuthoringRenderer:
             return self._render_dma_store(stmt, env, indent=indent)
         if isinstance(stmt, SemanticVectorStoreStmt):
             return self._render_vector_store(stmt, env, indent=indent)
+        if isinstance(stmt, SemanticVScatterStmt):
+            return self._render_vscatter(stmt, env, indent=indent)
         if isinstance(stmt, SemanticVectorPairStoreStmt):
             return self._render_vector_pair_store(stmt, env, indent=indent)
         if isinstance(stmt, SemanticPredicateStoreStmt):
@@ -1085,6 +1094,27 @@ class _AuthoringRenderer:
             + f"{low.name}, {high.name}, {destination.name}[{rendered_indices}], {dist}, {mask.name} : "
             + f"{self._render_type(low.type)}, {self._render_type(high.type)}, "
             + f"{self._render_type(destination.type)}, {self._render_type(mask.type)}"
+        )
+        return lines
+
+    def _render_vscatter(
+        self,
+        stmt: SemanticVScatterStmt,
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+    ) -> list[str]:
+        lines: list[str] = []
+        value = self._lower_expr(stmt.value, env, indent=indent, into=lines)
+        destination = self._lower_expr(stmt.destination, env, indent=indent, into=lines)
+        offsets = self._lower_expr(stmt.offsets, env, indent=indent, into=lines)
+        active_lanes = self._lower_to_index(stmt.active_lanes, env, indent=indent, into=lines)
+        lines.append(
+            self._indent(indent)
+            + "pto.vscatter "
+            + f"{value.name}, {destination.name}, {offsets.name}, {active_lanes.name} : "
+            + f"{self._render_type(value.type)}, {self._render_type(destination.type)}, "
+            + f"{self._render_type(offsets.type)}, {self._render_type(active_lanes.type)}"
         )
         return lines
 
