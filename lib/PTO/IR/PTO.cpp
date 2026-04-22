@@ -9954,7 +9954,11 @@ void TPReluOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_READ(getSrc0Mutable());
   PTO_ADD_READ(getSrc1Mutable());
-  PTO_ADD_WRITE(getTmpMutable());
+  // A5 pto-isa TPRELU implementation does not consume tmp; modeling tmp as a
+  // write-only scratch on A5 incorrectly inflates local-memory planning and
+  // can trigger false vec-overflow diagnostics.
+  if (getTargetArch(getOperation()) != PTOArch::A5)
+    PTO_ADD_WRITE(getTmpMutable());
   PTO_ADD_WRITE(getDstMutable());
 }
 
