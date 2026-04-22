@@ -2528,7 +2528,9 @@ public:
       return rewriter.notifyMatchFailure(op, "failed to convert vbr result type");
 
     Value scalar = adaptor.getValue();
-    if (!scalar || scalar.getType() != op.getValue().getType())
+    Type expectedScalarType =
+        this->getTypeConverter()->convertType(op.getValue().getType());
+    if (!scalar || !expectedScalarType || scalar.getType() != expectedScalarType)
       return rewriter.notifyMatchFailure(op,
                                          "unexpected converted vbr operand type");
 
