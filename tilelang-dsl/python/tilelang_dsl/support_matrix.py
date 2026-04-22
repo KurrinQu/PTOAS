@@ -157,6 +157,7 @@ SUPPORTED_VECSCOPE_PTO_CALLS = frozenset(
 
 ADVANCED_VECSCOPE_PTO_CALLS = frozenset(
     {
+        "vscatter",
         "vcmp",
         "vcmps",
         "vsel",

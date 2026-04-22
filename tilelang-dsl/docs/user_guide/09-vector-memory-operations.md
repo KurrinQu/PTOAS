@@ -768,7 +768,7 @@ pto.vsta(align, tile[k:])
 
 **Constraints**:
 - Only `b8`, `b16`, and `b32` element sizes are supported
-- Index vector must use a supported integer element type and layout
+- Current TileLang DSL / VPTO path requires `i32` index vectors
 - Each computed address must be element-aligned
 - If indices alias, only one write is guaranteed (winning lane is implementation-defined)
 - Only the first `active_lanes` offsets participate in the scatter

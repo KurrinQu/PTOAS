@@ -74,6 +74,7 @@ from tilelang_dsl.semantic import (
     SemanticTileConfigType,
     SemanticTileType,
     SemanticVecscopeStmt,
+    SemanticVScatterStmt,
     SemanticVectorPairStoreStmt,
     SemanticVectorStoreStmt,
     SemanticVRegType,
@@ -444,6 +445,7 @@ class TileLangDSLSupportMatrixTests(unittest.TestCase):
         self.assertEqual(get_feature_tier("pto.vsort32"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.vldsx2"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.vstsx2"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.vscatter"), ADVANCED_TIER)
         self.assertEqual(get_feature_tier("pto.vbitsort"), ADVANCED_TIER)
         self.assertEqual(get_feature_tier("pto.vmrgsort4"), ADVANCED_TIER)
         self.assertEqual(get_feature_tier("PadMode"), BASIC_TIER)
@@ -5531,6 +5533,36 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         text = specialized.mlir_text()
         self.assertIn('"DINTLV"', text)
         self.assertIn('"INTLV"', text)
+
+    def test_vscatter_lowers_from_advanced_pointer_surface(self) -> None:
+        @pto.vkernel(
+            op="vscatter_pointer_surface",
+            dtypes=[(pto.i32, pto.f32)],
+            advanced=True,
+        )
+        def kernel(
+            offsets_src: pto.ptr(pto.i32, pto.MemorySpace.UB),
+            dst: pto.ptr(pto.f32, pto.MemorySpace.UB),
+        ):
+            vec = pto.vbr(1.0)
+            offsets = pto.vlds(offsets_src, 0)
+            pto.vscatter(vec, dst, offsets, 64)
+            return None
+
+        specialized = kernel.specialize()
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        vecscope = next(stmt for stmt in semantic_kernel.body if isinstance(stmt, SemanticVecscopeStmt))
+        scatter_stmt = next(stmt for stmt in vecscope.body if isinstance(stmt, SemanticVScatterStmt))
+
+        self.assertIsInstance(scatter_stmt, SemanticVScatterStmt)
+        self.assertEqual(scatter_stmt.destination.type.memory_space, "ub")
+        self.assertEqual(scatter_stmt.value.type.element_dtype, pto.f32)
+        self.assertEqual(scatter_stmt.offsets.type.element_dtype, pto.i32)
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.vscatter", text)
+        self.assertIn("!pto.vreg<64xf32>", text)
+        self.assertIn("!pto.vreg<64xi32>", text)
 
     def test_align_load_and_stateful_store_ops_lower_to_current_vpto_surface(self) -> None:
         @pto.vkernel(
