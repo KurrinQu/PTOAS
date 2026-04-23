@@ -6107,7 +6107,11 @@ struct PTOTCIToEmitC : public OpConversionPattern<pto::TCIOp> {
     // scalar type, not the converted EmitC value type.
     std::string scalarTok = "int32_t";
     if (auto it = dyn_cast<IntegerType>(op->getOperand(0).getType())) {
-      scalarTok = (it.getWidth() == 16) ? "int16_t" : "int32_t";
+      bool isUnsigned = it.isUnsigned();
+      if (it.getWidth() == 16)
+        scalarTok = isUnsigned ? "uint16_t" : "int16_t";
+      else
+        scalarTok = isUnsigned ? "uint32_t" : "int32_t";
     }
 
     // descending -> "0"/"1"
