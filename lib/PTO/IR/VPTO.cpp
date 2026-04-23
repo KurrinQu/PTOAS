@@ -2356,7 +2356,20 @@ LogicalResult VexpOp::verify() { return verifyUnaryVecOp(*this); }
 LogicalResult VlnOp::verify() { return verifyUnaryVecOp(*this); }
 LogicalResult VsqrtOp::verify() { return verifyUnaryVecOp(*this); }
 LogicalResult VnegOp::verify() { return verifyUnaryVecOp(*this); }
-LogicalResult VreluOp::verify() { return verifyUnaryVecOp(*this); }
+LogicalResult VreluOp::verify() {
+  if (failed(verifyUnaryVecOp(*this)))
+    return failure();
+  auto inputType = cast<VRegType>(getInput().getType());
+  Type elemType = inputType.getElementType();
+  if (auto intType = dyn_cast<IntegerType>(elemType)) {
+    if (intType.getWidth() != 32 || intType.isUnsigned())
+      return emitOpError("requires si32/i32/f16/f32 vector element type");
+    return success();
+  }
+  if (!elemType.isF16() && !elemType.isF32())
+    return emitOpError("requires si32/i32/f16/f32 vector element type");
+  return success();
+}
 LogicalResult VnotOp::verify() { return verifyUnaryVecOp(*this); }
 
 template <typename BinaryOp>

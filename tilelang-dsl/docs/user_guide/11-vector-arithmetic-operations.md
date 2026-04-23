@@ -89,6 +89,8 @@ abs_vec = pto.vabs(vec_f32, mask32)
 
 **Description**: ReLU activation (max(0, x)) of vector elements.
 
+**Supported dtypes**: `si32`, `i32`, `f16`, `f32`
+
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|

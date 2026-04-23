@@ -1,0 +1,42 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Regression test for issue #220: direct VPTO `pto.vrelu` should accept both
+// signless and signed i32 vectors and lower them to the same HIVM callee.
+//
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --vpto-emit-hivm-llvm %s -o - | FileCheck %s
+
+module attributes {pto.target_arch = "a5"} {
+  func.func @vrelu_signless_i32_store(%value: !pto.vreg<64xi32>, %dst: !pto.ptr<i32, ub>) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    pto.vecscope {
+      %mask = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
+      %out = pto.vrelu %value, %mask : !pto.vreg<64xi32>, !pto.mask<b32> -> !pto.vreg<64xi32>
+      pto.vsts %out, %dst[%c0], %mask : !pto.vreg<64xi32>, !pto.ptr<i32, ub>, !pto.mask<b32>
+    }
+    return
+  }
+
+  func.func @vrelu_signed_i32_store(%value: !pto.vreg<64xsi32>, %dst: !pto.ptr<si32, ub>) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    pto.vecscope {
+      %mask = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
+      %out = pto.vrelu %value, %mask : !pto.vreg<64xsi32>, !pto.mask<b32> -> !pto.vreg<64xsi32>
+      pto.vsts %out, %dst[%c0], %mask : !pto.vreg<64xsi32>, !pto.ptr<si32, ub>, !pto.mask<b32>
+    }
+    return
+  }
+}
+
+// CHECK-COUNT-1: declare <64 x i32> @llvm.hivm.vrelu.v64s32.x(<64 x i32>, <256 x i1>)
+// CHECK-LABEL: define void @vrelu_signless_i32_store(
+// CHECK: %[[RELU0:[^ ]+]] = call <64 x i32> @llvm.hivm.vrelu.v64s32.x(<64 x i32> %0, <256 x i1> %[[MASK0:[^ ]+]])
+// CHECK: call void @llvm.hivm.vstsx1.v64s32(<64 x i32> %[[RELU0]], ptr addrspace(6) %1, i32 0, i32 2, i32 0, <256 x i1> %[[MASK0]])
+// CHECK-LABEL: define void @vrelu_signed_i32_store(
+// CHECK: %[[RELU1:[^ ]+]] = call <64 x i32> @llvm.hivm.vrelu.v64s32.x(<64 x i32> %0, <256 x i1> %[[MASK1:[^ ]+]])
+// CHECK: call void @llvm.hivm.vstsx1.v64s32(<64 x i32> %[[RELU1]], ptr addrspace(6) %1, i32 0, i32 2, i32 0, <256 x i1> %[[MASK1]])

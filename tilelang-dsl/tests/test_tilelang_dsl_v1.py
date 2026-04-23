@@ -2917,6 +2917,39 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertRegex(text, r"%activated_\d+ = pto\.vrelu %summed_\d+, %mask_\d+ : !pto\.vreg<64xf32>, !pto\.mask<b32> -> !pto\.vreg<64xf32>")
         self.assertRegex(text, r"pto\.vsts %activated_\d+, %dst_\d+\[%lane_\d+\], %mask_\d+ : !pto\.vreg<64xf32>, !pto\.ptr<f32, ub>, !pto\.mask<b32>")
 
+    def test_vrelu_accepts_i32_inside_strict_vecscope(self) -> None:
+        @pto.vkernel(op="eltwise", dtypes=[(pto.i32, pto.i32)], advanced=True)
+        def kernel(tile: pto.Tile, bias: pto.i32):
+            with pto.strict_vecscope(tile, tile, bias, 0, 256, 64) as (
+                src,
+                dst,
+                offset,
+                lb,
+                ub,
+                step,
+            ):
+                for lane in range(lb, ub, step):
+                    mask = pto.make_mask(pto.i32, pto.PAT.ALL)
+                    vec = pto.vlds(src, lane)
+                    shifted = pto.vadds(vec, offset, mask)
+                    activated = pto.vrelu(shifted, mask)
+                    pto.vsts(activated, dst, lane, mask)
+            return None
+
+        specialized = kernel.specialize(
+            tile=pto.TileSpecialization(
+                shape=(16, 16),
+                memory_space=pto.MemorySpace.UB,
+            ),
+        )
+
+        text = specialized.mlir_text()
+        self.assertRegex(text, r'%mask_\d+ = pto\.pset_b32 "PAT_ALL" : !pto\.mask<b32>')
+        self.assertRegex(text, r"%vec_\d+ = pto\.vlds %src_\d+\[%lane_\d+\] : !pto\.ptr<i32, ub> -> !pto\.vreg<64xi32>")
+        self.assertRegex(text, r"%shifted_\d+ = pto\.vadds %vec_\d+, %offset_\d+, %mask_\d+ : !pto\.vreg<64xi32>, i32, !pto\.mask<b32> -> !pto\.vreg<64xi32>")
+        self.assertRegex(text, r"%activated_\d+ = pto\.vrelu %shifted_\d+, %mask_\d+ : !pto\.vreg<64xi32>, !pto\.mask<b32> -> !pto\.vreg<64xi32>")
+        self.assertRegex(text, r"pto\.vsts %activated_\d+, %dst_\d+\[%lane_\d+\], %mask_\d+ : !pto\.vreg<64xi32>, !pto\.ptr<i32, ub>, !pto\.mask<b32>")
+
     def test_tail_make_mask_lowers_to_typed_plt_and_updates_remaining(self) -> None:
         @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.i32)], advanced=True)
         def kernel(tile: pto.Tile, remaining: pto.i32):

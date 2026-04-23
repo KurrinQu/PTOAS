@@ -600,6 +600,27 @@ private:
         .Default([](Operation *) { return success(); });
   }
 
+  static LogicalResult validateUnaryElementTypeContracts(Operation *op) {
+    return llvm::TypeSwitch<Operation *, LogicalResult>(op)
+        .Case<VreluOp>([](VreluOp concreteOp) {
+          auto vecType = dyn_cast<VRegType>(concreteOp.getInput().getType());
+          if (!vecType)
+            return success();
+
+          Type elemType = vecType.getElementType();
+          if (auto intType = dyn_cast<IntegerType>(elemType)) {
+            if (intType.getWidth() == 32 && !intType.isUnsigned())
+              return success();
+          } else if (elemType.isF16() || elemType.isF32()) {
+            return success();
+          }
+
+          concreteOp.emitOpError("requires si32/i32/f16/f32 vector element type");
+          return failure();
+        })
+        .Default([](Operation *) { return success(); });
+  }
+
   static LogicalResult validateMaskGranularityContracts(Operation *op) {
     return llvm::TypeSwitch<Operation *, LogicalResult>(op)
         .Case<VabsOp, VexpOp, VlnOp, VsqrtOp, VreluOp, VnotOp,
@@ -717,6 +738,7 @@ private:
 
       if (VPTOLegalityHelper::getEnclosingVectorScopeCarrier(op)) {
         if (failed(validateFamilySuffixMaskContracts(op)) ||
+            failed(validateUnaryElementTypeContracts(op)) ||
             failed(validateMaskGranularityContracts(op)))
           return WalkResult::interrupt();
         emitHardwareSupportWarnings(op);

@@ -3326,7 +3326,7 @@ for (int i = 0; i < N; i++)
 ##### `pto.vrelu`
 
 - **syntax:** `%result = pto.vrelu %input, %mask : !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
-- **A5 types:** f16, f32
+- **A5 types:** si32, i32, f16, f32
 
 ```c
 for (int i = 0; i < N; i++)
@@ -3335,8 +3335,9 @@ for (int i = 0; i < N; i++)
 
 - **inputs:** `%input` is the source vector and `%mask` selects active lanes.
 - **outputs:** `%result` holds `max(input[i], 0)` per active lane.
-- **constraints and limitations:** Only floating-point element types are legal
-  on the current A5 surface described here.
+- **constraints and limitations:** Signed or signless 32-bit integer and
+  floating-point element types are legal on the current A5 surface described
+  here.
 
 ---
 

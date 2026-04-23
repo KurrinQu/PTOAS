@@ -6033,8 +6033,11 @@ class _SemanticAnalyzer:
     def _validate_unary_dtype(self, name: str, dtype: ScalarType) -> None:
         if name in {"vexp", "vln", "vsqrt", "vrec", "vrsqrt"} and dtype.name not in {"f16", "f32"}:
             raise TypeError(f"pto.{name} only supports f16/f32 in TileLang DSL v1")
-        if name == "vrelu" and dtype.name not in {"f16", "f32"}:
-            raise TypeError("pto.vrelu only supports f16/f32 in TileLang DSL v1")
+        if name == "vrelu" and not (
+            dtype.name in {"f16", "f32"}
+            or (is_integer_dtype(dtype) and integer_bitwidth(dtype) == 32)
+        ):
+            raise TypeError("pto.vrelu only supports i32/f16/f32 in TileLang DSL v1")
         if name in {"vnot", "vbcnt", "vcls", "vsunpack", "vzunpack", "vusqz", "vsqz"} and not (
             is_integer_dtype(dtype) and integer_bitwidth(dtype) in {8, 16, 32}
         ):
