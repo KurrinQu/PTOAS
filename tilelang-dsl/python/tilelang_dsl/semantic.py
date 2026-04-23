@@ -44,6 +44,8 @@ from .frontend_ast import (
 )
 from .support_matrix import (
     DEFERRED_PTO_SURFACES,
+    INFERRED_VECSCOPE_ACTIVITY_PTO_CALLS,
+    INFERRED_VECSCOPE_NEUTRAL_PTO_CALLS,
     advanced_mode_message,
     deferred_surface_message,
     unsupported_feature_message,
@@ -297,44 +299,7 @@ def _is_supported_mov_pad_scalar_dtype(dtype: ScalarType) -> bool:
     return dtype.name in {"f16", "bf16", "f32"}
 
 
-_COMPARE_SELECT_OPS = {"vcmp", "vcmps", "vsel", "vselr", "vselrv2"}
-_PREDICATE_MOVEMENT_OPS = {
-    "pset_b8",
-    "pset_b16",
-    "pset_b32",
-    "pge_b8",
-    "pge_b16",
-    "pge_b32",
-    "plt_b8",
-    "plt_b16",
-    "plt_b32",
-    "plds",
-    "pld",
-    "pldi",
-    "psts",
-    "pst",
-    "psti",
-    "pstu",
-    "pnot",
-    "psel",
-    "pand",
-    "por",
-    "pxor",
-    "ppack",
-    "punpack",
-    "pdintlv_b8",
-    "pintlv_b16",
-}
-_CARRY_OPS = {"vaddc", "vsubc", "vaddcs", "vsubcs"}
-_REARRANGEMENT_OPS = {"vintlv", "vdintlv", "vintlvv2", "vdintlvv2"}
 _UB_HELPER_OPS = {"vbitsort", "vmrgsort4"}
-_ADVANCED_VECTOR_ACTIVITY_OPS = (
-    _COMPARE_SELECT_OPS
-    | _PREDICATE_MOVEMENT_OPS
-    | _CARRY_OPS
-    | _REARRANGEMENT_OPS
-    | {"vcvt"}
-)
 _TENSORVIEW_RANK = 5
 
 
@@ -1043,12 +1008,12 @@ class _SemanticAnalyzer:
         semantic_statements = []
         index = 0
         while index < len(statements):
-            if self._stmt_can_participate_in_inferred_vecscope(
+            if self._stmt_can_start_inferred_vecscope_run(
                 statements[index],
                 allow_inferred_vecscope=allow_inferred_vecscope,
             ):
                 end = index + 1
-                while end < len(statements) and self._stmt_can_participate_in_inferred_vecscope(
+                while end < len(statements) and self._stmt_can_continue_inferred_vecscope_run(
                     statements[end],
                     allow_inferred_vecscope=allow_inferred_vecscope,
                 ):
@@ -1083,21 +1048,40 @@ class _SemanticAnalyzer:
             index += 1
         return tuple(semantic_statements), current_env
 
-    def _stmt_can_participate_in_inferred_vecscope(
+    def _stmt_can_start_inferred_vecscope_run(
         self,
         stmt: FrontendStmtNode,
         *,
         allow_inferred_vecscope: bool,
     ) -> bool:
+        if not self._stmt_allows_inferred_vecscope(allow_inferred_vecscope):
+            return False
+        if self._frontend_stmt_is_vecscope_boundary(stmt):
+            return False
+        return self._frontend_stmt_can_live_in_inferred_vecscope(stmt)
+
+    def _stmt_can_continue_inferred_vecscope_run(
+        self,
+        stmt: FrontendStmtNode,
+        *,
+        allow_inferred_vecscope: bool,
+    ) -> bool:
+        if not self._stmt_allows_inferred_vecscope(allow_inferred_vecscope):
+            return False
+        if self._frontend_stmt_is_vecscope_boundary(stmt):
+            return False
+        return self._frontend_stmt_can_live_in_inferred_vecscope(
+            stmt
+        ) or self._frontend_stmt_is_neutral_vecscope_stmt(stmt)
+
+    def _stmt_allows_inferred_vecscope(self, allow_inferred_vecscope: bool) -> bool:
         if self._has_explicit_vecscope:
             return False
         if self._disable_inference_depth > 0:
             return False
         if not allow_inferred_vecscope:
             return False
-        if self._frontend_stmt_is_vecscope_boundary(stmt):
-            return False
-        return self._frontend_stmt_can_live_in_inferred_vecscope(stmt)
+        return True
 
     def _analyze_stmt_or_inline(
         self,
@@ -1160,36 +1144,7 @@ class _SemanticAnalyzer:
         if isinstance(stmt, FrontendForStmt):
             return self._block_can_live_in_inferred_vecscope(stmt.body)
         name = self._frontend_vector_call_name(stmt)
-        return name in (
-            {
-                "make_mask",
-                "init_align",
-                "vlds",
-                "vldas",
-                "vldus",
-                "plds",
-                "psts",
-                "pstu",
-                "vsst",
-                "vsta",
-                "vstas",
-                "vstar",
-                "vscatter",
-                "vsts",
-                "vstsx2",
-                "vstus",
-                "vstur",
-            }
-            | _UNARY_VECTOR_OPS
-            | _BINARY_VECTOR_OPS
-            | _VECTOR_SCALAR_OPS
-            | _VECTOR_IMMEDIATE_OPS
-            | _TERNARY_VECTOR_OPS
-            | _MULTI_RESULT_VECTOR_OPS
-            | _BROADCAST_VECTOR_OPS
-            | _ADVANCED_VECTOR_ACTIVITY_OPS
-            | _VEXPDIF_OP_ALIASES
-        )
+        return name in INFERRED_VECSCOPE_ACTIVITY_PTO_CALLS
 
     def _block_can_live_in_inferred_vecscope(
         self,
@@ -1214,6 +1169,13 @@ class _SemanticAnalyzer:
             return True
         if isinstance(stmt, FrontendIfStmt):
             return not stmt.is_constexpr
+        if (
+            isinstance(stmt, FrontendExprStmt)
+            and isinstance(stmt.expr, FrontendCallExpr)
+            and stmt.expr.namespace == "pto"
+            and stmt.expr.name in INFERRED_VECSCOPE_NEUTRAL_PTO_CALLS
+        ):
+            return False
         return (
             isinstance(stmt, FrontendExprStmt)
             and (
@@ -1244,12 +1206,20 @@ class _SemanticAnalyzer:
         stmt: FrontendStmtNode,
     ) -> bool:
         return isinstance(stmt, FrontendNoOpStmt) or isinstance(stmt, FrontendAssignStmt) or (
+            self._frontend_stmt_is_neutral_vecscope_stmt(stmt)
+        ) or (
+            isinstance(stmt, FrontendIfStmt) and stmt.is_constexpr
+        )
+
+    def _frontend_stmt_is_neutral_vecscope_stmt(
+        self,
+        stmt: FrontendStmtNode,
+    ) -> bool:
+        return (
             isinstance(stmt, FrontendExprStmt)
             and isinstance(stmt.expr, FrontendCallExpr)
             and stmt.expr.namespace == "pto"
-            and stmt.expr.name == "store_scalar"
-        ) or (
-            isinstance(stmt, FrontendIfStmt) and stmt.is_constexpr
+            and stmt.expr.name in INFERRED_VECSCOPE_NEUTRAL_PTO_CALLS
         )
 
     def _frontend_stmt_contains_vector_activity(self, stmt: FrontendStmtNode) -> bool:
@@ -1262,36 +1232,7 @@ class _SemanticAnalyzer:
             return False
         return (
             expr.namespace == "pto"
-            and expr.name in (
-                {
-                    "make_mask",
-                    "init_align",
-                    "vlds",
-                    "vldas",
-                    "vldus",
-                    "plds",
-                    "psts",
-                    "pstu",
-                    "vsst",
-                    "vsta",
-                    "vstas",
-                    "vstar",
-                    "vscatter",
-                    "vsts",
-                    "vstsx2",
-                    "vstus",
-                    "vstur",
-                }
-                | _UNARY_VECTOR_OPS
-                | _BINARY_VECTOR_OPS
-                | _VECTOR_SCALAR_OPS
-                | _VECTOR_IMMEDIATE_OPS
-                | _TERNARY_VECTOR_OPS
-                | _MULTI_RESULT_VECTOR_OPS
-                | _BROADCAST_VECTOR_OPS
-                | _ADVANCED_VECTOR_ACTIVITY_OPS
-                | _VEXPDIF_OP_ALIASES
-            )
+            and expr.name in INFERRED_VECSCOPE_ACTIVITY_PTO_CALLS
         )
 
     def _run_contains_vector_op(self, statements: tuple[FrontendStmtNode, ...]) -> bool:
@@ -1404,17 +1345,9 @@ class _SemanticAnalyzer:
 
     def _expr_contains_vector_activity(self, expr: SemanticExpr) -> bool:
         if isinstance(expr, SemanticCallExpr):
-            if expr.namespace == "pto" and expr.name in (
-                {"make_mask", "vlds"}
-                | _UNARY_VECTOR_OPS
-                | _BINARY_VECTOR_OPS
-                | _VECTOR_SCALAR_OPS
-                | _VECTOR_IMMEDIATE_OPS
-                | _TERNARY_VECTOR_OPS
-                | _MULTI_RESULT_VECTOR_OPS
-                | _BROADCAST_VECTOR_OPS
-                | _ADVANCED_VECTOR_ACTIVITY_OPS
-                | _VEXPDIF_OP_ALIASES
+            if (
+                expr.namespace == "pto"
+                and expr.name in INFERRED_VECSCOPE_ACTIVITY_PTO_CALLS
             ):
                 return True
             return any(self._expr_contains_vector_activity(arg) for arg in expr.args)
