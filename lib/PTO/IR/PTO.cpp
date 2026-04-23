@@ -10717,7 +10717,11 @@ void TRowMaxOp::getEffects(
 void TRowArgMaxOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_READ(getSrcMutable());
-  PTO_ADD_WRITE(getTmpMutable());
+  // A5 lowering does not consume tmp for TROWARGMAX; modeling tmp as a
+  // scratch write inflates local-memory planning and can trigger false
+  // vec-overflow diagnostics, mirroring the fixed A5 TPRELU issue.
+  if (getTargetArch(getOperation()) != PTOArch::A5)
+    PTO_ADD_WRITE(getTmpMutable());
   PTO_ADD_WRITE(getDstMutable());
 }
 
@@ -10731,7 +10735,11 @@ void TRowMinOp::getEffects(
 void TRowArgMinOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_READ(getSrcMutable());
-  PTO_ADD_WRITE(getTmpMutable());
+  // A5 lowering does not consume tmp for TROWARGMIN; modeling tmp as a
+  // scratch write inflates local-memory planning and can trigger false
+  // vec-overflow diagnostics, mirroring the fixed A5 TPRELU issue.
+  if (getTargetArch(getOperation()) != PTOArch::A5)
+    PTO_ADD_WRITE(getTmpMutable());
   PTO_ADD_WRITE(getDstMutable());
 }
 
