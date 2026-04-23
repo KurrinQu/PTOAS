@@ -6909,8 +6909,7 @@ For padded elements: dst = PadVal(dst)
 - `dst.pad` must not be `null`.
 - `src` and `dst` element sizes must match, and the element size must be `1`, `2`, or `4` bytes.
 - `dst.rows/cols` must match `src.rows/cols`.
-- `dst.rows >= src.rows` and `dst.cols >= src.cols`.
-- For `mat` tiles, the current implementation only supports `blayout=col_major`, `slayout=row_major`, and `pad=zero`.
+- For `loc=mat`, `src` and `dst` must be lowerable to the same `TFILLPAD` tile specialization, i.e. `validShape` and `pad` must be identical.
 
 **Hardware Mapping:**
 
@@ -6947,7 +6946,8 @@ Constraint: dst.rows >= src.rows and dst.cols >= src.cols
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- The operation has a custom verifier.
+- For `loc=mat`, cross-layer behavior with heterogeneous (`src`/`dst`) expand shape is not finalized in this release; `tfillpad_expand` is not covered by the `tfillpad`-specific lowerability check.
 
 **Hardware Mapping:**
 

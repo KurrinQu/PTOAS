@@ -4583,6 +4583,9 @@ static mlir::LogicalResult verifyTFillPadLike(Operation *op, Type srcTy, Type ds
   // pto.tfillpad lowers to TFILLPAD(dst, src). For loc=mat, pto-isa only
   // exposes the homogeneous overload, so src/dst must use the same Tile<...>
   // specialization (including valid_shape and pad).
+  // Note: tfillpad_expand is intentionally not covered here because its
+  // cross-layer ABI contract for loc=mat heterogeneous shape expansion is not
+  // finalized yet.
   if (opName == "tfillpad") {
     auto srcTb = mlir::dyn_cast<mlir::pto::TileBufType>(srcTy);
     auto dstTb = mlir::dyn_cast<mlir::pto::TileBufType>(dstTy);
