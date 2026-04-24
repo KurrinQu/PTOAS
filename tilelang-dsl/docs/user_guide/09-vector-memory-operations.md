@@ -3,6 +3,18 @@
 The current DSL exposes type-safe Enum operands for the dual load/store
 distribution families:
 
+- **`VLoadDist`** for `pto.vlds`
+  - `VLoadDist.NORM`: ordinary load
+  - `VLoadDist.UNPK_B8`, `VLoadDist.UNPK_B16`, `VLoadDist.UNPK_B32`: unpacking loads
+  - `VLoadDist.BRC_B8`, `VLoadDist.BRC_B16`, `VLoadDist.BRC_B32`: broadcast loads
+  - `VLoadDist.US_B8`, `VLoadDist.US_B16`, `VLoadDist.DS_B8`, `VLoadDist.DS_B16`: strided/narrow load families
+
+- **`VStoreDist`** for `pto.vsts`
+  - `VStoreDist.NORM_B8`, `VStoreDist.NORM_B16`, `VStoreDist.NORM_B32`: ordinary stores
+  - `VStoreDist.ONE_POINT_B8`, `VStoreDist.ONE_POINT_B16`, `VStoreDist.ONE_POINT_B32`: one-point stores
+  - `VStoreDist.PK_B16`, `VStoreDist.PK_B32`, `VStoreDist.PK_B64`: packed stores
+  - `VStoreDist.PK4_B32`, `VStoreDist.MRG4CHN_B8`, `VStoreDist.MRG2CHN_B8`, `VStoreDist.MRG2CHN_B16`: merged packed stores
+
 - **`DeinterleaveDist`** for `pto.vldsx2`
   - `DeinterleaveDist.DINTLV`: alternating-element deinterleave
   - `DeinterleaveDist.BDINTLV`: block deinterleave
@@ -20,6 +32,8 @@ distribution families:
 
 The canonical VPTO v0.3 spellings are the enum values:
 
+- `VLoadDist.UNPK_B16.value == "UNPK_B16"`
+- `VStoreDist.PK_B32.value == "PK_B32"`
 - `DeinterleaveDist.DINTLV.value == "DINTLV"`
 - `DeinterleaveDist.BDINTLV.value == "BDINTLV"`
 - `InterleaveDist.INTLV.value == "INTLV"`
@@ -208,9 +222,9 @@ The syntax sugar eliminates manual byte calculations, reduces errors, and makes 
 
 Operations for loading data from memory into vector registers.
 
-#### `pto.vlds(buf: ptr, offset: Index) -> VRegType`  [Advanced Tier]
-#### `pto.vlds(tile[row, col:]) -> VRegType`  [Basic Tier]
-#### `pto.vlds(tile[start:]) -> VRegType`  [Basic Tier]
+#### `pto.vlds(buf: ptr, offset: Index, dist: pto.VLoadDist | None = None) -> VRegType`  [Advanced Tier]
+#### `pto.vlds(tile[row, col:], dist: pto.VLoadDist | None = None) -> VRegType`  [Basic Tier]
+#### `pto.vlds(tile[start:], dist: pto.VLoadDist | None = None) -> VRegType`  [Basic Tier]
 
 **Description**: Stateless vector load from buffer. Supports both traditional byte-offset syntax and new element-indexing syntax.
 
@@ -219,12 +233,14 @@ Operations for loading data from memory into vector registers.
 |-----------|------|-------------|
 | `buf` | `ptr` | Pointer to buffer in UB memory space (Advanced mode only - requires explicit pointer) |
 | `offset` | `Index` | Byte offset |
+| `dist` | `pto.VLoadDist \| None` | Optional load distribution enum such as `pto.VLoadDist.NORM` or `pto.VLoadDist.UNPK_B16` |
 
 **Parameters (element-indexing syntax)**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `tile[row, col:]` | `Tile` with indexing | 2D tile with row index and starting column (vector-width range) |
 | `tile[start:]` | `Tile` with indexing | 1D tile with starting element index (vector-width range) |
+| `dist` | `pto.VLoadDist \| None` | Optional load distribution enum such as `pto.VLoadDist.NORM` or `pto.VLoadDist.UNPK_B16` |
 
 **Returns**:
 | Return Value | Type | Description |
@@ -235,11 +251,14 @@ Operations for loading data from memory into vector registers.
 - Buffer must be in UB memory space
 - For byte-offset syntax: offset must be properly aligned based on element type
 - For element-indexing syntax: the requested vector region must be within tile bounds and satisfy alignment requirements
+- `dist` is optional. When omitted, the load uses the backend default layout for the vector family.
+- `dist` must be a `pto.VLoadDist` enum value.
 
 **Examples**:
 ```python
 # Traditional byte-offset syntax
 vec = pto.vlds(ub_ptr, lane * 256)
+vec_unpacked = pto.vlds(ub_ptr, lane * 128, dist=pto.VLoadDist.UNPK_B16)
 
 # New element-indexing syntax
 vec = pto.vlds(tile[i, j:])      # Load from row i, columns j to j+vector_lanes-1
@@ -550,9 +569,9 @@ vec = pto.vsldb(tile[k], control_word, mask)
 
 Operations for storing data from vector registers to memory.
 
-#### `pto.vsts(vec: VRegType, buf: ptr, offset: Index, mask: MaskType) -> None`  [Advanced Tier]
-#### `pto.vsts(vec: VRegType, tile[row, col:], mask: MaskType) -> None`  [Basic Tier]
-#### `pto.vsts(vec: VRegType, tile[start:], mask: MaskType) -> None`  [Basic Tier]
+#### `pto.vsts(vec: VRegType, buf: ptr, offset: Index, mask: MaskType, dist: pto.VStoreDist | None = None) -> None`  [Advanced Tier]
+#### `pto.vsts(vec: VRegType, tile[row, col:], mask: MaskType, dist: pto.VStoreDist | None = None) -> None`  [Basic Tier]
+#### `pto.vsts(vec: VRegType, tile[start:], mask: MaskType, dist: pto.VStoreDist | None = None) -> None`  [Basic Tier]
 
 **Description**: Stateless vector store to buffer. Supports both byte-offset and element-indexing syntax.
 
@@ -563,6 +582,7 @@ Operations for storing data from vector registers to memory.
 | `buf` | `ptr` | Pointer to destination buffer in UB memory space (Advanced mode only - requires explicit pointer) |
 | `offset` | `Index` | Byte offset |
 | `mask` | `MaskType` | Predicate mask |
+| `dist` | `pto.VStoreDist \| None` | Optional store distribution enum such as `pto.VStoreDist.NORM_B32` or `pto.VStoreDist.PK_B32` |
 
 **Parameters (element-indexing syntax)**:
 | Parameter | Type | Description |
@@ -571,6 +591,7 @@ Operations for storing data from vector registers to memory.
 | `tile[row, col:]` | `Tile` with indexing | 2D tile with row index and starting column |
 | `tile[start:]` | `Tile` with indexing | 1D tile with starting element index |
 | `mask` | `MaskType` | Predicate mask |
+| `dist` | `pto.VStoreDist \| None` | Optional store distribution enum such as `pto.VStoreDist.NORM_B32` or `pto.VStoreDist.PK_B32` |
 
 **Returns**: None (side-effect operation)
 
@@ -578,6 +599,14 @@ Operations for storing data from vector registers to memory.
 - Buffer must be in UB memory space
 - For byte-offset syntax: offset must be properly aligned based on element type
 - For element-indexing syntax: the destination vector region must be within tile bounds and satisfy alignment requirements
+- `dist` is optional. When omitted, the store uses the backend default layout for the vector family.
+- Current TileLang DSL v1 accepts exactly one keyword attr on `pto.vsts`: `dist=...`.
+- `dist` must be a `pto.VStoreDist` enum value.
+- `mask` must match the effective store payload granularity, which may differ from the vector element family when `dist` repacks lanes.
+- Common width-changing cases:
+  default / `NORM_B32` stores expect `mask_b32` for `f32`/`i32`-family vectors;
+  `PK_B32` also expects `mask_b32` and is used by narrow stores such as `f32 -> f16` `tcvt`;
+  `PK_B16` expects `mask_b16`.
 
 **Examples**:
 ```python
@@ -587,6 +616,17 @@ pto.vsts(vec_f32, ub_ptr, lane * 256, mask32)
 # Element-indexing syntax
 pto.vsts(vec, tile[i, j:], mask)      # Store to row i, columns j to j+vector_lanes-1
 pto.vsts(vec, tile[k:], mask)         # Store to 1D tile, elements k to k+vector_lanes-1
+
+# VPTO-aligned packed store
+vec_f16 = pto.vcvt(
+    vec_f32,
+    pto.f16,
+    mask32,
+    rnd=pto.VcvtRoundMode.R,
+    sat=pto.VcvtSatMode.SAT,
+    part=pto.VcvtPartMode.EVEN,
+)
+pto.vsts(vec_f16, tile[i, j:], mask32, dist=pto.VStoreDist.PK_B32)
 
 # In a generic kernel
 @pto.vkernel(target="a5", op="copy", dtypes=[(pto.AnyFloat, pto.AnyFloat)], priority=10)

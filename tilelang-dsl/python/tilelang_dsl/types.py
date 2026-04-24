@@ -205,6 +205,43 @@ class PredicateDist(str, Enum):
     PK = "PK"
 
 
+class VLoadDist(str, Enum):
+    NORM = "NORM"
+    BRC_B8 = "BRC_B8"
+    BRC_B16 = "BRC_B16"
+    BRC_B32 = "BRC_B32"
+    US_B8 = "US_B8"
+    US_B16 = "US_B16"
+    DS_B8 = "DS_B8"
+    DS_B16 = "DS_B16"
+    UNPK_B8 = "UNPK_B8"
+    UNPK_B16 = "UNPK_B16"
+    UNPK_B32 = "UNPK_B32"
+    BRC_BLK = "BRC_BLK"
+    E2B_B16 = "E2B_B16"
+    E2B_B32 = "E2B_B32"
+    UNPK4 = "UNPK4"
+    SPLT4CHN = "SPLT4CHN"
+    SPLT2CHN_B8 = "SPLT2CHN_B8"
+    SPLT2CHN_B16 = "SPLT2CHN_B16"
+
+
+class VStoreDist(str, Enum):
+    NORM_B8 = "NORM_B8"
+    NORM_B16 = "NORM_B16"
+    NORM_B32 = "NORM_B32"
+    ONE_POINT_B8 = "1PT_B8"
+    ONE_POINT_B16 = "1PT_B16"
+    ONE_POINT_B32 = "1PT_B32"
+    PK_B16 = "PK_B16"
+    PK_B32 = "PK_B32"
+    PK_B64 = "PK_B64"
+    PK4_B32 = "PK4_B32"
+    MRG4CHN_B8 = "MRG4CHN_B8"
+    MRG2CHN_B8 = "MRG2CHN_B8"
+    MRG2CHN_B16 = "MRG2CHN_B16"
+
+
 class PredicatePart(str, Enum):
     LOWER = "LOWER"
     HIGHER = "HIGHER"
@@ -710,6 +747,8 @@ __all__ = [
     "EVENT",
     "MaskPattern",
     "PredicateDist",
+    "VLoadDist",
+    "VStoreDist",
     "PredicatePart",
     "CmpMode",
     "PAT",

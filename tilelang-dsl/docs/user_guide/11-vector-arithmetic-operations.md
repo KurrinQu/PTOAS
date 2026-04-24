@@ -1414,12 +1414,19 @@ family.
   `f16 -> si32` requires `rnd` and `part`, and rejects `sat`;
   `bf16 -> f16` requires `rnd` and `sat`;
   `f16 -> f32` requires `part`;
+  `f32 -> f16` requires `rnd`, `sat`, and `part`;
   `si32 -> f32` requires `rnd`.
 - VPTO does not define a `mask_b64` form. Conversions that produce `si64`
   results still use the typed mask granularity of the source vector family.
 - Width-changing conversions continue to follow VPTO packing semantics even on
   the simplified DSL surface. For example, `f16 -> f32` uses an `f16`-family
   `mask_b16`, because the mask is attached to the source vector family.
+- A common `tcvt`-style pair is:
+  `f16 -> f32`: `pto.vlds(..., dist=pto.VLoadDist.UNPK_B16)` + `pto.vcvt(..., part=pto.VcvtPartMode.EVEN)`;
+  `f32 -> f16`: `pto.vcvt(..., rnd=..., sat=..., part=pto.VcvtPartMode.EVEN)` + `pto.vsts(..., dist=pto.VStoreDist.PK_B32)`.
+- In those `tcvt` flows, the `vcvt` mask still follows the source vector family:
+  `f16 -> f32` uses `mask_b16`, while `f32 -> f16` uses `mask_b32`.
+- The follow-on `vsts` mask is checked against the store `dist`, not the narrowed element dtype alone. For example, `pto.vsts(vec_f16, ..., mask32, dist=pto.VStoreDist.PK_B32)` is valid and expected for `f32 -> f16` rowwise `tcvt`.
 
 **Example**:
 ```python
@@ -1454,6 +1461,26 @@ vec_f16_narrow = pto.vcvt(
     sat=pto.VcvtSatMode.SAT,
     part=pto.VcvtPartMode.ODD,
 )
+
+# Rowwise tcvt-style widening from f16 to f32
+vec_f16_unpacked = pto.vlds(src, 0, dist=pto.VLoadDist.UNPK_B16)
+vec_f32_from_f16 = pto.vcvt(
+    vec_f16_unpacked,
+    pto.f32,
+    mask16,
+    part=pto.VcvtPartMode.EVEN,
+)
+
+# Rowwise tcvt-style narrowing from f32 to f16
+vec_f16_packed = pto.vcvt(
+    vec_f32,
+    pto.f16,
+    mask32,
+    rnd=pto.VcvtRoundMode.R,
+    sat=pto.VcvtSatMode.SAT,
+    part=pto.VcvtPartMode.EVEN,
+)
+pto.vsts(vec_f16_packed, dst, 0, mask32, dist=pto.VStoreDist.PK_B32)
 ```
 
 #### `pto.vbitsort(dest: ptr, src: ptr, indices: ptr, repeat_times: index) -> None`  [Advanced Tier]

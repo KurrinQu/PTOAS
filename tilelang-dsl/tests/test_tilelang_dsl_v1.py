@@ -3614,7 +3614,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         def kernel(dst: pto.Tile, src: pto.Tile):
             src_mask = pto.make_mask(pto.i32, pto.PAT.ALL)
             dst_mask = pto.make_mask(pto.i64, pto.PAT.ALL)
-            vec = pto.vlds(src, 0, dist="UNPK_B32")
+            vec = pto.vlds(src, 0, dist=pto.VLoadDist.UNPK_B32)
             out = pto.vcvt(
                 vec,
                 pto.i64,
@@ -3641,6 +3641,50 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertRegex(text, r"!pto\.vreg<32xi64>")
         self.assertIn('part = "EVEN"', text)
         self.assertIn("pto.vsts", text)
+
+    def test_vlds_dist_requires_vload_dist_enum(self) -> None:
+        with self.assertRaises(TypeError) as ctx:
+
+            @pto.vkernel(
+                op="vlds_dist_requires_enum_unique",
+                dtypes=[(pto.i32, pto.i32)],
+                advanced=True,
+            )
+            def kernel(dst: pto.Tile, src: pto.Tile):
+                mask = pto.make_mask(pto.i32, pto.PAT.ALL)
+                vec = pto.vlds(src, 0, dist="UNPK_B32")
+                pto.vsts(vec, dst, 0, mask)
+                return None
+
+            specialized = kernel.specialize(
+                dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+                src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            )
+            specialized.mlir_text()
+
+        self.assertIn("VLoadDist enum", str(ctx.exception))
+
+    def test_vsts_dist_requires_vstore_dist_enum(self) -> None:
+        with self.assertRaises(TypeError) as ctx:
+
+            @pto.vkernel(
+                op="vsts_dist_requires_enum_unique",
+                dtypes=[(pto.ui8, pto.ui8)],
+                advanced=True,
+            )
+            def kernel(dst: pto.Tile, src: pto.Tile):
+                mask = pto.make_mask(pto.ui8, pto.PAT.ALL)
+                vec = pto.vlds(src, 0)
+                pto.vsts(vec, dst, 0, mask, dist="NORM_B8")
+                return None
+
+            specialized = kernel.specialize(
+                dst=pto.TileSpecialization(shape=(8, 256), memory_space=pto.MemorySpace.UB),
+                src=pto.TileSpecialization(shape=(8, 256), memory_space=pto.MemorySpace.UB),
+            )
+            specialized.mlir_text()
+
+        self.assertIn("VStoreDist enum", str(ctx.exception))
 
     def test_vtrc_defaults_to_round_nearest(self) -> None:
         @pto.vkernel(
@@ -3879,7 +3923,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             def kernel(dst: pto.Tile, src: pto.Tile):
                 src_mask = pto.make_mask(pto.f16, pto.PAT.ALL)
                 dst_mask = pto.make_mask(pto.i32, pto.PAT.ALL)
-                vec = pto.vlds(src, 0, dist="UNPK_B16")
+                vec = pto.vlds(src, 0, dist=pto.VLoadDist.UNPK_B16)
                 out = pto.vcvt(
                     vec,
                     pto.i32,
@@ -3907,7 +3951,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             def kernel(dst: pto.Tile, src: pto.Tile):
                 src_mask = pto.make_mask(pto.f16, pto.PAT.ALL)
                 dst_mask = pto.make_mask(pto.i32, pto.PAT.ALL)
-                vec = pto.vlds(src, 0, dist="UNPK_B16")
+                vec = pto.vlds(src, 0, dist=pto.VLoadDist.UNPK_B16)
                 out = pto.vcvt(
                     vec,
                     pto.i32,
@@ -3936,7 +3980,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             def kernel(dst: pto.Tile, src: pto.Tile):
                 src_mask = pto.make_mask(pto.f16, pto.PAT.ALL)
                 dst_mask = pto.make_mask(pto.i32, pto.PAT.ALL)
-                vec = pto.vlds(src, 0, dist="UNPK_B16")
+                vec = pto.vlds(src, 0, dist=pto.VLoadDist.UNPK_B16)
                 out = pto.vcvt(
                     vec,
                     pto.i32,
@@ -3965,7 +4009,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         def kernel(dst: pto.Tile, src: pto.Tile):
             src_mask = pto.make_mask(pto.f16, pto.PAT.ALL)
             dst_mask = pto.make_mask(pto.i32, pto.PAT.ALL)
-            vec = pto.vlds(src, 0, dist="UNPK_B16")
+            vec = pto.vlds(src, 0, dist=pto.VLoadDist.UNPK_B16)
             out = pto.vcvt(
                 vec,
                 pto.i32,
@@ -6184,7 +6228,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
                     )
                     result = pto.vselr(converted, v_idx_ui8)
                     pto.mem_bar(pto.BarrierType.VST_VST)
-                    pto.vsts(result, dst[row, col:], store_mask, dist="NORM_B8")
+                    pto.vsts(result, dst[row, col:], store_mask, dist=pto.VStoreDist.NORM_B8)
 
             return None
 
@@ -6213,15 +6257,15 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
                 b8_mask = pto.make_mask(pto.i8, pto.PAT.ALL)
                 mask_b16, _ = pto.make_mask(pto.i16, valid_cols)
                 mask_b32 = pto.punpack(mask_b16, pto.PredicatePart.LOWER)
-                vec_si8 = pto.vlds(src[row, 0:], dist="UNPK_B8")
+                vec_si8 = pto.vlds(src[row, 0:], dist=pto.VLoadDist.UNPK_B8)
                 vec_ui8 = pto.vbitcast(vec_si8, pto.ui8)
                 v_zero_i8 = pto.vdup(pto.i8(0), b8_mask)
                 v_zero = pto.vbitcast(v_zero_i8, pto.ui8)
                 wide_lo, _ = pto.vintlv(vec_ui8, v_zero)
                 narrowed = pto.vbitcast(wide_lo, pto.si8)
                 converted = pto.vcvt(narrowed, pto.i32, b8_mask, part=pto.VcvtPartMode.P0)
-                pto.vsts(converted, dst[row, 0:], mask_b32, dist="NORM_B32")
-                pto.vsts(converted, dst[row, lanes_i32:], mask_b32, dist="NORM_B32")
+                pto.vsts(converted, dst[row, 0:], mask_b32, dist=pto.VStoreDist.NORM_B32)
+                pto.vsts(converted, dst[row, lanes_i32:], mask_b32, dist=pto.VStoreDist.NORM_B32)
             return None
 
         specialized = kernel.specialize(

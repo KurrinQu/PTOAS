@@ -66,7 +66,7 @@ def template_tcvt_f32_to_f16(src: pto.Tile, dst: pto.Tile):
                 sat=pto.VcvtSatMode.SAT,
                 part=pto.VcvtPartMode.EVEN,
             )
-            pto.vsts(converted, dst[row, col:], store_mask, dist="PK_B32")
+            pto.vsts(converted, dst[row, col:], store_mask, dist=pto.VStoreDist.PK_B32)
     return
 
 
@@ -126,7 +126,7 @@ def template_tcvt_f16_to_f32(src: pto.Tile, dst: pto.Tile):
         remained = valid_cols
         for col in range(0, valid_cols, pto.get_lanes(pto.f32)):
             store_mask, remained = pto.make_mask(pto.f32, remained)
-            vec = pto.vlds(src[row, col:], dist="UNPK_B16")
+            vec = pto.vlds(src[row, col:], dist=pto.VLoadDist.UNPK_B16)
             converted = pto.vcvt(
                 vec,
                 pto.f32,
