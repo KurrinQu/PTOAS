@@ -115,7 +115,7 @@ ninja -C $LLVM_BUILD_DIR
 ```bash
 # 1. 下载 PTOAS 源码
 cd $WORKSPACE_DIR
-git clone https://github.com/hw-native-sys/PTOAS.git
+git clone https://gitcode.com/cann/pto-as.git PTOAS
 cd $PTO_SOURCE_DIR
 
 # 2. 获取 pybind11 的 CMake 路径
