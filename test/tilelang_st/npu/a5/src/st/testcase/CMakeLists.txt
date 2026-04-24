@@ -141,6 +141,7 @@ set(ALL_TESTCASES
     trecip
     trsqrt
     tsqrt
+    softmax_tadds_mix
 )
 
 if((TEST_CASE IN_LIST ALL_TESTCASES) OR (TEST_CASE STREQUAL "all"))
