@@ -1895,6 +1895,24 @@ LogicalResult Vmrgsort4Op::verify() {
       classifyMemoryRole(getSource2().getType()) != MemoryRole::UB ||
       classifyMemoryRole(getSource3().getType()) != MemoryRole::UB)
     return emitOpError("requires UB-backed destination and sources");
+  auto dstPtrType = dyn_cast<pto::PtrType>(getDestination().getType());
+  auto src0PtrType = dyn_cast<pto::PtrType>(getSource0().getType());
+  auto src1PtrType = dyn_cast<pto::PtrType>(getSource1().getType());
+  auto src2PtrType = dyn_cast<pto::PtrType>(getSource2().getType());
+  auto src3PtrType = dyn_cast<pto::PtrType>(getSource3().getType());
+  if (!dstPtrType || !src0PtrType || !src1PtrType || !src2PtrType ||
+      !src3PtrType)
+    return emitOpError("requires ptr-backed destination and sources");
+
+  Type elemType = dstPtrType.getElementType();
+  if (src0PtrType.getElementType() != elemType ||
+      src1PtrType.getElementType() != elemType ||
+      src2PtrType.getElementType() != elemType ||
+      src3PtrType.getElementType() != elemType)
+    return emitOpError(
+        "requires destination and all sources to have the same element type");
+  if (!elemType.isF16() && !elemType.isF32())
+    return emitOpError("requires f16 or f32 element type");
   if (failed(verifyNotNestedInVecScope(*this, "pto.vmrgsort4")))
     return failure();
   return success();

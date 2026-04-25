@@ -2438,6 +2438,63 @@ static FailureOr<StringRef> buildVbitsortCallee(MLIRContext *context,
   return failure();
 }
 
+static FailureOr<StringRef> buildVmrgsort4Callee(MLIRContext *context,
+                                                 pto::Vmrgsort4Op op) {
+  Type elemType =
+      cast<pto::PtrType>(op.getDestination().getType()).getElementType();
+  if (elemType.isF16())
+    return StringAttr::get(context, "llvm.hivm.VMRGSORT.f16.V300").getValue();
+  if (elemType.isF32())
+    return StringAttr::get(context, "llvm.hivm.VMRGSORT.f32.V300").getValue();
+  return failure();
+}
+
+static FailureOr<Value> packVmrgsort4SourceAddr(Operation *anchor, Value source0,
+                                                Value source1, Value source2,
+                                                Value source3, Type elemType) {
+  OpBuilder builder(anchor);
+  builder.setInsertionPoint(anchor);
+  Location loc = anchor->getLoc();
+  unsigned addrShift = 0;
+  if (elemType.isF16())
+    addrShift = 3;
+  else if (elemType.isF32())
+    addrShift = 3;
+  else
+    return failure();
+
+  auto packOne = [&](Value source, uint64_t laneShift) -> FailureOr<Value> {
+    FailureOr<Value> ubPtr = reinterpretPointerToAddrSpace(anchor, source, 6);
+    if (failed(ubPtr))
+      return failure();
+    Value asInt =
+        builder.create<LLVM::PtrToIntOp>(loc, builder.getI64Type(), *ubPtr);
+    Value shifted = builder.create<arith::ShRUIOp>(
+        loc, asInt, getI64Constant(builder, loc, addrShift));
+    Value masked = builder.create<arith::AndIOp>(
+        loc, shifted, getI64Constant(builder, loc, 0xFFFFULL));
+    if (laneShift == 0)
+      return masked;
+    return builder
+        .create<arith::ShLIOp>(loc, masked,
+                               getI64Constant(builder, loc, laneShift))
+        .getResult();
+  };
+
+  FailureOr<Value> low0 = packOne(source0, 0);
+  FailureOr<Value> low1 = packOne(source1, 16);
+  FailureOr<Value> low2 = packOne(source2, 32);
+  FailureOr<Value> low3 = packOne(source3, 48);
+  if (failed(low0) || failed(low1) || failed(low2) || failed(low3))
+    return failure();
+
+  Value packed01 = builder.create<arith::OrIOp>(loc, *low0, *low1);
+  Value packed23 = builder.create<arith::OrIOp>(loc, *low2, *low3);
+  Value packed = builder.create<arith::OrIOp>(loc, packed01, packed23);
+  Type ubPtrTy = LLVM::LLVMPointerType::get(anchor->getContext(), 6);
+  return builder.create<LLVM::IntToPtrOp>(loc, ubPtrTy, packed).getResult();
+}
+
 static FailureOr<VcvtContract> buildVcvtContract(pto::VcvtOp op) {
   Type inputElemType = getElementTypeFromVectorLike(op.getInput().getType());
   Type resultElemType = getElementTypeFromVectorLike(op.getResult().getType());
@@ -5815,6 +5872,64 @@ private:
   LoweringState &state;
 };
 
+class LowerVmrgsort4OpPattern final
+    : public OpConversionPattern<pto::Vmrgsort4Op> {
+public:
+  explicit LowerVmrgsort4OpPattern(TypeConverter &typeConverter,
+                                   MLIRContext *context, LoweringState &state)
+      : OpConversionPattern<pto::Vmrgsort4Op>(typeConverter, context),
+        state(state) {}
+
+  LogicalResult
+  matchAndRewrite(pto::Vmrgsort4Op op, pto::Vmrgsort4Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto dstType =
+        dyn_cast<LLVM::LLVMPointerType>(adaptor.getDestination().getType());
+    auto src0Type =
+        dyn_cast<LLVM::LLVMPointerType>(adaptor.getSource0().getType());
+    auto src1Type =
+        dyn_cast<LLVM::LLVMPointerType>(adaptor.getSource1().getType());
+    auto src2Type =
+        dyn_cast<LLVM::LLVMPointerType>(adaptor.getSource2().getType());
+    auto src3Type =
+        dyn_cast<LLVM::LLVMPointerType>(adaptor.getSource3().getType());
+    if (!dstType || !src0Type || !src1Type || !src2Type || !src3Type)
+      return rewriter.notifyMatchFailure(
+          op, "unexpected converted vmrgsort4 operand types");
+
+    Type elemType =
+        cast<pto::PtrType>(op.getDestination().getType()).getElementType();
+    FailureOr<Value> packedSrc = packVmrgsort4SourceAddr(
+        op, adaptor.getSource0(), adaptor.getSource1(), adaptor.getSource2(),
+        adaptor.getSource3(), elemType);
+    if (failed(packedSrc))
+      return rewriter.notifyMatchFailure(
+          op, "failed to pack vmrgsort4 source addresses");
+
+    FailureOr<Value> dst = reinterpretPointerToAddrSpace(op, adaptor.getDestination(), 6);
+    if (failed(dst))
+      return rewriter.notifyMatchFailure(op, "failed to normalize vmrgsort4 destination");
+
+    FailureOr<StringRef> calleeName = buildVmrgsort4Callee(op.getContext(), op);
+    if (failed(calleeName))
+      return rewriter.notifyMatchFailure(op, "unsupported vmrgsort4 signature");
+
+    auto funcType = rewriter.getFunctionType(
+        TypeRange{(*dst).getType(), (*packedSrc).getType(),
+                  adaptor.getCount().getType(), adaptor.getConfig().getType()},
+        TypeRange{});
+    rewriter.create<func::CallOp>(
+        op.getLoc(), *calleeName, TypeRange{},
+        ValueRange{*dst, *packedSrc, adaptor.getCount(), adaptor.getConfig()});
+    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
 class LowerVcvtOpPattern final : public OpConversionPattern<pto::VcvtOp> {
 public:
   explicit LowerVcvtOpPattern(TypeConverter &typeConverter,
@@ -6749,7 +6864,8 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
                LowerVgatherbOpPattern, LowerVscatterOpPattern,
                LowerVaxpyOpPattern,
                LowerVciOpPattern, LowerVexpdifOpPattern,
-               LowerVbitsortOpPattern, LowerVtrcOpPattern, LowerVcvtOpPattern,
+               LowerVbitsortOpPattern, LowerVmrgsort4OpPattern,
+               LowerVtrcOpPattern, LowerVcvtOpPattern,
                LowerVbitcastOpPattern, LowerPbitcastOpPattern,
                LowerPredicateLoadOpPattern<pto::PldiOp>,
                LowerPredicateLoadOpPattern<pto::PldsOp>,
@@ -6827,7 +6943,8 @@ static void configureVPTOOpLoweringTarget(ConversionTarget &target,
                       pto::VsunpackOp, pto::VzunpackOp, pto::VpackOp,
                       pto::VintlvOp, pto::VdintlvOp, pto::VpreluOp,
                       pto::VaxpyOp, pto::VciOp, pto::VexpdifOp,
-                      pto::VbitsortOp, pto::VtrcOp, pto::VcvtOp,
+                      pto::VbitsortOp, pto::Vmrgsort4Op, pto::VtrcOp,
+                      pto::VcvtOp,
                       pto::VbitcastOp,
                       pto::VcmpOp, pto::VcmpsOp,
                       pto::CopyGmToUbufOp, pto::CopyUbufToGmOp,
