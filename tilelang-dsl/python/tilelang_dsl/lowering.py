@@ -2552,6 +2552,9 @@ class _AuthoringRenderer:
                     desired_name=desired_name,
                     into=into,
                 )
+            if isinstance(expr.type, SemanticScalarType):
+                lhs = self._coerce_rendered_value(lhs, expr.type, indent=indent, into=into)
+                rhs = self._coerce_rendered_value(rhs, expr.type, indent=indent, into=into)
             result_name = desired_name or self._new_temp()
             into.append(
                 self._indent(indent)
@@ -3194,7 +3197,23 @@ class _AuthoringRenderer:
                 "le": "sle",
             }
             predicate = index_predicates[op]
-        elif isinstance(lhs.type, SemanticScalarType) and lhs.type == rhs.type:
+            cmp_name = "arith.cmpi"
+        elif (
+            isinstance(lhs.type, SemanticIndexType)
+            and isinstance(rhs.type, SemanticScalarType)
+            and is_integer_dtype(rhs.type.dtype)
+            and integer_bitwidth(rhs.type.dtype) in {32, 64}
+        ):
+            lhs = self._coerce_rendered_value(lhs, rhs.type, indent=indent, into=into)
+        elif (
+            isinstance(rhs.type, SemanticIndexType)
+            and isinstance(lhs.type, SemanticScalarType)
+            and is_integer_dtype(lhs.type.dtype)
+            and integer_bitwidth(lhs.type.dtype) in {32, 64}
+        ):
+            rhs = self._coerce_rendered_value(rhs, lhs.type, indent=indent, into=into)
+
+        if isinstance(lhs.type, SemanticScalarType) and lhs.type == rhs.type:
             if lhs.type.dtype.name in {"f16", "bf16", "f32"}:
                 float_predicates = {
                     "eq": "oeq",
@@ -3207,13 +3226,14 @@ class _AuthoringRenderer:
                 predicate = float_predicates[op]
                 cmp_name = "arith.cmpf"
             else:
+                int_sign = integer_signedness(lhs.type.dtype)
                 int_predicates = {
                     "eq": "eq",
                     "ne": "ne",
-                    "gt": "sgt",
-                    "lt": "slt",
-                    "ge": "sge",
-                    "le": "sle",
+                    "gt": "ugt" if int_sign == "unsigned" else "sgt",
+                    "lt": "ult" if int_sign == "unsigned" else "slt",
+                    "ge": "uge" if int_sign == "unsigned" else "sge",
+                    "le": "ule" if int_sign == "unsigned" else "sle",
                 }
                 predicate = int_predicates[op]
                 cmp_name = "arith.cmpi"
@@ -3223,16 +3243,17 @@ class _AuthoringRenderer:
                 f"{self._render_type(lhs.type)}"
             )
             return _RenderedValue(name=result_name, type=_I1_TYPE)
-        else:
-            raise NotImplementedError(
-                f"comparison lowering requires matching scalar types or index operands, got {lhs.type!r} and {rhs.type!r}"
-            )
 
-        into.append(
-            self._indent(indent)
-            + f"{result_name} = arith.cmpi {predicate}, {lhs.name}, {rhs.name} : {self._render_type(lhs.type)}"
+        if isinstance(lhs.type, SemanticIndexType) and isinstance(rhs.type, SemanticIndexType):
+            into.append(
+                self._indent(indent)
+                + f"{result_name} = {cmp_name} {predicate}, {lhs.name}, {rhs.name} : {self._render_type(lhs.type)}"
+            )
+            return _RenderedValue(name=result_name, type=_I1_TYPE)
+
+        raise NotImplementedError(
+            f"comparison lowering requires matching scalar types or index operands, got {lhs.type!r} and {rhs.type!r}"
         )
-        return _RenderedValue(name=result_name, type=_I1_TYPE)
 
     def _lower_bool_expr(
         self,

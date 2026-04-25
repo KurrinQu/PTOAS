@@ -3957,6 +3957,7 @@ class _SemanticAnalyzer:
         rhs: SemanticExpr,
         op: str,
     ) -> SemanticType:
+        mixed_index_scalar_type = self._mixed_index_integer_scalar_type(lhs.type, rhs.type)
         if op in {"add", "sub", "mul", "mod", "floordiv", "bitand", "bitor", "bitxor", "lshift", "rshift"}:
             if isinstance(lhs.type, SemanticIndexType) and isinstance(rhs.type, SemanticIndexType):
                 if op in {"add", "sub", "mul", "mod", "floordiv"}:
@@ -3969,36 +3970,61 @@ class _SemanticAnalyzer:
                     return SemanticScalarType(dtype=dtype)
                 if op in {"bitand", "bitor", "bitxor", "lshift", "rshift"} and is_integer_dtype(dtype):
                     return SemanticScalarType(dtype=dtype)
+            if mixed_index_scalar_type is not None and op in {"add", "sub", "mul", "mod", "floordiv"}:
+                return mixed_index_scalar_type
             raise TypeError(
                 "binary expressions currently require matching index operands, "
-                "or matching scalar operands (add/sub/mul for integer/float; "
-                "mod/floordiv/bitwise/shift for integer)"
+                "matching scalar operands (add/sub/mul for integer/float; "
+                "mod/floordiv/bitwise/shift for integer), or index operands "
+                "mixed with 32/64-bit integer scalars for add/sub/mul/mod/floordiv"
             )
         if op in {"eq", "ne"}:
             if isinstance(lhs.type, SemanticIndexType) and isinstance(rhs.type, SemanticIndexType):
                 return SemanticScalarType(dtype=i1)
             if isinstance(lhs.type, SemanticScalarType) and lhs.type == rhs.type:
                 return SemanticScalarType(dtype=i1)
+            if mixed_index_scalar_type is not None:
+                return SemanticScalarType(dtype=i1)
             if isinstance(lhs.type, SemanticPadValueType) and isinstance(rhs.type, SemanticPadValueType):
                 return SemanticScalarType(dtype=i1)
             if isinstance(lhs.type, SemanticMetaType) and lhs.type == rhs.type:
                 return SemanticScalarType(dtype=i1)
             raise TypeError(
-                "comparison expressions currently require matching scalar/meta types or index-typed operands"
+                "comparison expressions currently require matching scalar/meta types, "
+                "index-typed operands, or index operands mixed with 32/64-bit integer scalars"
             )
         if op in {"gt", "lt", "ge", "le"}:
             if isinstance(lhs.type, SemanticIndexType) and isinstance(rhs.type, SemanticIndexType):
                 return SemanticScalarType(dtype=i1)
             if isinstance(lhs.type, SemanticScalarType) and lhs.type == rhs.type:
                 return SemanticScalarType(dtype=i1)
+            if mixed_index_scalar_type is not None:
+                return SemanticScalarType(dtype=i1)
             raise TypeError(
-                "ordered comparison expressions currently require matching scalar types or index-typed operands"
+                "ordered comparison expressions currently require matching scalar types, "
+                "index-typed operands, or index operands mixed with 32/64-bit integer scalars"
             )
         if op in {"and", "or"}:
             self._require_condition_type(lhs.type)
             self._require_condition_type(rhs.type)
             return SemanticScalarType(dtype=i1)
         raise TypeError(f"unsupported binary operator '{op}' in TileLang DSL v1")
+
+    def _mixed_index_integer_scalar_type(
+        self,
+        lhs_type: SemanticType,
+        rhs_type: SemanticType,
+    ) -> SemanticScalarType | None:
+        scalar_type: SemanticScalarType | None = None
+        if isinstance(lhs_type, SemanticIndexType) and isinstance(rhs_type, SemanticScalarType):
+            scalar_type = rhs_type
+        elif isinstance(rhs_type, SemanticIndexType) and isinstance(lhs_type, SemanticScalarType):
+            scalar_type = lhs_type
+        if scalar_type is None or not is_integer_dtype(scalar_type.dtype):
+            return None
+        if integer_bitwidth(scalar_type.dtype) not in {32, 64}:
+            return None
+        return scalar_type
 
     def _analyze_call_expr(
         self,

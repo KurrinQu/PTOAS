@@ -3195,6 +3195,68 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertRegex(text, r"= arith\.mulf %tmp_\d+, %c0_5_f32 : f32")
         self.assertRegex(text, r"= arith\.addf %tmp_\d+, %tmp_\d+ : f32")
 
+    def test_index_and_i32_scalar_binary_ops_bridge_index_literals(self) -> None:
+        @pto.vkernel(
+            op="index_i32_scalar_binary_bridge_unique",
+            dtypes=[(pto.f32, pto.AnyType, pto.f32)],
+            advanced=True,
+        )
+        def kernel(src: pto.Tile, gate: pto.AnyType, dst: pto.Tile):
+            rows = src.shape[0]
+            cols = src.shape[1]
+            with pto.strict_vecscope(
+                src,
+                dst,
+                gate,
+                rows,
+                cols,
+                0,
+                rows,
+                1,
+            ) as (src_tile, dst_tile, in_gate, valid_rows, valid_cols, row_lb, row_ub, row_step):
+                for row in range(row_lb, row_ub, row_step):
+                    if in_gate > 1:
+                        for lane in range(0, valid_cols, 64):
+                            lane_limit = in_gate + 1
+                            mask, _ = pto.make_mask(pto.f32, lane_limit)
+                            vec = pto.vlds(src_tile, lane)
+                            pto.vsts(vec, dst_tile, lane, mask)
+            return None
+
+        selected = pto.select_kernel(
+            "a5",
+            "index_i32_scalar_binary_bridge_unique",
+            (pto.f32, pto.i32, pto.f32),
+        )
+        specialized = selected.specialize(
+            src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertRegex(text, r"%tmp_\d+ = arith\.index_cast %c1 : index to i32")
+        self.assertRegex(text, r"%tmp_\d+ = arith\.cmpi sgt, %in_gate_\d+, %tmp_\d+ : i32")
+        self.assertRegex(text, r"%\w+_\d+ = arith\.addi %in_gate_\d+, %tmp_\d+ : i32")
+
+    def test_index_and_narrow_or_float_scalar_binary_ops_still_reject(self) -> None:
+        @pto.vkernel(op="index_i16_scalar_binary_reject_unique", dtypes=[(pto.i16,)], advanced=True)
+        def i16_kernel(gate: pto.i16):
+            _ = gate + 1
+            return None
+
+        @pto.vkernel(op="index_f32_scalar_binary_reject_unique", dtypes=[(pto.f32,)], advanced=True)
+        def f32_kernel(gate: pto.f32):
+            _ = gate + 1
+            return None
+
+        with self.assertRaises(TypeError) as i16_ctx:
+            i16_kernel.specialize().mlir_text()
+        self.assertIn("32/64-bit integer scalars", str(i16_ctx.exception))
+
+        with self.assertRaises(TypeError) as f32_ctx:
+            f32_kernel.specialize().mlir_text()
+        self.assertIn("32/64-bit integer scalars", str(f32_ctx.exception))
+
     def test_index_floordiv_lowers_to_divui_instead_of_floordivsi(self) -> None:
         @pto.vkernel(
             op="index_floordiv_lowering_unique",
