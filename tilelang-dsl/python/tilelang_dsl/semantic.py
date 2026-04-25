@@ -246,6 +246,7 @@ _BINARY_VECTOR_OPS = {
     "vsub",
     "vmul",
     "vdiv",
+    "vmod",
     "vmax",
     "vmin",
     "vand",
@@ -776,6 +777,9 @@ class _SemanticAnalyzer:
         self._hidden_parameters: list[SemanticParameter] = []
         self._inline_proc_nodes: dict[str, FrontendInlineProcNode] = {
             inline_proc.name: inline_proc for inline_proc in node.inline_procs
+        }
+        self._internal_inline_proc_nodes: dict[str, FrontendInlineProcNode] = {
+            inline_proc.name: inline_proc for inline_proc in node.internal_inline_procs
         }
         self._inline_proc_specializations: dict[
             tuple[str, tuple[tuple[SemanticType, object], ...]], SemanticKernel
@@ -1427,9 +1431,12 @@ class _SemanticAnalyzer:
         self,
         name: str,
         args: tuple[SemanticExpr, ...],
+        *,
+        internal: bool = False,
     ) -> tuple[str, tuple[tuple[SemanticType, object], ...]]:
+        specialization_name = f"__internal__::{name}" if internal else name
         return (
-            name,
+            specialization_name,
             tuple(
                 (arg.type, self._inline_proc_static_specialization_token(arg))
                 for arg in args
@@ -1508,12 +1515,17 @@ class _SemanticAnalyzer:
         self,
         name: str,
         args: tuple[SemanticExpr, ...],
+        *,
+        internal: bool = False,
     ) -> SemanticKernel:
-        inline_proc_node = self._inline_proc_nodes.get(name)
+        inline_proc_nodes = (
+            self._internal_inline_proc_nodes if internal else self._inline_proc_nodes
+        )
+        inline_proc_node = inline_proc_nodes.get(name)
         if inline_proc_node is None:
             raise TypeError(f"inline_proc `{name}` is not registered in the current TileLang module")
 
-        key = self._inline_proc_specialization_key(name, args)
+        key = self._inline_proc_specialization_key(name, args, internal=internal)
         existing = self._inline_proc_specializations.get(key)
         if existing is not None:
             return existing
@@ -1597,6 +1609,27 @@ class _SemanticAnalyzer:
             args=args,
             type=self._inline_proc_return_types.get(key),
         )
+
+    def _analyze_internal_inline_proc_call_expr(
+        self,
+        name: str,
+        args: tuple[SemanticExpr, ...],
+    ) -> SemanticExpr:
+        helper_kernel = self._materialize_inline_proc_specialization(
+            name,
+            args,
+            internal=True,
+        )
+        key = self._inline_proc_specialization_key(name, args, internal=True)
+        return SemanticCallExpr(
+            namespace=None,
+            name=helper_kernel.symbol_name,
+            args=args,
+            type=self._inline_proc_return_types.get(key),
+        )
+
+    def _is_internal_inline_proc_context(self) -> bool:
+        return any(key[0].startswith("__internal__::") for key in self._inline_proc_active_stack)
 
     def _contains_explicit_vecscope(self, statements: tuple[FrontendStmtNode, ...]) -> bool:
         for stmt in statements:
@@ -3976,6 +4009,10 @@ class _SemanticAnalyzer:
         if namespace is None and name == "range":
             return SemanticCallExpr(namespace=namespace, name=name, args=args, type=None)
         if namespace is None:
+            if name in self._inline_proc_nodes:
+                return self._analyze_inline_proc_call_expr(name, args)
+            if name in self._internal_inline_proc_nodes and self._is_internal_inline_proc_context():
+                return self._analyze_internal_inline_proc_call_expr(name, args)
             raise TypeError(
                 f"call surface `{name}` is not supported in TileLang DSL v1"
             )
@@ -4854,6 +4891,20 @@ class _SemanticAnalyzer:
             raise TypeError(f"pto.{name} requires lhs/rhs vector types to match")
         self._require_mask_for_vreg(mask, lhs, f"pto.{name}")
         self._validate_binary_dtype(name, lhs.element_dtype)
+        if (
+            name in {"vdiv", "vmod"}
+            and is_integer_dtype(lhs.element_dtype)
+            and integer_bitwidth(lhs.element_dtype) in {8, 16, 32}
+        ):
+            return self._analyze_internal_inline_proc_call_expr(
+                "_tl_soft_vdiv" if name == "vdiv" else "_tl_soft_vmod",
+                (
+                    lhs_expr,
+                    rhs_expr,
+                    mask,
+                    self._dtype_symbol_expr(lhs.element_dtype),
+                ),
+            )
         return SemanticCallExpr(namespace="pto", name=name, args=args, type=lhs)
 
     def _analyze_vector_scalar_op(
@@ -5375,6 +5426,14 @@ class _SemanticAnalyzer:
                 return expr.binding.value
             raise TypeError(f"{context} must be a TileLang scalar dtype symbol in TileLang DSL v1")
         return expr.value
+
+    def _dtype_symbol_expr(self, dtype: ScalarType) -> SemanticSymbolExpr:
+        return SemanticSymbolExpr(
+            namespace="pto",
+            name=dtype.name,
+            value=dtype,
+            type=SemanticMetaType(kind="dtype"),
+        )
 
     def _require_memory_space_symbol(self, expr: SemanticExpr, context: str) -> MemorySpace:
         if (
@@ -6180,9 +6239,18 @@ class _SemanticAnalyzer:
 
     def _validate_binary_dtype(self, name: str, dtype: ScalarType) -> None:
         if name == "vdiv" and not (
-            dtype.name in {"f16", "f32"} or (is_integer_dtype(dtype) and integer_bitwidth(dtype) == 16)
+            (is_integer_dtype(dtype) and integer_bitwidth(dtype) in {8, 16, 32})
+            or dtype.name in {"f16", "f32"}
         ):
-            raise TypeError("pto.vdiv only supports f16/f32/i16/ui16 in TileLang DSL v1")
+            raise TypeError(
+                "pto.vdiv only supports 8/16/32-bit integer families and f16/f32 in TileLang DSL v1"
+            )
+        if name == "vmod" and not (
+            is_integer_dtype(dtype) and integer_bitwidth(dtype) in {8, 16, 32}
+        ):
+            raise TypeError(
+                "pto.vmod only supports 8/16/32-bit integer families in TileLang DSL v1"
+            )
         if name == "vprelu" and dtype.name not in {"f16", "f32"}:
             raise TypeError("pto.vprelu only supports f16/f32 in TileLang DSL v1")
         if name in {"vaddreluconv", "vmulconv"} and dtype.name not in {"f16", "bf16", "f32"}:

@@ -482,6 +482,17 @@ static bool hasUnexpandedTileOps(ModuleOp module) {
   return found;
 }
 
+static bool hasTilelangInlineHelpers(ModuleOp module) {
+  bool found = false;
+  module.walk([&](func::FuncOp func) {
+    if (found)
+      return;
+    if (func->hasAttr("pto.tilelang.inline_proc"))
+      found = true;
+  });
+  return found;
+}
+
 // --------------------------------------------------------------------------
 // Post-process C++ output: rewrite marker calls into Tile member calls.
 //
@@ -1177,6 +1188,21 @@ static LogicalResult lowerPTOToVPTOBackend(ModuleOp module) {
   return success();
 }
 
+static LogicalResult inlineTilelangHelpersOnVPTOInput(ModuleOp module) {
+  PassManager inlinePM(module.getContext());
+  inlinePM.addPass(pto::createPTOInlineLibCallPass());
+  inlinePM.addPass(mlir::createSCCPPass());
+  inlinePM.addPass(mlir::createCanonicalizerPass());
+  if (failed(applyConfiguredPassManagerCLOptions(
+          inlinePM, "VPTO TileLang helper inlining")))
+    return failure();
+  if (failed(inlinePM.run(module))) {
+    llvm::errs() << "Error: VPTO TileLang helper inlining failed.\n";
+    return failure();
+  }
+  return success();
+}
+
 static pto::VPTOEmissionOptions buildVPTOEmissionOptions() {
   pto::VPTOEmissionOptions options;
   options.dumpVPTOIR = false;
@@ -1485,6 +1511,7 @@ int main(int argc, char **argv) {
   }
 
   const bool hasTileOpsToExpand = hasUnexpandedTileOps(*module);
+  const bool hasTilelangHelpers = hasTilelangInlineHelpers(*module);
 
   if (effectiveBackend == PTOBackend::VPTO && inputIsVPTOIR &&
       !hasTileOpsToExpand) {
@@ -1493,6 +1520,10 @@ int main(int argc, char **argv) {
                       "the input is already VPTO IR.\n";
       return 1;
     }
+
+    if (hasTilelangHelpers &&
+        failed(inlineTilelangHelpersOnVPTOInput(*module)))
+      return 1;
 
     return emitVPTOBackendResult(*module, outputFile);
   }

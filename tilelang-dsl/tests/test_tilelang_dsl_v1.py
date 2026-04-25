@@ -47,6 +47,7 @@ from tilelang_dsl.semantic import (
     SemanticAlignStoreStmt,
     SemanticAlignType,
     SemanticAssignStmt,
+    SemanticBindingRef,
     SemanticBinaryExpr,
     SemanticCallExpr,
     SemanticDmaConfigStmt,
@@ -65,6 +66,7 @@ from tilelang_dsl.semantic import (
     SemanticPipeBarrierStmt,
     SemanticPtrType,
     SemanticPredicateStoreStmt,
+    SemanticReturnStmt,
     SemanticRlsBufStmt,
     SemanticScalarStoreStmt,
     SemanticScalarType,
@@ -90,6 +92,62 @@ from tilelang_dsl.semantic import (
 
 GLOBAL_TILELANG_LITERAL_BLOCK_SIZE = 32
 INLINE_PROC_GLOBAL_LANE = 0
+
+
+def _walk_semantic_stmts(statements):
+    for stmt in statements:
+        yield stmt
+        if isinstance(stmt, SemanticVecscopeStmt):
+            yield from _walk_semantic_stmts(stmt.body)
+        elif isinstance(stmt, SemanticForStmt):
+            yield from _walk_semantic_stmts(stmt.body)
+        elif isinstance(stmt, SemanticIfStmt):
+            yield from _walk_semantic_stmts(stmt.then_body)
+            yield from _walk_semantic_stmts(stmt.else_body)
+
+
+def _find_inline_helper(semantic_kernel, symbol_prefix):
+    return next(
+        helper for helper in semantic_kernel.inline_helpers if helper.symbol_name.startswith(symbol_prefix)
+    )
+
+
+def _find_helper_assign_by_ssa(helper, ssa_name):
+    return next(
+        stmt
+        for stmt in helper.body
+        if isinstance(stmt, SemanticAssignStmt)
+        and any(target.ssa_name == ssa_name for target in stmt.targets)
+    )
+
+
+def _find_last_helper_assign_by_name(helper, name):
+    return next(
+        stmt
+        for stmt in reversed(helper.body)
+        if isinstance(stmt, SemanticAssignStmt)
+        and any(target.name == name for target in stmt.targets)
+    )
+
+
+def _find_helper_return_stmt(helper):
+    return next(stmt for stmt in helper.body if isinstance(stmt, SemanticReturnStmt))
+
+
+def _resolve_helper_expr(helper, expr):
+    if isinstance(expr, SemanticBindingRef):
+        assign = _find_helper_assign_by_ssa(helper, expr.binding.ssa_name)
+        return _resolve_helper_expr(helper, assign.value)
+    return expr
+
+
+def _resolve_helper_broadcast_scalar_literal(helper, expr):
+    resolved = _resolve_helper_expr(helper, expr)
+    if isinstance(resolved, SemanticLiteralExpr):
+        return resolved.value
+    if isinstance(resolved, SemanticCallExpr) and resolved.namespace == "pto" and resolved.name == "vbr":
+        return _resolve_helper_broadcast_scalar_literal(helper, resolved.args[0])
+    raise AssertionError(f"expected helper scalar literal or broadcast, got {resolved!r}")
 
 
 class TileLangDSLPackageTests(unittest.TestCase):
@@ -419,6 +477,7 @@ class TileLangDSLSupportMatrixTests(unittest.TestCase):
         self.assertIn("pto.vsts", AUTHORING_TIER_SURFACE_GROUPS["base_vector_ops"])
         self.assertIn("pto.vadd", AUTHORING_TIER_SURFACE_GROUPS["base_vector_ops"])
         self.assertIn("pto.vmuls", AUTHORING_TIER_SURFACE_GROUPS["base_vector_ops"])
+        self.assertIn("pto.vmod", AUTHORING_TIER_SURFACE_GROUPS["base_vector_ops"])
         self.assertIn("tile[start:]", BASIC_TILE_INDEXING_SURFACES)
         self.assertIn("tile[row, col:]", BASIC_TILE_INDEXING_SURFACES)
 
@@ -428,6 +487,7 @@ class TileLangDSLSupportMatrixTests(unittest.TestCase):
         self.assertEqual(get_feature_tier("pto.vsts"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.vadd"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.vmuls"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.vmod"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.get_buf"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.rls_buf"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.get_block_idx"), BASIC_TIER)
@@ -7033,6 +7093,731 @@ class TileLangDSLInlineProcTests(unittest.TestCase):
         self.assertIn("func.call", text)
         self.assertRegex(text, r"= func\.call @__tl_inline_")
         self.assertIn("pto.vsts", text)
+
+    def test_vdiv_integer_vector_types_rewrite_to_internal_helper(self) -> None:
+        @pto.vkernel(op="vdiv_i16_dtype_support_unique", dtypes=[(pto.i16, pto.i16)])
+        def kernel_i16(dst: pto.Tile, src: pto.Tile):
+            dtype = dst.element_type
+            mask = pto.make_mask(dtype, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            out = pto.vdiv(vec, vec, mask)
+            pto.vsts(out, dst, 0, mask)
+            return None
+
+        @pto.vkernel(op="vdiv_i32_dtype_support_unique", dtypes=[(pto.i32, pto.i32)])
+        def kernel_i32(dst: pto.Tile, src: pto.Tile):
+            dtype = dst.element_type
+            mask = pto.make_mask(dtype, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            out = pto.vdiv(vec, vec, mask)
+            pto.vsts(out, dst, 0, mask)
+            return None
+
+        specialized_i16 = kernel_i16.specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        )
+        semantic_i16 = analyze_frontend_kernel(build_frontend_kernel_node(specialized_i16))
+        assign_i16 = next(
+            stmt
+            for stmt in _walk_semantic_stmts(semantic_i16.body)
+            if isinstance(stmt, SemanticAssignStmt)
+            and len(stmt.targets) == 1
+            and stmt.targets[0].name == "out"
+            and isinstance(stmt.value, SemanticCallExpr)
+        )
+        self.assertIsNone(assign_i16.value.namespace)
+        self.assertRegex(assign_i16.value.name, r"^__tl_inline__tl_soft_vdiv_")
+        self.assertEqual(assign_i16.value.type, SemanticVRegType(element_dtype=pto.i16, lanes=128))
+        self.assertGreaterEqual(len(semantic_i16.inline_helpers), 1)
+        self.assertRegex(specialized_i16.mlir_text(), r"func\.call @__tl_inline__tl_soft_vdiv_")
+
+        text_i32 = kernel_i32.specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        )
+        semantic_i32 = analyze_frontend_kernel(build_frontend_kernel_node(text_i32))
+        assign_i32 = next(
+            stmt
+            for stmt in _walk_semantic_stmts(semantic_i32.body)
+            if isinstance(stmt, SemanticAssignStmt)
+            and len(stmt.targets) == 1
+            and stmt.targets[0].name == "out"
+            and isinstance(stmt.value, SemanticCallExpr)
+        )
+        self.assertIsNone(assign_i32.value.namespace)
+        self.assertRegex(assign_i32.value.name, r"^__tl_inline__tl_soft_vdiv_")
+        self.assertEqual(assign_i32.value.type, SemanticVRegType(element_dtype=pto.i32, lanes=64))
+        self.assertGreaterEqual(len(semantic_i32.inline_helpers), 1)
+        self.assertRegex(text_i32.mlir_text(), r"func\.call @__tl_inline__tl_soft_vdiv_")
+
+    def test_vdiv_f16_and_f32_vector_types_keep_authoring_form_vpto_path(self) -> None:
+        @pto.vkernel(
+            op="vdiv_float_dtype_support_unique",
+            dtypes=[(pto.f16, pto.f16), (pto.f32, pto.f32)],
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            dtype = dst.element_type
+            mask = pto.make_mask(dtype, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            out = pto.vdiv(vec, vec, mask)
+            pto.vsts(out, dst, 0, mask)
+            return None
+
+        cases = [
+            (pto.f16, 128),
+            (pto.f32, 64),
+        ]
+
+        for dtype, lanes in cases:
+            with self.subTest(dtype=dtype):
+                selected = pto.select_kernel("a5", "vdiv_float_dtype_support_unique", (dtype, dtype))
+                specialized = selected.specialize(
+                    dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+                    src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+                )
+                semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+
+                assign_stmt = next(
+                    stmt
+                    for stmt in _walk_semantic_stmts(semantic_kernel.body)
+                    if isinstance(stmt, SemanticAssignStmt)
+                    and len(stmt.targets) == 1
+                    and stmt.targets[0].name == "out"
+                    and isinstance(stmt.value, SemanticCallExpr)
+                )
+                self.assertEqual(assign_stmt.value.namespace, "pto")
+                self.assertEqual(assign_stmt.value.name, "vdiv")
+                self.assertEqual(
+                    assign_stmt.value.type,
+                    SemanticVRegType(element_dtype=dtype, lanes=lanes),
+                )
+                self.assertEqual(len(semantic_kernel.inline_helpers), 0)
+
+                text = lower_semantic_kernel(semantic_kernel).render()
+                self.assertEqual(text, specialized.mlir_text())
+                self.assertIn("= pto.vdiv ", text)
+                self.assertNotIn("__tl_inline__tl_soft_vdiv_", text)
+
+    def test_vdiv_i8_and_ui8_vector_types_rewrite_to_internal_helper(self) -> None:
+        @pto.vkernel(op="vdiv_i8_dtype_support_unique", dtypes=[(pto.i8, pto.i8)])
+        def kernel_i8(dst: pto.Tile, src: pto.Tile):
+            mask = pto.make_mask(pto.i8, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            out = pto.vdiv(vec, vec, mask)
+            pto.vsts(out, dst, 0, mask)
+            return None
+
+        @pto.vkernel(op="vdiv_ui8_dtype_support_unique", dtypes=[(pto.ui8, pto.ui8)])
+        def kernel_ui8(dst: pto.Tile, src: pto.Tile):
+            mask = pto.make_mask(pto.ui8, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            out = pto.vdiv(vec, vec, mask)
+            pto.vsts(out, dst, 0, mask)
+            return None
+
+        specialized_i8 = kernel_i8.specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        )
+        semantic_i8 = analyze_frontend_kernel(build_frontend_kernel_node(specialized_i8))
+        assign_i8 = next(
+            stmt
+            for stmt in _walk_semantic_stmts(semantic_i8.body)
+            if isinstance(stmt, SemanticAssignStmt)
+            and len(stmt.targets) == 1
+            and stmt.targets[0].name == "out"
+            and isinstance(stmt.value, SemanticCallExpr)
+        )
+        self.assertIsNone(assign_i8.value.namespace)
+        self.assertRegex(assign_i8.value.name, r"^__tl_inline__tl_soft_vdiv_")
+        self.assertEqual(assign_i8.value.type, SemanticVRegType(element_dtype=pto.i8, lanes=256))
+        self.assertGreaterEqual(len(semantic_i8.inline_helpers), 1)
+        self.assertRegex(specialized_i8.mlir_text(), r"func\.call @__tl_inline__tl_soft_vdiv_")
+
+        specialized_ui8 = kernel_ui8.specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        )
+        semantic_ui8 = analyze_frontend_kernel(build_frontend_kernel_node(specialized_ui8))
+        assign_ui8 = next(
+            stmt
+            for stmt in _walk_semantic_stmts(semantic_ui8.body)
+            if isinstance(stmt, SemanticAssignStmt)
+            and len(stmt.targets) == 1
+            and stmt.targets[0].name == "out"
+            and isinstance(stmt.value, SemanticCallExpr)
+        )
+        self.assertIsNone(assign_ui8.value.namespace)
+        self.assertRegex(assign_ui8.value.name, r"^__tl_inline__tl_soft_vdiv_")
+        self.assertEqual(assign_ui8.value.type, SemanticVRegType(element_dtype=pto.ui8, lanes=256))
+        self.assertGreaterEqual(len(semantic_ui8.inline_helpers), 1)
+        self.assertRegex(specialized_ui8.mlir_text(), r"func\.call @__tl_inline__tl_soft_vdiv_")
+
+    def test_vdiv_rejects_bf16_vector_type(self) -> None:
+        @pto.vkernel(op="vdiv_bf16_reject_unique", dtypes=[(pto.bf16, pto.bf16)])
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            mask = pto.make_mask(pto.bf16, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            out = pto.vdiv(vec, vec, mask)
+            pto.vsts(out, dst, 0, mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        )
+
+        with self.assertRaises(TypeError) as ctx:
+            specialized.mlir_text()
+
+        self.assertIn(
+            "pto.vdiv only supports 8/16/32-bit integer families and f16/f32 in TileLang DSL v1",
+            str(ctx.exception),
+        )
+
+    def test_vmod_integer_vector_types_rewrite_to_internal_helper(self) -> None:
+        @pto.vkernel(op="vmod_i16_dtype_support_unique", dtypes=[(pto.i16, pto.i16)])
+        def kernel_i16(dst: pto.Tile, src: pto.Tile):
+            dtype = dst.element_type
+            mask = pto.make_mask(dtype, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            out = pto.vmod(vec, vec, mask)
+            pto.vsts(out, dst, 0, mask)
+            return None
+
+        @pto.vkernel(op="vmod_i32_dtype_support_unique", dtypes=[(pto.i32, pto.i32)])
+        def kernel_i32(dst: pto.Tile, src: pto.Tile):
+            dtype = dst.element_type
+            mask = pto.make_mask(dtype, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            out = pto.vmod(vec, vec, mask)
+            pto.vsts(out, dst, 0, mask)
+            return None
+
+        specialized_i16 = kernel_i16.specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        )
+        semantic_i16 = analyze_frontend_kernel(build_frontend_kernel_node(specialized_i16))
+        assign_i16 = next(
+            stmt
+            for stmt in _walk_semantic_stmts(semantic_i16.body)
+            if isinstance(stmt, SemanticAssignStmt)
+            and len(stmt.targets) == 1
+            and stmt.targets[0].name == "out"
+            and isinstance(stmt.value, SemanticCallExpr)
+        )
+        self.assertIsNone(assign_i16.value.namespace)
+        self.assertRegex(assign_i16.value.name, r"^__tl_inline__tl_soft_vmod_")
+        self.assertEqual(assign_i16.value.type, SemanticVRegType(element_dtype=pto.i16, lanes=128))
+        self.assertGreaterEqual(len(semantic_i16.inline_helpers), 1)
+        self.assertRegex(specialized_i16.mlir_text(), r"func\.call @__tl_inline__tl_soft_vmod_")
+
+        specialized_i32 = kernel_i32.specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        )
+        semantic_i32 = analyze_frontend_kernel(build_frontend_kernel_node(specialized_i32))
+        assign_i32 = next(
+            stmt
+            for stmt in _walk_semantic_stmts(semantic_i32.body)
+            if isinstance(stmt, SemanticAssignStmt)
+            and len(stmt.targets) == 1
+            and stmt.targets[0].name == "out"
+            and isinstance(stmt.value, SemanticCallExpr)
+        )
+        self.assertIsNone(assign_i32.value.namespace)
+        self.assertRegex(assign_i32.value.name, r"^__tl_inline__tl_soft_vmod_")
+        self.assertEqual(assign_i32.value.type, SemanticVRegType(element_dtype=pto.i32, lanes=64))
+        self.assertGreaterEqual(len(semantic_i32.inline_helpers), 1)
+        self.assertRegex(specialized_i32.mlir_text(), r"func\.call @__tl_inline__tl_soft_vmod_")
+
+    def test_vmod_i8_and_ui8_vector_types_rewrite_to_internal_helper(self) -> None:
+        @pto.vkernel(op="vmod_i8_dtype_support_unique", dtypes=[(pto.i8, pto.i8)])
+        def kernel_i8(dst: pto.Tile, src: pto.Tile):
+            mask = pto.make_mask(pto.i8, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            out = pto.vmod(vec, vec, mask)
+            pto.vsts(out, dst, 0, mask)
+            return None
+
+        @pto.vkernel(op="vmod_ui8_dtype_support_unique", dtypes=[(pto.ui8, pto.ui8)])
+        def kernel_ui8(dst: pto.Tile, src: pto.Tile):
+            mask = pto.make_mask(pto.ui8, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            out = pto.vmod(vec, vec, mask)
+            pto.vsts(out, dst, 0, mask)
+            return None
+
+        specialized_i8 = kernel_i8.specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        )
+        semantic_i8 = analyze_frontend_kernel(build_frontend_kernel_node(specialized_i8))
+        assign_i8 = next(
+            stmt
+            for stmt in _walk_semantic_stmts(semantic_i8.body)
+            if isinstance(stmt, SemanticAssignStmt)
+            and len(stmt.targets) == 1
+            and stmt.targets[0].name == "out"
+            and isinstance(stmt.value, SemanticCallExpr)
+        )
+        self.assertIsNone(assign_i8.value.namespace)
+        self.assertRegex(assign_i8.value.name, r"^__tl_inline__tl_soft_vmod_")
+        self.assertEqual(assign_i8.value.type, SemanticVRegType(element_dtype=pto.i8, lanes=256))
+        self.assertGreaterEqual(len(semantic_i8.inline_helpers), 1)
+        self.assertRegex(specialized_i8.mlir_text(), r"func\.call @__tl_inline__tl_soft_vmod_")
+
+        specialized_ui8 = kernel_ui8.specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        )
+        semantic_ui8 = analyze_frontend_kernel(build_frontend_kernel_node(specialized_ui8))
+        assign_ui8 = next(
+            stmt
+            for stmt in _walk_semantic_stmts(semantic_ui8.body)
+            if isinstance(stmt, SemanticAssignStmt)
+            and len(stmt.targets) == 1
+            and stmt.targets[0].name == "out"
+            and isinstance(stmt.value, SemanticCallExpr)
+        )
+        self.assertIsNone(assign_ui8.value.namespace)
+        self.assertRegex(assign_ui8.value.name, r"^__tl_inline__tl_soft_vmod_")
+        self.assertEqual(assign_ui8.value.type, SemanticVRegType(element_dtype=pto.ui8, lanes=256))
+        self.assertGreaterEqual(len(semantic_ui8.inline_helpers), 1)
+        self.assertRegex(specialized_ui8.mlir_text(), r"func\.call @__tl_inline__tl_soft_vmod_")
+
+    def test_vmod_rejects_f32_vector_type(self) -> None:
+        @pto.vkernel(op="vmod_f32_reject_unique", dtypes=[(pto.f32, pto.f32)])
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            out = pto.vmod(vec, vec, mask)
+            pto.vsts(out, dst, 0, mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        )
+
+        with self.assertRaises(TypeError) as ctx:
+            specialized.mlir_text()
+
+        self.assertIn(
+            "pto.vmod only supports 8/16/32-bit integer families in TileLang DSL v1",
+            str(ctx.exception),
+        )
+
+    def test_integer_divmod_helpers_lock_zero_divisor_sentinel_convention(self) -> None:
+        @pto.vkernel(
+            op="integer_divmod_zero_divisor_contract_unique",
+            dtypes=[
+                (pto.i8, pto.i8),
+                (pto.ui8, pto.ui8),
+                (pto.i16, pto.i16),
+                (pto.ui16, pto.ui16),
+                (pto.i32, pto.i32),
+                (pto.ui32, pto.ui32),
+            ],
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            dtype = dst.element_type
+            mask = pto.make_mask(dtype, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            quot = pto.vdiv(vec, vec, mask)
+            rem = pto.vmod(vec, vec, mask)
+            pto.vsts(quot, dst, 0, mask)
+            pto.vsts(rem, dst, 0, mask)
+            return None
+
+        cases = [
+            ("vdiv", pto.i8, "__tl_inline__tl_soft_vdiv_i8_", -1),
+            ("vdiv", pto.ui8, "__tl_inline__tl_soft_vdiv_u8_", 0xFF),
+            ("vdiv", pto.i16, "__tl_inline__tl_soft_vdiv_i16_", -1),
+            ("vdiv", pto.ui16, "__tl_inline__tl_soft_vdiv_u16_", 0xFFFF),
+            ("vdiv", pto.i32, "__tl_inline__tl_soft_vdiv_i32_", -1),
+            ("vdiv", pto.ui32, "__tl_inline__tl_soft_vdiv_u32_", 0xFFFFFFFF),
+            ("vmod", pto.i8, "__tl_inline__tl_soft_vmod_i8_", -1),
+            ("vmod", pto.ui8, "__tl_inline__tl_soft_vmod_u8_", 0xFF),
+            ("vmod", pto.i16, "__tl_inline__tl_soft_vmod_i16_", -1),
+            ("vmod", pto.ui16, "__tl_inline__tl_soft_vmod_u16_", 0xFFFF),
+            ("vmod", pto.i32, "__tl_inline__tl_soft_vmod_i32_", -1),
+            ("vmod", pto.ui32, "__tl_inline__tl_soft_vmod_u32_", 0xFFFFFFFF),
+        ]
+
+        for op_name, dtype, helper_prefix, expected_sentinel in cases:
+            with self.subTest(op=op_name, dtype=dtype):
+                selected = pto.select_kernel(
+                    "a5",
+                    "integer_divmod_zero_divisor_contract_unique",
+                    (dtype, dtype),
+                )
+                specialized = selected.specialize(
+                    dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+                    src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+                )
+                semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+                helper = _find_inline_helper(semantic_kernel, helper_prefix)
+
+                zero_mask_assign = _find_last_helper_assign_by_name(helper, "zero_mask")
+                self.assertIsInstance(zero_mask_assign.value, SemanticCallExpr)
+                self.assertEqual(zero_mask_assign.value.namespace, "pto")
+                self.assertEqual(zero_mask_assign.value.name, "vcmps")
+                self.assertEqual(zero_mask_assign.value.args[3].value, "eq")
+                self.assertEqual(
+                    _resolve_helper_broadcast_scalar_literal(helper, zero_mask_assign.value.args[1]),
+                    0,
+                )
+
+                return_stmt = _find_helper_return_stmt(helper)
+                self.assertIsInstance(return_stmt.value, SemanticCallExpr)
+                self.assertEqual(return_stmt.value.namespace, "pto")
+                self.assertEqual(return_stmt.value.name, "vsel")
+                self.assertIsInstance(return_stmt.value.args[2], SemanticBindingRef)
+                self.assertEqual(return_stmt.value.args[2].binding.name, "zero_mask")
+                self.assertEqual(
+                    _resolve_helper_broadcast_scalar_literal(helper, return_stmt.value.args[0]),
+                    expected_sentinel,
+                )
+
+    def test_signed_vdiv_helpers_derive_result_sign_from_operand_signs(self) -> None:
+        @pto.vkernel(
+            op="signed_vdiv_sign_contract_unique",
+            dtypes=[(pto.i16, pto.i16), (pto.i32, pto.i32)],
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            dtype = dst.element_type
+            mask = pto.make_mask(dtype, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            out = pto.vdiv(vec, vec, mask)
+            pto.vsts(out, dst, 0, mask)
+            return None
+
+        cases = [
+            (pto.i16, "__tl_inline__tl_soft_vdiv_i16_", "i16"),
+            (pto.i32, "__tl_inline__tl_soft_vdiv_i32_", "i32"),
+        ]
+
+        for dtype, helper_prefix, dtype_name in cases:
+            with self.subTest(dtype=dtype):
+                selected = pto.select_kernel("a5", "signed_vdiv_sign_contract_unique", (dtype, dtype))
+                specialized = selected.specialize(
+                    dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+                    src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+                )
+                semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+                helper = _find_inline_helper(semantic_kernel, helper_prefix)
+
+                xor_assign = _find_last_helper_assign_by_name(helper, "x_xor_y")
+                self.assertIsInstance(xor_assign.value, SemanticCallExpr)
+                self.assertEqual(xor_assign.value.namespace, "pto")
+                self.assertEqual(xor_assign.value.name, "vxor")
+                self.assertEqual(xor_assign.value.args[0].binding.name, "vec")
+                self.assertEqual(xor_assign.value.args[1].binding.name, "scalar_vec")
+                self.assertEqual(xor_assign.value.args[2].binding.name, "active_mask")
+
+                p_pos_assign = _find_last_helper_assign_by_name(helper, "p_pos")
+                self.assertIsInstance(p_pos_assign.value, SemanticCallExpr)
+                self.assertEqual(p_pos_assign.value.namespace, "pto")
+                self.assertEqual(p_pos_assign.value.name, "vcmps")
+                self.assertEqual(p_pos_assign.value.args[0].binding.name, "x_xor_y")
+                self.assertEqual(p_pos_assign.value.args[1].binding.name, "zero")
+                self.assertEqual(p_pos_assign.value.args[2].binding.name, "active_mask")
+                self.assertEqual(p_pos_assign.value.args[3].value, "ge")
+
+                q_assign = _find_last_helper_assign_by_name(helper, "q")
+                self.assertIsInstance(q_assign.value, SemanticCallExpr)
+                self.assertEqual(q_assign.value.namespace, "pto")
+                self.assertEqual(q_assign.value.name, "vsel")
+                self.assertEqual(q_assign.value.args[1].binding.name, "neg_q")
+                self.assertEqual(q_assign.value.args[2].binding.name, "p_pos")
+                self.assertIsInstance(q_assign.value.args[0], SemanticCallExpr)
+                self.assertEqual(q_assign.value.args[0].namespace, "pto")
+                self.assertEqual(q_assign.value.args[0].name, "vbitcast")
+                self.assertIsInstance(q_assign.value.args[0].args[0], SemanticBindingRef)
+                self.assertEqual(q_assign.value.args[0].args[1].name, dtype_name)
+
+    def test_signed_vmod_helpers_apply_floor_fix_when_signs_differ(self) -> None:
+        @pto.vkernel(
+            op="signed_vmod_sign_contract_unique",
+            dtypes=[(pto.i16, pto.i16), (pto.i32, pto.i32)],
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            dtype = dst.element_type
+            mask = pto.make_mask(dtype, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            out = pto.vmod(vec, vec, mask)
+            pto.vsts(out, dst, 0, mask)
+            return None
+
+        cases = [
+            (pto.i16, "__tl_inline__tl_soft_vmod_i16_"),
+            (pto.i32, "__tl_inline__tl_soft_vmod_i32_"),
+        ]
+
+        for dtype, helper_prefix in cases:
+            with self.subTest(dtype=dtype):
+                selected = pto.select_kernel("a5", "signed_vmod_sign_contract_unique", (dtype, dtype))
+                specialized = selected.specialize(
+                    dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+                    src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+                )
+                semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+                helper = _find_inline_helper(semantic_kernel, helper_prefix)
+
+                nonzero_assign = _find_last_helper_assign_by_name(helper, "nonzero_remainder")
+                self.assertIsInstance(nonzero_assign.value, SemanticCallExpr)
+                self.assertEqual(nonzero_assign.value.namespace, "pto")
+                self.assertEqual(nonzero_assign.value.name, "vcmps")
+                self.assertEqual(nonzero_assign.value.args[1].binding.name, "zero")
+                self.assertEqual(nonzero_assign.value.args[2].binding.name, "active_mask")
+                self.assertEqual(nonzero_assign.value.args[3].value, "ne")
+
+                sign_diff_assign = _find_last_helper_assign_by_name(helper, "sign_diff")
+                self.assertIsInstance(sign_diff_assign.value, SemanticCallExpr)
+                self.assertEqual(sign_diff_assign.value.namespace, "pto")
+                self.assertEqual(sign_diff_assign.value.name, "pxor")
+                self.assertEqual(sign_diff_assign.value.args[0].binding.name, "sign_x")
+                self.assertEqual(sign_diff_assign.value.args[1].binding.name, "sign_y")
+                self.assertEqual(sign_diff_assign.value.args[2].binding.name, "active_mask")
+
+                need_fix_assign = _find_last_helper_assign_by_name(helper, "need_floor_fix")
+                self.assertIsInstance(need_fix_assign.value, SemanticCallExpr)
+                self.assertEqual(need_fix_assign.value.namespace, "pto")
+                self.assertEqual(need_fix_assign.value.name, "pand")
+                self.assertEqual(need_fix_assign.value.args[0].binding.name, "sign_diff")
+                self.assertEqual(need_fix_assign.value.args[1].binding.name, "nonzero_remainder")
+                self.assertEqual(need_fix_assign.value.args[2].binding.name, "active_mask")
+
+                amended_assign = _find_last_helper_assign_by_name(helper, "amended_remainder")
+                self.assertIsInstance(amended_assign.value, SemanticCallExpr)
+                self.assertEqual(amended_assign.value.namespace, "pto")
+                self.assertEqual(amended_assign.value.name, "vadd")
+                self.assertEqual(amended_assign.value.args[0].binding.name, "scalar_vec")
+                self.assertEqual(amended_assign.value.args[1].binding.name, "remainder")
+                self.assertEqual(amended_assign.value.args[2].binding.name, "active_mask")
+
+                remainder_assign = _find_last_helper_assign_by_name(helper, "remainder")
+                self.assertIsInstance(remainder_assign.value, SemanticCallExpr)
+                self.assertEqual(remainder_assign.value.namespace, "pto")
+                self.assertEqual(remainder_assign.value.name, "vsel")
+                self.assertEqual(remainder_assign.value.args[0].binding.name, "amended_remainder")
+                self.assertEqual(remainder_assign.value.args[2].binding.name, "need_floor_fix")
+
+    def test_i8_divmod_helpers_use_explicit_widen_narrow_profile(self) -> None:
+        @pto.vkernel(
+            op="i8_divmod_widen_narrow_contract_unique",
+            dtypes=[
+                (pto.i8, pto.i8),
+                (pto.ui8, pto.ui8),
+            ],
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            dtype = dst.element_type
+            mask = pto.make_mask(dtype, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            quot = pto.vdiv(vec, vec, mask)
+            rem = pto.vmod(vec, vec, mask)
+            pto.vsts(quot, dst, 0, mask)
+            pto.vsts(rem, dst, 1, mask)
+            return None
+
+        cases = [
+            (
+                pto.i8,
+                "__tl_inline__tl_soft_vdiv_i8_",
+                "__tl_inline__tl_soft_vdiv_i16_",
+                "vsunpack",
+                "q",
+                "q_low",
+                "q_high",
+                "vbitcast",
+            ),
+            (
+                pto.ui8,
+                "__tl_inline__tl_soft_vdiv_u8_",
+                "__tl_inline__tl_soft_vdiv_u16_",
+                "vzunpack",
+                "q",
+                "q_low",
+                "q_high",
+                "vor",
+            ),
+            (
+                pto.i8,
+                "__tl_inline__tl_soft_vmod_i8_",
+                "__tl_inline__tl_soft_vmod_i16_",
+                "vsunpack",
+                "r",
+                "r_low",
+                "r_high",
+                "vbitcast",
+            ),
+            (
+                pto.ui8,
+                "__tl_inline__tl_soft_vmod_u8_",
+                "__tl_inline__tl_soft_vmod_u16_",
+                "vzunpack",
+                "r",
+                "r_low",
+                "r_high",
+                "vor",
+            ),
+        ]
+
+        for (
+            dtype,
+            helper_prefix,
+            widened_helper_prefix,
+            unpack_name,
+            packed_result_name,
+            lower_result_name,
+            higher_result_name,
+            packed_result_op,
+        ) in cases:
+            with self.subTest(dtype=dtype, helper=helper_prefix):
+                selected = pto.select_kernel(
+                    "a5",
+                    "i8_divmod_widen_narrow_contract_unique",
+                    (dtype, dtype),
+                )
+                specialized = selected.specialize(
+                    dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+                    src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+                )
+                semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+                helper = _find_inline_helper(semantic_kernel, helper_prefix)
+
+                active_low_assign = _find_last_helper_assign_by_name(helper, "active_low")
+                self.assertIsInstance(active_low_assign.value, SemanticCallExpr)
+                self.assertEqual(active_low_assign.value.namespace, "pto")
+                self.assertEqual(active_low_assign.value.name, "punpack")
+                self.assertEqual(active_low_assign.value.args[0].binding.name, "active_mask")
+
+                active_high_assign = _find_last_helper_assign_by_name(helper, "active_high")
+                self.assertIsInstance(active_high_assign.value, SemanticCallExpr)
+                self.assertEqual(active_high_assign.value.namespace, "pto")
+                self.assertEqual(active_high_assign.value.name, "punpack")
+                self.assertEqual(active_high_assign.value.args[0].binding.name, "active_mask")
+
+                for name, expected_half in (
+                    ("vec_low", 0),
+                    ("vec_high", 1),
+                    ("scalar_low", 0),
+                    ("scalar_high", 1),
+                ):
+                    assign = _find_last_helper_assign_by_name(helper, name)
+                    self.assertIsInstance(assign.value, SemanticCallExpr)
+                    self.assertEqual(assign.value.namespace, "pto")
+                    self.assertEqual(assign.value.name, unpack_name)
+                    self.assertEqual(assign.value.args[1].value, expected_half)
+
+                lower_assign = _find_last_helper_assign_by_name(helper, lower_result_name)
+                self.assertIsInstance(lower_assign.value, SemanticCallExpr)
+                self.assertIsNone(lower_assign.value.namespace)
+                self.assertRegex(lower_assign.value.name, rf"^{widened_helper_prefix}")
+                self.assertEqual(lower_assign.value.args[2].binding.name, "active_low")
+
+                higher_assign = _find_last_helper_assign_by_name(helper, higher_result_name)
+                self.assertIsInstance(higher_assign.value, SemanticCallExpr)
+                self.assertIsNone(higher_assign.value.namespace)
+                self.assertRegex(higher_assign.value.name, rf"^{widened_helper_prefix}")
+                self.assertEqual(higher_assign.value.args[2].binding.name, "active_high")
+
+                packed_low_assign = _find_last_helper_assign_by_name(helper, "packed_low")
+                self.assertIsInstance(packed_low_assign.value, SemanticCallExpr)
+                self.assertEqual(packed_low_assign.value.namespace, "pto")
+                self.assertEqual(packed_low_assign.value.name, "vpack")
+                self.assertEqual(packed_low_assign.value.args[0].binding.name, lower_result_name)
+
+                packed_high_assign = _find_last_helper_assign_by_name(helper, "packed_high")
+                self.assertIsInstance(packed_high_assign.value, SemanticCallExpr)
+                self.assertEqual(packed_high_assign.value.namespace, "pto")
+                self.assertEqual(packed_high_assign.value.name, "vpack")
+                self.assertEqual(packed_high_assign.value.args[0].binding.name, higher_result_name)
+
+                packed_result_assign = _find_last_helper_assign_by_name(helper, packed_result_name)
+                self.assertIsInstance(packed_result_assign.value, SemanticCallExpr)
+                self.assertEqual(packed_result_assign.value.namespace, "pto")
+                self.assertEqual(packed_result_assign.value.name, packed_result_op)
+                if packed_result_op == "vor":
+                    combined_expr = packed_result_assign.value
+                else:
+                    self.assertIsInstance(packed_result_assign.value.args[0], SemanticCallExpr)
+                    combined_expr = packed_result_assign.value.args[0]
+                    self.assertEqual(combined_expr.namespace, "pto")
+                    self.assertEqual(combined_expr.name, "vor")
+                self.assertEqual(combined_expr.args[0].binding.name, "packed_low")
+                self.assertEqual(combined_expr.args[1].binding.name, "packed_high")
+                self.assertEqual(combined_expr.args[2].binding.name, "full_mask_b8")
+
+    def test_integer_divmod_rewrite_uses_injected_internal_helpers(self) -> None:
+        @pto.vkernel(op="divmod_internal_helper_injection_unique", dtypes=[(pto.i32, pto.i32)])
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            mask = pto.make_mask(pto.i32, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            quot = pto.vdiv(vec, vec, mask)
+            rem = pto.vmod(vec, vec, mask)
+            pto.vsts(quot, dst, 0, mask)
+            pto.vsts(rem, dst, 1, mask)
+            return None
+
+        self.assertNotIn("vdiv", kernel.py_fn.__globals__)
+        self.assertNotIn("vmod", kernel.py_fn.__globals__)
+        self.assertNotIn("_tl_soft_vdiv_i32", kernel.inline_procs)
+        self.assertNotIn("_tl_soft_vmod_i32", kernel.inline_procs)
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        )
+        frontend_kernel = build_frontend_kernel_node(specialized)
+
+        self.assertEqual({proc.name for proc in frontend_kernel.inline_procs}, set())
+        internal_names = {proc.name for proc in frontend_kernel.internal_inline_procs}
+        self.assertIn("_tl_soft_vdiv", internal_names)
+        self.assertIn("_tl_soft_vmod", internal_names)
+        self.assertIn("_tl_soft_vdiv_i32", internal_names)
+        self.assertIn("_tl_soft_vmod_i32", internal_names)
+
+        semantic_kernel = analyze_frontend_kernel(frontend_kernel)
+        helper_symbols = {helper.symbol_name for helper in semantic_kernel.inline_helpers}
+        self.assertTrue(any(name.startswith("__tl_inline__tl_soft_vdiv_") for name in helper_symbols))
+        self.assertTrue(any(name.startswith("__tl_inline__tl_soft_vmod_") for name in helper_symbols))
+
+    def test_internal_vdiv_helper_name_is_not_public_surface(self) -> None:
+        with self.assertRaises(pto.TileLangFrontendError) as ctx:
+
+            @pto.vkernel(op="internal_vdiv_helper_reject_unique", dtypes=[(pto.i32, pto.i32)])
+            def kernel(dst: pto.Tile, src: pto.Tile):
+                mask = pto.make_mask(pto.i32, pto.PAT.ALL)
+                vec = pto.vlds(src, 0)
+                out = _tl_soft_vdiv_i32(vec, vec, mask)
+                pto.vsts(out, dst, 0, mask)
+                return None
+
+        self.assertIn(
+            "arbitrary external call `_tl_soft_vdiv_i32` is not supported in TileLang DSL v1",
+            str(ctx.exception),
+        )
+
+    def test_internal_vmod_helper_name_is_not_public_surface(self) -> None:
+        with self.assertRaises(pto.TileLangFrontendError) as ctx:
+
+            @pto.vkernel(op="internal_vmod_helper_reject_unique", dtypes=[(pto.i32, pto.i32)])
+            def kernel(dst: pto.Tile, src: pto.Tile):
+                mask = pto.make_mask(pto.i32, pto.PAT.ALL)
+                vec = pto.vlds(src, 0)
+                out = _tl_soft_vmod_i32(vec, vec, mask)
+                pto.vsts(out, dst, 0, mask)
+                return None
+
+        self.assertIn(
+            "arbitrary external call `_tl_soft_vmod_i32` is not supported in TileLang DSL v1",
+            str(ctx.exception),
+        )
 
     def test_inline_proc_and_pto_surface_can_share_basename(self) -> None:
         @pto.inline_proc

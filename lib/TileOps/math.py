@@ -10,7 +10,55 @@ import tilelang_dsl as pto
 
 
 @pto.inline_proc
-def _vdiv_u16(vec, scalar_vec, mask):
+def _tl_soft_vdiv_u8(vec, scalar_vec, mask):
+    zero = pto.ui8(0)
+    zero_q = pto.ui8(0xFF)
+    full_mask_b8 = pto.pset_b8(pto.PAT.ALL)
+
+    zero_mask = pto.vcmps(scalar_vec, zero, mask, pto.CmpMode.EQ)
+    active_mask = pto.pnot(zero_mask, mask)
+    active_low = pto.punpack(active_mask, pto.PredicatePart.LOWER)
+    active_high = pto.punpack(active_mask, pto.PredicatePart.HIGHER)
+
+    vec_low = pto.vzunpack(vec, 0)
+    vec_high = pto.vzunpack(vec, 1)
+    scalar_low = pto.vzunpack(scalar_vec, 0)
+    scalar_high = pto.vzunpack(scalar_vec, 1)
+
+    q_low = _tl_soft_vdiv_u16(vec_low, scalar_low, active_low)
+    q_high = _tl_soft_vdiv_u16(vec_high, scalar_high, active_high)
+    packed_low = pto.vpack(q_low, pto.PredicatePart.LOWER)
+    packed_high = pto.vpack(q_high, pto.PredicatePart.HIGHER)
+    q = pto.vor(packed_low, packed_high, full_mask_b8)
+    return pto.vsel(pto.vbr(zero_q), q, zero_mask)
+
+
+@pto.inline_proc
+def _tl_soft_vdiv_i8(vec, scalar_vec, mask):
+    zero = pto.i8(0)
+    neg_one = pto.i8(-1)
+    full_mask_b8 = pto.pset_b8(pto.PAT.ALL)
+
+    zero_mask = pto.vcmps(scalar_vec, zero, mask, pto.CmpMode.EQ)
+    active_mask = pto.pnot(zero_mask, mask)
+    active_low = pto.punpack(active_mask, pto.PredicatePart.LOWER)
+    active_high = pto.punpack(active_mask, pto.PredicatePart.HIGHER)
+
+    vec_low = pto.vsunpack(vec, 0)
+    vec_high = pto.vsunpack(vec, 1)
+    scalar_low = pto.vsunpack(scalar_vec, 0)
+    scalar_high = pto.vsunpack(scalar_vec, 1)
+
+    q_low = _tl_soft_vdiv_i16(vec_low, scalar_low, active_low)
+    q_high = _tl_soft_vdiv_i16(vec_high, scalar_high, active_high)
+    packed_low = pto.vpack(q_low, pto.PredicatePart.LOWER)
+    packed_high = pto.vpack(q_high, pto.PredicatePart.HIGHER)
+    q = pto.vbitcast(pto.vor(packed_low, packed_high, full_mask_b8), pto.i8)
+    return pto.vsel(pto.vbr(neg_one), q, zero_mask)
+
+
+@pto.inline_proc
+def _tl_soft_vdiv_u16(vec, scalar_vec, mask):
     zero = pto.ui16(0)
     one = pto.ui16(1)
     fp32_one = pto.f32(1.0)
@@ -75,12 +123,7 @@ def _vdiv_u16(vec, scalar_vec, mask):
 
 
 @pto.inline_proc
-def vdiv_u16(vec, scalar_vec, mask):
-    return _vdiv_u16(vec, scalar_vec, mask)
-
-
-@pto.inline_proc
-def vdiv_i16(vec, scalar_vec, mask):
+def _tl_soft_vdiv_i16(vec, scalar_vec, mask):
     zero = pto.i16(0)
     neg_one = pto.i16(-1)
 
@@ -92,14 +135,62 @@ def vdiv_i16(vec, scalar_vec, mask):
     x_xor_y = pto.vxor(vec, scalar_vec, active_mask)
     p_pos = pto.vcmps(x_xor_y, zero, active_mask, pto.CmpMode.GE)
 
-    q_abs = _vdiv_u16(abs_x, abs_y, active_mask)
+    q_abs = _tl_soft_vdiv_u16(abs_x, abs_y, active_mask)
     neg_q = pto.vneg(pto.vbitcast(q_abs, pto.i16), active_mask)
     q = pto.vsel(pto.vbitcast(q_abs, pto.i16), neg_q, p_pos)
     return pto.vsel(pto.vbr(neg_one), q, zero_mask)
 
 
 @pto.inline_proc
-def vmod_u16(vec, scalar_vec, mask):
+def _tl_soft_vmod_u8(vec, scalar_vec, mask):
+    zero = pto.ui8(0)
+    zero_r = pto.ui8(0xFF)
+    full_mask_b8 = pto.pset_b8(pto.PAT.ALL)
+
+    zero_mask = pto.vcmps(scalar_vec, zero, mask, pto.CmpMode.EQ)
+    active_mask = pto.pnot(zero_mask, mask)
+    active_low = pto.punpack(active_mask, pto.PredicatePart.LOWER)
+    active_high = pto.punpack(active_mask, pto.PredicatePart.HIGHER)
+
+    vec_low = pto.vzunpack(vec, 0)
+    vec_high = pto.vzunpack(vec, 1)
+    scalar_low = pto.vzunpack(scalar_vec, 0)
+    scalar_high = pto.vzunpack(scalar_vec, 1)
+
+    r_low = _tl_soft_vmod_u16(vec_low, scalar_low, active_low)
+    r_high = _tl_soft_vmod_u16(vec_high, scalar_high, active_high)
+    packed_low = pto.vpack(r_low, pto.PredicatePart.LOWER)
+    packed_high = pto.vpack(r_high, pto.PredicatePart.HIGHER)
+    r = pto.vor(packed_low, packed_high, full_mask_b8)
+    return pto.vsel(pto.vbr(zero_r), r, zero_mask)
+
+
+@pto.inline_proc
+def _tl_soft_vmod_i8(vec, scalar_vec, mask):
+    zero = pto.i8(0)
+    neg_one = pto.i8(-1)
+    full_mask_b8 = pto.pset_b8(pto.PAT.ALL)
+
+    zero_mask = pto.vcmps(scalar_vec, zero, mask, pto.CmpMode.EQ)
+    active_mask = pto.pnot(zero_mask, mask)
+    active_low = pto.punpack(active_mask, pto.PredicatePart.LOWER)
+    active_high = pto.punpack(active_mask, pto.PredicatePart.HIGHER)
+
+    vec_low = pto.vsunpack(vec, 0)
+    vec_high = pto.vsunpack(vec, 1)
+    scalar_low = pto.vsunpack(scalar_vec, 0)
+    scalar_high = pto.vsunpack(scalar_vec, 1)
+
+    r_low = _tl_soft_vmod_i16(vec_low, scalar_low, active_low)
+    r_high = _tl_soft_vmod_i16(vec_high, scalar_high, active_high)
+    packed_low = pto.vpack(r_low, pto.PredicatePart.LOWER)
+    packed_high = pto.vpack(r_high, pto.PredicatePart.HIGHER)
+    r = pto.vbitcast(pto.vor(packed_low, packed_high, full_mask_b8), pto.i8)
+    return pto.vsel(pto.vbr(neg_one), r, zero_mask)
+
+
+@pto.inline_proc
+def _tl_soft_vmod_u16(vec, scalar_vec, mask):
     zero = pto.ui16(0)
     one = pto.ui16(1)
     zero_r = pto.ui16(0xFFFF)
@@ -164,7 +255,7 @@ def vmod_u16(vec, scalar_vec, mask):
 
 
 @pto.inline_proc
-def vdiv_u32(vec, scalar_vec, mask):
+def _tl_soft_vdiv_u32(vec, scalar_vec, mask):
     zero = pto.ui32(0)
     one = pto.ui32(1)
     zero_q = pto.ui32(0xFFFFFFFF)
@@ -225,7 +316,7 @@ def vdiv_u32(vec, scalar_vec, mask):
 
 
 @pto.inline_proc
-def vmod_i16(vec, scalar_vec, mask):
+def _tl_soft_vmod_i16(vec, scalar_vec, mask):
     zero = pto.i16(0)
     neg_one = pto.i16(-1)
 
@@ -237,7 +328,7 @@ def vmod_i16(vec, scalar_vec, mask):
     x_xor_y = pto.vxor(vec, scalar_vec, active_mask)
     p_pos = pto.vcmps(x_xor_y, zero, active_mask, pto.CmpMode.GE)
 
-    q_abs = _vdiv_u16(abs_x, abs_y, active_mask)
+    q_abs = _tl_soft_vdiv_u16(abs_x, abs_y, active_mask)
     neg_q = pto.vneg(pto.vbitcast(q_abs, pto.i16), active_mask)
     q = pto.vsel(pto.vbitcast(q_abs, pto.i16), neg_q, p_pos)
 
@@ -255,7 +346,7 @@ def vmod_i16(vec, scalar_vec, mask):
 
 
 @pto.inline_proc
-def vdiv_i32(vec, scalar_vec, mask):
+def _tl_soft_vdiv_i32(vec, scalar_vec, mask):
     zero = pto.i32(0)
     neg_one = pto.i32(-1)
     fp32_one = pto.f32(1.0)
@@ -322,7 +413,7 @@ def vdiv_i32(vec, scalar_vec, mask):
 
 
 @pto.inline_proc
-def vmod_u32(vec, scalar_vec, mask):
+def _tl_soft_vmod_u32(vec, scalar_vec, mask):
     zero = pto.ui32(0)
     one = pto.ui32(1)
     zero_r = pto.ui32(0xFFFFFFFF)
@@ -383,7 +474,7 @@ def vmod_u32(vec, scalar_vec, mask):
 
 
 @pto.inline_proc
-def vmod_i32(vec, scalar_vec, mask):
+def _tl_soft_vmod_i32(vec, scalar_vec, mask):
     zero = pto.i32(0)
     neg_one = pto.i32(-1)
     fp32_one = pto.f32(1.0)
@@ -460,26 +551,34 @@ def vmod_i32(vec, scalar_vec, mask):
 
 
 @pto.inline_proc
-def vmod(vec, scalar_vec, mask, dtype):
-    if pto.constexpr(dtype == pto.ui16):
-        result = vmod_u16(vec, scalar_vec, mask)
+def _tl_soft_vmod(vec, scalar_vec, mask, dtype):
+    if pto.constexpr(dtype == pto.ui8):
+        result = _tl_soft_vmod_u8(vec, scalar_vec, mask)
+    elif pto.constexpr(dtype == pto.i8):
+        result = _tl_soft_vmod_i8(vec, scalar_vec, mask)
+    elif pto.constexpr(dtype == pto.ui16):
+        result = _tl_soft_vmod_u16(vec, scalar_vec, mask)
     elif pto.constexpr(dtype == pto.i16):
-        result = vmod_i16(vec, scalar_vec, mask)
+        result = _tl_soft_vmod_i16(vec, scalar_vec, mask)
     elif pto.constexpr(dtype == pto.ui32):
-        result = vmod_u32(vec, scalar_vec, mask)
+        result = _tl_soft_vmod_u32(vec, scalar_vec, mask)
     else:
-        result = vmod_i32(vec, scalar_vec, mask)
+        result = _tl_soft_vmod_i32(vec, scalar_vec, mask)
     return result
 
 
 @pto.inline_proc
-def vdiv(vec, scalar_vec, mask, dtype):
-    if pto.constexpr(dtype == pto.ui16):
-        result = vdiv_u16(vec, scalar_vec, mask)
+def _tl_soft_vdiv(vec, scalar_vec, mask, dtype):
+    if pto.constexpr(dtype == pto.ui8):
+        result = _tl_soft_vdiv_u8(vec, scalar_vec, mask)
+    elif pto.constexpr(dtype == pto.i8):
+        result = _tl_soft_vdiv_i8(vec, scalar_vec, mask)
+    elif pto.constexpr(dtype == pto.ui16):
+        result = _tl_soft_vdiv_u16(vec, scalar_vec, mask)
     elif pto.constexpr(dtype == pto.i16):
-        result = vdiv_i16(vec, scalar_vec, mask)
+        result = _tl_soft_vdiv_i16(vec, scalar_vec, mask)
     elif pto.constexpr(dtype == pto.ui32):
-        result = vdiv_u32(vec, scalar_vec, mask)
+        result = _tl_soft_vdiv_u32(vec, scalar_vec, mask)
     else:
-        result = vdiv_i32(vec, scalar_vec, mask)
+        result = _tl_soft_vdiv_i32(vec, scalar_vec, mask)
     return result

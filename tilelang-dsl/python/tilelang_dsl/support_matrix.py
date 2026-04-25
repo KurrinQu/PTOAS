@@ -113,6 +113,7 @@ SUPPORTED_VECSCOPE_PTO_CALLS = frozenset(
         "vsub",
         "vmul",
         "vdiv",
+        "vmod",
         "vmax",
         "vmin",
         "vand",

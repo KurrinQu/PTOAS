@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import inspect
 import ast
+import importlib.util
 import sys
 import subprocess
 import tempfile
@@ -54,6 +55,7 @@ from .support_matrix import (
 
 _UNSET = object()
 _PTOAS_BIN_ENV = "PTOAS_BIN"
+_INTERNAL_SOFT_MATH_MODULE_NAME = "tilelang_dsl._internal_soft_math"
 _SUPPORTED_TEMPLATE_PTO_CALLS = frozenset(
     SUPPORTED_TOPLEVEL_PTO_CALLS
     | SUPPORTED_VECSCOPE_PTO_CALLS
@@ -85,6 +87,7 @@ _DSL_DTYPE_NAMES = frozenset(
 
 
 _INLINE_PROC_REGISTRY: dict[tuple[str, str], "InlineProcDescriptor"] = {}
+_INTERNAL_INLINE_PROC_CACHE: tuple[tuple[str, "InlineProcDescriptor"], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -203,6 +206,45 @@ def _collect_inline_procs(module_name: str) -> tuple[tuple[str, InlineProcDescri
                     collected.setdefault(helper_name, helper)
 
     return tuple(sorted(collected.items(), key=lambda item: item[0]))
+
+
+def _load_module_from_path(module_name: str, path: Path) -> Any:
+    module = sys.modules.get(module_name)
+    if module is not None:
+        return module
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"unable to load module {module_name!r} from {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _collect_internal_inline_procs() -> tuple[tuple[str, InlineProcDescriptor], ...]:
+    global _INTERNAL_INLINE_PROC_CACHE
+    if _INTERNAL_INLINE_PROC_CACHE is not None:
+        return _INTERNAL_INLINE_PROC_CACHE
+
+    repo_root = Path(__file__).resolve().parents[3]
+    soft_math_path = repo_root / "lib" / "TileOps" / "math.py"
+    if not soft_math_path.exists():
+        _INTERNAL_INLINE_PROC_CACHE = ()
+        return _INTERNAL_INLINE_PROC_CACHE
+
+    try:
+        module = _load_module_from_path(_INTERNAL_SOFT_MATH_MODULE_NAME, soft_math_path)
+    except Exception:
+        _INTERNAL_INLINE_PROC_CACHE = ()
+        return _INTERNAL_INLINE_PROC_CACHE
+
+    collected: dict[str, InlineProcDescriptor] = {}
+    for symbol, value in vars(module).items():
+        if isinstance(value, InlineProcDescriptor):
+            collected.setdefault(symbol, value)
+
+    _INTERNAL_INLINE_PROC_CACHE = tuple(sorted(collected.items(), key=lambda item: item[0]))
+    return _INTERNAL_INLINE_PROC_CACHE
 
 
 def _register_inline_proc(descriptor: InlineProcDescriptor) -> InlineProcDescriptor:
@@ -847,6 +889,7 @@ class VKernelDescriptor:
     priority: int = 0
     _templates: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = field(default=(), repr=False)
     _inline_procs: tuple[tuple[str, InlineProcDescriptor], ...] = field(default=(), repr=False)
+    _internal_inline_procs: tuple[tuple[str, InlineProcDescriptor], ...] = field(default=(), repr=False)
     _selected_op: str | None = None
     _selected_dtype_signature: tuple[ScalarType | MaskType, ...] | None = None
     _parameters: tuple[BoundKernelParameter, ...] | None = field(default=None, repr=False)
@@ -879,6 +922,10 @@ class VKernelDescriptor:
     @property
     def inline_procs(self) -> dict[str, InlineProcDescriptor]:
         return {name: descriptor for name, descriptor in self._inline_procs}
+
+    @property
+    def internal_inline_procs(self) -> dict[str, InlineProcDescriptor]:
+        return {name: descriptor for name, descriptor in self._internal_inline_procs}
 
     @property
     def dtype_signature(self) -> tuple[ScalarType | MaskType, ...]:
@@ -954,6 +1001,7 @@ class VKernelDescriptor:
             priority=self.priority,
             _templates=self._templates,
             _inline_procs=self._inline_procs,
+            _internal_inline_procs=self._internal_inline_procs,
             _selected_op=self._selected_op,
             _selected_dtype_signature=self._selected_dtype_signature,
             _parameters=self._parameters,
@@ -980,6 +1028,7 @@ class VKernelDescriptor:
             priority=self.priority,
             _templates=self._templates,
             _inline_procs=self._inline_procs,
+            _internal_inline_procs=self._internal_inline_procs,
             _selected_op=self._selected_op,
             _selected_dtype_signature=dtype_signature,
             _parameters=bound_parameters,
@@ -1009,6 +1058,7 @@ class VKernelDescriptor:
             priority=self.priority,
             _templates=self._templates,
             _inline_procs=self._inline_procs,
+            _internal_inline_procs=self._internal_inline_procs,
             _selected_op=normalized_op,
             _selected_dtype_signature=self._selected_dtype_signature,
             _parameters=self._parameters,
@@ -1050,6 +1100,7 @@ class VKernelDescriptor:
             priority=self.priority,
             _templates=self._templates,
             _inline_procs=self._inline_procs,
+            _internal_inline_procs=self._internal_inline_procs,
             _selected_op=self._selected_op,
             _selected_dtype_signature=self._selected_dtype_signature,
             _parameters=self._parameters,
@@ -2121,6 +2172,7 @@ def _build_descriptor(
     source_info = _load_function_source_info(py_fn)
     advanced_enabled = _validate_advanced(advanced)
     inline_procs = _collect_inline_procs(py_fn.__module__)
+    internal_inline_procs = _collect_internal_inline_procs()
     _validate_function_body(
         source_info,
         advanced_enabled=advanced_enabled,
@@ -2157,6 +2209,7 @@ def _build_descriptor(
         priority=_validate_priority(priority),
         _templates=frozen_templates,
         _inline_procs=inline_procs,
+        _internal_inline_procs=internal_inline_procs,
         _selected_op=selected_op,
         _selected_dtype_signature=selected_dtype_signature,
         _parameters=bound_parameters,

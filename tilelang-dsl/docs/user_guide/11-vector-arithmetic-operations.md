@@ -428,6 +428,12 @@ sum_vec = pto.vadd(vec_a, vec_b, mask32)
 
 **Description**: Element-wise division of two vectors.
 
+- Supported element types are the 8/16/32-bit integer families (`i*`, `si*`, `ui*`) plus `f16` and `f32`.
+- `f16`/`f32` authoring code stays on the public `pto.vdiv` VPTO path.
+- Integer `pto.vdiv` also uses the same public surface, but lowers through an internal soft-helper path.
+- For `i8`/`ui8`, the integer lowering widens to 16-bit lanes, computes the soft division, then narrows back to 8-bit lanes.
+- Internal helper names such as `_tl_soft_vdiv_*` are implementation details and are not part of the supported DSL call surface.
+
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -439,6 +445,28 @@ sum_vec = pto.vadd(vec_a, vec_b, mask32)
 | Return Value | Type | Description |
 |--------------|------|-------------|
 | `result` | `VRegType` | Quotient of vectors |
+
+#### `pto.vmod(vec1: VRegType, vec2: VRegType, mask: MaskType) -> VRegType`
+
+**Description**: Element-wise modulo of two vectors.
+
+- Supported element types are the 8/16/32-bit integer families (`i*`, `si*`, `ui*`).
+- Floating-point `vmod` is not part of the current TileLang DSL v1 public surface.
+- `pto.vmod` is the only public vector modulo entry point in TileLang DSL v1.
+- The current implementation lowers through an internal soft-helper path; helper names such as `_tl_soft_vmod_*` are intentionally hidden implementation details.
+- For `i8`/`ui8`, the modulo path uses an explicit widen-to-16-bit, soft-compute, narrow-back-to-8-bit profile.
+
+**Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `vec1` | `VRegType` | Dividend vector |
+| `vec2` | `VRegType` | Divisor vector |
+| `mask` | `MaskType` | Predicate mask |
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Remainder vector |
 
 #### `pto.vmax(vec1: VRegType, vec2: VRegType, mask: MaskType) -> VRegType`
 

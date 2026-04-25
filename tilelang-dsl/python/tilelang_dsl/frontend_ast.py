@@ -206,6 +206,7 @@ class FrontendKernelNode:
     body: tuple[FrontendStmtNode, ...]
     context_attrs: tuple[tuple[str, Any], ...] = ()
     inline_procs: tuple[FrontendInlineProcNode, ...] = ()
+    internal_inline_procs: tuple[FrontendInlineProcNode, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1415,6 +1416,9 @@ def build_frontend_kernel_node(descriptor: Any) -> FrontendKernelNode:
         local_bindings=local_bindings,
     )
     sorted_inline_procs = tuple(sorted(descriptor.inline_procs.items(), key=lambda item: item[0]))
+    sorted_internal_inline_procs = tuple(
+        sorted(descriptor.internal_inline_procs.items(), key=lambda item: item[0])
+    )
     context = _FrontendBuildContext(
         source_info=source_info,
         module_globals=getattr(descriptor._py_fn, "__globals__", None),
@@ -1518,6 +1522,82 @@ def build_frontend_kernel_node(descriptor: Any) -> FrontendKernelNode:
         inline_proc_source_infos,
     )
 
+    internal_inline_proc_nodes: tuple[FrontendInlineProcNode, ...] = ()
+    if sorted_internal_inline_procs:
+        merged_inline_proc_descriptors = {
+            name: _FrontendInlineProc(
+                name=name,
+                source_info=proc.source_info,
+                signature=proc.signature,
+            )
+            for name, proc in (*sorted_inline_procs, *sorted_internal_inline_procs)
+        }
+        internal_context = _FrontendBuildContext(
+            source_info=source_info,
+            module_globals=getattr(descriptor._py_fn, "__globals__", None),
+            templates=descriptor.templates,
+            selected_op=descriptor.selected_op,
+            advanced_enabled=descriptor.advanced_enabled,
+            inline_procs=merged_inline_proc_descriptors,
+            global_literal_constants=global_literal_constants,
+            local_bindings=local_bindings,
+        )
+        internal_nodes: list[FrontendInlineProcNode] = []
+        internal_source_infos: dict[str, Any] = {}
+        for name, inline_proc_descriptor in sorted_internal_inline_procs:
+            inline_source = inline_proc_descriptor.source_info
+            if inline_source is None:
+                if source_info is not None:
+                    raise context.error(
+                        source_info.function_def,
+                        f"inline_proc `{name}` requires source-visible Python functions",
+                    )
+                raise ValueError(
+                    f"inline_proc `{name}` requires source-visible Python functions"
+                )
+            internal_source_infos[name] = inline_source
+            helper_context = internal_context.enter_inline_proc(name, inline_source)
+            helper_body = _build_stmt_list(inline_source.function_def.body, helper_context)
+            parameter_specs = _inline_proc_param_specs(
+                _FrontendInlineProc(
+                    name=name,
+                    source_info=inline_source,
+                    signature=inline_proc_descriptor.signature,
+                )
+            )
+            inline_proc_node = FrontendInlineProcNode(
+                name=name,
+                parameters=tuple(
+                    FrontendInlineProcParameterNode(
+                        name=param_name,
+                        annotation=arg.annotation,
+                        default=None
+                        if default_node is None
+                        else _build_expr(default_node, helper_context),
+                    )
+                    for (param_name, default_node), arg in zip(
+                        parameter_specs,
+                        inline_source.function_def.args.args,
+                    )
+                ),
+                body=helper_body,
+            )
+            internal_nodes.append(inline_proc_node)
+
+        internal_inline_proc_nodes = tuple(internal_nodes)
+        for inline_proc_node in internal_inline_proc_nodes:
+            source = internal_source_infos[inline_proc_node.name]
+            helper_context = internal_context.enter_inline_proc(inline_proc_node.name, source)
+            assigned_names: set[str] = set()
+            param_names = {parameter.name for parameter in inline_proc_node.parameters}
+            for stmt in inline_proc_node.body:
+                _validate_inline_capture(
+                    stmt,
+                    param_names,
+                    assigned_names,
+                    context=helper_context,
+                )
+
     return FrontendKernelNode(
         target=descriptor.target,
         op=descriptor.op,
@@ -1532,6 +1612,7 @@ def build_frontend_kernel_node(descriptor: Any) -> FrontendKernelNode:
             sorted(descriptor.constraint_context_attrs.items(), key=lambda item: item[0])
         ),
         inline_procs=reachable_inline_proc_nodes,
+        internal_inline_procs=internal_inline_proc_nodes,
     )
 
 
