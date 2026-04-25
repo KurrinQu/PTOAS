@@ -26,9 +26,6 @@ namespace mlir::pto {
 
 struct VPTOEmissionOptions {
   bool dumpVPTOIR = false;
-  bool printIntrinsicSelections = false;
-  bool allowUnresolved = true;
-  std::string unresolvedReportPath;
   std::string targetTriple;
   std::string march;
   std::string aicoreArch;
