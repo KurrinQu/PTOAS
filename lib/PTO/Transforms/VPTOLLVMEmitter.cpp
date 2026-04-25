@@ -1916,6 +1916,12 @@ static FailureOr<StringRef> buildCopyGmToUbCallee(MLIRContext *context,
   if (!ptrType)
     return failure();
   Type elementType = ptrType.getElementType();
+  if ((isa<IntegerType>(elementType) &&
+       cast<IntegerType>(elementType).getWidth() == 64) ||
+      elementType.isF64()) {
+    return StringAttr::get(context, "llvm.hivm.MOV.OUT.TO.UB.ALIGN.V2.s32.DV")
+        .getValue();
+  }
   std::string elem = getCopyElementFragment(elementType);
   if (elem.empty())
     return failure();

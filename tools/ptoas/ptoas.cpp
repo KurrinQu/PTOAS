@@ -286,11 +286,6 @@ static llvm::cl::opt<std::string> ptoSeamIRFile(
     llvm::cl::value_desc("path"),
     llvm::cl::init(""));
 
-static llvm::cl::opt<bool> vptoPrintIntrinsics(
-    "vpto-print-intrinsics",
-    llvm::cl::desc("Print VPTO intrinsic selection decisions to stderr"),
-    llvm::cl::init(false));
-
 static llvm::cl::opt<bool> vptoEmitHIVMOfficialLLVM(
     "vpto-emit-hivm-llvm",
     llvm::cl::desc("After lowering to VPTO IR, emit textual LLVM/HIVM via "
@@ -303,16 +298,6 @@ static llvm::cl::opt<bool> vptoEmitHIVMOfficialBitcode(
                    "official LLVM dialect export path"),
     llvm::cl::init(false));
 
-static llvm::cl::opt<bool> vptoAllowUnresolved(
-    "vpto-allow-unresolved",
-    llvm::cl::desc("Emit explicit unresolved VPTO comments instead of failing"),
-    llvm::cl::init(false));
-
-static llvm::cl::opt<std::string> vptoUnresolvedReport(
-    "vpto-unresolved-report",
-    llvm::cl::desc("Write unresolved VPTO mappings to a sidecar report"),
-    llvm::cl::value_desc("path"), llvm::cl::init(""));
-
 static llvm::cl::opt<std::string> vptoMarch(
     "vpto-march",
     llvm::cl::desc("Bisheng -march for VPTO HIVM LLVM emission (default: "
@@ -324,12 +309,6 @@ static llvm::cl::opt<std::string> vptoCceAicoreArch(
     llvm::cl::desc("Bisheng --cce-aicore-arch for VPTO HIVM target-attribute "
                     "queries (default: same as --vpto-march)."),
     llvm::cl::value_desc("arch"), llvm::cl::init(""));
-
-static llvm::cl::opt<std::string> hivmUnresolvedReport(
-    "hivm-unresolved-report",
-    llvm::cl::desc("Write unresolved HIVM mappings to a sidecar report"),
-    llvm::cl::value_desc("path"),
-    llvm::cl::init(""));
 
 enum class PTOBuildLevel {
   Level1,
@@ -1225,10 +1204,6 @@ static LogicalResult inlineTilelangHelpersOnVPTOInput(ModuleOp module) {
 static pto::VPTOEmissionOptions buildVPTOEmissionOptions() {
   pto::VPTOEmissionOptions options;
   options.dumpVPTOIR = false;
-  options.printIntrinsicSelections = vptoPrintIntrinsics;
-  options.allowUnresolved = vptoAllowUnresolved;
-  options.unresolvedReportPath =
-      !hivmUnresolvedReport.empty() ? hivmUnresolvedReport : vptoUnresolvedReport;
   options.targetTriple = "hiipu64-hisilicon-cce";
 
   const std::string kVecMarch = "dav-c310-vec";
@@ -1358,8 +1333,6 @@ int main(int argc, char **argv) {
 
   if (effectiveBackend != PTOBackend::VPTO &&
       (vptoEmitHIVMOfficialLLVM || vptoEmitHIVMOfficialBitcode || emitVPTO ||
-       vptoPrintIntrinsics || vptoAllowUnresolved ||
-       !vptoUnresolvedReport.empty() || !hivmUnresolvedReport.empty() ||
        ptoPrintSeamIR || !ptoSeamIRFile.empty())) {
     llvm::errs() << "Error: VPTO-specific flags require "
                     "--pto-backend=vpto.\n";
