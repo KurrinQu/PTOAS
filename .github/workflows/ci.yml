@@ -96,7 +96,8 @@ jobs:
   build-and-test:
     runs-on: ubuntu-22.04
     env:
-      LLVM_COMMIT: cd708029e0b2869e80abe31ddb175f7c35361f90
+      LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
+      LLVM_REF: feature-vpto
       LLVM_DIR: ${{ github.workspace }}/llvm-project/llvm/build-shared
       PTO_INSTALL_DIR: ${{ github.workspace }}/install
       MLIR_PYTHONPATH: ${{ github.workspace }}/llvm-project/llvm/build-shared/tools/mlir/python_packages/mlir_core
@@ -138,6 +139,17 @@ jobs:
           mkdir -p "${PAYLOAD_DIR}/test/npu_validation/scripts"
           mkdir -p "${PAYLOAD_DIR}/test/npu_validation/templates"
 
+      - name: Resolve LLVM source SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          LLVM_SOURCE_SHA="$(git ls-remote "${LLVM_REPO}" "refs/heads/${LLVM_REF}" | awk '{print $1}')"
+          [[ -n "${LLVM_SOURCE_SHA}" ]] || {
+            echo "ERROR: failed to resolve ${LLVM_REPO} ${LLVM_REF}" >&2
+            exit 1
+          }
+          echo "LLVM_SOURCE_SHA=${LLVM_SOURCE_SHA}" >> "${GITHUB_ENV}"
+
       # 先恢复 LLVM build 缓存
       - name: Restore LLVM build cache
         id: cache-llvm
@@ -145,7 +157,7 @@ jobs:
         with:
           path: |
             llvm-project/llvm/build-shared
-          key: llvm-${{ runner.os }}-${{ env.LLVM_COMMIT }}-shared-mlirpy-hardening-v2
+          key: llvm-${{ runner.os }}-${{ env.LLVM_SOURCE_SHA }}-shared-mlirpy-hardening-v2
 
       - name: Prepare LLVM source (no rebuild)
         run: |
@@ -155,14 +167,14 @@ jobs:
           # 如果 restore 只带来了 build-shared，这里补一个 git repo
           if [ ! -d .git ]; then
             git init
-            git remote add origin https://github.com/llvm/llvm-project.git
+            git remote add origin "${LLVM_REPO}"
           fi
 
-          git fetch --depth 1 origin tag llvmorg-19.1.7
-          git checkout "${LLVM_COMMIT}"
+          git remote set-url origin "${LLVM_REPO}"
+          git fetch --depth 1 origin "${LLVM_REF}"
+          git checkout --force FETCH_HEAD
 
-      - name: Build LLVM/MLIR (only if cache miss)
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
+      - name: Build LLVM/MLIR
         run: |
           cd llvm-project
           cmake -C "${GITHUB_WORKSPACE}/cmake/LinuxHardeningCache.cmake" -G Ninja -S llvm -B llvm/build-shared \
@@ -183,7 +195,7 @@ jobs:
         with:
           path: |
             llvm-project/llvm/build-shared
-          key: llvm-${{ runner.os }}-${{ env.LLVM_COMMIT }}-shared-mlirpy-hardening-v2
+          key: llvm-${{ runner.os }}-${{ env.LLVM_SOURCE_SHA }}-shared-mlirpy-hardening-v2
 
       - name: Build PTOAS
         run: |
@@ -278,7 +290,8 @@ jobs:
         github.event_name == 'pull_request'
       }}
     env:
-      LLVM_COMMIT: cd708029e0b2869e80abe31ddb175f7c35361f90
+      LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
+      LLVM_REF: feature-vpto
       VPTO_SIM_WORKSPACE: ${{ github.workspace }}/.work/vpto-sim-ci
       TILELANG_DSL_WORKSPACE: ${{ github.workspace }}/.work/tilelang-dsl-ci
       TILELANG_DSL_UT_WORKSPACE: ${{ github.workspace }}/.work/tilelang-dsl-ut-ci
@@ -341,18 +354,6 @@ jobs:
             python3 -m pip install 'pybind11<3' numpy ml-dtypes
           fi
 
-      - name: Detect reusable LLVM build
-        id: detect-llvm-build
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -f "${LLVM_DIR}/lib/cmake/llvm/LLVMConfig.cmake" && \
-                -f "${LLVM_DIR}/lib/cmake/mlir/MLIRConfig.cmake" ]]; then
-            echo "ready=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "ready=false" >> "${GITHUB_OUTPUT}"
-          fi
-
       - name: Clean CI work dirs
         shell: bash
         run: |
@@ -362,7 +363,6 @@ jobs:
           rm -rf "${TILELANG_DSL_WORKSPACE}"
 
       - name: Prepare LLVM source (no rebuild)
-        if: steps.detect-llvm-build.outputs.ready != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -371,14 +371,14 @@ jobs:
 
           if [ ! -d .git ]; then
             git init
-            git remote add origin https://github.com/llvm/llvm-project.git
+            git remote add origin "${LLVM_REPO}"
           fi
 
-          git fetch --depth 1 origin tag llvmorg-19.1.7
-          git checkout "${LLVM_COMMIT}"
+          git remote set-url origin "${LLVM_REPO}"
+          git fetch --depth 1 origin "${LLVM_REF}"
+          git checkout --force FETCH_HEAD
 
-      - name: Build LLVM/MLIR (only if cache miss)
-        if: steps.detect-llvm-build.outputs.ready != 'true'
+      - name: Build LLVM/MLIR
         shell: bash
         run: |
           set -euo pipefail

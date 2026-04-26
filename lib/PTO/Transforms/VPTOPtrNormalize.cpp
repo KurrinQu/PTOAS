@@ -640,6 +640,43 @@ struct ConvertAccStoreUbOperandPattern
   }
 };
 
+struct ConvertLoadOperandToPtrPattern : public OpConversionPattern<pto::PTOLoadOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(pto::PTOLoadOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Value ptr = materializeScalarAccessPtr(adaptor.getPtr(), rewriter, op.getLoc());
+    if (!ptr)
+      return rewriter.notifyMatchFailure(op, "failed to materialize load ptr");
+    if (!isa<pto::PtrType>(ptr.getType()))
+      return rewriter.notifyMatchFailure(op, "expected ptr-form load input");
+
+    rewriter.replaceOpWithNewOp<pto::PTOLoadOp>(op, op.getValue().getType(),
+                                                ptr, adaptor.getOffset());
+    return success();
+  }
+};
+
+struct ConvertStoreOperandToPtrPattern
+    : public OpConversionPattern<pto::PTOStoreOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(pto::PTOStoreOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Value ptr = materializeScalarAccessPtr(adaptor.getPtr(), rewriter, op.getLoc());
+    if (!ptr)
+      return rewriter.notifyMatchFailure(op, "failed to materialize store ptr");
+    if (!isa<pto::PtrType>(ptr.getType()))
+      return rewriter.notifyMatchFailure(op, "expected ptr-form store input");
+
+    rewriter.replaceOpWithNewOp<pto::PTOStoreOp>(op, ptr, adaptor.getOffset(),
+                                                 adaptor.getValue());
+    return success();
+  }
+};
+
 struct ConvertPtrNormalizeUnrealizedCastOp final
     : public OpConversionPattern<UnrealizedConversionCastOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -696,6 +733,10 @@ struct VPTOPtrNormalizePass
       return typeConverter.isSignatureLegal(op.getFunctionType()) &&
              typeConverter.isLegal(&op.getBody());
     });
+    target.addDynamicallyLegalOp<func::CallOp>(
+        [&](func::CallOp op) { return typeConverter.isLegal(op); });
+    target.addDynamicallyLegalOp<func::ReturnOp>(
+        [&](func::ReturnOp op) { return typeConverter.isLegal(op); });
     target.addDynamicallyLegalOp<UnrealizedConversionCastOp>(
         [&](UnrealizedConversionCastOp op) {
           return !hasPtrNormalizeConvertibleType(op->getOperandTypes()) &&
@@ -779,6 +820,10 @@ struct VPTOPtrNormalizePass
       return isa<pto::PtrType>(op.getSource().getType()) &&
              isa<pto::PtrType>(op.getDestination().getType());
     });
+    target.addDynamicallyLegalOp<pto::PTOLoadOp>(
+        [](pto::PTOLoadOp op) { return isa<pto::PtrType>(op.getPtr().getType()); });
+    target.addDynamicallyLegalOp<pto::PTOStoreOp>(
+        [](pto::PTOStoreOp op) { return isa<pto::PtrType>(op.getPtr().getType()); });
     target.addDynamicallyLegalOp<memref::SubViewOp>(
         [](memref::SubViewOp op) { return !needsSubviewPtrConversion(op); });
 
@@ -787,6 +832,8 @@ struct VPTOPtrNormalizePass
                                                          target);
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(patterns,
                                                                    typeConverter);
+    populateCallOpTypeConversionPattern(patterns, typeConverter);
+    populateReturnOpTypeConversionPattern(patterns, typeConverter);
     patterns.add<ConvertTileBufAddrToPtrPattern,
                  ConvertPointerCastToCastPtrPattern, ConvertCastPtrPattern,
                  ConvertBindTileToPtrPattern,
@@ -807,6 +854,8 @@ struct VPTOPtrNormalizePass
                  ConvertAccStoreOperandPattern,
                  ConvertAccStoreGmOperandPattern,
                  ConvertAccStoreUbOperandPattern,
+                 ConvertLoadOperandToPtrPattern,
+                 ConvertStoreOperandToPtrPattern,
                  ConvertPtrNormalizeUnrealizedCastOp>(
         typeConverter, context);
 

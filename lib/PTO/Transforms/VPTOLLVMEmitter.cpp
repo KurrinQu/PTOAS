@@ -14,6 +14,7 @@
 #include "PTO/IR/PTO.h"
 #include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/IR/PTOSyncUtils.h"
+#include "PTO/Transforms/Passes.h"
 
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
@@ -34,6 +35,10 @@
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringSet.h"
+#include "llvm/Bitcode/BitcodeWriter.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -1879,6 +1884,21 @@ StringRef buildRuntimeQueryCallee<pto::GetVms4SrOp>(MLIRContext *context) {
   return StringAttr::get(context, "llvm.hivm.GET.VMS4.SR").getValue();
 }
 
+template <>
+StringRef buildRuntimeQueryCallee<pto::GetTidXOp>(MLIRContext *context) {
+  return StringAttr::get(context, "llvm.hivm.get.TID.X").getValue();
+}
+
+template <>
+StringRef buildRuntimeQueryCallee<pto::GetTidYOp>(MLIRContext *context) {
+  return StringAttr::get(context, "llvm.hivm.get.TID.Y").getValue();
+}
+
+template <>
+StringRef buildRuntimeQueryCallee<pto::GetTidZOp>(MLIRContext *context) {
+  return StringAttr::get(context, "llvm.hivm.get.TID.Z").getValue();
+}
+
 static StringRef buildSprclrCallee(MLIRContext *context) {
   return StringAttr::get(context, "llvm.hivm.sprclr").getValue();
 }
@@ -1889,6 +1909,10 @@ static StringRef buildUnaryConfigCallee(MLIRContext *context);
 template <>
 StringRef buildUnaryConfigCallee<pto::SetCtrlOp>(MLIRContext *context) {
   return StringAttr::get(context, "llvm.hivm.SET.CTRL").getValue();
+}
+
+static StringRef buildStoreVfSimtInfoCallee(MLIRContext *context) {
+  return StringAttr::get(context, "llvm.hivm.store.vfsimt.info").getValue();
 }
 
 static StringRef buildVstarCallee(MLIRContext *context) {
@@ -6573,6 +6597,62 @@ private:
   LoweringState &state;
 };
 
+class LowerStoreVfSimtInfoOpPattern final
+    : public OpConversionPattern<pto::StoreVfSimtInfoOp> {
+public:
+  explicit LowerStoreVfSimtInfoOpPattern(TypeConverter &typeConverter,
+                                         MLIRContext *context,
+                                         LoweringState &state)
+      : OpConversionPattern<pto::StoreVfSimtInfoOp>(typeConverter, context),
+        state(state) {}
+
+  LogicalResult
+  matchAndRewrite(pto::StoreVfSimtInfoOp op,
+                  pto::StoreVfSimtInfoOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value dimZ = adaptor.getDimZ();
+    Value dimY = adaptor.getDimY();
+    Value dimX = adaptor.getDimX();
+    if (!dimZ || !dimY || !dimX)
+      return rewriter.notifyMatchFailure(op, "missing converted SIMT dims");
+
+    auto i64Type = rewriter.getI64Type();
+    auto castToI64 = [&](Value value) -> Value {
+      if (value.getType().isInteger(64))
+        return value;
+      return rewriter.create<arith::ExtUIOp>(loc, i64Type, value).getResult();
+    };
+
+    Value dimZI64 = castToI64(dimZ);
+    Value dimYI64 = castToI64(dimY);
+    Value dimXI64 = castToI64(dimX);
+    Value dimYShift = rewriter.create<arith::ConstantOp>(
+        loc, i64Type, rewriter.getI64IntegerAttr(16));
+    Value dimZShift = rewriter.create<arith::ConstantOp>(
+        loc, i64Type, rewriter.getI64IntegerAttr(32));
+    Value packedDimY =
+        rewriter.create<arith::ShLIOp>(loc, dimYI64, dimYShift).getResult();
+    Value packedDimZ =
+        rewriter.create<arith::ShLIOp>(loc, dimZI64, dimZShift).getResult();
+    Value payload =
+        rewriter.create<arith::OrIOp>(loc, dimXI64, packedDimY).getResult();
+    payload =
+        rewriter.create<arith::OrIOp>(loc, payload, packedDimZ).getResult();
+
+    StringRef calleeName = buildStoreVfSimtInfoCallee(op.getContext());
+    auto funcType = rewriter.getFunctionType(TypeRange{i64Type}, TypeRange{});
+    rewriter.create<func::CallOp>(loc, calleeName, TypeRange{},
+                                  ValueRange{payload});
+    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
 template <typename ConfigOp>
 class LowerNullaryConfigOpPattern final : public OpConversionPattern<ConfigOp> {
 public:
@@ -7089,6 +7169,97 @@ public:
   }
 };
 
+class ConvertPtoLoadOp final : public OpConversionPattern<pto::PTOLoadOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(pto::PTOLoadOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto llvmPtrType = dyn_cast<LLVM::LLVMPointerType>(adaptor.getPtr().getType());
+    if (!llvmPtrType)
+      return rewriter.notifyMatchFailure(op, "expected LLVM pointer operand");
+
+    Type convertedValueType =
+        getTypeConverter()->convertType(op.getValue().getType());
+    if (!convertedValueType)
+      return rewriter.notifyMatchFailure(op, "could not convert load result type");
+
+    Value offset = adaptor.getOffset();
+    if (offset.getType().isIndex())
+      offset = rewriter.create<arith::IndexCastUIOp>(op.getLoc(),
+                                                     rewriter.getI64Type(), offset);
+
+    Value elemPtr = adaptor.getPtr();
+    if (!matchPattern(offset, m_Zero())) {
+      elemPtr = rewriter.create<LLVM::GEPOp>(op.getLoc(), llvmPtrType,
+                                             convertedValueType, adaptor.getPtr(),
+                                             ValueRange{offset});
+    }
+
+    auto getNaturalAlignment = [&](Type type) -> unsigned {
+      unsigned alignBytes = 0;
+      if (auto intType = dyn_cast<IntegerType>(type))
+        alignBytes = llvm::divideCeil(unsigned(intType.getWidth()), 8u);
+      else if (type.isF16() || type.isBF16())
+        alignBytes = 2;
+      else if (type.isF32())
+        alignBytes = 4;
+      else if (type.isF64())
+        alignBytes = 8;
+      return alignBytes;
+    };
+
+    rewriter.replaceOpWithNewOp<LLVM::LoadOp>(
+        op, convertedValueType, elemPtr,
+        getNaturalAlignment(convertedValueType));
+    return success();
+  }
+};
+
+class ConvertPtoStoreOp final : public OpConversionPattern<pto::PTOStoreOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(pto::PTOStoreOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto llvmPtrType = dyn_cast<LLVM::LLVMPointerType>(adaptor.getPtr().getType());
+    if (!llvmPtrType)
+      return rewriter.notifyMatchFailure(op, "expected LLVM pointer operand");
+
+    Value offset = adaptor.getOffset();
+    if (offset.getType().isIndex())
+      offset = rewriter.create<arith::IndexCastUIOp>(op.getLoc(),
+                                                     rewriter.getI64Type(), offset);
+
+    Value elemPtr = adaptor.getPtr();
+    if (!matchPattern(offset, m_Zero())) {
+      elemPtr = rewriter.create<LLVM::GEPOp>(op.getLoc(), llvmPtrType,
+                                             adaptor.getValue().getType(),
+                                             adaptor.getPtr(), ValueRange{offset});
+    }
+
+    auto getNaturalAlignment = [&](Type type) -> unsigned {
+      unsigned alignBytes = 0;
+      if (auto intType = dyn_cast<IntegerType>(type))
+        alignBytes = llvm::divideCeil(unsigned(intType.getWidth()), 8u);
+      else if (type.isF16() || type.isBF16())
+        alignBytes = 2;
+      else if (type.isF32())
+        alignBytes = 4;
+      else if (type.isF64())
+        alignBytes = 8;
+      return alignBytes;
+    };
+
+    rewriter.replaceOpWithNewOp<LLVM::StoreOp>(
+        op, adaptor.getValue(), elemPtr,
+        getNaturalAlignment(adaptor.getValue().getType()));
+    return success();
+  }
+};
+
 class ConvertVPTOTypedCarrierOp final : public ConversionPattern {
 public:
   ConvertVPTOTypedCarrierOp(TypeConverter &typeConverter, MLIRContext *context)
@@ -7189,6 +7360,9 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
                LowerPgeOpPattern<pto::PgeB32Op>,
                LowerRuntimeQueryOpPattern<pto::GetCtrlOp>,
                LowerGetVms4SrOpPattern,
+               LowerRuntimeQueryOpPattern<pto::GetTidXOp>,
+               LowerRuntimeQueryOpPattern<pto::GetTidYOp>,
+               LowerRuntimeQueryOpPattern<pto::GetTidZOp>,
                LowerBinaryI64PureOpPattern<pto::Sbitset0Op>,
                LowerBinaryI64PureOpPattern<pto::Sbitset1Op>,
                LowerSetLoopConfigOpPattern<pto::SetLoop2StrideOutToUbOp>,
@@ -7200,6 +7374,7 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
                LowerSetLoopConfigOpPattern<pto::SetLoop3ParaOp>,
                LowerSetLoopConfigOpPattern<pto::SetChannelParaOp>,
                LowerUnaryI64ConfigOpPattern<pto::SetCtrlOp>,
+               LowerStoreVfSimtInfoOpPattern,
                LowerUnaryConfigOpPattern<pto::SetMovPadValOp>,
                LowerUnaryI64ConfigOpPattern<pto::SetQuantPreOp>,
                LowerUnaryI64ConfigOpPattern<pto::SetReluAlphaOp>,
@@ -7277,7 +7452,8 @@ static void configureVPTOOpLoweringTarget(ConversionTarget &target,
                       pto::GetBufOp, pto::RlsBufOp>();
   target.addIllegalOp<pto::GetBlockIdxOp, pto::GetSubBlockIdxOp,
                       pto::GetBlockNumOp, pto::GetSubBlockNumOp,
-                      pto::GetCtrlOp, pto::GetVms4SrOp>();
+                      pto::GetCtrlOp, pto::GetVms4SrOp, pto::GetTidXOp,
+                      pto::GetTidYOp, pto::GetTidZOp>();
   target.addIllegalOp<pto::SetLoop2StrideOutToUbOp, pto::SetLoop1StrideOutToUbOp,
                       pto::SetLoopSizeOutToUbOp, pto::SetLoop2StrideUbToOutOp,
                       pto::SetLoop1StrideUbToOutOp, pto::SetLoopSizeUbToOutOp,
@@ -7287,6 +7463,7 @@ static void configureVPTOOpLoweringTarget(ConversionTarget &target,
                       pto::SetPadValOutToL1Op, pto::SetReluAlphaOp,
                       pto::SetFixClipReluOp, pto::SetFpcOp,
                       pto::SetAtomicS32Op, pto::SetAtomicS8Op, pto::SetCtrlOp,
+                      pto::StoreVfSimtInfoOp,
                       pto::SetMovPadValOp, pto::SetQuantPreOp>();
   target.addIllegalOp<pto::Sbitset0Op, pto::Sbitset1Op>();
   target.addIllegalOp<pto::VldsOp, pto::VldsPostOp, pto::Vldsx2Op,
@@ -7414,7 +7591,7 @@ static LogicalResult lowerVPTOTypes(ModuleOp module, llvm::raw_ostream &diagOS) 
                                                                 typeConverter);
       });
   target.addIllegalOp<pto::AddPtrOp, pto::CastPtrOp, pto::LoadScalarOp,
-                      pto::StoreScalarOp>();
+                      pto::StoreScalarOp, pto::PTOLoadOp, pto::PTOStoreOp>();
   target.addDynamicallyLegalOp<UnrealizedConversionCastOp>(
       [&](UnrealizedConversionCastOp op) {
         return !hasVPTOConvertibleType(op->getOperandTypes()) &&
@@ -7427,7 +7604,8 @@ static LogicalResult lowerVPTOTypes(ModuleOp module, llvm::raw_ostream &diagOS) 
 
   populateVPTOStructuralTypePatterns(typeConverter, patterns, target);
   patterns.add<ConvertPtoAddPtrOp, ConvertPtoCastPtrOp, ConvertPtoLoadScalarOp,
-               ConvertPtoStoreScalarOp>(typeConverter, context);
+               ConvertPtoStoreScalarOp, ConvertPtoLoadOp, ConvertPtoStoreOp>(
+      typeConverter, context);
   patterns.add<ConvertVPTOUnrealizedCastOp>(typeConverter, context);
   patterns.add<ConvertVPTOTypedCarrierOp>(typeConverter, context);
 
@@ -7621,9 +7799,47 @@ struct PrepareVPTOLLVMLoweringPass final
   }
 };
 
+llvm::StringSet<llvm::BumpPtrAllocator>
+collectSimtEntryFunctionNames(ModuleOp module) {
+  llvm::StringSet<llvm::BumpPtrAllocator> simtEntries;
+  module.walk([&](func::FuncOp funcOp) {
+    if (funcOp->hasAttr(pto::kPTOSimtEntryAttrName))
+      simtEntries.insert(funcOp.getSymName());
+  });
+  return simtEntries;
+}
+
+static void applySimtEntryCallingConvention(
+    llvm::Module &llvmModule,
+    const llvm::StringSet<llvm::BumpPtrAllocator> &simtEntryNames) {
+  constexpr unsigned kSimtEntryCallingConv = 109;
+
+  for (llvm::Function &function : llvmModule) {
+    if (simtEntryNames.contains(function.getName())) {
+      function.setCallingConv(kSimtEntryCallingConv);
+      function.addFnAttr(llvm::Attribute::NoInline);
+    }
+  }
+
+  for (llvm::Function &function : llvmModule) {
+    for (llvm::BasicBlock &block : function) {
+      for (llvm::Instruction &inst : block) {
+        auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+        if (!call)
+          continue;
+        auto *callee = call->getCalledFunction();
+        if (!callee || !simtEntryNames.contains(callee->getName()))
+          continue;
+        call->setCallingConv(kSimtEntryCallingConv);
+      }
+    }
+  }
+}
+
 static FailureOr<EmittedLLVMModule>
 emitDeviceLLVMModule(ModuleOp deviceModule, StringRef kernelKind,
                      const VPTOEmissionOptions &options,
+                     const llvm::StringSet<llvm::BumpPtrAllocator> &simtEntryNames,
                      llvm::raw_ostream &diagOS) {
   if (!deviceModule)
     return EmittedLLVMModule{};
@@ -7641,6 +7857,7 @@ emitDeviceLLVMModule(ModuleOp deviceModule, StringRef kernelKind,
     return failure();
   }
 
+  applySimtEntryCallingConvention(*llvmModule, simtEntryNames);
   if (failed(attachAIVectorScopeMetadata(*llvmModule, diagOS)))
     return failure();
   attachHIVMKernelAnnotations(*llvmModule);
@@ -7651,9 +7868,16 @@ emitDeviceLLVMModule(ModuleOp deviceModule, StringRef kernelKind,
 
 template <typename EmitFn>
 static LogicalResult runPipeline(ModuleOp module, llvm::raw_ostream &diagOS,
+                                 const llvm::StringSet<llvm::BumpPtrAllocator> &simtEntryNames,
                                  EmitFn &&emit) {
   OwningOpRef<Operation *> clonedOp(module->clone());
   ModuleOp clonedModule = cast<ModuleOp>(*clonedOp);
+
+  if (failed(validateVPTOAuthoringIR(clonedModule, &diagOS))) {
+    diagOS << "VPTO LLVM emission failed: authoring-stage VPTO legality "
+              "validation failed\n";
+    return failure();
+  }
 
   PassManager pm(clonedModule.getContext());
   pm.enableVerifier();
@@ -7688,11 +7912,14 @@ LogicalResult lowerVPTOModuleToLLVMModules(
     ModuleOp module, const VPTOEmissionOptions &options,
     EmittedLLVMModule &cubeModule, EmittedLLVMModule &vectorModule,
     llvm::raw_ostream &diagOS) {
+  llvm::StringSet<llvm::BumpPtrAllocator> simtEntryNames =
+      collectSimtEntryFunctionNames(module);
   cubeModule.context.reset();
   cubeModule.module.reset();
   vectorModule.context.reset();
   vectorModule.module.reset();
-  return runPipeline(module, diagOS, [&](ModuleOp loweredModule) {
+  return runPipeline(module, diagOS, simtEntryNames,
+                     [&](ModuleOp loweredModule) {
     auto vectorDeviceModule =
         getUniqueDeviceModuleByKernelKind(
             loweredModule, FunctionKernelKind::Vector, diagOS);
@@ -7709,7 +7936,7 @@ LogicalResult lowerVPTOModuleToLLVMModules(
           makeDeviceEmissionOptions(options, FunctionKernelKind::Vector);
       auto emitted =
           emitDeviceLLVMModule(*vectorDeviceModule, "vector", vectorOptions,
-                               diagOS);
+                               simtEntryNames, diagOS);
       if (failed(emitted))
         return failure();
       vectorModule.context = std::move(emitted->context);
@@ -7719,14 +7946,15 @@ LogicalResult lowerVPTOModuleToLLVMModules(
       auto cubeOptions =
           makeDeviceEmissionOptions(options, FunctionKernelKind::Cube);
       auto emitted =
-          emitDeviceLLVMModule(*cubeDeviceModule, "cube", cubeOptions, diagOS);
+          emitDeviceLLVMModule(*cubeDeviceModule, "cube", cubeOptions,
+                               simtEntryNames, diagOS);
       if (failed(emitted))
         return failure();
       cubeModule.context = std::move(emitted->context);
       cubeModule.module = std::move(emitted->module);
     }
     return success();
-  });
+                     });
 }
 
 } // namespace mlir::pto

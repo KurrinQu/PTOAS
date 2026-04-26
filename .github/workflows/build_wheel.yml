@@ -24,7 +24,8 @@ permissions:
   contents: write
 
 env:
-  LLVM_TAG: llvmorg-19.1.7
+  LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
+  LLVM_REF: feature-vpto
 
 jobs:
   build_wheel:
@@ -92,12 +93,22 @@ jobs:
           echo "PTO_SOURCE_DIR=$GITHUB_WORKSPACE" >> $GITHUB_ENV
           echo "PTO_INSTALL_DIR=$GITHUB_WORKSPACE/install" >> $GITHUB_ENV
 
+      - name: Resolve LLVM source SHA
+        id: llvm-source
+        run: |
+          LLVM_SOURCE_SHA="$(git ls-remote "${LLVM_REPO}" "refs/heads/${LLVM_REF}" | awk '{print $1}')"
+          if [ -z "${LLVM_SOURCE_SHA}" ]; then
+            echo "ERROR: failed to resolve ${LLVM_REPO} ${LLVM_REF}" >&2
+            exit 1
+          fi
+          echo "sha=${LLVM_SOURCE_SHA}" >> "$GITHUB_OUTPUT"
+
       - name: Restore LLVM build cache (exact key)
         id: cache-llvm
         uses: actions/cache/restore@v4
         with:
           path: /llvm-workspace/llvm-project/build-shared
-          key: llvm-${{ env.LLVM_TAG }}-manylinux_2_34-${{ matrix.arch }}-${{ matrix.python }}-hardening-v2
+          key: llvm-${{ steps.llvm-source.outputs.sha }}-manylinux_2_34-${{ matrix.arch }}-${{ matrix.python }}-hardening-v2
 
       - name: Prepare LLVM source
         run: |
@@ -105,10 +116,11 @@ jobs:
           cd $LLVM_SOURCE_DIR
           if [ ! -d .git ]; then
             git init
-            git remote add origin https://github.com/llvm/llvm-project.git
+            git remote add origin "${LLVM_REPO}"
           fi
-          git fetch --depth 1 origin tag ${{ env.LLVM_TAG }}
-          git checkout ${{ env.LLVM_TAG }}
+          git remote set-url origin "${LLVM_REPO}"
+          git fetch --depth 1 origin "${LLVM_REF}"
+          git checkout --force FETCH_HEAD
 
       - name: Warn when default-branch cache is missing for PR/release runs
         if: steps.cache-llvm.outputs.cache-hit != 'true' && (github.event_name == 'pull_request' || github.event_name == 'release')
@@ -116,7 +128,7 @@ jobs:
           echo "LLVM cache miss while running on PR/release."
           echo "PR/release runs are cache-consumers only and should reuse cache generated on the default branch."
           echo "Please run this workflow on the default branch first to populate cache key:"
-          echo "llvm-${{ env.LLVM_TAG }}-manylinux_2_34-${{ matrix.arch }}-${{ matrix.python }}-hardening-v2"
+          echo "llvm-${{ steps.llvm-source.outputs.sha }}-manylinux_2_34-${{ matrix.arch }}-${{ matrix.python }}-hardening-v2"
 
       - name: Build LLVM/MLIR
         if: steps.cache-llvm.outputs.cache-hit != 'true'
@@ -139,7 +151,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: /llvm-workspace/llvm-project/build-shared
-          key: llvm-${{ env.LLVM_TAG }}-manylinux_2_34-${{ matrix.arch }}-${{ matrix.python }}-hardening-v2
+          key: llvm-${{ steps.llvm-source.outputs.sha }}-manylinux_2_34-${{ matrix.arch }}-${{ matrix.python }}-hardening-v2
 
       - name: Build PTOAS
         run: |

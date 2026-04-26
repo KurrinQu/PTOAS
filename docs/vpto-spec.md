@@ -663,6 +663,91 @@ block_num = block_num();
 subblock_num = subblock_num();
 ```
 
+#### `pto.store_vfsimt_info`
+
+- **syntax:** `pto.store_vfsimt_info %dim_z, %dim_y, %dim_x : i32, i32, i32`
+- **operands:** `i32, i32, i32`
+- **semantics:** Configure the SIMT VF launch descriptor consumed by a subsequent SIMT entry invocation. The three operands are the launch dimensions in `z, y, x` order. Lowering packs them into the `llvm.hivm.store.vfsimt.info` intrinsic payload.
+- **placement:** This op must appear in the outer non-SIMT caller. It must not appear inside a function marked with `pto.simt_entry`.
+
+```c
+store_vfsimt_info(dim_z, dim_y, dim_x);
+```
+
+#### `pto.get_tid_x`
+
+- **syntax:** `%tx = pto.get_tid_x : i32`
+- **result:** `i32`
+- **semantics:** Return the current SIMT lane X coordinate inside the active VF launch.
+
+```c
+tx = get_tid_x();
+```
+
+#### `pto.get_tid_y`
+
+- **syntax:** `%ty = pto.get_tid_y : i32`
+- **result:** `i32`
+- **semantics:** Return the current SIMT lane Y coordinate inside the active VF launch.
+
+```c
+ty = get_tid_y();
+```
+
+#### `pto.get_tid_z`
+
+- **syntax:** `%tz = pto.get_tid_z : i32`
+- **result:** `i32`
+- **semantics:** Return the current SIMT lane Z coordinate inside the active VF launch.
+
+```c
+tz = get_tid_z();
+```
+
+Example:
+
+```mlir
+module attributes {pto.target_arch = "a5"} {
+  func.func @simt_store_tid_kernel(%out: !pto.ptr<i32, gm>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c32_i64 = arith.constant 32 : i64
+    %c128_i64 = arith.constant 128 : i64
+    %dim_z = arith.constant 1 : i32
+    %dim_y = arith.constant 32 : i32
+    %dim_x = arith.constant 32 : i32
+
+    %ub_out = pto.castptr %c0_i64 : i64 -> !pto.ptr<i32, ub>
+    pto.store_vfsimt_info %dim_z, %dim_y, %dim_x : i32, i32, i32
+    func.call @simt_write(%ub_out) : (!pto.ptr<i32, ub>) -> ()
+
+    pto.set_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
+    pto.wait_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
+    pto.dma_store %ub_out, %out, %c128_i64
+      nburst(%c32_i64, %c128_i64, %c128_i64)
+      : !pto.ptr<i32, ub>, !pto.ptr<i32, gm>, i64, i64, i64, i64
+    return
+  }
+
+  func.func @simt_write(%dst: !pto.ptr<i32, ub>) attributes {pto.simt_entry} {
+    %tx = pto.get_tid_x : i32
+    %ty = pto.get_tid_y : i32
+    %tz = pto.get_tid_z : i32
+    %c8_i32 = arith.constant 8 : i32
+    %c16_i32 = arith.constant 16 : i32
+    %c32_i32 = arith.constant 32 : i32
+    %ty_shift = arith.shli %ty, %c8_i32 : i32
+    %tz_shift = arith.shli %tz, %c16_i32 : i32
+    %xy = arith.ori %tx, %ty_shift : i32
+    %xyz = arith.ori %xy, %tz_shift : i32
+    %lane_base = arith.muli %ty, %c32_i32 : i32
+    %tid = arith.addi %lane_base, %tx : i32
+    %tid_idx = arith.index_castui %tid : i32 to index
+    pto.store %xyz, %dst[%tid_idx] : !pto.ptr<i32, ub>, i32
+    return
+  }
+}
+```
+
 Typical usage:
 
 ```mlir
@@ -821,6 +906,43 @@ ptr[offset] = value;
   scalar memory helper; unlike `pto.vsts`, it does not consume a mask and does
   not target vector-store `dist` families.
 
+#### `pto.load`
+
+- **syntax:** `%value = pto.load %ptr[%offset] : !pto.ptr<T, space> -> T`
+- **semantics:** Load one scalar element from a VPTO pointer-like operand.
+
+```c
+value = ptr[offset];
+```
+
+- **inputs:**
+  `%ptr` is a typed PTO pointer `!pto.ptr<T, space>` or a memref operand that
+  will be normalized to a PTO pointer before LLVM emission. `%offset` is an
+  `index` displacement counted in elements.
+- **outputs:**
+  `%value` is the loaded scalar element.
+- **constraints and limitations:**
+  The result type MUST match the element type of `%ptr`. This is the preferred
+  scalar memory op for VPTO/SIMT authoring.
+
+#### `pto.store`
+
+- **syntax:** `pto.store %value, %ptr[%offset] : !pto.ptr<T, space>, T`
+- **semantics:** Store one scalar element to a VPTO pointer-like operand.
+
+```c
+ptr[offset] = value;
+```
+
+- **inputs:**
+  `%value` is the scalar value to store. `%ptr` is a typed PTO pointer
+  `!pto.ptr<T, space>` or a memref operand that will be normalized to a PTO
+  pointer before LLVM emission. `%offset` is an `index` displacement counted in
+  elements.
+- **constraints and limitations:**
+  The stored value type MUST match the element type of `%ptr`. This is the
+  preferred scalar memory op for VPTO/SIMT authoring.
+
 #### Pointer-Based Vector Access Example
 
 The following lowered-style fragment shows how typed PTO pointers flow through
@@ -835,8 +957,8 @@ UB vector loads/stores:
 pto.vecscope {
   %16 = scf.for %arg3 = %c0 to %11 step %c64 iter_args(%arg4 = %12) -> (i32) {
     %mask, %scalar_out = pto.plt_b32 %arg4 : i32 -> !pto.mask<b32>, i32
-    %s = pto.load_scalar %1[%c4] : !pto.ptr<f32, ub> -> f32
-    pto.store_scalar %s, %1[%c8] : !pto.ptr<f32, ub>, f32
+    %s = pto.load %1[%c4] : !pto.ptr<f32, ub> -> f32
+    pto.store %s, %1[%c8] : !pto.ptr<f32, ub>, f32
     %17 = pto.vlds %1[%arg3] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
     %18 = pto.vabs %17, %mask : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
     pto.vsts %18, %10[%arg3], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>

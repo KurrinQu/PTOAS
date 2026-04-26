@@ -77,6 +77,10 @@ std::unique_ptr<Pass> createVPTOExpandWrapperOpsPass();
 std::unique_ptr<Pass> createPTOVPTOPtrBoundaryPass();
 std::unique_ptr<Pass> createVPTOPtrNormalizePass();
 std::unique_ptr<Pass> createVPTOPtrCastCleanupPass();
+LogicalResult validateVPTOAuthoringIR(ModuleOp module,
+                                      llvm::raw_ostream *diagOS = nullptr);
+LogicalResult validateVPTOEmissionIR(ModuleOp module,
+                                     llvm::raw_ostream *diagOS = nullptr);
 std::unique_ptr<Pass> createPTOValidateVPTOIRPass();
 std::unique_ptr<Pass> createPTOValidateVPTOEmissionIRPass();
 std::unique_ptr<Pass> createMemrefToTileBufPass();

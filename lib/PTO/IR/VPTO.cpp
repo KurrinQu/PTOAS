@@ -89,10 +89,52 @@ static LogicalResult verifyMaskTypeWithGranularityLike(Operation *op, Type type,
   return success();
 }
 
+static LogicalResult verifyVPTOScalarAccessTypes(Operation *op, Type ptrTy,
+                                                 Type valueTy,
+                                                 StringRef opNameForDiag) {
+  Type elemTy;
+  if (auto pty = dyn_cast<PtrType>(ptrTy)) {
+    elemTy = pty.getElementType();
+  } else if (auto memTy = dyn_cast<MemRefType>(ptrTy)) {
+    elemTy = memTy.getElementType();
+  } else {
+    return op->emitOpError() << "expects " << opNameForDiag
+                             << " pointer operand to be !pto.ptr or memref";
+  }
+
+  if (valueTy != elemTy) {
+    return op->emitOpError() << "expects " << opNameForDiag
+                             << " value type to match pointer element type";
+  }
+  return success();
+}
+
 static bool isMaskGranularityAdjacentWidening(StringRef inputGranularity,
                                               StringRef resultGranularity) {
   return (inputGranularity == "b8" && resultGranularity == "b16") ||
          (inputGranularity == "b16" && resultGranularity == "b32");
+}
+
+LogicalResult PTOLoadOp::verify() {
+  return verifyVPTOScalarAccessTypes(getOperation(), getPtr().getType(),
+                                     getValue().getType(), "load");
+}
+
+LogicalResult PTOStoreOp::verify() {
+  return verifyVPTOScalarAccessTypes(getOperation(), getPtr().getType(),
+                                     getValue().getType(), "store");
+}
+
+void PTOLoadOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getPtrMutable());
+}
+
+void PTOStoreOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Write::get(), &getPtrMutable());
 }
 
 static LogicalResult verifyNotNestedInVecScope(Operation *op,

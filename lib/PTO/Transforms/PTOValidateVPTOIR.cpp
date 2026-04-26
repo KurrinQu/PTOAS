@@ -712,7 +712,19 @@ private:
 
   LogicalResult validateAuthoringFunctionSurface() {
     for (func::FuncOp func : helper.getFunctions()) {
-      (void)func;
+      if (!func->hasAttr(pto::kPTOSimtEntryAttrName))
+        continue;
+
+      WalkResult walkResult = func.walk([&](StoreVfSimtInfoOp op) {
+        op.emitOpError()
+            << "must not appear inside a function marked with '"
+            << pto::kPTOSimtEntryAttrName
+            << "'; configure SIMT launch info in the outer non-simt caller "
+               "instead";
+        return WalkResult::interrupt();
+      });
+      if (walkResult.wasInterrupted())
+        return failure();
     }
     return success();
   }
