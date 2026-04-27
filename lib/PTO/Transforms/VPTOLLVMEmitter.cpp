@@ -1589,10 +1589,23 @@ static FailureOr<Value> materializeDynamicPltMask(ConversionPatternRewriter &rew
   Type i32Type = rewriter.getI32Type();
   Value laneCountI32 = laneCount;
   if (laneCountI32.getType() != i32Type) {
-    laneCountI32 = castIntegerLikeTo(rewriter.getInsertionBlock()->getParentOp(),
-                                     laneCountI32, i32Type);
-    if (!laneCountI32)
+    if (laneCountI32.getType().isIndex()) {
+      laneCountI32 =
+          rewriter.create<arith::IndexCastOp>(loc, i32Type, laneCountI32);
+    } else if (auto sourceInt = dyn_cast<IntegerType>(laneCountI32.getType())) {
+      auto targetInt = dyn_cast<IntegerType>(i32Type);
+      if (!targetInt)
+        return failure();
+      if (sourceInt.getWidth() < targetInt.getWidth()) {
+        laneCountI32 =
+            rewriter.create<arith::ExtUIOp>(loc, i32Type, laneCountI32);
+      } else if (sourceInt.getWidth() > targetInt.getWidth()) {
+        laneCountI32 =
+            rewriter.create<arith::TruncIOp>(loc, i32Type, laneCountI32);
+      }
+    } else {
       return failure();
+    }
   }
 
   StringRef calleeName;
