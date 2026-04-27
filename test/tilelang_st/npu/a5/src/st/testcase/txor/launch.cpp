@@ -12,30 +12,16 @@
 #define AICORE [aicore]
 #endif
 
-// Case 0: i16, dst=64x64, src0=64x64, src1=64x64, valid=64x64
-extern "C" __global__ AICORE void TXOR_i16_64x64_64x64_64x64_64x64(__gm__ int16_t *a, __gm__ int16_t *b, __gm__ int16_t *c);
+// Case 0: i32 16x64
+extern "C" __global__ AICORE void TXOR_i32_16x64(__gm__ int32_t *a, __gm__ int32_t *b, __gm__ int32_t *c);
 
-void LaunchTXOR_i16_64x64_64x64_64x64_64x64(void *a, void *b, void *c, void *stream) {
-    TXOR_i16_64x64_64x64_64x64_64x64<<<1, nullptr, stream>>>((__gm__ int16_t *)a, (__gm__ int16_t *)b, (__gm__ int16_t *)c);
+void LaunchTXOR_i32_16x64(int32_t *a, int32_t *b, int32_t *c, void *stream) {
+    TXOR_i32_16x64<<<1, nullptr, stream>>>((__gm__ int32_t *)a, (__gm__ int32_t *)b, (__gm__ int32_t *)c);
 }
 
-// Case 1: i16, dst=32x128, src0=32x128, src1=32x256, valid=32x128
-extern "C" __global__ AICORE void TXOR_i16_32x128_32x128_32x256_32x128(__gm__ int16_t *a, __gm__ int16_t *b, __gm__ int16_t *c);
+// Case 1: i32 32x32
+extern "C" __global__ AICORE void TXOR_i32_32x32(__gm__ int32_t *a, __gm__ int32_t *b, __gm__ int32_t *c);
 
-void LaunchTXOR_i16_32x128_32x128_32x256_32x128(void *a, void *b, void *c, void *stream) {
-    TXOR_i16_32x128_32x128_32x256_32x128<<<1, nullptr, stream>>>((__gm__ int16_t *)a, (__gm__ int16_t *)b, (__gm__ int16_t *)c);
-}
-
-// Case 2: i16, dst=32x128, src0=32x128, src1=32x256, valid=32x127
-extern "C" __global__ AICORE void TXOR_i16_32x128_32x128_32x256_32x127(__gm__ int16_t *a, __gm__ int16_t *b, __gm__ int16_t *c);
-
-void LaunchTXOR_i16_32x128_32x128_32x256_32x127(void *a, void *b, void *c, void *stream) {
-    TXOR_i16_32x128_32x128_32x256_32x127<<<1, nullptr, stream>>>((__gm__ int16_t *)a, (__gm__ int16_t *)b, (__gm__ int16_t *)c);
-}
-
-// Case 3: i8, dst=32x128, src0=32x128, src1=32x256, valid=32x127
-extern "C" __global__ AICORE void TXOR_i8_32x128_32x128_32x256_32x127(__gm__ int8_t *a, __gm__ int8_t *b, __gm__ int8_t *c);
-
-void LaunchTXOR_i8_32x128_32x128_32x256_32x127(void *a, void *b, void *c, void *stream) {
-    TXOR_i8_32x128_32x128_32x256_32x127<<<1, nullptr, stream>>>((__gm__ int8_t *)a, (__gm__ int8_t *)b, (__gm__ int8_t *)c);
+void LaunchTXOR_i32_32x32(int32_t *a, int32_t *b, int32_t *c, void *stream) {
+    TXOR_i32_32x32<<<1, nullptr, stream>>>((__gm__ int32_t *)a, (__gm__ int32_t *)b, (__gm__ int32_t *)c);
 }

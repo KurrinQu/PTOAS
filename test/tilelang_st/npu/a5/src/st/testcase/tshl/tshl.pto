@@ -10,9 +10,6 @@
 // Multiple cases with different shapes in a single module.
 // Compiled by ptoas --enable-insert-sync --enable-tile-op-expand --vpto-emit-hivm-llvm
 // to produce LLVM IR.
-//
-// NOTE: Unsigned integer types temporarily disabled due to HIVM backend bug
-// See BUG_REPORT_UNSIGNED_BITOPS.md for details
 
 module {
   // Case 0: i32 16x64 (1024 elements)

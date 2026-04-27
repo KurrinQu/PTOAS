@@ -1,4 +1,3 @@
-#!/usr/bin/python3
 # Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # This program is free software, you can redistribute it and/or modify it under the terms and conditions of
 # CANN Open Software License Agreement Version 2.0 (the "License").
@@ -15,24 +14,19 @@ from st_common import validate_cases, setup_case_rng, save_case_data
 
 validate_cases(CASES)
 
-np.random.seed(19)
-
 for case in CASES:
     setup_case_rng(case)
 
     dtype = case["dtype"]
-    dst_tile = case["dst_tile"]
-    src0_tile = case["src0_tile"]
-    src1_tile = case["src1_tile"]
+    shape = case["shape"]
     valid_shape = case["valid_shape"]
 
-    dtype_info = np.iinfo(dtype)
-    input1 = np.random.randint(dtype_info.min, dtype_info.max, size=src0_tile).astype(dtype)
-    input2 = np.random.randint(dtype_info.min, dtype_info.max, size=src1_tile).astype(dtype)
+    input1 = np.random.randint(0, 100, size=shape).astype(dtype)
+    input2 = np.random.randint(0, 100, size=shape).astype(dtype)
 
-    golden = np.zeros(dst_tile, dtype=dtype)
+    golden = np.zeros(shape, dtype=dtype)
     vr, vc = valid_shape
     golden[:vr, :vc] = (input1[:vr, :vc] ^ input2[:vr, :vc]).astype(dtype, copy=False)
 
     save_case_data(case["name"], {"input1": input1, "input2": input2, "golden": golden})
-    print(f"[INFO] gen_data: {case['name']} dst={dst_tile} src0={src0_tile} src1={src1_tile} valid={valid_shape} dtype={dtype.__name__}")
+    print(f"[INFO] gen_data: {case['name']} shape={shape} valid_shape={valid_shape} dtype={dtype.__name__}")

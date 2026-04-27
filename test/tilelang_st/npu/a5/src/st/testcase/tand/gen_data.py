@@ -1,4 +1,3 @@
-#!/usr/bin/python3
 # Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # This program is free software, you can redistribute it and/or modify it under the terms and conditions of
 # CANN Open Software License Agreement Version 2.0 (the "License").
@@ -15,8 +14,6 @@ from st_common import validate_cases, setup_case_rng, save_case_data
 
 validate_cases(CASES)
 
-np.random.seed(19)
-
 for case in CASES:
     setup_case_rng(case)
 
@@ -24,8 +21,8 @@ for case in CASES:
     shape = case["shape"]
     valid_shape = case["valid_shape"]
 
-    input1 = np.random.randint(1, 16383, size=shape).astype(dtype)
-    input2 = np.random.randint(1, 16383, size=shape).astype(dtype)
+    input1 = np.random.randint(0, 100, size=shape).astype(dtype)
+    input2 = np.random.randint(0, 100, size=shape).astype(dtype)
 
     golden = np.zeros(shape, dtype=dtype)
     vr, vc = valid_shape

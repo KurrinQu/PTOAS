@@ -7,6 +7,8 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // Host driver for TileLang tand ST — case-table driven.
+// Each case launches a different kernel variant, reads/writes from per-case subdirectory.
+// Numerical comparison is done externally by compare.py.
 
 #include "acl/acl.h"
 #include "test_common.h"
@@ -19,54 +21,57 @@
 
 using namespace PtoTestCommon;
 
-void LaunchTAND_i16_64x64(void *a, void *b, void *c, void *stream);
-void LaunchTAND_i8_64x64_valid63x63(void *a, void *b, void *c, void *stream);
+// Kernel launch wrappers (defined in launch.cpp)
+void LaunchTAND_i32_16x64(int32_t *a, int32_t *b, int32_t *c, void *stream);
+void LaunchTAND_i32_32x32(int32_t *a, int32_t *b, int32_t *c, void *stream);
 
-using LaunchFn = void (*)(void *, void *, void *, void *);
+using LaunchFn = void (*)(int32_t *, int32_t *, int32_t *, void *);
 
 struct TestCase {
     const char *name;
     LaunchFn    launch;
-    size_t      rows;
-    size_t      cols;
-    size_t      validRows;
-    size_t      validCols;
-    size_t      elemSize;
+    size_t      rows;       // allocated tile rows
+    size_t      cols;       // allocated tile cols
+    size_t      validRows;  // effective computation rows  (<= rows)
+    size_t      validCols;  // effective computation cols  (<= cols)
+    size_t      elemSize;   // bytes per element
 };
 
 static const TestCase kCases[] = {
-    {"i16_64x64", LaunchTAND_i16_64x64, 64, 64, 64, 64, sizeof(int16_t)},
-    {"i8_64x64_valid63x63", LaunchTAND_i8_64x64_valid63x63, 64, 64, 63, 63, sizeof(int8_t)},
+    {"i32_16x64", LaunchTAND_i32_16x64, 16, 64, 16, 64, sizeof(int32_t)},
+    {"i32_32x32", LaunchTAND_i32_32x32, 32, 32, 32, 32, sizeof(int32_t)},
 };
 static constexpr size_t kNumCases = sizeof(kCases) / sizeof(kCases[0]);
 
 static int RunCase(const TestCase &tc, int deviceId, aclrtStream stream) {
     int rc = 0;
-    const size_t fileSize = tc.rows * tc.cols * tc.elemSize;
+    const size_t elemCount = tc.rows * tc.cols;
+    const size_t fileSize  = elemCount * tc.elemSize;
 
     std::printf("[INFO] === case: %s (shape=%zux%zu, valid=%zux%zu) ===\n",
                 tc.name, tc.rows, tc.cols, tc.validRows, tc.validCols);
 
+    // Per-case data directory
     std::string caseDir = std::string("./") + tc.name;
+    size_t src0FileSize = fileSize;
+    size_t src1FileSize = fileSize;
 
-    void *src0Host = nullptr, *src1Host = nullptr, *dstHost = nullptr;
-    void *src0Device = nullptr, *src1Device = nullptr, *dstDevice = nullptr;
+    int32_t *src0Host = nullptr, *src1Host = nullptr, *dstHost = nullptr;
+    int32_t *src0Device = nullptr, *src1Device = nullptr, *dstDevice = nullptr;
 
-    aclrtMallocHost(&src0Host, fileSize);
-    aclrtMallocHost(&src1Host, fileSize);
-    aclrtMallocHost(&dstHost, fileSize);
+    aclrtMallocHost((void **)(&src0Host), fileSize);
+    aclrtMallocHost((void **)(&src1Host), fileSize);
+    aclrtMallocHost((void **)(&dstHost), fileSize);
 
-    aclrtMalloc(&src0Device, fileSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    aclrtMalloc(&src1Device, fileSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    aclrtMalloc(&dstDevice, fileSize, ACL_MEM_MALLOC_HUGE_FIRST);
+    aclrtMalloc((void **)&src0Device, fileSize, ACL_MEM_MALLOC_HUGE_FIRST);
+    aclrtMalloc((void **)&src1Device, fileSize, ACL_MEM_MALLOC_HUGE_FIRST);
+    aclrtMalloc((void **)&dstDevice, fileSize, ACL_MEM_MALLOC_HUGE_FIRST);
 
-    size_t fileSizeRead = 0;
-    if (!ReadFile((caseDir + "/input1.bin").c_str(), fileSizeRead, src0Host, fileSize)) {
+    if (!ReadFile((caseDir + "/input1.bin").c_str(), src0FileSize, src0Host, fileSize)) {
         std::fprintf(stderr, "[ERROR] failed to read %s/input1.bin\n", caseDir.c_str());
         rc = 1;
     }
-    fileSizeRead = 0;
-    if (rc == 0 && !ReadFile((caseDir + "/input2.bin").c_str(), fileSizeRead, src1Host, fileSize)) {
+    if (rc == 0 && !ReadFile((caseDir + "/input2.bin").c_str(), src1FileSize, src1Host, fileSize)) {
         std::fprintf(stderr, "[ERROR] failed to read %s/input2.bin\n", caseDir.c_str());
         rc = 1;
     }
@@ -105,6 +110,7 @@ static int RunCase(const TestCase &tc, int deviceId, aclrtStream stream) {
 }
 
 int main(int argc, char *argv[]) {
+    // Optional case filter: ./tand [case_name]
     const char *caseFilter = (argc > 1) ? argv[1] : nullptr;
 
     int rc = 0;

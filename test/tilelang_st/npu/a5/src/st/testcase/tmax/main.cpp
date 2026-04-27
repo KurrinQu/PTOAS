@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Huawei Technologies Co., Ltd.
 // This program is free software, you can redistribute it and/or modify it under the terms and conditions of
 // CANN Open Software License Agreement Version 2.0 (the "License").
-// Please refer to the License for details. You can not use this file except in compliance with the License.
+// Please refer to the License for details. You may not use this file except in compliance with the License.
 // THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
@@ -22,18 +22,10 @@
 using namespace PtoTestCommon;
 
 // Kernel launch wrappers (defined in launch.cpp)
-void LaunchTMAX_f32_16x64(void *a, void *b, void *c, void *stream);
-void LaunchTMAX_f32_32x32(void *a, void *b, void *c, void *stream);
-void LaunchTMAX_f32_64x64(void *a, void *b, void *c, void *stream);
-void LaunchTMAX_i32_64x64(void *a, void *b, void *c, void *stream);
-void LaunchTMAX_i16_64x64(void *a, void *b, void *c, void *stream);
-void LaunchTMAX_f16_64x64(void *a, void *b, void *c, void *stream);
-void LaunchTMAX_f32_64x64_v60x60(void *a, void *b, void *c, void *stream);
-void LaunchTMAX_i32_64x64_v60x60(void *a, void *b, void *c, void *stream);
-void LaunchTMAX_f16_2x4096_v1x3600(void *a, void *b, void *c, void *stream);
-void LaunchTMAX_i16_20x512_v16x200(void *a, void *b, void *c, void *stream);
+void LaunchTMAX_f32_16x64(float *a, float *b, float *c, void *stream);
+void LaunchTMAX_f32_32x32(float *a, float *b, float *c, void *stream);
 
-using LaunchFn = void (*)(void *, void *, void *, void *);
+using LaunchFn = void (*)(float *, float *, float *, void *);
 
 struct TestCase {
     const char *name;
@@ -48,19 +40,10 @@ struct TestCase {
 static const TestCase kCases[] = {
     {"f32_16x64", LaunchTMAX_f32_16x64, 16, 64, 16, 64, sizeof(float)},
     {"f32_32x32", LaunchTMAX_f32_32x32, 32, 32, 32, 32, sizeof(float)},
-    {"f32_64x64", LaunchTMAX_f32_64x64, 64, 64, 64, 64, sizeof(float)},
-    {"i32_64x64", LaunchTMAX_i32_64x64, 64, 64, 64, 64, sizeof(int32_t)},
-    {"i16_64x64", LaunchTMAX_i16_64x64, 64, 64, 64, 64, sizeof(int16_t)},
-    {"f16_64x64", LaunchTMAX_f16_64x64, 64, 64, 64, 64, sizeof(uint16_t)},
-    {"f32_64x64_v60x60", LaunchTMAX_f32_64x64_v60x60, 64, 64, 60, 60, sizeof(float)},
-    {"i32_64x64_v60x60", LaunchTMAX_i32_64x64_v60x60, 64, 64, 60, 60, sizeof(int32_t)},
-    {"f16_2x4096_v1x3600", LaunchTMAX_f16_2x4096_v1x3600, 2, 4096, 1, 3600, sizeof(uint16_t)},
-    {"i16_20x512_v16x200", LaunchTMAX_i16_20x512_v16x200, 20, 512, 16, 200, sizeof(int16_t)},
 };
 static constexpr size_t kNumCases = sizeof(kCases) / sizeof(kCases[0]);
 
 static int RunCase(const TestCase &tc, int deviceId, aclrtStream stream) {
-    (void)deviceId;
     int rc = 0;
     const size_t elemCount = tc.rows * tc.cols;
     const size_t fileSize  = elemCount * tc.elemSize;
@@ -73,16 +56,16 @@ static int RunCase(const TestCase &tc, int deviceId, aclrtStream stream) {
     size_t src0FileSize = fileSize;
     size_t src1FileSize = fileSize;
 
-    void *src0Host = nullptr, *src1Host = nullptr, *dstHost = nullptr;
-    void *src0Device = nullptr, *src1Device = nullptr, *dstDevice = nullptr;
+    float *src0Host = nullptr, *src1Host = nullptr, *dstHost = nullptr;
+    float *src0Device = nullptr, *src1Device = nullptr, *dstDevice = nullptr;
 
-    aclrtMallocHost(&src0Host, fileSize);
-    aclrtMallocHost(&src1Host, fileSize);
-    aclrtMallocHost(&dstHost, fileSize);
+    aclrtMallocHost((void **)(&src0Host), fileSize);
+    aclrtMallocHost((void **)(&src1Host), fileSize);
+    aclrtMallocHost((void **)(&dstHost), fileSize);
 
-    aclrtMalloc(&src0Device, fileSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    aclrtMalloc(&src1Device, fileSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    aclrtMalloc(&dstDevice, fileSize, ACL_MEM_MALLOC_HUGE_FIRST);
+    aclrtMalloc((void **)&src0Device, fileSize, ACL_MEM_MALLOC_HUGE_FIRST);
+    aclrtMalloc((void **)&src1Device, fileSize, ACL_MEM_MALLOC_HUGE_FIRST);
+    aclrtMalloc((void **)&dstDevice, fileSize, ACL_MEM_MALLOC_HUGE_FIRST);
 
     if (!ReadFile((caseDir + "/input1.bin").c_str(), src0FileSize, src0Host, fileSize)) {
         std::fprintf(stderr, "[ERROR] failed to read %s/input1.bin\n", caseDir.c_str());

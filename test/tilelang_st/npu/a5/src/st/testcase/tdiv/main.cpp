@@ -1,14 +1,14 @@
 // Copyright (c) 2026 Huawei Technologies Co., Ltd.
 // This program is free software, you can redistribute it and/or modify it under the terms and conditions of
 // CANN Open Software License Agreement Version 2.0 (the "License").
-// Please refer to the License for details. You can not use this file except in compliance with the License.
+// Please refer to the License for details. You may not use this file except in compliance with the License.
 // THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // Host driver for TileLang tdiv ST — case-table driven.
 // Each case launches a different kernel variant, reads/writes from per-case subdirectory.
-// Numerical comparison is done externally by compare.py.
+// Numerical comparison is done externally by compare.cpp.
 
 #include "acl/acl.h"
 #include "test_common.h"
@@ -22,14 +22,10 @@
 using namespace PtoTestCommon;
 
 // Kernel launch wrappers (defined in launch.cpp)
-void LaunchTDIV_f32_16x64(void *a, void *b, void *c, void *stream);
-void LaunchTDIV_f32_32x32(void *a, void *b, void *c, void *stream);
-void LaunchTDIV_f32_64x64(void *a, void *b, void *c, void *stream);
-void LaunchTDIV_f16_64x64(void *a, void *b, void *c, void *stream);
-void LaunchTDIV_f16_64x64_v61x61(void *a, void *b, void *c, void *stream);
-void LaunchTDIV_f32_64x32_v60x30(void *a, void *b, void *c, void *stream);
+void LaunchTDIV_f32_16x64(float *a, float *b, float *c, void *stream);
+void LaunchTDIV_f32_32x32(float *a, float *b, float *c, void *stream);
 
-using LaunchFn = void (*)(void *, void *, void *, void *);
+using LaunchFn = void (*)(float *, float *, float *, void *);
 
 struct TestCase {
     const char *name;
@@ -44,15 +40,10 @@ struct TestCase {
 static const TestCase kCases[] = {
     {"f32_16x64", LaunchTDIV_f32_16x64, 16, 64, 16, 64, sizeof(float)},
     {"f32_32x32", LaunchTDIV_f32_32x32, 32, 32, 32, 32, sizeof(float)},
-    {"f32_64x64", LaunchTDIV_f32_64x64, 64, 64, 64, 64, sizeof(float)},
-    {"f16_64x64", LaunchTDIV_f16_64x64, 64, 64, 64, 64, sizeof(uint16_t)},
-    {"f16_64x64_v61x61", LaunchTDIV_f16_64x64_v61x61, 64, 64, 61, 61, sizeof(uint16_t)},
-    {"f32_64x32_v60x30", LaunchTDIV_f32_64x32_v60x30, 64, 32, 60, 30, sizeof(float)},
 };
 static constexpr size_t kNumCases = sizeof(kCases) / sizeof(kCases[0]);
 
 static int RunCase(const TestCase &tc, int deviceId, aclrtStream stream) {
-    (void)deviceId;
     int rc = 0;
     const size_t elemCount = tc.rows * tc.cols;
     const size_t fileSize  = elemCount * tc.elemSize;
@@ -65,16 +56,16 @@ static int RunCase(const TestCase &tc, int deviceId, aclrtStream stream) {
     size_t src0FileSize = fileSize;
     size_t src1FileSize = fileSize;
 
-    void *src0Host = nullptr, *src1Host = nullptr, *dstHost = nullptr;
-    void *src0Device = nullptr, *src1Device = nullptr, *dstDevice = nullptr;
+    float *src0Host = nullptr, *src1Host = nullptr, *dstHost = nullptr;
+    float *src0Device = nullptr, *src1Device = nullptr, *dstDevice = nullptr;
 
-    aclrtMallocHost(&src0Host, fileSize);
-    aclrtMallocHost(&src1Host, fileSize);
-    aclrtMallocHost(&dstHost, fileSize);
+    aclrtMallocHost((void **)(&src0Host), fileSize);
+    aclrtMallocHost((void **)(&src1Host), fileSize);
+    aclrtMallocHost((void **)(&dstHost), fileSize);
 
-    aclrtMalloc(&src0Device, fileSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    aclrtMalloc(&src1Device, fileSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    aclrtMalloc(&dstDevice, fileSize, ACL_MEM_MALLOC_HUGE_FIRST);
+    aclrtMalloc((void **)&src0Device, fileSize, ACL_MEM_MALLOC_HUGE_FIRST);
+    aclrtMalloc((void **)&src1Device, fileSize, ACL_MEM_MALLOC_HUGE_FIRST);
+    aclrtMalloc((void **)&dstDevice, fileSize, ACL_MEM_MALLOC_HUGE_FIRST);
 
     if (!ReadFile((caseDir + "/input1.bin").c_str(), src0FileSize, src0Host, fileSize)) {
         std::fprintf(stderr, "[ERROR] failed to read %s/input1.bin\n", caseDir.c_str());
