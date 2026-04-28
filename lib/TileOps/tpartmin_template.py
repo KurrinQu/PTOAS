@@ -31,12 +31,16 @@ def template_tpartmin(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
             mask, remained = pto.make_mask(dtype, remained)
             pto.vsts(pad_vec, dst[row, col:], mask)
 
+    pto.mem_bar(pto.BarrierType.VST_VLD)
+
     for row in range(0, src0_valid_rows, 1):
         remained = src0_valid_cols
         for col in range(0, src0_valid_cols, lanes):
             mask, remained = pto.make_mask(dtype, remained)
             vec0 = pto.vlds(src0[row, col:])
             pto.vsts(vec0, dst[row, col:], mask)
+
+    pto.mem_bar(pto.BarrierType.VST_VLD)
 
     for row in range(0, src1_valid_rows, 1):
         remained = src1_valid_cols
