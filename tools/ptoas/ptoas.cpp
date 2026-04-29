@@ -1283,32 +1283,13 @@ static pto::VPTOEmissionOptions buildVPTOEmissionOptions() {
   pto::VPTOEmissionOptions options;
   options.dumpVPTOIR = false;
   options.targetTriple = "hiipu64-hisilicon-cce";
-
-  const std::string kVecMarch = "dav-c310-vec";
-  const std::string kCubeMarch = "dav-c310-cube";
-  std::string march = vptoMarch.empty() ? kVecMarch : std::string(vptoMarch);
-  std::string aicore =
-      vptoCceAicoreArch.empty() ? march : std::string(vptoCceAicoreArch);
-  options.march = march;
-  options.aicoreArch = aicore;
-
-  // When bisheng target-attribute probing fails (e.g. ptoas subprocess without
-  // CANN in PATH), LLVMFuncOp attrs fall back to these defaults. They must
-  // match the HIVM intrinsics (vec vs cube) or bisheng will CannotSelect.
-  if (aicore.find("cube") != std::string::npos ||
-      march.find("cube") != std::string::npos) {
-    options.defaultTargetCPU = kCubeMarch;
-    options.defaultTargetFeatures =
-        "+ATOMIC,+ArchV130,+AregRedefinable,+ArithmeticBf16,+AtomicForB8 ,"
-        "+F8e4m3,+F8e5m2,+F8e8m0,+FFTSBlk,+Fp4e1m2x2,+Fp4e2m1x2,+LDExtRefine,"
-        "+MOVX8,+SPR7bits,+SyncV,+dav-c310-cube";
-  } else {
-    options.defaultTargetCPU = kVecMarch;
-    options.defaultTargetFeatures =
-        "+ATOMIC,+ArchV130,+AregRedefinable,+ArithmeticBf16,+AtomicForB8 ,"
-        "+F8e4m3,+F8e5m2,+F8e8m0,+FFTSBlk,+Fp4e1m2x2,+Fp4e2m1x2,+LDExtRefine,"
-        "+MOVX8,+SPR7bits,+SyncV,+dav-c310-vec";
-  }
+  options.march = "dav-c310-vec";
+  options.aicoreArch = "dav-c310-vec";
+  options.defaultTargetCPU = "dav-c310-vec";
+  options.defaultTargetFeatures =
+      "+ATOMIC,+ArchV130,+AregRedefinable,+ArithmeticBf16,+AtomicForB8 ,"
+      "+F8e4m3,+F8e5m2,+F8e8m0,+FFTSBlk,+Fp4e1m2x2,+Fp4e2m1x2,+LDExtRefine,"
+      "+MOVX8,+SPR7bits,+SyncV,+dav-c310-vec";
   return options;
 }
 
