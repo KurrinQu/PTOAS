@@ -460,6 +460,9 @@ static Value computeSubviewAddress(memref::SubViewOp subview,
   auto sourceTy = dyn_cast<MemRefType>(subview.getSource().getType());
   if (!sourceTy)
     return Value();
+  unsigned elemBytes = getPTOStorageElemByteSize(sourceTy.getElementType());
+  if (elemBytes == 0)
+    return Value();
 
   SmallVector<int64_t> sourceStrides;
   int64_t sourceOffset = ShapedType::kDynamic;
@@ -485,6 +488,7 @@ static Value computeSubviewAddress(memref::SubViewOp subview,
 
   if (!linearOffset)
     return base;
+  linearOffset = mulI64(linearOffset, elemBytes, builder, loc);
   return builder.create<arith::AddIOp>(loc, base, linearOffset);
 }
 

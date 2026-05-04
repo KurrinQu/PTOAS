@@ -30,8 +30,11 @@ module {
 }
 
 // IR: IR Dump After PTOMaterializeTileHandles
-// IR: arith.addi
-// IR: pto.alloc_tile addr = %{{.*}} : !pto.tile_buf<right, 64x256xf32, valid=64x128, slayout=col_major>
+// IR: %[[ELEM_OFFSET:.*]] = arith.addi %{{.*}}, %{{.*}} : i64
+// IR: %[[ELEM_BYTES:.*]] = arith.constant 4 : i64
+// IR: %[[BYTE_OFFSET:.*]] = arith.muli %[[ELEM_OFFSET]], %[[ELEM_BYTES]] : i64
+// IR: %[[ADDR:.*]] = arith.addi %{{.*}}, %[[BYTE_OFFSET]] : i64
+// IR: pto.alloc_tile addr = %[[ADDR]] : !pto.tile_buf<right, 64x256xf32, valid=64x128, slayout=col_major>
 // IR-NOT: pto.view_semantics
 // IR-NOT: pto.materialize_tile
 
