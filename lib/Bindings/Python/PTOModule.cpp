@@ -126,6 +126,10 @@ static void bindPTOModule(pybind11::module &m) {
     .value("ODD", mlir::pto::RoundMode::ODD)
     .value("CAST_RINT", mlir::pto::RoundMode::CAST_RINT);
 
+    py::enum_<mlir::pto::PrecisionMode>(m, "PrecisionMode")
+    .value("DEFAULT", mlir::pto::PrecisionMode::DEFAULT)
+    .value("HIGH_PRECISION", mlir::pto::PrecisionMode::HIGH_PRECISION);
+
     py::enum_<mlir::pto::SaturationMode>(m, "SaturationMode")
     .value("ON", mlir::pto::SaturationMode::ON)
     .value("OFF", mlir::pto::SaturationMode::OFF);
@@ -337,6 +341,33 @@ static void bindPTOModule(pybind11::module &m) {
         "value",
         [](MlirAttribute self) -> int32_t {
         return mlirPTORoundModeAttrGetValue(self);
+        });
+
+    mlir_attribute_subclass(
+        m, "PrecisionModeAttr",
+        [](MlirAttribute a) { return mlirPTOAttrIsAPrecisionModeAttr(a); })
+     .def_classmethod(
+         "get",
+        [](py::object cls, py::object value, MlirContext ctx) -> py::object {
+        int32_t v = 0;
+        if (py::isinstance<py::int_>(value)) {
+            v = value.cast<int32_t>();
+        } else if (py::hasattr(value, "value")) {
+            v = value.attr("value").cast<int32_t>();
+        } else {
+            throw std::runtime_error("PrecisionModeAttr.get expects int or PrecisionMode enum");
+        }
+
+        MlirAttribute a = mlirPTOPrecisionModeAttrGet(ctx, v);
+        if (mlirAttributeIsNull(a)) return py::none();
+        return cls.attr("__call__")(a);
+         },
+        py::arg("cls"), py::arg("value"), py::arg("context") = py::none())
+
+    .def_property_readonly(
+        "value",
+        [](MlirAttribute self) -> int32_t {
+        return mlirPTOPrecisionModeAttrGetValue(self);
         });
 
     mlir_attribute_subclass(

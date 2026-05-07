@@ -360,6 +360,21 @@ int32_t mlirPTORoundModeAttrGetValue(MlirAttribute attr) {
   return static_cast<int32_t>(a.getValue());
 }
 
+MlirAttribute mlirPTOPrecisionModeAttrGet(MlirContext ctx, int32_t value) {
+  auto *c = unwrap(ctx);
+  auto mode = static_cast<mlir::pto::PrecisionMode>(value);
+  return wrap(mlir::pto::PrecisionModeAttr::get(c, mode));
+}
+
+bool mlirPTOAttrIsAPrecisionModeAttr(MlirAttribute attr) {
+  return mlir::isa<mlir::pto::PrecisionModeAttr>(unwrap(attr));
+}
+
+int32_t mlirPTOPrecisionModeAttrGetValue(MlirAttribute attr) {
+  auto a = mlir::cast<mlir::pto::PrecisionModeAttr>(unwrap(attr));
+  return static_cast<int32_t>(a.getValue());
+}
+
 MlirAttribute mlirPTOSaturationModeAttrGet(MlirContext ctx, int32_t value) {
   auto *c = unwrap(ctx);
   auto mode = static_cast<mlir::pto::SaturationMode>(value);
