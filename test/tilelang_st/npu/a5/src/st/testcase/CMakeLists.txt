@@ -203,6 +203,9 @@ set(ALL_TESTCASES
     tshrs
     tsubs
     txors
+    trems
+    tfmods
+    tcmps
 )
 
 if((TEST_CASE IN_LIST ALL_TESTCASES) OR (TEST_CASE STREQUAL "all"))

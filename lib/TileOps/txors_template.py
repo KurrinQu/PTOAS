@@ -13,7 +13,6 @@ Note: A5 hardware implements txors as:
   TXOR_IMPL(dst, src, dst, tmp); // dst = src ^ dst
 
 This template uses vbr + vxor to achieve element-wise bitwise XOR.
-Requires tmp tile matching TXorS.hpp signature (src, scalar, tmp, dst).
 """
 
 import sys

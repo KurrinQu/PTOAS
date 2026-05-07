@@ -8,7 +8,7 @@
 
 """TileLang DSL template for pto.tdivs
 
-Supports two operand orders (matching TDivS.hpp):
+Supports two operand orders:
   1. tdivs(src_tile, scalar, dst) -> src / scalar
   2. tdivs(scalar, src_tile, dst) -> scalar / src
 

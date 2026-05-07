@@ -13,7 +13,7 @@ Note: A5 hardware implements tors as:
   TOR_IMPL(dst, src, dst);     // dst = src | dst
 
 This template uses vbr + vor to achieve element-wise bitwise OR.
-Only supports tile, scalar order (matching TOrS.hpp).
+Only supports tile, scalar order.
 """
 
 import sys

@@ -13,7 +13,7 @@ Note: A5 hardware implements tands as:
   TAND_IMPL(dst, src, dst);    // dst = src & dst
 
 This template uses vbr + vand to achieve element-wise bitwise AND.
-Only supports tile, scalar order (matching TAndS.hpp).
+Only supports tile, scalar order.
 """
 
 import sys
