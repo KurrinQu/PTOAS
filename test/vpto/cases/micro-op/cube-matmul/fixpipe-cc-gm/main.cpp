@@ -6,9 +6,8 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-#include "acl/acl.h"
 #include "test_common.h"
-
+#include "acl/acl.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
@@ -48,29 +47,26 @@ struct MrgSortExecutedNumList {
     }                                                                            \
   } while (0)
 
-void LaunchFixpipe_cc_gm_ub_kernel(__fp16 *a, __fp16 *b, float *gm_out,
-                                   float *ub_roundtrip_out, void *stream);
+void LaunchFixpipe_cc_gm_kernel(__fp16 *src, __fp16 *id, float *out,
+                                float *outCbuf,
+                                void *stream);
 
 int main() {
-  constexpr size_t kM = 16;
-  constexpr size_t kN = 16;
-  constexpr size_t kK = 16;
-  constexpr size_t aElem = kM * kK;
-  constexpr size_t bElem = kK * kN;
-  constexpr size_t cElem = kM * kN;
+  constexpr size_t kSrcElem = 50 * 64;
+  constexpr size_t kIdElem = 40 * 50;
+  constexpr size_t kOutElem = 40 * 64;
+  constexpr size_t kSrcSize = kSrcElem * sizeof(__fp16);
+  constexpr size_t kIdSize = kIdElem * sizeof(__fp16);
+  constexpr size_t kOutSize = kOutElem * sizeof(float);
 
-  constexpr size_t aSize = aElem * sizeof(__fp16);
-  constexpr size_t bSize = bElem * sizeof(__fp16);
-  constexpr size_t cSize = cElem * sizeof(float);
-
-  __fp16 *aHost = nullptr;
-  __fp16 *bHost = nullptr;
-  float *gmOutHost = nullptr;
-  float *ubRoundtripHost = nullptr;
-  __fp16 *aDevice = nullptr;
-  __fp16 *bDevice = nullptr;
-  float *gmOutDevice = nullptr;
-  float *ubRoundtripDevice = nullptr;
+  __fp16 *srcHost = nullptr;
+  __fp16 *idHost = nullptr;
+  float *outHost = nullptr;
+  float *outCbufHost = nullptr;
+  __fp16 *srcDevice = nullptr;
+  __fp16 *idDevice = nullptr;
+  float *outDevice = nullptr;
+  float *outCbufDevice = nullptr;
 
   int rc = 0;
   bool aclInited = false;
@@ -87,58 +83,50 @@ int main() {
   deviceSet = true;
   ACL_CHECK(aclrtCreateStream(&stream));
 
-  ACL_CHECK(aclrtMallocHost((void **)&aHost, aSize));
-  ACL_CHECK(aclrtMallocHost((void **)&bHost, bSize));
-  ACL_CHECK(aclrtMallocHost((void **)&gmOutHost, cSize));
-  ACL_CHECK(aclrtMallocHost((void **)&ubRoundtripHost, cSize));
-  ACL_CHECK(aclrtMalloc((void **)&aDevice, aSize, ACL_MEM_MALLOC_HUGE_FIRST));
-  ACL_CHECK(aclrtMalloc((void **)&bDevice, bSize, ACL_MEM_MALLOC_HUGE_FIRST));
-  ACL_CHECK(aclrtMalloc((void **)&gmOutDevice, cSize, ACL_MEM_MALLOC_HUGE_FIRST));
-  ACL_CHECK(
-      aclrtMalloc((void **)&ubRoundtripDevice, cSize, ACL_MEM_MALLOC_HUGE_FIRST));
+  ACL_CHECK(aclrtMallocHost((void **)&srcHost, kSrcSize));
+  ACL_CHECK(aclrtMallocHost((void **)&idHost, kIdSize));
+  ACL_CHECK(aclrtMallocHost((void **)&outHost, kOutSize));
+  ACL_CHECK(aclrtMallocHost((void **)&outCbufHost, kOutSize));
+  ACL_CHECK(aclrtMalloc((void **)&srcDevice, kSrcSize, ACL_MEM_MALLOC_HUGE_FIRST));
+  ACL_CHECK(aclrtMalloc((void **)&idDevice, kIdSize, ACL_MEM_MALLOC_HUGE_FIRST));
+  ACL_CHECK(aclrtMalloc((void **)&outDevice, kOutSize, ACL_MEM_MALLOC_HUGE_FIRST));
+  ACL_CHECK(aclrtMalloc((void **)&outCbufDevice, kOutSize, ACL_MEM_MALLOC_HUGE_FIRST));
 
-  inputSize = aSize;
-  FILE_CHECK(ReadFile("./v1.bin", inputSize, aHost, aSize) && inputSize == aSize,
+  inputSize = kIdSize;
+  FILE_CHECK(ReadFile("./v1.bin", inputSize, idHost, kIdSize) && inputSize == kIdSize,
              "./v1.bin");
-  inputSize = bSize;
-  FILE_CHECK(ReadFile("./v2.bin", inputSize, bHost, bSize) && inputSize == bSize,
+  inputSize = kSrcSize;
+  FILE_CHECK(ReadFile("./v2.bin", inputSize, srcHost, kSrcSize) && inputSize == kSrcSize,
              "./v2.bin");
-  inputSize = cSize;
-  FILE_CHECK(ReadFile("./v3.bin", inputSize, gmOutHost, cSize) &&
-                 inputSize == cSize,
+  inputSize = kOutSize;
+  FILE_CHECK(ReadFile("./v3.bin", inputSize, outHost, kOutSize) && inputSize == kOutSize,
              "./v3.bin");
-  inputSize = cSize;
-  FILE_CHECK(ReadFile("./v4.bin", inputSize, ubRoundtripHost, cSize) &&
-                 inputSize == cSize,
+  inputSize = kOutSize;
+  FILE_CHECK(ReadFile("./v4.bin", inputSize, outCbufHost, kOutSize) && inputSize == kOutSize,
              "./v4.bin");
 
-  ACL_CHECK(aclrtMemcpy(aDevice, aSize, aHost, aSize, ACL_MEMCPY_HOST_TO_DEVICE));
-  ACL_CHECK(aclrtMemcpy(bDevice, bSize, bHost, bSize, ACL_MEMCPY_HOST_TO_DEVICE));
-  ACL_CHECK(aclrtMemcpy(gmOutDevice, cSize, gmOutHost, cSize,
-                        ACL_MEMCPY_HOST_TO_DEVICE));
-  ACL_CHECK(aclrtMemcpy(ubRoundtripDevice, cSize, ubRoundtripHost, cSize,
-                        ACL_MEMCPY_HOST_TO_DEVICE));
+  ACL_CHECK(aclrtMemcpy(srcDevice, kSrcSize, srcHost, kSrcSize, ACL_MEMCPY_HOST_TO_DEVICE));
+  ACL_CHECK(aclrtMemcpy(idDevice, kIdSize, idHost, kIdSize, ACL_MEMCPY_HOST_TO_DEVICE));
+  ACL_CHECK(aclrtMemcpy(outDevice, kOutSize, outHost, kOutSize, ACL_MEMCPY_HOST_TO_DEVICE));
+  ACL_CHECK(aclrtMemcpy(outCbufDevice, kOutSize, outCbufHost, kOutSize, ACL_MEMCPY_HOST_TO_DEVICE));
 
-  LaunchFixpipe_cc_gm_ub_kernel(aDevice, bDevice, gmOutDevice, ubRoundtripDevice,
-                                stream);
+  LaunchFixpipe_cc_gm_kernel(srcDevice, idDevice, outDevice, outCbufDevice, stream);
   ACL_CHECK(aclrtSynchronizeStream(stream));
 
-  ACL_CHECK(aclrtMemcpy(gmOutHost, cSize, gmOutDevice, cSize,
-                        ACL_MEMCPY_DEVICE_TO_HOST));
-  ACL_CHECK(aclrtMemcpy(ubRoundtripHost, cSize, ubRoundtripDevice, cSize,
-                        ACL_MEMCPY_DEVICE_TO_HOST));
-  FILE_CHECK(WriteFile("./v3.bin", gmOutHost, cSize), "./v3.bin");
-  FILE_CHECK(WriteFile("./v4.bin", ubRoundtripHost, cSize), "./v4.bin");
+  ACL_CHECK(aclrtMemcpy(outHost, kOutSize, outDevice, kOutSize, ACL_MEMCPY_DEVICE_TO_HOST));
+  ACL_CHECK(aclrtMemcpy(outCbufHost, kOutSize, outCbufDevice, kOutSize, ACL_MEMCPY_DEVICE_TO_HOST));
+  FILE_CHECK(WriteFile("./v3.bin", outHost, kOutSize), "./v3.bin");
+  FILE_CHECK(WriteFile("./v4.bin", outCbufHost, kOutSize), "./v4.bin");
 
 cleanup:
-  aclrtFree(aDevice);
-  aclrtFree(bDevice);
-  aclrtFree(gmOutDevice);
-  aclrtFree(ubRoundtripDevice);
-  aclrtFreeHost(aHost);
-  aclrtFreeHost(bHost);
-  aclrtFreeHost(gmOutHost);
-  aclrtFreeHost(ubRoundtripHost);
+  aclrtFree(srcDevice);
+  aclrtFree(idDevice);
+  aclrtFree(outDevice);
+  aclrtFree(outCbufDevice);
+  aclrtFreeHost(srcHost);
+  aclrtFreeHost(idHost);
+  aclrtFreeHost(outHost);
+  aclrtFreeHost(outCbufHost);
   if (stream != nullptr)
     aclrtDestroyStream(stream);
   if (deviceSet)

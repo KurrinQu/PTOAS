@@ -39,24 +39,26 @@ using namespace PtoTestCommon;
     }                                                                            \
   } while (0)
 
-void LaunchFixpipe_quant_ub_cv_kernel(__fp16 *a, __fp16 *b, float *fp,
+void LaunchFixpipe_quant_ub_cv_kernel(__fp16 *src, __fp16 *id, uint32_t *fp,
                                       __fp16 *out, void *stream);
 
 int main() {
-  constexpr size_t kHalfElems = 16 * 16;
-  constexpr size_t kFpElems = 32;
-  constexpr size_t kSizeA = kHalfElems * sizeof(__fp16);
-  constexpr size_t kSizeB = kHalfElems * sizeof(__fp16);
-  constexpr size_t kSizeFp = kFpElems * sizeof(float);
-  constexpr size_t kSizeOut = kHalfElems * sizeof(__fp16);
+  constexpr size_t kSizeSrcElems = 50 * 64;
+  constexpr size_t kSizeIdElems = 40 * 50;
+  constexpr size_t kFpElems = 128;
+  constexpr size_t kOutElems = 40 * 64;
+  constexpr size_t kSizeSrc = kSizeSrcElems * sizeof(__fp16);
+  constexpr size_t kSizeId = kSizeIdElems * sizeof(__fp16);
+  constexpr size_t kSizeFp = kFpElems * sizeof(uint32_t);
+  constexpr size_t kSizeOut = kOutElems * sizeof(__fp16);
 
-  __fp16 *aHost = nullptr;
-  __fp16 *bHost = nullptr;
-  float *fpHost = nullptr;
+  __fp16 *srcHost = nullptr;
+  __fp16 *idHost = nullptr;
+  uint32_t *fpHost = nullptr;
   __fp16 *outHost = nullptr;
-  __fp16 *aDevice = nullptr;
-  __fp16 *bDevice = nullptr;
-  float *fpDevice = nullptr;
+  __fp16 *srcDevice = nullptr;
+  __fp16 *idDevice = nullptr;
+  uint32_t *fpDevice = nullptr;
   __fp16 *outDevice = nullptr;
 
   int rc = 0;
@@ -74,20 +76,20 @@ int main() {
   deviceSet = true;
   ACL_CHECK(aclrtCreateStream(&stream));
 
-  ACL_CHECK(aclrtMallocHost((void **)&aHost, kSizeA));
-  ACL_CHECK(aclrtMallocHost((void **)&bHost, kSizeB));
+  ACL_CHECK(aclrtMallocHost((void **)&srcHost, kSizeSrc));
+  ACL_CHECK(aclrtMallocHost((void **)&idHost, kSizeId));
   ACL_CHECK(aclrtMallocHost((void **)&fpHost, kSizeFp));
   ACL_CHECK(aclrtMallocHost((void **)&outHost, kSizeOut));
-  ACL_CHECK(aclrtMalloc((void **)&aDevice, kSizeA, ACL_MEM_MALLOC_HUGE_FIRST));
-  ACL_CHECK(aclrtMalloc((void **)&bDevice, kSizeB, ACL_MEM_MALLOC_HUGE_FIRST));
+  ACL_CHECK(aclrtMalloc((void **)&srcDevice, kSizeSrc, ACL_MEM_MALLOC_HUGE_FIRST));
+  ACL_CHECK(aclrtMalloc((void **)&idDevice, kSizeId, ACL_MEM_MALLOC_HUGE_FIRST));
   ACL_CHECK(aclrtMalloc((void **)&fpDevice, kSizeFp, ACL_MEM_MALLOC_HUGE_FIRST));
   ACL_CHECK(aclrtMalloc((void **)&outDevice, kSizeOut, ACL_MEM_MALLOC_HUGE_FIRST));
 
-  inputSize = kSizeA;
-  FILE_CHECK(ReadFile("./v1.bin", inputSize, aHost, kSizeA) && inputSize == kSizeA,
+  inputSize = kSizeId;
+  FILE_CHECK(ReadFile("./v1.bin", inputSize, idHost, kSizeId) && inputSize == kSizeId,
              "./v1.bin");
-  inputSize = kSizeB;
-  FILE_CHECK(ReadFile("./v2.bin", inputSize, bHost, kSizeB) && inputSize == kSizeB,
+  inputSize = kSizeSrc;
+  FILE_CHECK(ReadFile("./v2.bin", inputSize, srcHost, kSizeSrc) && inputSize == kSizeSrc,
              "./v2.bin");
   inputSize = kSizeFp;
   FILE_CHECK(ReadFile("./v3.bin", inputSize, fpHost, kSizeFp) && inputSize == kSizeFp,
@@ -97,13 +99,13 @@ int main() {
                  inputSize == kSizeOut,
              "./v4.bin");
 
-  ACL_CHECK(aclrtMemcpy(aDevice, kSizeA, aHost, kSizeA, ACL_MEMCPY_HOST_TO_DEVICE));
-  ACL_CHECK(aclrtMemcpy(bDevice, kSizeB, bHost, kSizeB, ACL_MEMCPY_HOST_TO_DEVICE));
+  ACL_CHECK(aclrtMemcpy(srcDevice, kSizeSrc, srcHost, kSizeSrc, ACL_MEMCPY_HOST_TO_DEVICE));
+  ACL_CHECK(aclrtMemcpy(idDevice, kSizeId, idHost, kSizeId, ACL_MEMCPY_HOST_TO_DEVICE));
   ACL_CHECK(aclrtMemcpy(fpDevice, kSizeFp, fpHost, kSizeFp, ACL_MEMCPY_HOST_TO_DEVICE));
   ACL_CHECK(aclrtMemcpy(outDevice, kSizeOut, outHost, kSizeOut,
                         ACL_MEMCPY_HOST_TO_DEVICE));
 
-  LaunchFixpipe_quant_ub_cv_kernel(aDevice, bDevice, fpDevice, outDevice, stream);
+  LaunchFixpipe_quant_ub_cv_kernel(srcDevice, idDevice, fpDevice, outDevice, stream);
   ACL_CHECK(aclrtSynchronizeStream(stream));
 
   ACL_CHECK(aclrtMemcpy(outHost, kSizeOut, outDevice, kSizeOut,
@@ -111,12 +113,12 @@ int main() {
   FILE_CHECK(WriteFile("./v4.bin", outHost, kSizeOut), "./v4.bin");
 
 cleanup:
-  aclrtFree(aDevice);
-  aclrtFree(bDevice);
+  aclrtFree(srcDevice);
+  aclrtFree(idDevice);
   aclrtFree(fpDevice);
   aclrtFree(outDevice);
-  aclrtFreeHost(aHost);
-  aclrtFreeHost(bHost);
+  aclrtFreeHost(srcHost);
+  aclrtFreeHost(idHost);
   aclrtFreeHost(fpHost);
   aclrtFreeHost(outHost);
   if (stream != nullptr)

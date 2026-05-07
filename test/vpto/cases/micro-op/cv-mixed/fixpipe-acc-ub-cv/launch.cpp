@@ -39,11 +39,10 @@ struct MrgSortExecutedNumList {
 #endif
 
 extern "C" __global__ [aicore] void fixpipe_acc_ub_cv_kernel(
-    __gm__ __fp16 *a, __gm__ __fp16 *b, __gm__ float *out);
+    __gm__ __fp16 *src, __gm__ __fp16 *id, __gm__ float *out);
 
-void LaunchFixpipe_acc_ub_cv_kernel(__fp16 *a, __fp16 *b, float *out,
+void LaunchFixpipe_acc_ub_cv_kernel(__fp16 *src, __fp16 *id, float *out,
                                     void *stream) {
-  fixpipe_acc_ub_cv_kernel<<<1, nullptr, stream>>>((__gm__ __fp16 *)a,
-                                                   (__gm__ __fp16 *)b,
-                                                   (__gm__ float *)out);
+  fixpipe_acc_ub_cv_kernel<<<1, nullptr, stream>>>(
+      (__gm__ __fp16 *)src, (__gm__ __fp16 *)id, (__gm__ float *)out);
 }

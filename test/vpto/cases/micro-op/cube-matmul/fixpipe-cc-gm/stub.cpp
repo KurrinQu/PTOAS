@@ -14,11 +14,11 @@
 #define __gm__
 #endif
 
-extern "C" __global__ [aicore] void fixpipe_cc_gm_ub_kernel(
-    __gm__ __fp16 *a, __gm__ __fp16 *b, __gm__ float *gm_out,
-    __gm__ float *ub_roundtrip_out) {
-  (void)a;
-  (void)b;
-  (void)gm_out;
-  (void)ub_roundtrip_out;
+extern "C" __global__ [aicore] void fixpipe_cc_gm_kernel(
+    __gm__ __fp16 *src, __gm__ __fp16 *id, __gm__ float *out,
+    __gm__ float *out_cbuf) {
+  (void)src;
+  (void)id;
+  (void)out;
+  (void)out_cbuf;
 }

@@ -52,7 +52,18 @@ pto.mad_acc %lhs, %rhs, %dst, %m, %n, %k
 ```
 - **semantics:** Accumulating cube matmul, `dst += lhs * rhs`.
 
-**Parameter Table:** same as `pto.mad`.
+**Parameter Table:**
+
+| Parameter | Width | Description |
+|-----------|-------|-------------|
+| `%lhs` | ptr | L0A input (`left`) |
+| `%rhs` | ptr | L0B input (`right`) |
+| `%dst` | ptr | L0C accumulator (`acc`) |
+| `%m` | i64 | M size |
+| `%n` | i64 | N size |
+| `%k` | i64 | K size |
+| `unit_flag_ctrl` | i32 attr | Accumulator control flag |
+| `disable_gemv` | bool attr | GEMV-disable control bit |
 
 **Constraints:**
 
@@ -107,7 +118,18 @@ pto.mad_mx %lhs, %rhs, %dst, %m, %n, %k
 ```
 - **semantics:** Zero-init MX cube matmul.
 
-**Parameter Table:** same as `pto.mad`.
+**Parameter Table:**
+
+| Parameter | Width | Description |
+|-----------|-------|-------------|
+| `%lhs` | ptr | MX L0A input (`left`) |
+| `%rhs` | ptr | MX L0B input (`right`) |
+| `%dst` | ptr | L0C accumulator (`acc`) |
+| `%m` | i64 | M size |
+| `%n` | i64 | N size |
+| `%k` | i64 | K size, typically matching MX tile granularity |
+| `unit_flag_ctrl` | i32 attr | Accumulator control flag |
+| `disable_gemv` | bool attr | GEMV-disable control bit |
 
 **Constraints:**
 
@@ -131,7 +153,18 @@ pto.mad_mx_acc %lhs, %rhs, %dst, %m, %n, %k
 ```
 - **semantics:** Accumulating MX cube matmul.
 
-**Parameter Table:** same as `pto.mad`.
+**Parameter Table:**
+
+| Parameter | Width | Description |
+|-----------|-------|-------------|
+| `%lhs` | ptr | MX L0A input (`left`) |
+| `%rhs` | ptr | MX L0B input (`right`) |
+| `%dst` | ptr | L0C accumulator (`acc`) |
+| `%m` | i64 | M size |
+| `%n` | i64 | N size |
+| `%k` | i64 | K size, typically matching MX tile granularity |
+| `unit_flag_ctrl` | i32 attr | Accumulator control flag |
+| `disable_gemv` | bool attr | GEMV-disable control bit |
 
 **Constraints:** same as `pto.mad_mx`.
 
@@ -153,7 +186,19 @@ pto.mad_mx_bias %lhs, %rhs, %dst, %bias, %m, %n, %k
 ```
 - **semantics:** Bias-init MX cube matmul.
 
-**Parameter Table:** same as `pto.mad_bias`.
+**Parameter Table:**
+
+| Parameter | Width | Description |
+|-----------|-------|-------------|
+| `%lhs` | ptr | MX L0A input (`left`) |
+| `%rhs` | ptr | MX L0B input (`right`) |
+| `%dst` | ptr | L0C accumulator (`acc`) |
+| `%bias` | ptr | Bias-table pointer (`bias`) |
+| `%m` | i64 | M size |
+| `%n` | i64 | N size |
+| `%k` | i64 | K size, typically matching MX tile granularity |
+| `unit_flag_ctrl` | i32 attr | Accumulator control flag |
+| `disable_gemv` | bool attr | GEMV-disable control bit |
 
 **Constraints:** same as `pto.mad_mx` plus bias address-space requirement.
 
@@ -179,7 +224,15 @@ pto.cube_load %src, %dst, %len_burst
 ```
 - **semantics:** Structured GM-to-L1 (`cbuf`) wrapper.
 
-**Parameter Table:** `%src`, `%dst`, `%len_burst`, `nburst(...)`, optional `loop(...)`.
+**Parameter Table:**
+
+| Parameter | Width | Description |
+|-----------|-------|-------------|
+| `%src` | ptr | GM source pointer |
+| `%dst` | ptr | L1 destination pointer (`mat`) |
+| `%len_burst` | i64 | Burst length |
+| `nburst(%count, %src_stride, %dst_stride)` | i64 triple | Inner DMA burst count and strides |
+| `loop(%count_i, %src_stride_i, %dst_stride_i)` | i64 triple | Optional outer loop triplet, repeatable |
 
 **Constraints:**
 
@@ -206,7 +259,15 @@ pto.cube_store %src, %dst, %len_burst
 ```
 - **semantics:** Structured L1 (`cbuf`) to UB wrapper.
 
-**Parameter Table:** `%src`, `%dst`, `%len_burst`, `nburst(...)`, optional `loop(...)`.
+**Parameter Table:**
+
+| Parameter | Width | Description |
+|-----------|-------|-------------|
+| `%src` | ptr | L1 source pointer (`mat`) |
+| `%dst` | ptr | UB destination pointer |
+| `%len_burst` | i64 | Burst length |
+| `nburst(%count, %src_stride, %dst_stride)` | i64 triple | Inner DMA burst count and strides |
+| `loop(%count_i, %src_stride_i, %dst_stride_i)` | i64 triple | Optional outer loop triplet, repeatable |
 
 **Constraints:**
 
@@ -231,7 +292,17 @@ pto.cube_load_frac %src, %dst, nd2nz|dn2nz, shape(%n_value, %d_value), src_layou
 ```
 - **semantics:** Structured fractal-load wrapper for `nd2nz` / `dn2nz`.
 
-**Parameter Table:** source/destination pointers, shape fields, source layout fields, destination group fields, control fields.
+**Parameter Table:**
+
+| Parameter | Width | Description |
+|-----------|-------|-------------|
+| `%src` | ptr | GM source pointer |
+| `%dst` | ptr | L1 destination pointer (`mat`) |
+| `nd2nz` / `dn2nz` | enum token | Fractal load mode |
+| `shape(%n_value, %d_value)` | i64 pair | Logical N and D shape |
+| `src_layout(%src_inner_stride[, %src_outer_stride])` | i64 / i64 pair | Source layout stride fields |
+| `dst_group(%group_count, %dst_loop2_stride, %dst_loop3_stride, %dst_loop4_stride)` | i64 tuple | Destination group count and nested destination strides |
+| `ctrl(%l2_cache_ctrl, %smallc0_en)` | i64, i1 | L2 cache control and small-C0 enable |
 
 **Constraints:**
 
@@ -328,7 +399,14 @@ pto.left_load %src, %dst, %m, %k
 ```
 - **semantics:** Structured L1-to-L0A wrapper.
 
-**Parameter Table:** `%src`, `%dst`, `%m`, `%k`.
+**Parameter Table:**
+
+| Parameter | Width | Description |
+|-----------|-------|-------------|
+| `%src` | ptr | L1 source pointer (`mat`) |
+| `%dst` | ptr | L0A destination pointer (`left`) |
+| `%m` | i64 | M tile size |
+| `%k` | i64 | K tile size |
 
 **Constraints:**
 
@@ -352,7 +430,14 @@ pto.right_load %src, %dst, %k, %n
 ```
 - **semantics:** Structured L1-to-L0B wrapper.
 
-**Parameter Table:** `%src`, `%dst`, `%k`, `%n`.
+**Parameter Table:**
+
+| Parameter | Width | Description |
+|-----------|-------|-------------|
+| `%src` | ptr | L1 source pointer (`mat`) |
+| `%dst` | ptr | L0B destination pointer (`right`) |
+| `%k` | i64 | K tile size |
+| `%n` | i64 | N tile size |
 
 **Constraints:**
 
@@ -376,7 +461,14 @@ pto.left_load_mx %src, %dst, %m, %k
 ```
 - **semantics:** MX-mode L1-to-L0A wrapper.
 
-**Parameter Table:** `%src`, `%dst`, `%m`, `%k`.
+**Parameter Table:**
+
+| Parameter | Width | Description |
+|-----------|-------|-------------|
+| `%src` | ptr | MX-formatted L1 source pointer (`mat`) |
+| `%dst` | ptr | MX L0A destination pointer (`left`) |
+| `%m` | i64 | M tile size |
+| `%k` | i64 | K tile size |
 
 **Constraints:**
 
@@ -400,7 +492,14 @@ pto.right_load_mx %src, %dst, %k, %n
 ```
 - **semantics:** MX-mode L1-to-L0B wrapper.
 
-**Parameter Table:** `%src`, `%dst`, `%k`, `%n`.
+**Parameter Table:**
+
+| Parameter | Width | Description |
+|-----------|-------|-------------|
+| `%src` | ptr | MX-formatted L1 source pointer (`mat`) |
+| `%dst` | ptr | MX L0B destination pointer (`right`) |
+| `%k` | i64 | K tile size |
+| `%n` | i64 | N tile size |
 
 **Constraints:**
 
@@ -419,12 +518,29 @@ pto.right_load_mx %l1_b, %l0b, %c64_i64, %c16_i64
 
 - **syntax:**
 ```mlir
-pto.acc_store %src, %dst, %m, %n, %src_stride, %dst_stride, %unit_flag_ctrl, %quant_pre, %relu_pre_mode, nz2nd|nz2dn(%loop0_src_stride)?|nz2nz(%split)? [loop3(%count, %src_stride3, %dst_stride3)]?
-  : !pto.ptr<T, acc>, !pto.ptr<T, mat>, ...
+pto.acc_store %src, %dst, %m, %n, %src_stride, %dst_stride, %unit_flag_ctrl, %quant_pre, %relu_pre_mode, [fpc(%fpc_addr),]? nz2nd|nz2dn[, loop0_src_stride(%loop0_src_stride)]?|nz2nz[, split(%split)]? [loop3(%count, %src_stride3, %dst_stride3)]?
+  : !pto.ptr<T, acc>, !pto.ptr<T, mat>, ..., [fpc(!pto.ptr<ui64, scaling>),]? ...
 ```
 - **semantics:** Structured L0C (`acc`) to L1 (`cbuf`) wrapper.
 
-**Parameter Table:** `%src`, `%dst`, shape/stride fields, pre/post fields, layout mode (`nz2nd` / `nz2dn` / `nz2nz`), optional `loop3`.
+**Parameter Table:**
+
+| Parameter | Width | Description |
+|-----------|-------|-------------|
+| `%src` | ptr | L0C source pointer (`acc`) |
+| `%dst` | ptr | L1 destination pointer (`mat`) |
+| `%m` | i64 | M size |
+| `%n` | i64 | N size |
+| `%src_stride` | i64 | Source stride field used in fixpipe config |
+| `%dst_stride` | i64 | Destination stride field used in fixpipe config |
+| `%unit_flag_ctrl` | i64 | Unit-flag control bits |
+| `%quant_pre` | i64 | Quantization pre-mode bits |
+| `%relu_pre_mode` | i64 | ReLU pre-mode bits |
+| `fpc(%fpc_addr)` | optional `!pto.ptr<ui64, scaling>` | Optional Fixpipe parameter block pointer. Lowering casts the pointer to an integer address before emitting `set_fpc`. |
+| `nz2nd` / `nz2dn` / `nz2nz` | enum token | Layout/store mode selector |
+| `loop0_src_stride(%loop0_src_stride)` | optional i64 | Extra mode parameter used by `nz2dn` |
+| `split(%split)` | optional i64 | Extra mode parameter used by `nz2nz` |
+| `loop3(%count, %src_stride3, %dst_stride3)` | optional i64 triple | Optional loop3 hardware control tuple |
 
 **Constraints:**
 
@@ -433,8 +549,8 @@ pto.acc_store %src, %dst, %m, %n, %src_stride, %dst_stride, %unit_flag_ctrl, %qu
 **Example:**
 
 ```mlir
-pto.acc_store %l0c, %l1_out, %c16_i64, %c16_i64, %c16_i64, %c16_i64, %c0_i64, %c0_i64, %c0_i64, nz2nd
-  : !pto.ptr<f32, acc>, !pto.ptr<f32, mat>, i64, i64, i64, i64, i64, i64, i64, nz2nd
+pto.acc_store %l0c, %l1_out, %c16_i64, %c16_i64, %c16_i64, %c16_i64, %c0_i64, %c33_i64, %c0_i64, fpc(%fb_fp), nz2nd
+  : !pto.ptr<f32, acc>, !pto.ptr<f32, mat>, i64, i64, i64, i64, i64, i64, i64, fpc(!pto.ptr<ui64, scaling>), nz2nd
 ```
 
 ---
@@ -443,12 +559,31 @@ pto.acc_store %l0c, %l1_out, %c16_i64, %c16_i64, %c16_i64, %c16_i64, %c0_i64, %c
 
 - **syntax:**
 ```mlir
-pto.acc_store_gm %src, %dst, %m, %n, %src_stride, %dst_stride, %unit_flag_ctrl, %quant_pre, %relu_pre_mode, %sid, %l2_cache_ctrl, nz2nd|nz2dn(%loop0_src_stride)?|nz2nz(%split)? [loop3(%count, %src_stride3, %dst_stride3)]?
-  : !pto.ptr<T, acc>, !pto.ptr<T, gm>, ...
+pto.acc_store_gm %src, %dst, %m, %n, %src_stride, %dst_stride, %unit_flag_ctrl, %quant_pre, %relu_pre_mode, %sid, %l2_cache_ctrl, [fpc(%fpc_addr),]? nz2nd|nz2dn[, loop0_src_stride(%loop0_src_stride)]?|nz2nz[, split(%split)]? [loop3(%count, %src_stride3, %dst_stride3)]?
+  : !pto.ptr<T, acc>, !pto.ptr<T, gm>, ..., [fpc(!pto.ptr<ui64, scaling>),]? ...
 ```
 - **semantics:** Structured L0C (`acc`) to GM wrapper.
 
-**Parameter Table:** same fields as `pto.acc_store` plus `%sid` and `%l2_cache_ctrl`.
+**Parameter Table:**
+
+| Parameter | Width | Description |
+|-----------|-------|-------------|
+| `%src` | ptr | L0C source pointer (`acc`) |
+| `%dst` | ptr | GM destination pointer |
+| `%m` | i64 | M size |
+| `%n` | i64 | N size |
+| `%src_stride` | i64 | Source stride field used in fixpipe config |
+| `%dst_stride` | i64 | Destination stride field used in fixpipe config |
+| `%unit_flag_ctrl` | i64 | Unit-flag control bits |
+| `%quant_pre` | i64 | Quantization pre-mode bits |
+| `%relu_pre_mode` | i64 | ReLU pre-mode bits |
+| `%sid` | i64 | GM store SID control |
+| `%l2_cache_ctrl` | i64 | GM-side L2 cache control |
+| `fpc(%fpc_addr)` | optional `!pto.ptr<ui64, scaling>` | Optional Fixpipe parameter block pointer. Lowering casts the pointer to an integer address before emitting `set_fpc`. |
+| `nz2nd` / `nz2dn` / `nz2nz` | enum token | Layout/store mode selector |
+| `loop0_src_stride(%loop0_src_stride)` | optional i64 | Extra mode parameter used by `nz2dn` |
+| `split(%split)` | optional i64 | Extra mode parameter used by `nz2nz` |
+| `loop3(%count, %src_stride3, %dst_stride3)` | optional i64 triple | Optional loop3 hardware control tuple |
 
 **Constraints:**
 
@@ -457,8 +592,8 @@ pto.acc_store_gm %src, %dst, %m, %n, %src_stride, %dst_stride, %unit_flag_ctrl, 
 **Example:**
 
 ```mlir
-pto.acc_store_gm %l0c, %c_gm, %c16_i64, %c16_i64, %c16_i64, %c16_i64, %c0_i64, %c0_i64, %c0_i64, %c0_i64, %c0_i64, nz2nd
-  : !pto.ptr<f32, acc>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64, i64, i64, i64, nz2nd
+pto.acc_store_gm %l0c, %c_gm, %c16_i64, %c16_i64, %c16_i64, %c16_i64, %c0_i64, %c33_i64, %c0_i64, %c0_i64, %c0_i64, fpc(%fb_fp), nz2nd
+  : !pto.ptr<f32, acc>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64, i64, i64, i64, fpc(!pto.ptr<ui64, scaling>), nz2nd
 ```
 
 ---
@@ -467,12 +602,31 @@ pto.acc_store_gm %l0c, %c_gm, %c16_i64, %c16_i64, %c16_i64, %c16_i64, %c0_i64, %
 
 - **syntax:**
 ```mlir
-pto.acc_store_ub %src, %dst, %m, %n, %src_stride, %dst_stride, %unit_flag_ctrl, %quant_pre, %relu_pre_mode, %dual_dst_mode, %sub_blockid, nz2nd|nz2dn(%loop0_src_stride)?|nz2nz(%channel_split_en)? [loop3(%count, %src_stride3, %dst_stride3)]?
-  : !pto.ptr<T, acc>, !pto.ptr<T, ub>, ...
+pto.acc_store_ub %src, %dst, %m, %n, %src_stride, %dst_stride, %unit_flag_ctrl, %quant_pre, %relu_pre_mode, [fpc(%fpc_addr),]? %dual_dst_mode, %sub_blockid, nz2nd|nz2dn[, loop0_src_stride(%loop0_src_stride)]?|nz2nz[, split(%split)]? [loop3(%count, %src_stride3, %dst_stride3)]?
+  : !pto.ptr<T, acc>, !pto.ptr<T, ub>, ..., [fpc(!pto.ptr<ui64, scaling>),]? ...
 ```
 - **semantics:** Structured L0C (`acc`) to UB wrapper.
 
-**Parameter Table:** same fields as `pto.acc_store` plus `%dual_dst_mode`, `%sub_blockid`.
+**Parameter Table:**
+
+| Parameter | Width | Description |
+|-----------|-------|-------------|
+| `%src` | ptr | L0C source pointer (`acc`) |
+| `%dst` | ptr | UB destination pointer |
+| `%m` | i64 | M size |
+| `%n` | i64 | N size |
+| `%src_stride` | i64 | Source stride field used in fixpipe config |
+| `%dst_stride` | i64 | Destination stride field used in fixpipe config |
+| `%unit_flag_ctrl` | i64 | Unit-flag control bits |
+| `%quant_pre` | i64 | Quantization pre-mode bits |
+| `%relu_pre_mode` | i64 | ReLU pre-mode bits |
+| `fpc(%fpc_addr)` | optional `!pto.ptr<ui64, scaling>` | Optional Fixpipe parameter block pointer. Lowering casts the pointer to an integer address before emitting `set_fpc`. |
+| `%dual_dst_mode` | i64 | Dual-destination mode control |
+| `%sub_blockid` | i64 | Sub-block id control |
+| `nz2nd` / `nz2dn` / `nz2nz` | enum token | Layout/store mode selector |
+| `loop0_src_stride(%loop0_src_stride)` | optional i64 | Extra mode parameter used by `nz2dn` |
+| `split(%split)` | optional i64 | Extra mode parameter used by `nz2nz` |
+| `loop3(%count, %src_stride3, %dst_stride3)` | optional i64 triple | Optional loop3 hardware control tuple |
 
 **Constraints:**
 
@@ -481,8 +635,8 @@ pto.acc_store_ub %src, %dst, %m, %n, %src_stride, %dst_stride, %unit_flag_ctrl, 
 **Example:**
 
 ```mlir
-pto.acc_store_ub %l0c, %ub_out, %c16_i64, %c16_i64, %c16_i64, %c16_i64, %c0_i64, %c0_i64, %c0_i64, %c0_i64, %c0_i64, nz2nd
-  : !pto.ptr<f32, acc>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i64, i64, i64, i64, nz2nd
+pto.acc_store_ub %l0c, %ub_out, %c16_i64, %c16_i64, %c16_i64, %c16_i64, %c0_i64, %c33_i64, %c0_i64, fpc(%fb_fp), %c0_i64, %c0_i64, nz2nd
+  : !pto.ptr<f32, acc>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i64, i64, fpc(!pto.ptr<ui64, scaling>), i64, i64, nz2nd
 ```
 
 ---

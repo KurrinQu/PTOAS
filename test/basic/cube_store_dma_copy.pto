@@ -25,11 +25,8 @@ module attributes {"pto.target_arch" = "a5"} {
 }
 
 // ROUNDTRIP-LABEL: func.func @cube_store_dma_copy_probe(
-// ROUNDTRIP: pto.cube_store %{{.*}}, %{{.*}}, %{{.*}}
-// ROUNDTRIP-SAME: nburst(%{{.*}}, %{{.*}}, %{{.*}})
-// ROUNDTRIP-SAME: loop(%{{.*}}, %{{.*}}, %{{.*}})
-// ROUNDTRIP: pto.dma_copy %{{.*}}, %{{.*}}, %{{.*}}
-// ROUNDTRIP-SAME: nburst(%{{.*}}, %{{.*}}, %{{.*}})
+// ROUNDTRIP: pto.cube_store {{.*}} nburst({{.*}}) loop({{.*}})
+// ROUNDTRIP: pto.dma_copy {{.*}} nburst({{.*}})
 
 // EXPAND-LABEL: func.func @cube_store_dma_copy_probe(
 // EXPAND: scf.for

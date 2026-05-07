@@ -8,30 +8,71 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 import argparse
+import struct
 from pathlib import Path
 
 import numpy as np
 
 
-M = 16
-N = 16
-K = 16
-FP_ELEMS = 32
+M = 40
+N = 64
+K = 50
+FP_QUANT_ELEMS = 64
+FP_TRANSPORT_ELEMS = FP_QUANT_ELEMS * 2
 SEED = 97
 
 
+def extract_quant_params(quant: np.uint64) -> tuple[float, int, int]:
+    value = int(quant)
+    m1_bits = (value >> 13) & 0x7FFFF
+    offset = (value >> 37) & 0x1FF
+    sign = (value >> 46) & 0x1
+
+    sign_bit = (m1_bits >> 18) & 0x1
+    exponent = (m1_bits >> 10) & 0xFF
+    mantissa = m1_bits & 0x3FF
+    m1 = ((-1) ** sign_bit) * (1 + mantissa / 1024.0) * (2 ** (exponent - 127))
+    return m1, offset, sign
+
+
+def qf322f16_pre(data: np.ndarray, quant: np.ndarray) -> np.ndarray:
+    result = np.zeros(data.shape, dtype=np.float16)
+    for row in range(data.shape[0]):
+        for col in range(data.shape[1]):
+            m1, _, _ = extract_quant_params(quant[col])
+            scaled = np.array([data[row, col].astype(np.float32) * np.float32(m1)],
+                              dtype=np.float32)
+            result[row, col] = (scaled.view(np.uint32) >> np.uint32(16)).astype(
+                np.uint16).view(np.float16)[0]
+    return result
+
+
+def make_vector_quant_params(n: int) -> np.ndarray:
+    scales = (np.arange(n, dtype=np.float32) % np.float32(4.0)) + np.float32(1.0)
+    encoded = scales.astype(np.uint64)
+    for idx, scale in enumerate(scales):
+        encoded[idx] = struct.unpack("!I", struct.pack("!f", float(scale)))[0]
+    return np.frombuffer(encoded, np.uint64)
+
+
 def generate(output_dir: Path, seed: int) -> None:
-    rng = np.random.default_rng(seed)
-    a = rng.uniform(-2.0, 2.0, size=(M, K)).astype(np.float16)
-    b = rng.uniform(-2.0, 2.0, size=(K, N)).astype(np.float16)
-    fp = np.zeros((1, FP_ELEMS), dtype=np.float32)
+    a = (np.arange(M * K, dtype=np.float32).reshape(M, K) * np.float32(0.01) +
+         np.float32(0.5)).astype(np.float16)
+    b = (np.arange(K * N, dtype=np.float32).reshape(K, N) * np.float32(0.005) +
+         np.float32(0.25)).astype(np.float16)
+    fp = make_vector_quant_params(FP_QUANT_ELEMS)
     out = np.zeros((M, N), dtype=np.float16)
-    golden = np.zeros((M, N), dtype=np.float16)
+    matmul = np.zeros((M, N), dtype=np.float32)
+    a32 = a.astype(np.float32)
+    b32 = b.astype(np.float32)
+    for k_idx in range(K):
+        matmul += a32[:, k_idx:k_idx + 1] * b32[k_idx:k_idx + 1, :]
+    golden = qf322f16_pre(matmul, fp)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     a.reshape(-1).tofile(output_dir / "v1.bin")
     b.reshape(-1).tofile(output_dir / "v2.bin")
-    fp.reshape(-1).tofile(output_dir / "v3.bin")
+    fp.view(np.uint32).reshape(FP_TRANSPORT_ELEMS).tofile(output_dir / "v3.bin")
     out.reshape(-1).tofile(output_dir / "v4.bin")
     golden.reshape(-1).tofile(output_dir / "golden_v4.bin")
 

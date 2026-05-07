@@ -7,23 +7,22 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 module attributes {pto.target_arch = "a5"} {
-  func.func @fixpipe_acc_ub_cv_kernel_mix_aiv(%a_gm: !pto.ptr<f16, gm>,
-                                              %b_gm: !pto.ptr<f16, gm>,
-                                              %out_gm: !pto.ptr<f32, gm>)
+  func.func @fixpipe_acc_ub_cv_kernel_mix_aiv(%src_gm: !pto.ptr<f16, gm>,
+                                              %id_gm: !pto.ptr<f16, gm>,
+                                                              %out_gm: !pto.ptr<f32, gm>)
       attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
     %c0_i64 = arith.constant 0 : i64
-    %c128_i64 = arith.constant 128 : i64
-    %c8_i64 = arith.constant 8 : i64
-    %c512_i64 = arith.constant 512 : i64
+    %c40_i64 = arith.constant 40 : i64
+    %c256_i64 = arith.constant 256 : i64
 
-    %ub_out = pto.castptr %c512_i64 : i64 -> !pto.ptr<f32, ub>
+    %ub_out = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, ub>
     %subblock = pto.get_subblock_idx
     %is_subblock0 = arith.cmpi eq, %subblock, %c0_i64 : i64
 
     scf.if %is_subblock0 {
       pto.sync.wait <PIPE_MTE3>, 1
-      pto.dma_store %ub_out, %out_gm, %c128_i64
-        nburst(%c8_i64, %c128_i64, %c128_i64)
+      pto.dma_store %ub_out, %out_gm, %c256_i64
+        nburst(%c40_i64, %c256_i64, %c256_i64)
         : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64
     }
     pto.barrier #pto.pipe<PIPE_ALL>

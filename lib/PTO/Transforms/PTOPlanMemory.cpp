@@ -471,8 +471,7 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
                    pto::TGetOp, pto::TNotifyOp, pto::TWaitOp, pto::TTestOp,
                    pto::SyncAllOp,
                    pto::TBroadcastOp, pto::CommTGatherOp,
-                   pto::CommTScatterOp, pto::TReduceOp,
-                   pto::CubeLoadFracOp, pto::FpLoadOp>(op)) {
+                   pto::CommTScatterOp, pto::TReduceOp>(op)) {
       UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
       OpKillHandle(curOpInfo, live, op->getBlock());
     } else if (auto gpuLaunchOp = dyn_cast<gpu::LaunchFuncOp>(op)) {

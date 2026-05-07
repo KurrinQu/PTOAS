@@ -38,13 +38,14 @@ struct MrgSortExecutedNumList {
 #include "acl/acl.h"
 #endif
 
-extern "C" __global__ [aicore] void fixpipe_cc_gm_ub_kernel(
-    __gm__ __fp16 *a, __gm__ __fp16 *b, __gm__ float *gm_out,
-    __gm__ float *ub_roundtrip_out);
+extern "C" __global__ [aicore] void fixpipe_cc_gm_kernel(
+    __gm__ __fp16 *src, __gm__ __fp16 *id, __gm__ float *out,
+    __gm__ float *out_cbuf);
 
-void LaunchFixpipe_cc_gm_ub_kernel(__fp16 *a, __fp16 *b, float *gm_out,
-                                   float *ub_roundtrip_out, void *stream) {
-  fixpipe_cc_gm_ub_kernel<<<1, nullptr, stream>>>(
-      (__gm__ __fp16 *)a, (__gm__ __fp16 *)b, (__gm__ float *)gm_out,
-      (__gm__ float *)ub_roundtrip_out);
+void LaunchFixpipe_cc_gm_kernel(__fp16 *src, __fp16 *id, float *out,
+                                float *outCbuf,
+                                void *stream) {
+  fixpipe_cc_gm_kernel<<<1, nullptr, stream>>>(
+      (__gm__ __fp16 *)src, (__gm__ __fp16 *)id, (__gm__ float *)out,
+      (__gm__ float *)outCbuf);
 }

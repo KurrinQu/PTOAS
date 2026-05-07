@@ -127,6 +127,17 @@ static Value offsetPointerByBytes(Value basePtr, Value byteOffset,
   return rewriter.create<pto::CastPtrOp>(loc, ptrType, advanced);
 }
 
+static Value materializeFpcValue(Value fpc, PatternRewriter &rewriter,
+                                 Location loc) {
+  if (!fpc)
+    return {};
+  if (fpc.getType().isInteger(64))
+    return fpc;
+  if (isa<pto::PtrType>(fpc.getType()))
+    return rewriter.create<pto::CastPtrOp>(loc, rewriter.getI64Type(), fpc);
+  return {};
+}
+
 static Value buildAccumulatedByteOffset(Location loc, Value baseOffset,
                                         Value indexI64, Value stride,
                                         PatternRewriter &rewriter) {
@@ -912,6 +923,8 @@ struct ExpandAccStorePattern : public OpRewritePattern<pto::AccStoreOp> {
     Location loc = op.getLoc();
     Value zero = rewriter.create<arith::ConstantIntOp>(loc, 0, 64);
     Value one = rewriter.create<arith::ConstantIntOp>(loc, 1, 64);
+    if (Value fpc = materializeFpcValue(op.getFpc(), rewriter, loc))
+      rewriter.create<pto::SetFpcOp>(loc, fpc);
     pto::DmaLoopConfig hwLoop{one, zero, zero};
     if (Value loop3Count = op.getLoop3Count()) {
       hwLoop = {loop3Count, op.getLoop3SrcStride(), op.getLoop3DstStride()};
@@ -966,6 +979,8 @@ struct ExpandAccStoreGmPattern : public OpRewritePattern<pto::AccStoreGmOp> {
     Location loc = op.getLoc();
     Value zero = rewriter.create<arith::ConstantIntOp>(loc, 0, 64);
     Value one = rewriter.create<arith::ConstantIntOp>(loc, 1, 64);
+    if (Value fpc = materializeFpcValue(op.getFpc(), rewriter, loc))
+      rewriter.create<pto::SetFpcOp>(loc, fpc);
     pto::DmaLoopConfig hwLoop{one, zero, zero};
     if (Value loop3Count = op.getLoop3Count()) {
       hwLoop = {loop3Count, op.getLoop3SrcStride(), op.getLoop3DstStride()};
@@ -1019,6 +1034,8 @@ struct ExpandAccStoreUbPattern : public OpRewritePattern<pto::AccStoreUbOp> {
     Location loc = op.getLoc();
     Value zero = rewriter.create<arith::ConstantIntOp>(loc, 0, 64);
     Value one = rewriter.create<arith::ConstantIntOp>(loc, 1, 64);
+    if (Value fpc = materializeFpcValue(op.getFpc(), rewriter, loc))
+      rewriter.create<pto::SetFpcOp>(loc, fpc);
     pto::DmaLoopConfig hwLoop{one, zero, zero};
     if (Value loop3Count = op.getLoop3Count()) {
       hwLoop = {loop3Count, op.getLoop3SrcStride(), op.getLoop3DstStride()};

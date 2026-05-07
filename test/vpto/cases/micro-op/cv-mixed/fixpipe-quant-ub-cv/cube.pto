@@ -9,70 +9,89 @@
 // -----------------------------------------------------------------------------
 // case: micro-op/cv-mixed/fixpipe-quant-ub-cv
 // family: cv-mixed
-// target_ops: pto.cube_load, pto.left_load, pto.right_load, pto.mad,
-//   pto.fp_load, pto.set_fpc, pto.acc_store_ub, pto.sync.set, pto.sync.wait
-// scenarios: split-compile, cube-producer, vector-consumer, fixpipe-quant, wrapper-load-mad
+// target_ops: pto.cube_load_frac, pto.left_load, pto.right_load, pto.mad,
+//   pto.fp_load, pto.acc_store_ub, pto.sync.set, pto.sync.wait
+// scenarios: split-compile, cube-producer, vector-consumer, fixpipe-vector-quant-f16, fp-load, strict-matmul-golden
 // -----------------------------------------------------------------------------
 
 module attributes {pto.target_arch = "a5"} {
-  func.func @fixpipe_quant_ub_cv_kernel_mix_aic(%a_gm: !pto.ptr<f16, gm>,
-                                                %b_gm: !pto.ptr<f16, gm>,
-                                                %fp_gm: !pto.ptr<f32, gm>,
+  func.func @fixpipe_quant_ub_cv_kernel_mix_aic(%src_gm: !pto.ptr<f16, gm>,
+                                                %id_gm: !pto.ptr<f16, gm>,
+                                                %fp_gm: !pto.ptr<ui32, gm>,
                                                 %out_gm: !pto.ptr<f16, gm>)
       attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
     %c0_i64 = arith.constant 0 : i64
     %c1_i64 = arith.constant 1 : i64
-    %c2_i64 = arith.constant 2 : i64
-    %c4_i64 = arith.constant 4 : i64
-    %c16_i64 = arith.constant 16 : i64
+    %c8_i64 = arith.constant 8 : i64
     %c33_i64 = arith.constant 33 : i64
-    %c32_i64 = arith.constant 32 : i64
+    %c40_i64 = arith.constant 40 : i64
+    %c48_i64 = arith.constant 48 : i64
+    %c50_i64 = arith.constant 50 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c100_i64 = arith.constant 100 : i64
+    %c128_i64 = arith.constant 128 : i64
     %c512_i64 = arith.constant 512 : i64
-    %c1024_i64 = arith.constant 1024 : i64
+    %c2560_i64 = arith.constant 2560 : i64
+    %c49152_i64 = arith.constant 49152 : i64
+    %c65536_i64 = arith.constant 65536 : i64
+    %c131072_i64 = arith.constant 131072 : i64
+    %false = arith.constant false
 
-    %l1_a = pto.castptr %c0_i64 : i64 -> !pto.ptr<f16, mat>
-    %l1_b = pto.castptr %c512_i64 : i64 -> !pto.ptr<f16, mat>
-    %l1_fp = pto.castptr %c1024_i64 : i64 -> !pto.ptr<f32, mat>
+    %mat_src = pto.castptr %c0_i64 : i64 -> !pto.ptr<f16, mat>
+    %mat_id = pto.castptr %c65536_i64 : i64 -> !pto.ptr<f16, mat>
+    %l1_fp_raw = pto.castptr %c131072_i64 : i64 -> !pto.ptr<ui32, mat>
+    %l1_fp = pto.castptr %c131072_i64 : i64 -> !pto.ptr<ui64, mat>
     %fb_fp = pto.castptr %c0_i64 : i64 -> !pto.ptr<ui64, scaling>
     %ub_out = pto.castptr %c0_i64 : i64 -> !pto.ptr<f16, ub>
     %l0a = pto.castptr %c0_i64 : i64 -> !pto.ptr<f16, left>
     %l0b = pto.castptr %c0_i64 : i64 -> !pto.ptr<f16, right>
     %l0c = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, acc>
 
-    pto.cube_load %a_gm, %l1_a, %c16_i64
+    pto.cube_load_frac %id_gm, %mat_src, nd2nz,
+        shape(%c40_i64, %c50_i64),
+        src_layout(%c100_i64),
+        dst_group(%c1_i64, %c1_i64, %c48_i64, %c0_i64),
+        ctrl(%c0_i64, %false)
+      : !pto.ptr<f16, gm>, !pto.ptr<f16, mat>, nd2nz,
+        shape i64, i64, src_layout(i64),
+        dst_group i64, i64, i64, i64, ctrl i64, i1
+    pto.cube_load_frac %src_gm, %mat_id, nd2nz,
+        shape(%c50_i64, %c64_i64),
+        src_layout(%c128_i64),
+        dst_group(%c1_i64, %c1_i64, %c64_i64, %c0_i64),
+        ctrl(%c0_i64, %false)
+      : !pto.ptr<f16, gm>, !pto.ptr<f16, mat>, nd2nz,
+        shape i64, i64, src_layout(i64),
+        dst_group i64, i64, i64, i64, ctrl i64, i1
+    pto.cube_load %fp_gm, %l1_fp_raw, %c512_i64
       nburst(%c1_i64, %c0_i64, %c0_i64)
-      : !pto.ptr<f16, gm>, !pto.ptr<f16, mat>, i64, i64, i64, i64
-    pto.cube_load %b_gm, %l1_b, %c16_i64
-      nburst(%c1_i64, %c0_i64, %c0_i64)
-      : !pto.ptr<f16, gm>, !pto.ptr<f16, mat>, i64, i64, i64, i64
-    pto.cube_load %fp_gm, %l1_fp, %c4_i64
-      nburst(%c1_i64, %c0_i64, %c0_i64)
-      : !pto.ptr<f32, gm>, !pto.ptr<f32, mat>, i64, i64, i64, i64
+      : !pto.ptr<ui32, gm>, !pto.ptr<ui32, mat>, i64, i64, i64, i64
 
     pto.set_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
     pto.wait_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
-    pto.left_load %l1_a, %l0a, %c16_i64, %c16_i64
+    pto.left_load %mat_src, %l0a, %c40_i64, %c50_i64
       : !pto.ptr<f16, mat>, !pto.ptr<f16, left>, i64, i64
-    pto.right_load %l1_b, %l0b, %c16_i64, %c16_i64
+    pto.right_load %mat_id, %l0b, %c50_i64, %c64_i64 {transpose = true}
       : !pto.ptr<f16, mat>, !pto.ptr<f16, right>, i64, i64
 
     pto.set_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
     pto.wait_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
-    pto.mad %l0a, %l0b, %l0c, %c16_i64, %c16_i64, %c16_i64
+    pto.mad %l0a, %l0b, %l0c, %c40_i64, %c64_i64, %c50_i64
       : !pto.ptr<f16, left>, !pto.ptr<f16, right>, !pto.ptr<f32, acc>, i64, i64, i64
 
     pto.set_flag["PIPE_M", "PIPE_FIX", "EVENT_ID1"]
     pto.wait_flag["PIPE_M", "PIPE_FIX", "EVENT_ID1"]
-    pto.fp_load %l1_fp, %fb_fp, %c2_i64
+    pto.set_flag["PIPE_MTE2", "PIPE_FIX", "EVENT_ID0"]
+    pto.wait_flag["PIPE_MTE2", "PIPE_FIX", "EVENT_ID0"]
+    pto.fp_load %l1_fp, %fb_fp, %c8_i64
       nburst(%c1_i64, %c0_i64, %c0_i64)
-      : !pto.ptr<f32, mat>, !pto.ptr<ui64, scaling>, i64, i64, i64, i64
-    pto.set_fpc %c0_i64 : i64
+      : !pto.ptr<ui64, mat>, !pto.ptr<ui64, scaling>, i64, i64, i64, i64
 
-    pto.acc_store_ub %l0c, %ub_out, %c16_i64, %c16_i64, %c16_i64, %c16_i64,
-      %c0_i64, %c33_i64, %c0_i64, %c0_i64, %c0_i64, nz2nd
-      loop3(%c1_i64, %c0_i64, %c16_i64)
+    pto.acc_store_ub %l0c, %ub_out, %c40_i64, %c64_i64, %c48_i64, %c64_i64,
+      %c0_i64, %c33_i64, %c0_i64, fpc(%fb_fp), %c0_i64, %c0_i64, nz2nd
+      loop3(%c1_i64, %c49152_i64, %c2560_i64)
       : !pto.ptr<f32, acc>, !pto.ptr<f16, ub>, i64, i64, i64, i64, i64, i64,
-        i64, i64, i64, nz2nd, loop3 i64, i64, i64
+        i64, fpc(!pto.ptr<ui64, scaling>), i64, i64, nz2nd, loop3 i64, i64, i64
 
     pto.sync.set <PIPE_FIX>, 1
     pto.sync.set <PIPE_FIX>, 17

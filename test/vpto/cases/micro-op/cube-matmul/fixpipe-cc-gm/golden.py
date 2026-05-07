@@ -12,39 +12,31 @@ from pathlib import Path
 
 import numpy as np
 
-M = 16
-N = 16
-K = 16
-SEED = 61
 
-
-def generate(output_dir: Path, seed: int) -> None:
-    rng = np.random.default_rng(seed)
-    a = rng.uniform(-2.0, 2.0, size=(M, K)).astype(np.float16)
-    b = rng.uniform(-2.0, 2.0, size=(K, N)).astype(np.float16)
-    gm_out = np.zeros((M, N), dtype=np.float32)
-    ub_roundtrip_out = np.zeros((M, N), dtype=np.float32)
-    # The current dav-c310 simulator exposes the cc->gm FIX path as a single
-    # observable scalar for this minimal case, while the mixed cc->ub path
-    # remains zero-filled after the vector-side store.
-    golden = np.zeros((M, N), dtype=np.float32)
-    golden[0, 0] = np.float32(6.8210273)
-
+def generate(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    a.reshape(-1).tofile(output_dir / "v1.bin")
-    b.reshape(-1).tofile(output_dir / "v2.bin")
-    gm_out.reshape(-1).tofile(output_dir / "v3.bin")
-    ub_roundtrip_out.reshape(-1).tofile(output_dir / "v4.bin")
+
+    lhs = (np.arange(40 * 50, dtype=np.float16).reshape(40, 50) * np.float16(0.5) +
+           np.float16(17)).astype(np.float16)
+    rhs = (np.arange(50 * 64, dtype=np.float16).reshape(50, 64) * np.float16(0.25) +
+           np.float16(3)).astype(np.float16)
+    out = np.zeros((40, 64), dtype=np.float32)
+    out_cbuf = np.zeros((40, 64), dtype=np.float32)
+    golden = lhs.astype(np.float32) @ rhs.astype(np.float32)
+
+    lhs.reshape(-1).tofile(output_dir / "v1.bin")
+    rhs.reshape(-1).tofile(output_dir / "v2.bin")
+    out.reshape(-1).tofile(output_dir / "v3.bin")
+    out_cbuf.reshape(-1).tofile(output_dir / "v4.bin")
     golden.reshape(-1).tofile(output_dir / "golden_v3.bin")
-    ub_roundtrip_out.reshape(-1).tofile(output_dir / "golden_v4.bin")
+    golden.reshape(-1).tofile(output_dir / "golden_v4.bin")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", type=Path, default=Path("."))
-    parser.add_argument("--seed", type=int, default=SEED)
     args = parser.parse_args()
-    generate(args.output_dir, args.seed)
+    generate(args.output_dir)
 
 
 if __name__ == "__main__":

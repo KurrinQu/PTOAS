@@ -13,22 +13,18 @@ from pathlib import Path
 import numpy as np
 
 
-M = 16
-N = 16
-K = 16
-SEED = 53
-
-
-def generate(output_dir: Path, seed: int) -> None:
-    rng = np.random.default_rng(seed)
-    a = rng.uniform(-2.0, 2.0, size=(M, K)).astype(np.float16)
-    b = rng.uniform(-2.0, 2.0, size=(K, N)).astype(np.float16)
-    out = np.zeros((M, N), dtype=np.float32)
-    golden = np.zeros((M, N), dtype=np.float32)
-
+def generate(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    a.reshape(-1).tofile(output_dir / "v1.bin")
-    b.reshape(-1).tofile(output_dir / "v2.bin")
+
+    lhs = (np.arange(40 * 50, dtype=np.float16).reshape(40, 50) * np.float16(0.5) +
+           np.float16(17)).astype(np.float16)
+    rhs = (np.arange(50 * 64, dtype=np.float16).reshape(50, 64) * np.float16(0.25) +
+           np.float16(3)).astype(np.float16)
+    out = np.zeros((40, 64), dtype=np.float32)
+    golden = lhs.astype(np.float32) @ rhs.astype(np.float32)
+
+    lhs.reshape(-1).tofile(output_dir / "v1.bin")
+    rhs.reshape(-1).tofile(output_dir / "v2.bin")
     out.reshape(-1).tofile(output_dir / "v3.bin")
     golden.reshape(-1).tofile(output_dir / "golden_v3.bin")
 
@@ -36,9 +32,8 @@ def generate(output_dir: Path, seed: int) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", type=Path, default=Path("."))
-    parser.add_argument("--seed", type=int, default=SEED)
     args = parser.parse_args()
-    generate(args.output_dir, args.seed)
+    generate(args.output_dir)
 
 
 if __name__ == "__main__":

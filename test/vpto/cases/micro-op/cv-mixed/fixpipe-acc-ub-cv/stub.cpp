@@ -6,6 +6,8 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
+#include <cstdint>
+
 #ifndef __global__
 #define __global__
 #endif
@@ -15,8 +17,8 @@
 #endif
 
 extern "C" __global__ [aicore] void fixpipe_acc_ub_cv_kernel(
-    __gm__ __fp16 *a, __gm__ __fp16 *b, __gm__ float *out) {
-  (void)a;
-  (void)b;
+    __gm__ __fp16 *src, __gm__ __fp16 *id, __gm__ float *out) {
+  (void)src;
+  (void)id;
   (void)out;
 }

@@ -39,6 +39,11 @@ def PTO_AlignTypeConstraint : Type<CPred<"::llvm::isa<::mlir::pto::AlignType>($_
 def PTO_BufferType : Type<
   CPred<"::llvm::isa<::mlir::pto::PtrType>($_self)">,
   "pointer-like buffer type">;
+def PTO_ScalingPtrType : Type<
+  CPred<"::llvm::isa<::mlir::pto::PtrType>($_self) && "
+        "::llvm::cast<::mlir::pto::PtrType>($_self).getElementType().isUnsignedInteger(64) && "
+        "::llvm::cast<::mlir::pto::PtrType>($_self).getMemorySpace().getAddressSpace() == ::mlir::pto::AddressSpace::SCALING">,
+  "scaling !pto.ptr<ui64> type">;
 def PTO_BufferLikeType : AnyTypeOf<[AnyMemRef, PTO_BufferType],
                                     "memref or pointer-like buffer type">;
 
@@ -2045,6 +2050,7 @@ def PTO_AccStoreOp : PTO_Op<"acc_store", [
     I64:$unit_flag_ctrl,
     I64:$quant_pre,
     I64:$relu_pre_mode,
+    Optional<PTO_ScalingPtrType>:$fpc,
     Optional<I64>:$split,
     Optional<I64>:$loop0_src_stride,
     Optional<I64>:$loop3_count,
@@ -2069,6 +2075,7 @@ def PTO_AccStoreOp : PTO_Op<"acc_store", [
       "::mlir::Value":$unitFlagCtrl,
       "::mlir::Value":$quantPre,
       "::mlir::Value":$reluPreMode,
+      "::std::optional<::mlir::Value>":$fpc,
       "::mlir::pto::AccStoreModeConfig":$modeConfig,
       "::std::optional<::mlir::pto::DmaLoopConfig>":$loop3
     )>
@@ -2091,6 +2098,7 @@ def PTO_AccStoreGmOp : PTO_Op<"acc_store_gm", [
     I64:$relu_pre_mode,
     I64:$sid,
     I64:$l2_cache_ctrl,
+    Optional<PTO_ScalingPtrType>:$fpc,
     Optional<I64>:$split,
     Optional<I64>:$loop0_src_stride,
     Optional<I64>:$loop3_count,
@@ -2119,6 +2127,7 @@ def PTO_AccStoreUbOp : PTO_Op<"acc_store_ub", [
     I64:$unit_flag_ctrl,
     I64:$quant_pre,
     I64:$relu_pre_mode,
+    Optional<PTO_ScalingPtrType>:$fpc,
     I64:$dual_dst_mode,
     I64:$sub_blockid,
     Optional<I64>:$split,

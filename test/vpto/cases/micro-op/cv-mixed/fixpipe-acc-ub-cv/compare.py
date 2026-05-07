@@ -21,14 +21,11 @@ def compare_bin(golden_path: str, output_path: str) -> bool:
     if golden.shape != output.shape:
         print(f"[ERROR] shape mismatch: {golden.shape} vs {output.shape}")
         return False
-    if np.allclose(golden, output, atol=1e-2, rtol=1e-2):
+    if np.allclose(golden, output, atol=1e-3, rtol=1e-3):
         return True
-    diff = np.where(np.abs(golden - output) > (1e-2 + 1e-2 * np.abs(golden)))[0]
+    diff = np.where(np.abs(golden - output) > (1e-3 + 1e-3 * np.abs(golden)))[0]
     idx = int(diff[0]) if diff.size else 0
-    print(
-        f"[ERROR] first mismatch at idx={idx}: "
-        f"golden={float(golden[idx])}, out={float(output[idx])}"
-    )
+    print(f"[ERROR] first mismatch at idx={idx}: golden={float(golden[idx])}, out={float(output[idx])}")
     return False
 
 

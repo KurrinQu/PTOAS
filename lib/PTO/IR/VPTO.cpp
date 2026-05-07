@@ -1375,12 +1375,39 @@ static ParseResult parseAccStoreModeGroup(
   if (failed(parseAccStoreModeKeyword(modeKeyword)))
     return parser.emitError(parser.getCurrentLocation(),
                             "expected one of 'nz2nd', 'nz2dn', or 'nz2nz'");
-  if (failed(parser.parseOptionalLParen()))
+  auto parseModeOperandWithParens = [&]() -> ParseResult {
+    OpAsmParser::UnresolvedOperand operand;
+    if (parser.parseLParen() || parser.parseOperand(operand) || parser.parseRParen())
+      return failure();
+    modeOperands.push_back(operand);
     return success();
-  OpAsmParser::UnresolvedOperand operand;
-  if (parser.parseOperand(operand) || parser.parseRParen())
-    return failure();
-  modeOperands.push_back(operand);
+  };
+  auto parseModeOperandAfterLParen = [&]() -> ParseResult {
+    OpAsmParser::UnresolvedOperand operand;
+    if (parser.parseOperand(operand) || parser.parseRParen())
+      return failure();
+    modeOperands.push_back(operand);
+    return success();
+  };
+
+  switch (*parseAccStoreModeKeyword(modeKeyword)) {
+  case AccStoreMode::Nz2nd:
+    return success();
+  case AccStoreMode::Nz2dn:
+    (void)parser.parseOptionalComma();
+    if (succeeded(parser.parseOptionalKeyword("loop0_src_stride")))
+      return parseModeOperandWithParens();
+    if (failed(parser.parseOptionalLParen()))
+      return success();
+    return parseModeOperandAfterLParen();
+  case AccStoreMode::Nz2nz:
+    (void)parser.parseOptionalComma();
+    if (succeeded(parser.parseOptionalKeyword("split")))
+      return parseModeOperandWithParens();
+    if (failed(parser.parseOptionalLParen()))
+      return success();
+    return parseModeOperandAfterLParen();
+  }
   return success();
 }
 
@@ -1389,12 +1416,39 @@ static ParseResult parseAccStoreModeTypes(OpAsmParser &parser,
                                           SmallVectorImpl<Type> &modeTypes) {
   if (parser.parseKeyword(modeKeyword))
     return failure();
-  if (failed(parser.parseOptionalLParen()))
+  auto parseModeTypeWithParens = [&]() -> ParseResult {
+    Type modeType;
+    if (parser.parseLParen() || parser.parseType(modeType) || parser.parseRParen())
+      return failure();
+    modeTypes.push_back(modeType);
     return success();
-  Type modeType;
-  if (parser.parseType(modeType) || parser.parseRParen())
-    return failure();
-  modeTypes.push_back(modeType);
+  };
+  auto parseModeTypeAfterLParen = [&]() -> ParseResult {
+    Type modeType;
+    if (parser.parseType(modeType) || parser.parseRParen())
+      return failure();
+    modeTypes.push_back(modeType);
+    return success();
+  };
+
+  switch (*parseAccStoreModeKeyword(modeKeyword)) {
+  case AccStoreMode::Nz2nd:
+    return success();
+  case AccStoreMode::Nz2dn:
+    (void)parser.parseOptionalComma();
+    if (succeeded(parser.parseOptionalKeyword("loop0_src_stride")))
+      return parseModeTypeWithParens();
+    if (failed(parser.parseOptionalLParen()))
+      return success();
+    return parseModeTypeAfterLParen();
+  case AccStoreMode::Nz2nz:
+    (void)parser.parseOptionalComma();
+    if (succeeded(parser.parseOptionalKeyword("split")))
+      return parseModeTypeWithParens();
+    if (failed(parser.parseOptionalLParen()))
+      return success();
+    return parseModeTypeAfterLParen();
+  }
   return success();
 }
 
@@ -1406,11 +1460,11 @@ static void printAccStoreModeGroup(OpAsmPrinter &printer, AccStoreMode mode,
     return;
   case AccStoreMode::Nz2dn:
     if (loop0SrcStride)
-      printer << "(" << loop0SrcStride << ")";
+      printer << ", loop0_src_stride(" << loop0SrcStride << ")";
     return;
   case AccStoreMode::Nz2nz:
     if (split)
-      printer << "(" << split << ")";
+      printer << ", split(" << split << ")";
     return;
   }
   llvm_unreachable("unexpected acc_store mode");
@@ -1424,11 +1478,11 @@ static void printAccStoreModeTypes(OpAsmPrinter &printer, AccStoreMode mode,
     return;
   case AccStoreMode::Nz2dn:
     if (loop0SrcStrideType)
-      printer << "(" << loop0SrcStrideType << ")";
+      printer << ", loop0_src_stride(" << loop0SrcStrideType << ")";
     return;
   case AccStoreMode::Nz2nz:
     if (splitType)
-      printer << "(" << splitType << ")";
+      printer << ", split(" << splitType << ")";
     return;
   }
   llvm_unreachable("unexpected acc_store mode");
@@ -1450,6 +1504,30 @@ static ParseResult parseAccStoreOptionalLoop3(
     loop3DstStrideOperands.push_back(loop3Operands[2]);
   }
   return success();
+}
+
+static ParseResult parseAccStoreOptionalFpc(
+    OpAsmParser &parser,
+    SmallVectorImpl<OpAsmParser::UnresolvedOperand> &fpcOperands) {
+  if (failed(parser.parseOptionalKeyword("fpc")))
+    return success();
+  if (parser.parseLParen())
+    return failure();
+  OpAsmParser::UnresolvedOperand operand;
+  if (parser.parseOperand(operand) || parser.parseRParen())
+    return failure();
+  fpcOperands.push_back(operand);
+  return success();
+}
+
+static void printAccStoreOptionalFpc(OpAsmPrinter &printer, Value fpc) {
+  if (fpc)
+    printer << ", fpc(" << fpc << ")";
+}
+
+static void printAccStoreOptionalFpcType(OpAsmPrinter &printer, Type fpcType) {
+  if (fpcType)
+    printer << ", fpc(" << fpcType << ")";
 }
 
 static ParseResult parseAccStoreOptionalLoop3Types(
@@ -4982,10 +5060,14 @@ void CubeLoadFracOp::getEffects(
 void AccStoreOp::build(OpBuilder &builder, OperationState &state, Value source,
                        Value destination, Value m, Value n, Value srcStride,
                        Value dstStride, Value unitFlagCtrl, Value quantPre,
-                       Value reluPreMode, pto::AccStoreModeConfig modeConfig,
+                       Value reluPreMode, std::optional<Value> fpc,
+                       pto::AccStoreModeConfig modeConfig,
                        std::optional<pto::DmaLoopConfig> loop3) {
   state.addOperands({source, destination, m, n, srcStride, dstStride,
                      unitFlagCtrl, quantPre, reluPreMode});
+  bool hasFpc = fpc.has_value();
+  if (hasFpc)
+    state.addOperands(*fpc);
   bool hasSplit = modeConfig.split.has_value();
   bool hasLoop0SrcStride = modeConfig.loop0SrcStride.has_value();
   bool hasLoop3 = loop3.has_value();
@@ -5004,16 +5086,18 @@ void AccStoreOp::build(OpBuilder &builder, OperationState &state, Value source,
                                            modeConfig.mode));
   state.addAttribute(
       getOperandSegmentSizeAttr(),
-      builder.getDenseI32ArrayAttr(
-          {1, 1, 1, 1, 1, 1, 1, 1, 1, hasSplit ? 1 : 0,
-           hasLoop0SrcStride ? 1 : 0, hasLoop3 ? 1 : 0, hasLoop3 ? 1 : 0,
-           hasLoop3 ? 1 : 0}));
+      builder.getDenseI32ArrayAttr({1, 1, 1, 1, 1, 1, 1, 1, 1,
+                                    hasFpc ? 1 : 0, hasSplit ? 1 : 0,
+                                    hasLoop0SrcStride ? 1 : 0,
+                                    hasLoop3 ? 1 : 0, hasLoop3 ? 1 : 0,
+                                    hasLoop3 ? 1 : 0}));
 }
 
 ParseResult AccStoreOp::parse(OpAsmParser &parser, OperationState &result) {
   OpAsmParser::UnresolvedOperand source, destination, m, n, srcStride,
       dstStride, unitFlagCtrl, quantPre, reluPreMode;
   SmallVector<OpAsmParser::UnresolvedOperand> modeOperands;
+  SmallVector<OpAsmParser::UnresolvedOperand, 1> fpcOperands;
   SmallVector<OpAsmParser::UnresolvedOperand, 1> loop3CountOperands;
   SmallVector<OpAsmParser::UnresolvedOperand, 1> loop3SrcStrideOperands;
   SmallVector<OpAsmParser::UnresolvedOperand, 1> loop3DstStrideOperands;
@@ -5026,8 +5110,13 @@ ParseResult AccStoreOp::parse(OpAsmParser &parser, OperationState &result) {
       parseRequiredOperandWithComma(parser, dstStride) ||
       parseRequiredOperandWithComma(parser, unitFlagCtrl) ||
       parseRequiredOperandWithComma(parser, quantPre) ||
-      parseRequiredOperandWithComma(parser, reluPreMode) ||
-      parseAccStoreModeGroup(parser, modeKeyword, modeOperands))
+      parseRequiredOperandWithComma(parser, reluPreMode))
+    return failure();
+  if (parseAccStoreOptionalFpc(parser, fpcOperands))
+    return failure();
+  if (!fpcOperands.empty() && parser.parseComma())
+    return failure();
+  if (parseAccStoreModeGroup(parser, modeKeyword, modeOperands))
     return failure();
   if (parseAccStoreOptionalLoop3(parser, loop3CountOperands,
                                  loop3SrcStrideOperands,
@@ -5040,6 +5129,7 @@ ParseResult AccStoreOp::parse(OpAsmParser &parser, OperationState &result) {
   Type sourceType, destinationType, mType, nType, srcStrideType, dstStrideType,
       unitFlagCtrlType, quantPreType, reluPreModeType;
   SmallVector<Type> modeTypes;
+  SmallVector<Type, 1> fpcTypes;
   SmallVector<Type, 1> loop3CountTypes, loop3SrcStrideTypes, loop3DstStrideTypes;
   if (parser.parseType(sourceType) || parser.parseComma() ||
       parser.parseType(destinationType) || parser.parseComma() ||
@@ -5049,8 +5139,17 @@ ParseResult AccStoreOp::parse(OpAsmParser &parser, OperationState &result) {
       parser.parseComma() || parser.parseType(unitFlagCtrlType) ||
       parser.parseComma() || parser.parseType(quantPreType) ||
       parser.parseComma() || parser.parseType(reluPreModeType) ||
-      parser.parseComma() ||
-      parseAccStoreModeTypes(parser, modeKeyword, modeTypes))
+      parser.parseComma())
+    return failure();
+  if (succeeded(parser.parseOptionalKeyword("fpc"))) {
+    if (parser.parseLParen())
+      return failure();
+    Type fpcType;
+    if (parser.parseType(fpcType) || parser.parseRParen() || parser.parseComma())
+      return failure();
+    fpcTypes.push_back(fpcType);
+  }
+  if (parseAccStoreModeTypes(parser, modeKeyword, modeTypes))
     return failure();
   if (parseAccStoreOptionalLoop3Types(parser, loop3CountTypes,
                                       loop3SrcStrideTypes, loop3DstStrideTypes,
@@ -5073,6 +5172,9 @@ ParseResult AccStoreOp::parse(OpAsmParser &parser, OperationState &result) {
   if (modeOperands.size() != modeTypes.size())
     return parser.emitError(parser.getCurrentLocation(),
                             "requires mode operand and type groups to match");
+  if (fpcOperands.size() != fpcTypes.size())
+    return parser.emitError(parser.getCurrentLocation(),
+                            "requires fpc operand and type groups to match");
   if (loop3CountOperands.size() != loop3SrcStrideOperands.size() ||
       loop3CountOperands.size() != loop3DstStrideOperands.size() ||
       loop3CountTypes.size() != loop3SrcStrideTypes.size() ||
@@ -5085,11 +5187,12 @@ ParseResult AccStoreOp::parse(OpAsmParser &parser, OperationState &result) {
 
   auto &segments =
       result.getOrAddProperties<AccStoreOp::Properties>().operandSegmentSizes;
+  bool hasFpc = !fpcOperands.empty();
   bool hasSplit = mode == AccStoreMode::Nz2nz && !modeOperands.empty();
   bool hasLoop0SrcStride =
       mode == AccStoreMode::Nz2dn && !modeOperands.empty();
   bool hasLoop3 = !loop3CountOperands.empty();
-  llvm::copy(ArrayRef<int32_t>{1, 1, 1, 1, 1, 1, 1, 1, 1,
+  llvm::copy(ArrayRef<int32_t>{1, 1, 1, 1, 1, 1, 1, 1, 1, hasFpc ? 1 : 0,
                                hasSplit ? 1 : 0, hasLoop0SrcStride ? 1 : 0,
                                hasLoop3 ? 1 : 0, hasLoop3 ? 1 : 0,
                                hasLoop3 ? 1 : 0},
@@ -5106,6 +5209,8 @@ ParseResult AccStoreOp::parse(OpAsmParser &parser, OperationState &result) {
       parser.resolveOperand(unitFlagCtrl, unitFlagCtrlType, result.operands) ||
       parser.resolveOperand(quantPre, quantPreType, result.operands) ||
       parser.resolveOperand(reluPreMode, reluPreModeType, result.operands) ||
+      parser.resolveOperands(fpcOperands, fpcTypes, parser.getCurrentLocation(),
+                             result.operands) ||
       parser.resolveOperands(modeOperands, modeTypes, parser.getCurrentLocation(),
                              result.operands) ||
       parser.resolveOperands(loop3CountOperands, loop3CountTypes,
@@ -5123,6 +5228,7 @@ void AccStoreOp::print(OpAsmPrinter &printer) {
           << ", " << getN() << ", " << getSrcStride() << ", "
           << getDstStride() << ", " << getUnitFlagCtrl() << ", "
           << getQuantPre() << ", " << getReluPreMode();
+  printAccStoreOptionalFpc(printer, getFpc());
   printAccStoreModeGroup(printer, getMode(), getSplit(), getLoop0SrcStride());
   if (Value loop3Count = getLoop3Count())
     printDmaTripleGroup(printer, "loop3", loop3Count, getLoop3SrcStride(),
@@ -5135,6 +5241,8 @@ void AccStoreOp::print(OpAsmPrinter &printer) {
           << getSrcStride().getType() << ", " << getDstStride().getType()
           << ", " << getUnitFlagCtrl().getType() << ", "
           << getQuantPre().getType() << ", " << getReluPreMode().getType();
+  printAccStoreOptionalFpcType(printer,
+                               getFpc() ? getFpc().getType() : Type());
   printAccStoreModeTypes(printer, getMode(),
                          getSplit() ? getSplit().getType() : Type(),
                          getLoop0SrcStride() ? getLoop0SrcStride().getType()
@@ -5202,6 +5310,7 @@ ParseResult AccStoreGmOp::parse(OpAsmParser &parser, OperationState &result) {
   OpAsmParser::UnresolvedOperand source, destination, m, n, srcStride,
       dstStride, unitFlagCtrl, quantPre, reluPreMode, sid, l2CacheCtrl;
   SmallVector<OpAsmParser::UnresolvedOperand> modeOperands;
+  SmallVector<OpAsmParser::UnresolvedOperand, 1> fpcOperands;
   SmallVector<OpAsmParser::UnresolvedOperand, 1> loop3CountOperands;
   SmallVector<OpAsmParser::UnresolvedOperand, 1> loop3SrcStrideOperands;
   SmallVector<OpAsmParser::UnresolvedOperand, 1> loop3DstStrideOperands;
@@ -5217,7 +5326,11 @@ ParseResult AccStoreGmOp::parse(OpAsmParser &parser, OperationState &result) {
       parseRequiredOperandWithComma(parser, reluPreMode) ||
       parseRequiredOperandWithComma(parser, sid) ||
       parseRequiredOperandWithComma(parser, l2CacheCtrl) ||
-      parseAccStoreModeGroup(parser, modeKeyword, modeOperands))
+      parseAccStoreOptionalFpc(parser, fpcOperands))
+    return failure();
+  if (!fpcOperands.empty() && parser.parseComma())
+    return failure();
+  if (parseAccStoreModeGroup(parser, modeKeyword, modeOperands))
     return failure();
   if (parseAccStoreOptionalLoop3(parser, loop3CountOperands,
                                  loop3SrcStrideOperands,
@@ -5231,6 +5344,7 @@ ParseResult AccStoreGmOp::parse(OpAsmParser &parser, OperationState &result) {
       unitFlagCtrlType, quantPreType, reluPreModeType, sidType,
       l2CacheCtrlType;
   SmallVector<Type> modeTypes;
+  SmallVector<Type, 1> fpcTypes;
   SmallVector<Type, 1> loop3CountTypes, loop3SrcStrideTypes, loop3DstStrideTypes;
   if (parser.parseType(sourceType) || parser.parseComma() ||
       parser.parseType(destinationType) || parser.parseComma() ||
@@ -5242,8 +5356,17 @@ ParseResult AccStoreGmOp::parse(OpAsmParser &parser, OperationState &result) {
       parser.parseComma() || parser.parseType(reluPreModeType) ||
       parser.parseComma() || parser.parseType(sidType) ||
       parser.parseComma() || parser.parseType(l2CacheCtrlType) ||
-      parser.parseComma() ||
-      parseAccStoreModeTypes(parser, modeKeyword, modeTypes))
+      parser.parseComma())
+    return failure();
+  if (succeeded(parser.parseOptionalKeyword("fpc"))) {
+    if (parser.parseLParen())
+      return failure();
+    Type fpcType;
+    if (parser.parseType(fpcType) || parser.parseRParen() || parser.parseComma())
+      return failure();
+    fpcTypes.push_back(fpcType);
+  }
+  if (parseAccStoreModeTypes(parser, modeKeyword, modeTypes))
     return failure();
   if (parseAccStoreOptionalLoop3Types(parser, loop3CountTypes,
                                       loop3SrcStrideTypes, loop3DstStrideTypes,
@@ -5266,6 +5389,9 @@ ParseResult AccStoreGmOp::parse(OpAsmParser &parser, OperationState &result) {
   if (modeOperands.size() != modeTypes.size())
     return parser.emitError(parser.getCurrentLocation(),
                             "requires mode operand and type groups to match");
+  if (fpcOperands.size() != fpcTypes.size())
+    return parser.emitError(parser.getCurrentLocation(),
+                            "requires fpc operand and type groups to match");
   if (loop3CountOperands.size() != loop3SrcStrideOperands.size() ||
       loop3CountOperands.size() != loop3DstStrideOperands.size() ||
       loop3CountTypes.size() != loop3SrcStrideTypes.size() ||
@@ -5278,12 +5404,13 @@ ParseResult AccStoreGmOp::parse(OpAsmParser &parser, OperationState &result) {
 
   auto &segments =
       result.getOrAddProperties<AccStoreGmOp::Properties>().operandSegmentSizes;
+  bool hasFpc = !fpcOperands.empty();
   bool hasSplit = mode == AccStoreMode::Nz2nz && !modeOperands.empty();
   bool hasLoop0SrcStride =
       mode == AccStoreMode::Nz2dn && !modeOperands.empty();
   bool hasLoop3 = !loop3CountOperands.empty();
-  llvm::copy(ArrayRef<int32_t>{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-                               hasSplit ? 1 : 0, hasLoop0SrcStride ? 1 : 0,
+  llvm::copy(ArrayRef<int32_t>{1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+                               1, hasFpc ? 1 : 0, hasSplit ? 1 : 0, hasLoop0SrcStride ? 1 : 0,
                                hasLoop3 ? 1 : 0, hasLoop3 ? 1 : 0,
                                hasLoop3 ? 1 : 0},
              segments.begin());
@@ -5301,6 +5428,8 @@ ParseResult AccStoreGmOp::parse(OpAsmParser &parser, OperationState &result) {
       parser.resolveOperand(reluPreMode, reluPreModeType, result.operands) ||
       parser.resolveOperand(sid, sidType, result.operands) ||
       parser.resolveOperand(l2CacheCtrl, l2CacheCtrlType, result.operands) ||
+      parser.resolveOperands(fpcOperands, fpcTypes, parser.getCurrentLocation(),
+                             result.operands) ||
       parser.resolveOperands(modeOperands, modeTypes, parser.getCurrentLocation(),
                              result.operands) ||
       parser.resolveOperands(loop3CountOperands, loop3CountTypes,
@@ -5319,6 +5448,7 @@ void AccStoreGmOp::print(OpAsmPrinter &printer) {
           << getDstStride() << ", " << getUnitFlagCtrl() << ", "
           << getQuantPre() << ", " << getReluPreMode() << ", " << getSid()
           << ", " << getL2CacheCtrl();
+  printAccStoreOptionalFpc(printer, getFpc());
   printAccStoreModeGroup(printer, getMode(), getSplit(), getLoop0SrcStride());
   if (Value loop3Count = getLoop3Count())
     printDmaTripleGroup(printer, "loop3", loop3Count, getLoop3SrcStride(),
@@ -5333,6 +5463,8 @@ void AccStoreGmOp::print(OpAsmPrinter &printer) {
           << getQuantPre().getType() << ", " << getReluPreMode().getType()
           << ", " << getSid().getType() << ", "
           << getL2CacheCtrl().getType();
+  printAccStoreOptionalFpcType(printer,
+                               getFpc() ? getFpc().getType() : Type());
   printAccStoreModeTypes(printer, getMode(),
                          getSplit() ? getSplit().getType() : Type(),
                          getLoop0SrcStride() ? getLoop0SrcStride().getType()
@@ -5372,6 +5504,7 @@ ParseResult AccStoreUbOp::parse(OpAsmParser &parser, OperationState &result) {
   OpAsmParser::UnresolvedOperand source, destination, m, n, srcStride,
       dstStride, unitFlagCtrl, quantPre, reluPreMode, dualDstMode, subBlockId;
   SmallVector<OpAsmParser::UnresolvedOperand> modeOperands;
+  SmallVector<OpAsmParser::UnresolvedOperand, 1> fpcOperands;
   SmallVector<OpAsmParser::UnresolvedOperand, 1> loop3CountOperands;
   SmallVector<OpAsmParser::UnresolvedOperand, 1> loop3SrcStrideOperands;
   SmallVector<OpAsmParser::UnresolvedOperand, 1> loop3DstStrideOperands;
@@ -5384,8 +5517,13 @@ ParseResult AccStoreUbOp::parse(OpAsmParser &parser, OperationState &result) {
       parseRequiredOperandWithComma(parser, dstStride) ||
       parseRequiredOperandWithComma(parser, unitFlagCtrl) ||
       parseRequiredOperandWithComma(parser, quantPre) ||
-      parseRequiredOperandWithComma(parser, reluPreMode) ||
-      parseRequiredOperandWithComma(parser, dualDstMode) ||
+      parseRequiredOperandWithComma(parser, reluPreMode))
+    return failure();
+  if (parseAccStoreOptionalFpc(parser, fpcOperands))
+    return failure();
+  if (!fpcOperands.empty() && parser.parseComma())
+    return failure();
+  if (parseRequiredOperandWithComma(parser, dualDstMode) ||
       parseRequiredOperandWithComma(parser, subBlockId) ||
       parseAccStoreModeGroup(parser, modeKeyword, modeOperands))
     return failure();
@@ -5401,6 +5539,7 @@ ParseResult AccStoreUbOp::parse(OpAsmParser &parser, OperationState &result) {
       unitFlagCtrlType, quantPreType, reluPreModeType, dualDstModeType,
       subBlockIdType;
   SmallVector<Type> modeTypes;
+  SmallVector<Type, 1> fpcTypes;
   SmallVector<Type, 1> loop3CountTypes, loop3SrcStrideTypes, loop3DstStrideTypes;
   if (parser.parseType(sourceType) || parser.parseComma() ||
       parser.parseType(destinationType) || parser.parseComma() ||
@@ -5410,7 +5549,17 @@ ParseResult AccStoreUbOp::parse(OpAsmParser &parser, OperationState &result) {
       parser.parseComma() || parser.parseType(unitFlagCtrlType) ||
       parser.parseComma() || parser.parseType(quantPreType) ||
       parser.parseComma() || parser.parseType(reluPreModeType) ||
-      parser.parseComma() || parser.parseType(dualDstModeType) ||
+      parser.parseComma())
+    return failure();
+  if (succeeded(parser.parseOptionalKeyword("fpc"))) {
+    if (parser.parseLParen())
+      return failure();
+    Type fpcType;
+    if (parser.parseType(fpcType) || parser.parseRParen() || parser.parseComma())
+      return failure();
+    fpcTypes.push_back(fpcType);
+  }
+  if (parser.parseType(dualDstModeType) ||
       parser.parseComma() || parser.parseType(subBlockIdType) ||
       parser.parseComma() ||
       parseAccStoreModeTypes(parser, modeKeyword, modeTypes))
@@ -5436,6 +5585,9 @@ ParseResult AccStoreUbOp::parse(OpAsmParser &parser, OperationState &result) {
   if (modeOperands.size() != modeTypes.size())
     return parser.emitError(parser.getCurrentLocation(),
                             "requires mode operand and type groups to match");
+  if (fpcOperands.size() != fpcTypes.size())
+    return parser.emitError(parser.getCurrentLocation(),
+                            "requires fpc operand and type groups to match");
   if (loop3CountOperands.size() != loop3SrcStrideOperands.size() ||
       loop3CountOperands.size() != loop3DstStrideOperands.size() ||
       loop3CountTypes.size() != loop3SrcStrideTypes.size() ||
@@ -5448,14 +5600,15 @@ ParseResult AccStoreUbOp::parse(OpAsmParser &parser, OperationState &result) {
 
   auto &segments =
       result.getOrAddProperties<AccStoreUbOp::Properties>().operandSegmentSizes;
+  bool hasFpc = !fpcOperands.empty();
   bool hasSplit = mode == AccStoreMode::Nz2nz && !modeOperands.empty();
   bool hasLoop0SrcStride =
       mode == AccStoreMode::Nz2dn && !modeOperands.empty();
   bool hasLoop3 = !loop3CountOperands.empty();
-  llvm::copy(ArrayRef<int32_t>{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-                               hasSplit ? 1 : 0, hasLoop0SrcStride ? 1 : 0,
-                               hasLoop3 ? 1 : 0, hasLoop3 ? 1 : 0,
-                               hasLoop3 ? 1 : 0},
+  llvm::copy(ArrayRef<int32_t>{1, 1, 1, 1, 1, 1, 1, 1, 1, hasFpc ? 1 : 0,
+                               1, 1, hasSplit ? 1 : 0,
+                               hasLoop0SrcStride ? 1 : 0, hasLoop3 ? 1 : 0,
+                               hasLoop3 ? 1 : 0, hasLoop3 ? 1 : 0},
              segments.begin());
   result.addAttribute(getModeAttrName(result.name),
                       AccStoreModeAttr::get(parser.getContext(), mode));
@@ -5469,6 +5622,8 @@ ParseResult AccStoreUbOp::parse(OpAsmParser &parser, OperationState &result) {
       parser.resolveOperand(unitFlagCtrl, unitFlagCtrlType, result.operands) ||
       parser.resolveOperand(quantPre, quantPreType, result.operands) ||
       parser.resolveOperand(reluPreMode, reluPreModeType, result.operands) ||
+      parser.resolveOperands(fpcOperands, fpcTypes, parser.getCurrentLocation(),
+                             result.operands) ||
       parser.resolveOperand(dualDstMode, dualDstModeType, result.operands) ||
       parser.resolveOperand(subBlockId, subBlockIdType, result.operands) ||
       parser.resolveOperands(modeOperands, modeTypes, parser.getCurrentLocation(),
@@ -5487,7 +5642,9 @@ void AccStoreUbOp::print(OpAsmPrinter &printer) {
   printer << " " << getSource() << ", " << getDestination() << ", " << getM()
           << ", " << getN() << ", " << getSrcStride() << ", "
           << getDstStride() << ", " << getUnitFlagCtrl() << ", "
-          << getQuantPre() << ", " << getReluPreMode() << ", "
+          << getQuantPre() << ", " << getReluPreMode();
+  printAccStoreOptionalFpc(printer, getFpc());
+  printer << ", "
           << getDualDstMode() << ", " << getSubBlockid();
   printAccStoreModeGroup(printer, getMode(), getSplit(), getLoop0SrcStride());
   if (Value loop3Count = getLoop3Count())
@@ -5500,8 +5657,10 @@ void AccStoreUbOp::print(OpAsmPrinter &printer) {
           << ", " << getM().getType() << ", " << getN().getType() << ", "
           << getSrcStride().getType() << ", " << getDstStride().getType()
           << ", " << getUnitFlagCtrl().getType() << ", "
-          << getQuantPre().getType() << ", " << getReluPreMode().getType()
-          << ", " << getDualDstMode().getType() << ", "
+          << getQuantPre().getType() << ", " << getReluPreMode().getType();
+  printAccStoreOptionalFpcType(printer,
+                               getFpc() ? getFpc().getType() : Type());
+  printer << ", " << getDualDstMode().getType() << ", "
           << getSubBlockid().getType();
   printAccStoreModeTypes(printer, getMode(),
                          getSplit() ? getSplit().getType() : Type(),
