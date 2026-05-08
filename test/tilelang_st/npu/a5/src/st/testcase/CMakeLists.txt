@@ -173,6 +173,8 @@ set(ALL_TESTCASES
     tpartmin
     tpartadd
     tpartmul
+    tprelu
+    trandom
     trecip
     trowargmax
     trowargmin

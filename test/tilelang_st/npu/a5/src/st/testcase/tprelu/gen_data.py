@@ -10,7 +10,6 @@
 # coding=utf-8
 
 import numpy as np
-import struct
 from cases import CASES
 from st_common import validate_cases, setup_case_rng, save_case_data
 
@@ -21,25 +20,21 @@ for case in CASES:
 
     dtype = case["dtype"]
     shape = case["shape"]
-    dst_shape = case["dst_shape"]
     valid_shape = case["valid_shape"]
 
     rows, cols = shape
-    dst_rows, dst_cols = dst_shape
     vr, vc = valid_shape
 
-    input_arr = np.random.uniform(low=-8, high=8, size=(rows, cols)).astype(dtype)
-    slope = np.random.uniform(low=-8, high=8, size=(1, 1)).astype(np.float32)
-    golden = np.zeros((dst_rows, dst_cols), dtype=dtype)
+    input0 = np.random.uniform(-8, high=8, size=(rows, cols)).astype(dtype)
+    input1 = np.random.uniform(-8, high=8, size=(rows, cols)).astype(dtype)
 
+    golden = np.zeros((rows, cols), dtype=dtype)
     for i in range(vr):
         for j in range(vc):
-            if input_arr[i, j] > 0:
-                golden[i, j] = input_arr[i, j]
+            if input0[i, j] > 0:
+                golden[i, j] = input0[i, j]
             else:
-                golden[i, j] = dtype(input_arr[i, j] * slope[0, 0])
+                golden[i, j] = dtype(input0[i, j] * input1[i, j])
 
-    slope_arr = np.array([slope[0, 0]], dtype=np.float32)
-
-    save_case_data(case["name"], {"input": input_arr, "slope": slope_arr, "golden": golden})
-    print(f"[INFO] gen_data: {case['name']} shape={shape} dst_shape={dst_shape} valid_shape={valid_shape} dtype={dtype.__name__}")
+    save_case_data(case["name"], {"input0": input0, "input1": input1, "golden": golden})
+    print(f"[INFO] gen_data: {case['name']} shape={shape} valid_shape={valid_shape} dtype={dtype.__name__}")
