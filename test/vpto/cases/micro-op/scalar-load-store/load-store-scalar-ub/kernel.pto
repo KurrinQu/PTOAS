@@ -4,8 +4,8 @@
 // target_ops: pto.load_scalar, pto.store_scalar
 // scenarios: core-i16, ub-roundtrip, scalar-rw
 // -----------------------------------------------------------------------------
-module attributes {pto.target_arch = "a5"} {
-  func.func @load_store_scalar_ub_kernel(%arg0: !pto.ptr<i16, gm>, %arg1: !pto.ptr<i16, gm>) {
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @load_store_scalar_ub_kernel(%arg0: !pto.ptr<i16, gm>, %arg1: !pto.ptr<i16, gm>) attributes {pto.aicore} {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c1024 = arith.constant 1024 : index

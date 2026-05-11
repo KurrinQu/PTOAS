@@ -240,7 +240,7 @@ build_one_impl() {
   local out_dir="${WORK_SPACE}/${case_token}"
   local launch_obj="${out_dir}/launch.o"
   local kernel_fatobj="${out_dir}/kernel.fatobj.o"
-  local repack_so="${out_dir}/lib${case_token}_kernel.so"
+  local kernel_so="${out_dir}/lib${case_token}_kernel.so"
 
   [[ -f "${case_dir}/main.cpp" ]] || die "missing main.cpp for ${case_name}"
   [[ -f "${case_dir}/launch.cpp" ]] || die "missing launch.cpp for ${case_name}"
@@ -257,7 +257,7 @@ build_one_impl() {
   build_launch_object "${case_dir}" "${launch_obj}"
 
   log "[$case_name] step 3/4: link kernel shared library"
-  link_kernel_so "${case_token}" "${kernel_fatobj}" "${launch_obj}" "${repack_so}"
+  link_kernel_so "${case_token}" "${kernel_fatobj}" "${launch_obj}" "${kernel_so}"
 
   if [[ "${COMPILE_ONLY}" == "1" ]]; then
     log "[$case_name] compile-only mode: stop after kernel shared library"
@@ -293,7 +293,7 @@ EOF
 )
   local ldd_output
   ldd_output="$(run_remote "${remote_ldd_cmd}")"
-  [[ "${ldd_output}" == *"${repack_so}"* || "${ldd_output}" == *"lib${case_token}_kernel.so"* ]] || \
+  [[ "${ldd_output}" == *"${kernel_so}"* || "${ldd_output}" == *"lib${case_token}_kernel.so"* ]] || \
     die "${case_name} did not load expected kernel so: ${ldd_output}"
 
   (

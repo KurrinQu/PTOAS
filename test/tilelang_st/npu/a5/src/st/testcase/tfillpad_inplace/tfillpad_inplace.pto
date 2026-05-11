@@ -8,7 +8,7 @@
 
 // TileLang ST kernels for pto.tfillpad (inplace mode).
 // Matches C++ reference test case: Case 5
-// Compiled by ptoas --enable-insert-sync --enable-tile-op-expand --vpto-emit-hivm-llvm
+// Compiled by ptoas --enable-insert-sync --enable-tile-op-expand --pto-backend=vpto
 //
 // PadValue encoding: 0=Null, 1=Zero, 2=Max, 3=Min
 // Case 5: float, 260x16, valid=260x7, FillPad=Max (pad=2)
@@ -18,10 +18,10 @@
 // - src tile: holds input data (valid=260x7)
 // - dst tile: receives filled data (valid=260x16 for output)
 
-module {
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
   // ========== No expansion: float, 260x16 physical, src_valid == dst_valid ==========
 
-  func.func @TFILLPAD_INPLACE_f32_260x16_noexpand(%tile_ptr: !pto.ptr<f32>) {
+  func.func @TFILLPAD_INPLACE_f32_260x16_noexpand(%tile_ptr: !pto.ptr<f32>) attributes {pto.aicore} {
     %c0    = arith.constant 0    : index
     %c0_i64 = arith.constant 0   : i64
     %c1    = arith.constant 1    : index

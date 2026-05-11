@@ -10,8 +10,8 @@
 //   2. issue `pto.vlds` with `dist = "BRC_B16"` inside `pto.vecscope`
 //   3. store the resulting vector back through `pto.vsts`
 
-module attributes {pto.target_arch = "a5"} {
-  func.func @vabs_kernel_2d(%arg0: !pto.ptr<f16, gm>, %arg1: !pto.ptr<f16, gm>) {
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @vabs_kernel_2d(%arg0: !pto.ptr<f16, gm>, %arg1: !pto.ptr<f16, gm>) attributes {pto.aicore} {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c128 = arith.constant 128 : index

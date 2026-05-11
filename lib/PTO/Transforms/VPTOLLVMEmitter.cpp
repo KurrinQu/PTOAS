@@ -7718,6 +7718,7 @@ static LogicalResult renameAICoreFunctionsForKernelKind(ModuleOp module,
 struct LowerVPTOOpsPass final
     : public PassWrapper<LowerVPTOOpsPass, OperationPass<ModuleOp>> {
   void runOnOperation() override {
+    materializeVecScopeCarrierLoops(getOperation());
     if (failed(lowerVPTOOps(getOperation(), llvm::errs())))
       signalPassFailure();
   }
@@ -7744,7 +7745,6 @@ struct PrepareVPTOLLVMLoweringPass final
   void runOnOperation() override {
     ModuleOp module = getOperation();
     pto::annotatePTOEntryFunctions(module);
-    materializeVecScopeCarrierLoops(module);
     forceV300CtrlModeForVPTOFuncs(module);
     if (failed(renameAICoreFunctionsForKernelKind(module, llvm::errs())))
       signalPassFailure();

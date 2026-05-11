@@ -7,13 +7,13 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // TileLang ST kernels for pto.trandom: generate random numbers using key and counter.
-// Compiled by ptoas --enable-insert-sync --enable-tile-op-expand --vpto-emit-hivm-llvm
-// to produce LLVM IR.
+// Compiled by ptoas --enable-insert-sync --enable-tile-op-expand --pto-backend=vpto
+// to produce a fatobj object.
 
-module {
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
   // Case 0: ui32 4x256 (1024 elements, valid=4x256)
   // Key and counter passed as ui32 arrays, converted to i32 for pto.trandom (which requires signless)
-  func.func @TRANDOM_int32_4x256(%key_ptr: !pto.ptr<ui32>, %counter_ptr: !pto.ptr<ui32>, %output_ptr: !pto.ptr<ui32>) {
+  func.func @TRANDOM_int32_4x256(%key_ptr: !pto.ptr<ui32>, %counter_ptr: !pto.ptr<ui32>, %output_ptr: !pto.ptr<ui32>) attributes {pto.aicore} {
     %c0     = arith.constant 0     : index
     %c1     = arith.constant 1     : index
     %c2     = arith.constant 2     : index

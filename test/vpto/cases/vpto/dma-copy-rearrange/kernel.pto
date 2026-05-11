@@ -4,13 +4,13 @@
 // target_ops: pto.copy_gm_to_ubuf, pto.dma_copy, pto.copy_ubuf_to_gm
 // scenarios: i16, ub-rearrange, permute-4x16-rows
 // -----------------------------------------------------------------------------
-module attributes {pto.target_arch = "a5"} {
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
   func.func @dma_copy_rearrange_kernel(%arg0: !pto.ptr<i16, gm>,
                                        %arg1: !pto.ptr<i16, gm>,
                                        %arg2: i64,
                                        %arg3: i64,
                                        %arg4: i64,
-                                       %arg5: i64) {
+                                       %arg5: i64) attributes {pto.aicore} {
     %false = arith.constant false
     %c0_i64 = arith.constant 0 : i64
     %c1_i64 = arith.constant 1 : i64

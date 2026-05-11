@@ -5,19 +5,19 @@
 ### 输入
 
 ```mlir
-module attributes {pto.kernel_kind = "vector"} {
-    func.func @helper (...) {
-    }
-    func.func @foo(...) attributes {pto.aicore} {
-        ...
-    }
+module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @helper(...) {
+  }
+  func.func @foo(...) attributes {pto.aicore} {
+    ...
+  }
 }
 
-module attributes {pto.kernel_kind = "cube" } {
-    func.func @helper(...) {}
-    func.func @foo(...) attributes {pto.aicore} {
-        ...
-    }
+module attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
+  func.func @helper(...) {}
+  func.func @foo(...) attributes {pto.aicore} {
+    ...
+  }
 }
 ```
 
@@ -33,7 +33,7 @@ fatobj 对象文件
 
 ### `ptoas`
 
-`--backend=vpto` 直接输出 fatobj。这里移除的是对外的 llvm ir/bc 输出模式，不是禁止内部使用 `.ll` 作为 fatobj 编译中间产物。所有修改发生在 vpto 路径内。emitc 路径不要动，不是我们关心的内容。
+`--pto-backend=vpto` 直接输出 fatobj。这里移除的是对外的 llvm ir/bc 输出模式。所有修改发生在 vpto 路径内。emitc 路径不要动，不是我们关心的内容。
 
 0. 对于两个并列 module，mlir 的 parser 会自动做一个嵌套。为了保证 pass pipeline 不产生分歧，单个 module 的场景也主动包裹为相同的嵌套结构。
 
@@ -67,7 +67,7 @@ module {
 
 ### `VPTOHostStubEmission`
 
-1. 负责 stub 源码字符串的生成，形式可以参考 test/vpto/cases 中的 stub.cpp
+1. 负责 stub 源码字符串的生成，依据输入中 `pto.aicore` 函数的签名和符号约定生成对应 stub
 
 2. cube 和 vector module 中的同名 `pto.aicore` 函数共享同一个 stub 函数
 
@@ -94,7 +94,7 @@ module {
 
 2. 负责临时文件管理。这里禁止使用“临时目录托管 + 目录递归删除”的模型，而是只管理单个临时文件。原因不是实现 bug，而是目录模型本身具有更高的删除风险：一旦路径判断错误，目录删除天然带有批量删除和隐式路径解释的风险；文件级清理不存在这种大范围破坏面。
 
-3. 将 vector cube 这俩 llvm module 吐到临时的 `.ll` 文件中，将 stub 字符串也吐到临时的 `.cpp` 文件中。文件落盘是统一主模型。
+3. 将 vector/cube LLVM module 和 stub 字符串按工具链需要写入临时文件。文件落盘是统一主模型。
 
 4. 参考 test/vpto 下的脚本搭建编译流程，并参考 LLVM/Clang driver 的工具链调用模式实现本地封装。这里需要有一组统一接口负责：
 

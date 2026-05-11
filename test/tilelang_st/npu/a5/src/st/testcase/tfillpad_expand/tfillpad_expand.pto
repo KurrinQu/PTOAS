@@ -8,7 +8,7 @@
 
 // TileLang ST kernels for pto.tfillpad_expand: copy src to dst and fill padding.
 // Matches C++ test cases: case 8, 9
-// Compiled by ptoas --enable-insert-sync --enable-tile-op-expand --vpto-emit-hivm-llvm
+// Compiled by ptoas --enable-insert-sync --enable-tile-op-expand --pto-backend=vpto
 //
 // PadValue encoding: 0=Null, 1=Zero, 2=Max, 3=Min
 // Case 8: uint16, LoadPad=Min(pad=3), FillPad=Max(pad=2)
@@ -16,10 +16,10 @@
 //
 // C++ template params: shape3=src_rows, shape4=src_cols, kTRows_=dst_rows, kTCols_=dst_cols
 
-module {
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
   // ========== Case 8: uint16, src=259x7, dst=260x32, LoadPad=Min, FillPad=Max ==========
 
-  func.func @TFILLPAD_EXPAND_u16_260x32_src_259x7(%src_ptr: !pto.ptr<ui16>, %dst_ptr: !pto.ptr<ui16>) {
+  func.func @TFILLPAD_EXPAND_u16_260x32_src_259x7(%src_ptr: !pto.ptr<ui16>, %dst_ptr: !pto.ptr<ui16>) attributes {pto.aicore} {
     %c0     = arith.constant 0     : index
     %c1     = arith.constant 1     : index
     %c7     = arith.constant 7     : index
@@ -70,7 +70,7 @@ module {
 
   // ========== Case 9: int8, src=259x7, dst=260x64, LoadPad=Min, FillPad=Max ==========
 
-  func.func @TFILLPAD_EXPAND_s8_260x64_src_259x7(%src_ptr: !pto.ptr<i8>, %dst_ptr: !pto.ptr<i8>) {
+  func.func @TFILLPAD_EXPAND_s8_260x64_src_259x7(%src_ptr: !pto.ptr<i8>, %dst_ptr: !pto.ptr<i8>) attributes {pto.aicore} {
     %c0     = arith.constant 0     : index
     %c1     = arith.constant 1     : index
     %c7     = arith.constant 7     : index
