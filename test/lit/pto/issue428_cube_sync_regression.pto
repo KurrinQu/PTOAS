@@ -5,51 +5,98 @@
 // - Preserve the tail drain before the auto tail barrier helper.
 //
 // CHECK-LABEL: tri_inv_block2x2_fp16(
-// CHECK: for (size_t v60 = v20; v60 < v22; v60 += v19) {
+// CHECK: for (size_t v71 = v20; v71 < v22; v71 += v19) {
 // CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID2);
-// CHECK: TMOV(v57, v49);
-// CHECK: TMOV(v58, v55);
+// CHECK: TMOV(v65, v49);
+// CHECK: TMOV(v67, v61);
 // CHECK: set_flag(PIPE_MTE1, PIPE_M, EVENT_ID2);
 // CHECK: wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID2);
 // CHECK: wait_flag(PIPE_FIX, PIPE_M, EVENT_ID2);
-// CHECK: TMATMUL(v59, v57, v58);
+// CHECK: TMATMUL(v69, v65, v67);
 // CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID3);
 // CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID3);
-// CHECK: TMOV(v58, v50);
+// CHECK: TMOV(v67, v51);
 // CHECK: set_flag(PIPE_MTE1, PIPE_M, EVENT_ID3);
 // CHECK: wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID3);
-// CHECK: TMATMUL_ACC(v59, v59, v57, v58);
+// CHECK: TMATMUL_ACC(v69, v69, v65, v67);
 // CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID4);
 // CHECK: set_flag(PIPE_M, PIPE_FIX, EVENT_ID2);
 // CHECK: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID2);
 // CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID4);
-// CHECK: if ((int32_t) ((uint32_t) ((int32_t) v60) + (uint32_t) v8) < v21) {
+// CHECK: if ((int32_t) ((uint32_t) ((int32_t) v71) + (uint32_t) v8) < v21) {
+// CHECK: TMOV(v49, v69);
+// CHECK: set_flag(PIPE_FIX, PIPE_M, EVENT_ID3);
+// CHECK: TMOV(v65, v51);
+// CHECK: set_flag(PIPE_MTE1, PIPE_M, EVENT_ID4);
+// CHECK: wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID4);
+// CHECK: wait_flag(PIPE_FIX, PIPE_M, EVENT_ID3);
+// CHECK: TMATMUL(v69, v65, v67);
+// CHECK: set_flag(PIPE_M, PIPE_FIX, EVENT_ID3);
+// CHECK: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID3);
+// CHECK: TMOV(v51, v69);
 // CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID2);
 // CHECK: set_flag(PIPE_FIX, PIPE_M, EVENT_ID2);
 // CHECK: }
-// CHECK: for (size_t v61 = v20; v61 < v22; v61 += v19) {
+// CHECK: for (size_t v72 = v20; v72 < v22; v72 += v19) {
 // CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID7);
-// CHECK: TMOV(v57, v51);
-// CHECK: TMOV(v58, v55);
+// CHECK: TMOV(v65, v53);
+// CHECK: TMOV(v67, v61);
 // CHECK: set_flag(PIPE_MTE1, PIPE_M, EVENT_ID6);
 // CHECK: wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID6);
 // CHECK: wait_flag(PIPE_FIX, PIPE_M, EVENT_ID6);
-// CHECK: TMATMUL(v59, v57, v58);
+// CHECK: TMATMUL(v69, v65, v67);
 // CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
 // CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
-// CHECK: TMOV(v58, v52);
+// CHECK: TMOV(v67, v55);
 // CHECK: set_flag(PIPE_MTE1, PIPE_M, EVENT_ID7);
 // CHECK: wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID7);
-// CHECK: TMATMUL_ACC(v59, v59, v57, v58);
+// CHECK: TMATMUL_ACC(v69, v69, v65, v67);
 // CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
 // CHECK: set_flag(PIPE_M, PIPE_FIX, EVENT_ID6);
 // CHECK: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID6);
 // CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
-// CHECK: if ((int32_t) ((uint32_t) ((int32_t) v61) + (uint32_t) v8) < v21) {
+// CHECK: if ((int32_t) ((uint32_t) ((int32_t) v72) + (uint32_t) v8) < v21) {
+// CHECK: TMOV(v53, v69);
+// CHECK: set_flag(PIPE_FIX, PIPE_M, EVENT_ID7);
+// CHECK: TMOV(v65, v55);
+// CHECK: set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+// CHECK: wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+// CHECK: wait_flag(PIPE_FIX, PIPE_M, EVENT_ID7);
+// CHECK: TMATMUL(v69, v65, v67);
+// CHECK: set_flag(PIPE_M, PIPE_FIX, EVENT_ID7);
+// CHECK: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID7);
+// CHECK: TMOV(v55, v69);
 // CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID7);
 // CHECK: set_flag(PIPE_FIX, PIPE_M, EVENT_ID6);
 // CHECK: }
-// CHECK: TSTORE(v45, v59);
+// CHECK: set_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+// CHECK: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+// CHECK: TMOV(v53, v69);
+// CHECK: TSTORE(v48, v69);
+// CHECK: set_flag(PIPE_FIX, PIPE_M, EVENT_ID0);
+// CHECK: TLOAD(v57, v36);
+// CHECK: set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID3);
+// CHECK: wait_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID0);
+// CHECK: TMOV(v65, v53);
+// CHECK: wait_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID3);
+// CHECK: TMOV(v67, v57);
+// CHECK: set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+// CHECK: wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+// CHECK: wait_flag(PIPE_FIX, PIPE_M, EVENT_ID0);
+// CHECK: TMATMUL(v69, v65, v67);
+// CHECK: set_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+// CHECK: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+// CHECK: TMOV(v63, v69);
+// CHECK: set_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID1);
+// CHECK: wait_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID1);
+// CHECK: TMOV(v65, v63);
+// CHECK: TMOV(v67, v49);
+// CHECK: set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+// CHECK: wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+// CHECK: TMATMUL(v69, v65, v67);
+// CHECK: set_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+// CHECK: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+// CHECK: TSTORE(v45, v69);
 // CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID2);
 // CHECK: wait_flag(PIPE_FIX, PIPE_M, EVENT_ID2);
 // CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID7);
