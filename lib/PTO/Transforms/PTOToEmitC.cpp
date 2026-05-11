@@ -4163,6 +4163,9 @@ struct PTOTStoreToTSTORE : public OpConversionPattern<pto::TStoreOp> {
     switch (reluPreMode) {
       case pto::ReluPreMode::NoRelu: return "ReluPreMode::NoRelu";
       case pto::ReluPreMode::NormalRelu: return "ReluPreMode::NormalRelu";
+      case pto::ReluPreMode::ScalarRelu: return "ReluPreMode::ScalarRelu";
+      case pto::ReluPreMode::VectorRelu: return "ReluPreMode::VectorRelu";
+      case pto::ReluPreMode::Pwl: return "ReluPreMode::Pwl";
     }
     return "ReluPreMode::NoRelu";
   }
@@ -8256,6 +8259,12 @@ struct PTOMovToEmitC : public OpConversionPattern<pto::TMovOp> {
         return "ReluPreMode::NoRelu";
       case pto::ReluPreMode::NormalRelu:
         return "ReluPreMode::NormalRelu";
+      case pto::ReluPreMode::ScalarRelu:
+        return "ReluPreMode::ScalarRelu";
+      case pto::ReluPreMode::VectorRelu:
+        return "ReluPreMode::VectorRelu";
+      case pto::ReluPreMode::Pwl:
+        return "ReluPreMode::Pwl";
       }
       llvm_unreachable("unknown ReluPreMode");
     };
