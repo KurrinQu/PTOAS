@@ -219,6 +219,14 @@ def PTO_SetChannelParaOp : PTO_BinaryI64ConfigOp<"set_channel_para">;
 def PTO_SetMte2NzParaOp : PTO_UnaryI64ConfigOp<"set_mte2_nz_para">;
 def PTO_SetPadValOutToL1Op : PTO_UnaryI64ConfigOp<"set_pad_val_outtol1">;
 def PTO_GetCtrlOp : PTO_NullaryI64PureOp<"get_ctrl">;
+def PTO_GetVms4SrOp : PTO_Op<"get_vms4_sr", [Pure]> {
+  let arguments = (ins);
+  let results = (outs I16:$list0, I16:$list1, I16:$list2, I16:$list3);
+
+  let assemblyFormat = [{
+    attr-dict `:` type($list0) `,` type($list1) `,` type($list2) `,` type($list3)
+  }];
+}
 def PTO_SetCtrlOp : PTO_UnaryI64ConfigOp<"set_ctrl">;
 def PTO_Sbitset0Op : PTO_BinaryI64PureOp<"sbitset0">;
 def PTO_Sbitset1Op : PTO_BinaryI64PureOp<"sbitset1">;

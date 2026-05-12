@@ -1878,6 +1878,11 @@ StringRef buildRuntimeQueryCallee<pto::GetCtrlOp>(MLIRContext *context) {
   return StringAttr::get(context, "llvm.hivm.GET.CTRL").getValue();
 }
 
+template <>
+StringRef buildRuntimeQueryCallee<pto::GetVms4SrOp>(MLIRContext *context) {
+  return StringAttr::get(context, "llvm.hivm.GET.VMS4.SR").getValue();
+}
+
 static StringRef buildSprclrCallee(MLIRContext *context) {
   return StringAttr::get(context, "llvm.hivm.sprclr").getValue();
 }
@@ -7008,6 +7013,54 @@ private:
   LoweringState &state;
 };
 
+class LowerGetVms4SrOpPattern final
+    : public OpConversionPattern<pto::GetVms4SrOp> {
+public:
+  explicit LowerGetVms4SrOpPattern(TypeConverter &typeConverter,
+                                   MLIRContext *context,
+                                   LoweringState &state)
+      : OpConversionPattern<pto::GetVms4SrOp>(typeConverter, context),
+        state(state) {}
+
+  LogicalResult
+  matchAndRewrite(pto::GetVms4SrOp op, pto::GetVms4SrOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    (void)adaptor;
+    SmallVector<Type> resultTypes;
+    if (failed(this->getTypeConverter()->convertTypes(op->getResultTypes(),
+                                                      resultTypes)) ||
+        resultTypes.size() != 4)
+      return rewriter.notifyMatchFailure(
+          op, "failed to convert get_vms4_sr result types");
+
+    StringRef calleeName = buildRuntimeQueryCallee<pto::GetVms4SrOp>(
+        op.getContext());
+    auto funcType =
+        rewriter.getFunctionType(TypeRange{}, TypeRange{rewriter.getI64Type()});
+    auto call = rewriter.create<func::CallOp>(
+        op.getLoc(), calleeName, TypeRange{rewriter.getI64Type()},
+        ValueRange{});
+    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
+
+    SmallVector<Value> counts;
+    counts.reserve(4);
+    Value raw = call.getResult(0);
+    for (unsigned i = 0; i < 4; ++i) {
+      Value shifted = raw;
+      if (i != 0)
+        shifted = rewriter.create<arith::ShRUIOp>(
+            op.getLoc(), raw, getI64Constant(rewriter, op.getLoc(), i * 16));
+      counts.push_back(rewriter.create<arith::TruncIOp>(
+          op.getLoc(), resultTypes[i], shifted));
+    }
+    rewriter.replaceOp(op, counts);
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
 template <typename BinaryOp>
 class LowerBinaryI64PureOpPattern final : public OpConversionPattern<BinaryOp> {
 public:
@@ -7334,6 +7387,7 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
                LowerPgeOpPattern<pto::PgeB16Op>,
                LowerPgeOpPattern<pto::PgeB32Op>,
                LowerRuntimeQueryOpPattern<pto::GetCtrlOp>,
+               LowerGetVms4SrOpPattern,
                LowerBinaryI64PureOpPattern<pto::Sbitset0Op>,
                LowerBinaryI64PureOpPattern<pto::Sbitset1Op>,
                LowerSetLoopConfigOpPattern<pto::SetLoop2StrideOutToUbOp>,
@@ -7420,7 +7474,7 @@ static void configureVPTOOpLoweringTarget(ConversionTarget &target,
                       pto::GetBufOp, pto::RlsBufOp>();
   target.addIllegalOp<pto::GetBlockIdxOp, pto::GetSubBlockIdxOp,
                       pto::GetBlockNumOp, pto::GetSubBlockNumOp,
-                      pto::GetCtrlOp>();
+                      pto::GetCtrlOp, pto::GetVms4SrOp>();
   target.addIllegalOp<pto::SetLoop2StrideOutToUbOp, pto::SetLoop1StrideOutToUbOp,
                       pto::SetLoopSizeOutToUbOp, pto::SetLoop2StrideUbToOutOp,
                       pto::SetLoop1StrideUbToOutOp, pto::SetLoopSizeUbToOutOp,

@@ -681,6 +681,31 @@ Typical usage:
 %subblock_num = pto.get_subblock_num
 ```
 
+### VMS4 Status Query
+
+#### `pto.get_vms4_sr`
+
+- **syntax:** `%list0, %list1, %list2, %list3 = pto.get_vms4_sr : i16, i16, i16, i16`
+- **results:** four `i16` values
+- **semantics:** Read `VMS4_SR` and return the finished element counts for
+  source lists 0, 1, 2, and 3. After an exhausted `pto.vmrgsort4`, these are
+  the per-source-list executed counts.
+
+| Bits | Meaning |
+|------|---------|
+| `[15:0]` | finished count for source list 0 |
+| `[31:16]` | finished count for source list 1 |
+| `[47:32]` | finished count for source list 2 |
+| `[63:48]` | finished count for source list 3 |
+
+```c
+status = VMS4_SR;
+list0 = (uint16_t)(status & 0xffff);
+list1 = (uint16_t)((status >> 16) & 0xffff);
+list2 = (uint16_t)((status >> 32) & 0xffff);
+list3 = (uint16_t)((status >> 48) & 0xffff);
+```
+
 ### Core Types
 
 ### Element Types
@@ -1134,7 +1159,7 @@ This section provides a categorized overview of all PTO micro Instruction operat
 | 10 | [Reduction Ops](isa/micro-isa/10-reduction-ops.md) | Vector reductions | 7 | `pto.vcadd`, `pto.vcmax`, `pto.vcmin`, `pto.vcgadd`, `pto.vcgmax`, `pto.vcgmin`, `pto.vcpadd` |
 | 11 | [Compare & Select](isa/micro-isa/11-compare-select.md) | Comparison and conditional selection | 4 (+1 not A5) | `pto.vcmp`, `pto.vcmps`, `pto.vsel`, `pto.vselr` (`pto.vselrv2` removed: not A5) |
 | 12 | [Data Rearrangement](isa/micro-isa/12-data-rearrangement.md) | In-register data movement and permutation | 2 (+2 not A5) | `pto.vintlv`, `pto.vdintlv` (`pto.vintlvv2`, `pto.vdintlvv2` removed: not A5) |
-| 13 | [DSA/SFU Ops](isa/micro-isa/13-dsa-sfu-ops.md) | Specialized ops, index generation, and sorting helpers | 9 | `pto.vlrelu`, `pto.vprelu`, `pto.vexpdif`, `pto.vaxpy`, `pto.vmull`, `pto.vmula`, `pto.vci`, `pto.vbitsort`, `pto.vmrgsort4` |
+| 13 | [DSA/SFU Ops](isa/micro-isa/13-dsa-sfu-ops.md) | Specialized ops, index generation, and sorting helpers | 10 | `pto.vlrelu`, `pto.vprelu`, `pto.vexpdif`, `pto.vaxpy`, `pto.vmull`, `pto.vmula`, `pto.vci`, `pto.vbitsort`, `pto.vmrgsort4`, `pto.get_vms4_sr` |
 | 14 | [Arith (Shared MLIR Dialect)](isa/micro-isa/14-shared-arith.md) | Full scalar `arith` surface used around PTO ops; the companion page lists categories and representative examples | all scalar ops | `arith.constant`, `arith.addi`, `arith.addf`, `arith.cmpi`, `arith.cmpf`, `arith.select`, `arith.index_cast`, `arith.extsi`, `arith.trunci`, `arith.andi`, `arith.shli`, etc. |
 | 15 | [SCF (Shared MLIR Dialect)](isa/micro-isa/15-shared-scf.md) | Structured loops, branches, and loop-carried state around PTO regions | 5 | `scf.for`, `scf.if`, `scf.while`, `scf.condition`, `scf.yield` |
 | 16 | [Cube Matrix Multiply (MAT)](isa/micro-isa/16-cube-matmul.md) | GM↔L1 (`cbuf`) staging, L1 (`cbuf`)↔UB side moves, L1→L0A/L0B loads, L0C (`acc`) matmul, and wrapper bridge load/store ops | 16+ | `pto.copy_gm_to_cbuf`, `pto.copy_gm_to_cbuf_multi_nd2nz`, `pto.copy_gm_to_cbuf_multi_dn2nz`, `pto.load_cbuf_to_ca`, `pto.load_cbuf_to_cb`, `pto.load_cbuf_to_ca_mx`, `pto.load_cbuf_to_cb_mx`, `pto.mad`, `pto.mad_acc`, `pto.mad_bias`, `pto.mad_mx`, `pto.mad_mx_acc`, `pto.mad_mx_bias`, `pto.copy_matrix_cc_to_gm`, `pto.copy_matrix_cc_to_cbuf`, `pto.copy_matrix_cc_to_ub`, `pto.copy_cbuf_to_bt`, `pto.copy_cbuf_to_fbuf`, `pto.cube_load`, `pto.cube_store`, `pto.cube_load_frac`, `pto.left_load`, `pto.right_load`, `pto.left_load_mx`, `pto.right_load_mx`, `pto.acc_store`, `pto.acc_store_gm`, `pto.acc_store_ub` |

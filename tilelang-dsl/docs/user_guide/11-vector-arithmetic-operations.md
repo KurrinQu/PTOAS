@@ -1558,6 +1558,24 @@ None. The op writes UB memory directly.
 - `dest` and `src0` through `src3` must be UB-backed pointers
 - Inputs must already be sorted according to the order encoded by `config`
 
+#### `pto.get_vms4_sr() -> (pto.i16, pto.i16, pto.i16, pto.i16)`  [Advanced Tier]
+
+**Description**: Read `VMS4_SR` after exhausted `pto.vmrgsort4` and return the
+finished element counts for source lists 0 through 3.
+
+**Returns**:
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `list0` | `pto.i16` | Finished count from `VMS4_SR[15:0]` |
+| `list1` | `pto.i16` | Finished count from `VMS4_SR[31:16]` |
+| `list2` | `pto.i16` | Finished count from `VMS4_SR[47:32]` |
+| `list3` | `pto.i16` | Finished count from `VMS4_SR[63:48]` |
+
+**Example**:
+```python
+list0, list1, list2, list3 = pto.get_vms4_sr()
+```
+
 **Order Mode Enum**: The `OrderMode` enum provides type-safe order selection for `pto.vci` operations. `ASC` and `DESC` are supported.
 
 #### `pto.vci(index: ScalarType, order: OrderMode = OrderMode.ASC) -> VRegType`

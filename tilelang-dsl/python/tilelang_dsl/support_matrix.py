@@ -202,6 +202,7 @@ ADVANCED_VECSCOPE_PTO_CALLS = frozenset(
         "vdintlvv2",
         "vbitsort",
         "vmrgsort4",
+        "get_vms4_sr",
     }
 )
 

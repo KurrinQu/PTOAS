@@ -209,6 +209,16 @@ for (int i = 0; i < N; i++)
 
 ---
 
+### `pto.get_vms4_sr`
+
+- **syntax:** `%list0, %list1, %list2, %list3 = pto.get_vms4_sr : i16, i16, i16, i16`
+- **semantics:** Read `VMS4_SR` and return the finished counts for source
+  lists 0, 1, 2, and 3. After exhausted `pto.vmrgsort4`, the four results map
+  to `VMS4_SR[15:0]`, `VMS4_SR[31:16]`, `VMS4_SR[47:32]`, and
+  `VMS4_SR[63:48]`.
+
+---
+
 ## Current Implementation Surface Summary
 
 - `pto.vmull %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>, !pto.vreg<NxT>`
@@ -216,6 +226,7 @@ for (int i = 0; i < N; i++)
 - `pto.vci %index {order = "ASC|DESC"} : T -> !pto.vreg<NxT>`
 - `pto.vbitsort %dest, %src, %indices, %repeat_times : !pto.ptr<...>, !pto.ptr<...>, !pto.ptr<...>, index`
 - `pto.vmrgsort4 %dest, %src0, %src1, %src2, %src3, %count, %config : !pto.ptr<...>, !pto.ptr<...>, !pto.ptr<...>, !pto.ptr<...>, !pto.ptr<...>, i64, i64`
+- `pto.get_vms4_sr : i16, i16, i16, i16`
 
 ---
 

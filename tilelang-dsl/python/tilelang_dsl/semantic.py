@@ -3924,6 +3924,8 @@ class _SemanticAnalyzer:
             return self._analyze_vbitsort(args)
         if name == "vmrgsort4":
             return self._analyze_vmrgsort4(args)
+        if name == "get_vms4_sr":
+            return self._analyze_get_vms4_sr(args)
         if name in _BROADCAST_VECTOR_OPS:
             return self._analyze_broadcast_vector_op(name, args)
         if name in _MULTI_RESULT_VECTOR_OPS:
@@ -5973,6 +5975,17 @@ class _SemanticAnalyzer:
             name="vmrgsort4",
             args=(destination, source0, source1, source2, source3, args[5], args[6]),
             type=None,
+        )
+
+    def _analyze_get_vms4_sr(self, args: tuple[SemanticExpr, ...]) -> SemanticExpr:
+        if args:
+            raise TypeError("pto.get_vms4_sr does not accept positional arguments in TileLang DSL v1")
+        count_type = SemanticScalarType(dtype=i16)
+        return SemanticCallExpr(
+            namespace="pto",
+            name="get_vms4_sr",
+            args=(),
+            type=SemanticTupleType(elements=(count_type, count_type, count_type, count_type)),
         )
 
     def _require_dtype_symbol(self, expr: SemanticExpr, context: str) -> ScalarType:

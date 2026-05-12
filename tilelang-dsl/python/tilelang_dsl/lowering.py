@@ -727,12 +727,14 @@ class _AuthoringRenderer:
             raise NotImplementedError(
                 f"multi-result assignment for `pto.{stmt.value.name}` is not supported in TileLang DSL v1"
             )
-        if len(stmt.targets) != 2:
-            raise NotImplementedError("multi-result lowering expects exactly two assignment targets")
-        if not isinstance(stmt.value.type, SemanticTupleType) or len(stmt.value.type.elements) != 2:
-            raise NotImplementedError("multi-result lowering expects a two-result tuple type")
+        if not isinstance(stmt.value.type, SemanticTupleType):
+            raise NotImplementedError("multi-result lowering expects a tuple result type")
+        if len(stmt.targets) != len(stmt.value.type.elements):
+            raise NotImplementedError("multi-result lowering expects assignment arity to match result arity")
 
         if stmt.value.name in {"make_mask", "plt_b8", "plt_b16", "plt_b32"}:
+            if len(stmt.targets) != 2 or len(stmt.value.type.elements) != 2:
+                raise NotImplementedError("mask multi-result lowering expects exactly two results")
             lines: list[str] = []
             if stmt.value.name == "make_mask":
                 dtype_expr, remaining_expr = stmt.value.args
@@ -932,6 +934,18 @@ class _AuthoringRenderer:
             )
             env[align_target.name] = _RenderedValue(name=align_target.ssa_name, type=align_type)
             env[base_target.name] = _RenderedValue(name=base_target.ssa_name, type=base_type)
+            return lines
+
+        if stmt.value.name == "get_vms4_sr":
+            lines = []
+            result_names = ", ".join(target.ssa_name for target in stmt.targets)
+            result_types = ", ".join(self._render_type(result_type) for result_type in stmt.value.type.elements)
+            lines.append(
+                self._indent(indent)
+                + f"{result_names} = pto.get_vms4_sr : {result_types}"
+            )
+            for target, result_type in zip(stmt.targets, stmt.value.type.elements):
+                env[target.name] = _RenderedValue(name=target.ssa_name, type=result_type)
             return lines
 
         raise NotImplementedError(

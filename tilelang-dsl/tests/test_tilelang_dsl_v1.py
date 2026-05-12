@@ -923,6 +923,7 @@ class TileLangDSLSupportMatrixTests(unittest.TestCase):
         self.assertEqual(get_feature_tier("pto.vscatter"), ADVANCED_TIER)
         self.assertEqual(get_feature_tier("pto.vbitsort"), ADVANCED_TIER)
         self.assertEqual(get_feature_tier("pto.vmrgsort4"), ADVANCED_TIER)
+        self.assertEqual(get_feature_tier("pto.get_vms4_sr"), ADVANCED_TIER)
         self.assertEqual(get_feature_tier("PadMode"), BASIC_TIER)
         self.assertEqual(get_feature_tier("VRegType"), BASIC_TIER)
         self.assertEqual(get_feature_tier("MaskType"), BASIC_TIER)
@@ -1965,6 +1966,33 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertEqual(kernel.parameters[0].dtype, pto.f32)
         self.assertEqual(kernel.parameters[0].annotation, pto.ptr(pto.f32, pto.MemorySpace.UB))
         self.assertEqual(kernel.parameters[0].element_dtype, pto.f32)
+
+    def test_get_vms4_sr_lowers_to_four_i16_results(self) -> None:
+        @pto.vkernel(op="get_vms4_sr_surface", dtypes=[(pto.i16,)], advanced=True)
+        def kernel(dst: pto.ptr(pto.i16, pto.MemorySpace.GM)):
+            list0, list1, list2, list3 = pto.get_vms4_sr()
+            pto.store_scalar(dst, 0, list2)
+            return None
+
+        specialized = kernel.specialize()
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        status_assign = next(
+            stmt
+            for stmt in semantic_kernel.body
+            if isinstance(stmt, SemanticAssignStmt)
+            and isinstance(stmt.value, SemanticCallExpr)
+            and stmt.value.name == "get_vms4_sr"
+        )
+        self.assertEqual(len(status_assign.targets), 4)
+        self.assertTrue(all(isinstance(target.type, SemanticScalarType) for target in status_assign.targets))
+        self.assertTrue(all(target.type.dtype == pto.i16 for target in status_assign.targets))
+
+        text = specialized.mlir_text()
+        self.assertRegex(
+            text,
+            r"%list0_\d+, %list1_\d+, %list2_\d+, %list3_\d+ = pto\.get_vms4_sr : i16, i16, i16, i16",
+        )
+        self.assertIn("pto.store_scalar", text)
 
     def test_vreg_type_constructor_exposes_inferred_lane_count(self) -> None:
         vec_type = pto.vreg(pto.f32)
