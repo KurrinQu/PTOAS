@@ -19,6 +19,7 @@ N = 64
 K = 50
 FP_RELU_ELEMS = 128
 ALPHA = np.float32(0.25)
+VECTOR_ALPHA_PATTERN = np.array([0.125, 0.25, 0.5, 0.75], dtype=np.float32)
 SEED = 521
 
 
@@ -30,11 +31,29 @@ def scalar_relu(data: np.ndarray) -> np.ndarray:
     return np.where(data >= np.float32(0.0), data, data * ALPHA)
 
 
+def make_vector_alphas() -> np.ndarray:
+    return np.resize(VECTOR_ALPHA_PATTERN, N).astype(np.float32)
+
+
+def make_vector_relu_params(vector_alphas: np.ndarray) -> np.ndarray:
+    payload = np.resize(vector_alphas, FP_RELU_ELEMS).astype(np.float32)
+    return np.array([encode_scale(float(alpha)) for alpha in payload], dtype=np.uint32)
+
+
+def vector_relu(data: np.ndarray, vector_alphas: np.ndarray) -> np.ndarray:
+    return np.where(
+        data >= np.float32(0.0),
+        data,
+        data * vector_alphas.reshape(1, N),
+    )
+
+
 def generate(output_dir: Path, seed: int) -> None:
     rng = np.random.default_rng(seed)
     lhs = rng.uniform(-2.0, 2.0, size=(M, K)).astype(np.float16)
     rhs = rng.uniform(-1.5, 1.5, size=(K, N)).astype(np.float16)
-    relu_fp = np.full(FP_RELU_ELEMS, encode_scale(float(ALPHA)), dtype=np.uint32)
+    vector_alphas = make_vector_alphas()
+    relu_fp = make_vector_relu_params(vector_alphas)
 
     lhs32 = lhs.astype(np.float32)
     rhs32 = rhs.astype(np.float32)
@@ -42,7 +61,10 @@ def generate(output_dir: Path, seed: int) -> None:
     for k_idx in range(K):
         matmul += lhs32[:, k_idx:k_idx + 1] * rhs32[k_idx:k_idx + 1, :]
 
-    golden = scalar_relu(matmul).astype(np.float16)
+    scalar_golden = scalar_relu(matmul).astype(np.float16)
+    vector_golden = vector_relu(matmul, vector_alphas).astype(np.float16)
+    if np.array_equal(scalar_golden, vector_golden):
+        raise AssertionError("vector relu golden must differ from scalar relu golden")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     lhs.reshape(-1).tofile(output_dir / "v1.bin")
@@ -50,6 +72,7 @@ def generate(output_dir: Path, seed: int) -> None:
     relu_fp.reshape(-1).tofile(output_dir / "v3.bin")
     for index in range(4, 10):
         np.zeros((M, N), dtype=np.float16).reshape(-1).tofile(output_dir / f"v{index}.bin")
+        golden = scalar_golden if index in (4, 6, 8) else vector_golden
         golden.reshape(-1).tofile(output_dir / f"golden_v{index}.bin")
 
 

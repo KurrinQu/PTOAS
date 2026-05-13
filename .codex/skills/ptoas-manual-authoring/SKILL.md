@@ -17,6 +17,8 @@ details unless the user explicitly asks for an implementation design document.
 Do not mention:
 
 - raw op layers, bridge ops, or wrapper-to-raw expansion
+- legacy or low-level operation names in high-level manuals or in
+  `docs/vpto-spec.md` high-level summaries, inventories, and navigation tables
 - hardware registers, control-bit numbers, packed instruction fields, or
   intrinsic names
 - pass names, lowering helper names, emitter internals, or source file paths
@@ -25,6 +27,10 @@ Do not mention:
 
 Implementation details may live in `docs/designs/` or implementation plans, but
 not in the stable user manual.
+
+Legacy and low-level operation references may remain only in explicitly legacy
+release snapshots or dedicated low-level reference material. Do not promote them
+into current high-level op manuals, examples, or `docs/vpto-spec.md` indexes.
 
 ## Required Content
 
@@ -58,6 +64,9 @@ For each op or op family, document these items when applicable:
   examples.
 - Keep the manual canonical. Remove obsolete plans and superseded forms instead
   of preserving them for history.
+- When updating `docs/vpto-spec.md`, keep high-level summaries, inventories,
+  and chapter op lists aligned with the current semantic surface. Do not list
+  legacy implementation ops just because they exist in ODS or old manuals.
 - Avoid vague phrases such as "sets parameters", "configures the pipeline", or
   "does the conversion" unless followed by the concrete values, organization,
   and observable effect.
@@ -93,6 +102,8 @@ Before finishing a manual edit:
   register implementation.
 - No removed syntax, old方案, TODO design fragments, or dead alternatives remain
   in the stable manual.
+- No legacy or low-level op names are introduced into high-level manuals or
+  `docs/vpto-spec.md` high-level summaries/inventories.
 - Examples are meaningful and consistent with verifier/lowering behavior.
 - Related generated or bundled docs are refreshed when this repo expects them
   to be kept in sync.

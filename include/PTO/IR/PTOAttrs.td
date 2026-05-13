@@ -799,6 +799,30 @@ def PTO_AccStoreModeAttr : EnumAttr<PTO_Dialect, PTO_AccStoreModeEnum, "acc_stor
   let summary = "acc_store layout conversion mode";
 }
 
+def PTO_AccStoreUbDstModeEnum : PTO_I32Enum<
+  "AccStoreUbDstMode", "PTO accumulator store UB destination mode", [
+    I32EnumAttrCase<"Single", 0, "single">,
+    I32EnumAttrCase<"SplitM", 1, "split_m">,
+    I32EnumAttrCase<"SplitN", 2, "split_n">
+  ]>;
+
+def PTO_AccStoreUbDstModeAttr
+    : EnumAttr<PTO_Dialect, PTO_AccStoreUbDstModeEnum, "acc_store_ub_dst_mode"> {
+  let summary = "acc_store_ub destination mode attribute";
+}
+
+def PTO_AccStoreSatModeEnum : PTO_I32Enum<
+  "AccStoreSatMode", "PTO accumulator store saturation mode", [
+    I32EnumAttrCase<"Sat", 0, "sat">,
+    I32EnumAttrCase<"NoSat", 1, "nosat">,
+    I32EnumAttrCase<"SatPreserveNan", 2, "sat_preserve_nan">
+  ]>;
+
+def PTO_AccStoreSatModeAttr
+    : EnumAttr<PTO_Dialect, PTO_AccStoreSatModeEnum, "acc_store_sat_mode"> {
+  let summary = "acc_store saturation mode attribute";
+}
+
 def PTO_CubeLoadFracModeEnum : PTO_I32Enum<
   "CubeLoadFracMode", "PTO cube fractal load source layout mode", [
     I32EnumAttrCase<"Nd2nz", 0, "nd2nz">,

@@ -73,31 +73,27 @@ module attributes {pto.target_arch = "a5"} {
 
       pto.set_flag["PIPE_M", "PIPE_FIX", "EVENT_ID1"]
       pto.wait_flag["PIPE_M", "PIPE_FIX", "EVENT_ID1"]
-      pto.acc_store_gm %l0c, %out_plain_gm, %c40_i64, %c64_i64, %c48_i64, %c64_i64,
-        %c0_i64, %c0_i64,
+      pto.acc_store_gm %l0c, %out_plain_gm, %c40_i64, %c64_i64, %c48_i64, %c64_i64, %c0_i64, %c0_i64,
         nz2nd,
         loop3(%c1_i64, %c49152_i64, %c2560_i64)
         : !pto.ptr<f32, acc>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64,
           i64, i64, i64
 
-      pto.acc_store_gm %l0c, %out_atomic_add_gm, %c40_i64, %c64_i64, %c48_i64, %c64_i64,
-        %c0_i64, %c0_i64,
+      pto.acc_store_gm %l0c, %out_atomic_add_gm, %c40_i64, %c64_i64, %c48_i64, %c64_i64, %c0_i64, %c0_i64,
         nz2nd,
         loop3(%c1_i64, %c49152_i64, %c2560_i64),
         atomic(type = f32, op = add)
         : !pto.ptr<f32, acc>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64,
           i64, i64, i64
 
-      pto.acc_store_gm %l0c, %out_atomic_max_gm, %c40_i64, %c64_i64, %c48_i64, %c64_i64,
-        %c0_i64, %c0_i64,
+      pto.acc_store_gm %l0c, %out_atomic_max_gm, %c40_i64, %c64_i64, %c48_i64, %c64_i64, %c0_i64, %c0_i64,
         nz2nd,
         loop3(%c1_i64, %c49152_i64, %c2560_i64),
         atomic(type = f32, op = max)
         : !pto.ptr<f32, acc>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64,
           i64, i64, i64
 
-      pto.acc_store_gm %l0c, %out_atomic_min_gm, %c40_i64, %c64_i64, %c48_i64, %c64_i64,
-        %c0_i64, %c0_i64,
+      pto.acc_store_gm %l0c, %out_atomic_min_gm, %c40_i64, %c64_i64, %c48_i64, %c64_i64, %c0_i64, %c0_i64,
         nz2nd,
         loop3(%c1_i64, %c49152_i64, %c2560_i64),
         atomic(type = f32, op = min)

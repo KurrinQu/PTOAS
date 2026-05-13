@@ -16,19 +16,18 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
     %c1_i64 = arith.constant 1 : i64
     %c16_i64 = arith.constant 16 : i64
 
-    pto.acc_store_ub %src, %dst, %c16_i64, %c16_i64, %c16_i64, %c16_i64,
-      %c0_i64, %c0_i64,
+    pto.acc_store_ub %src, %dst, %c16_i64, %c16_i64, %c16_i64, %c16_i64, dst_mode(%c0_i64),
       unit_flag(check_only),
       nz2nd,
       loop3(%c1_i64, %c0_i64, %c16_i64)
-      : !pto.ptr<f32, acc>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i64, i64, i64, i64
+      : !pto.ptr<f32, acc>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i64, i64, i64
 
     return
   }
 }
 
 // ROUNDTRIP-LABEL: func.func @acc_store_ub_unit_flag_probe(
-// ROUNDTRIP: pto.acc_store_ub %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, unit_flag(check_only), nz2nd, loop3(%{{.*}}, %{{.*}}, %{{.*}})
+// ROUNDTRIP: pto.acc_store_ub %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, dst_mode(%{{.*}}), unit_flag(check_only), nz2nd, loop3(%{{.*}}, %{{.*}}, %{{.*}})
 
 // EXPAND-LABEL: func.func @acc_store_ub_unit_flag_probe(
 // EXPAND: %[[XT:.*]] = arith.constant 8804682956816 : i64

@@ -15,30 +15,24 @@ import numpy as np
 
 def compare_bin(golden_path: str, output_path: str) -> bool:
     if not os.path.exists(golden_path) or not os.path.exists(output_path):
-        print(f"[ERROR] missing file: {golden_path} or {output_path}")
         return False
-    golden = np.fromfile(golden_path, dtype=np.float16)
-    output = np.fromfile(output_path, dtype=np.float16)
+    golden = np.fromfile(golden_path, dtype=np.float32)
+    output = np.fromfile(output_path, dtype=np.float32)
     if golden.shape != output.shape:
         print(f"[ERROR] shape mismatch: {golden.shape} vs {output.shape}")
         return False
-    equal = golden.view(np.uint16) == output.view(np.uint16)
-    equal |= np.isnan(golden) & np.isnan(output)
-    if bool(np.all(equal)):
+    if np.allclose(golden, output, atol=1e-3, rtol=1e-3):
         return True
-    diff = np.where(~equal)[0]
+    diff = np.where(np.abs(golden - output) > (1e-3 + 1e-3 * np.abs(golden)))[0]
     idx = int(diff[0]) if diff.size else 0
-    print(
-        f"[ERROR] first mismatch at idx={idx}: "
-        f"golden={float(golden[idx])}, out={float(output[idx])}"
-    )
+    print(f"[ERROR] first mismatch at idx={idx}: golden={float(golden[idx])}, out={float(output[idx])}")
     return False
 
 
 def main() -> None:
     strict = os.getenv("COMPARE_STRICT", "1") != "0"
     ok = True
-    for index in range(4, 10):
+    for index in range(3, 7):
         ok = compare_bin(f"golden_v{index}.bin", f"v{index}.bin") and ok
     if not ok:
         if strict:

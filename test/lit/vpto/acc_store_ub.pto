@@ -10,12 +10,11 @@ module attributes {"pto.target_arch" = "a5", pto.kernel_kind = #pto.kernel_kind<
     %c16_i64 = arith.constant 16 : i64
     %c32_i64 = arith.constant 32 : i64
 
-    pto.acc_store_ub %src, %dst, %c16_i64, %c16_i64, %c16_i64, %c32_i64,
-      %c2_i64, %c0_i64,
+    pto.acc_store_ub %src, %dst, %c16_i64, %c16_i64, %c16_i64, %c32_i64, dst_mode(%c0_i64),
       pre_relu(mode = normal_relu),
       nz2nz(%c1_i64),
       sat
-      : !pto.ptr<f32, acc>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i64,
+      : !pto.ptr<f32, acc>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64,
       i64
 
     return
@@ -23,7 +22,7 @@ module attributes {"pto.target_arch" = "a5", pto.kernel_kind = #pto.kernel_kind<
 }
 
 // ROUNDTRIP-LABEL: func.func @acc_store_ub_probe(
-// ROUNDTRIP: pto.acc_store_ub %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, pre_relu(mode = normal_relu), nz2nz(%{{.*}}), sat
+// ROUNDTRIP: pto.acc_store_ub %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, dst_mode(%{{.*}}), pre_relu(mode = normal_relu), nz2nz(%{{.*}}), sat
 
 // EXPAND-LABEL: func.func @acc_store_ub_probe(
 // EXPAND: pto.get_ctrl

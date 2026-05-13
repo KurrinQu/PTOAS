@@ -1,48 +1,112 @@
 # 16. Cube Matrix Multiply (MAT)
 
-> **Category:** Cube unit ops — staged load/store and matrix multiply
+> **Category:** Cube unit ops — staged load/store, matrix multiply, and
+> FIXPIPE MTE writeback
+
+This chapter documents the high-level Cube VPTO surface. It describes logical
+data objects, operand units, layout contracts, numeric behavior, and writeback
+effects from the user's point of view.
 
 ---
 
-## Wrapper-Layer Compute Ops
+## Common Cube Operand Model
 
-The `pto.mad*` family describes a logical matrix multiply over already prepared
-cube tiles:
+Cube ops use typed PTO pointers to name logical storage domains:
 
-- `%lhs` is the logical `M x K` left matrix tile in `left`.
-- `%rhs` is the logical `K x N` right matrix tile in `right`.
-- `%dst` is the logical `M x N` accumulator tile in `acc`.
-- `%m`, `%n`, and `%k` are element counts in the logical M/N/K dimensions, not
-  byte sizes.
-- The matrix data type is inferred from the pointer element types. Do not pass
-  a separate type selector. Invalid target-profile type combinations are not
-  valid programs.
+| Address space | Logical role |
+|---------------|--------------|
+| `gm` | Global memory |
+| `mat` | L1 matrix staging buffer |
+| `left` | Left matrix operand tile for Cube compute |
+| `right` | Right matrix operand tile for Cube compute |
+| `acc` | Accumulator/result tile produced by Cube compute |
+| `bias` | Bias vector payload consumed by bias matmul forms |
+| `scaling` | FIXPIPE parameter payloads consumed by vector quant/ReLU clauses |
+| `ub` | Unified Buffer destination/source for vector-side use |
 
-Common optional clauses:
+Unless an op says otherwise:
 
-| Clause | Values | Semantic effect |
-|--------|--------|-----------------|
-| `unit_flag(...)` | `check_only`, `check_and_set` | Enables producer-side unit-flag participation for this result tile. `check_only` only performs the producer-side availability check; `check_and_set` also publishes the produced tile for downstream consumers. Omit it when the schedule does not use unit-flag synchronization. |
-| `disable_gemv` | flag | Selects the normal matmul `%lhs` consumption contract for `M = 1` GEMV operations. When `M = 1`, omitting this flag selects the GEMV `%lhs` consumption contract: `%lhs` must point to an L0A tile organized in the target GEMV A-vector format. On the current A5 contract, the logical `A[1, K]` values must be provided as a sequential K-element vector. Supplying a normal matmul L0A organization while GEMV mode is selected is invalid. Adding `disable_gemv` makes `%lhs` use the normal matmul consumption contract instead. For `M != 1`, the op uses the normal matmul `%lhs` consumption contract. The mathematical result is unchanged: all modes compute `A @ B`; only the required L0A organization for `%lhs` changes in the `M = 1` GEMV case. |
-| `sat` / `nosat` | flags | Optional CUBE floating exceptional-value mode. With `sat`, exceptional input values participating in the multiply are normalized before arithmetic (`+/-INF -> +/-finite type max`, `NaN -> 0`), and finite arithmetic overflow saturates to the finite type range instead of producing INF. With `nosat`, INF/NaN inputs are preserved and overflow can produce INF/NaN through the multiply-accumulate. Omit both to use the surrounding execution mode. These flags are valid only for floating/MX MAD forms, not integer MAD. |
-| `tf32_mode(...)` | `round_even`, `round_away` | Valid only for non-MX `f32 x f32 -> f32`. FP32 inputs are rounded to TF32 precision before multiplication; accumulation/output remain FP32. `round_even` uses nearest-even tie handling; `round_away` uses nearest-away tie handling. |
-| `n_dir` | flag | Requests N-direction result production. This does not change the mathematical matrix value; it changes the producer ordering expected by schedules that combine unit flags with later layout movement. Omit it for the default M-direction production order. |
+- Shape operands such as `%m`, `%n`, `%k`, `shape(%n, %d)` are logical element
+  counts, not byte counts.
+- Length operands named `%len_burst` in byte-copy surfaces are byte counts
+  unless the op explicitly states a different unit.
+- Strides named `src_stride` or `dst_stride` are start-to-start distances in
+  the unit stated by the op. Do not infer byte units from the name alone.
+- Pointer operands select the base address of the logical object. Sub-tile
+  selection is expressed by computing a different base pointer before calling
+  the op, unless the op exposes an explicit start or group operand.
+- Cache/session hint operands may affect the memory path but do not change the
+  mathematical value written or read.
 
-`pto.mad_mx*` additionally applies microscaling. The scale operands are not
-explicit operands of the matmul op: they are associated with the `%lhs` and
-`%rhs` tiles by the MX load/layout contract. Logically, each group of 32
-K-direction values shares one scale value. In the current target profile, the
-supported MX data tile type is `f8E4M3FN`:
+---
+
+## Cube Compute Ops
+
+The `pto.mad*` family computes logical matrix multiplication over tiles already
+prepared in `left` and `right`:
 
 ```text
-mx_matmul(lhs, rhs)[m, n] =
-  sum_k (lhs[m, k] * scale_lhs[m, floor(k / 32)]) *
-        (rhs[k, n] * scale_rhs[floor(k / 32), n])
+lhs: M x K
+rhs: K x N
+dst: M x N
 ```
 
-The corresponding scale data must have been loaded into the matching MX side
-buffers before the `pto.mad_mx*` op executes, and it must be aligned with the
-data tile selected by `%lhs` / `%rhs`.
+The matrix element types are inferred from `%lhs`, `%rhs`, and `%dst` pointer
+element types. There is no separate type selector. Unsupported type
+combinations are invalid programs.
+
+The current VPTO surface enforces the Cube storage roles through pointer
+address spaces: `%lhs` is `left`, `%rhs` is `right`, and `%dst` is `acc`.
+Bias forms additionally require `%bias` in the `bias` address space with the
+same element type as `%dst`. MX forms require MX element types on both `%lhs`
+and `%rhs`; the current target-profile MX data type is `f8E4M3FN`.
+
+### MAD Common Clauses
+
+| Clause | Values | Effect |
+|--------|--------|--------|
+| `unit_flag(...)` | `check_only`, `check_and_set` | Participates in producer-side tile synchronization. `check_only` checks that the producer slot can be used. `check_and_set` also publishes the produced `%dst` tile for later consumers. Omit the clause when the schedule does not use unit flags for this tile. |
+| `disable_gemv` | flag | Applies only when `%m = 1`. Omitted means GEMV A-vector consumption: `%lhs` must contain the logical `1 x K` row in the target GEMV left-tile organization. Present means normal matmul left-tile organization. The mathematical result is still `lhs @ rhs`; only the required `%lhs` organization changes. For `%m != 1`, normal matmul organization is used. |
+| `sat` / `nosat` | flags | Floating exceptional-value mode for floating and MX MAD forms. With `sat`, exceptional multiply inputs are normalized before arithmetic (`+/-inf` to finite type extrema, `nan` to 0) and finite overflow saturates to the finite type range. With `nosat`, exceptional inputs are preserved and overflow may produce exceptional outputs. Omit both to use the execution mode selected outside this op. Integer MAD forms do not accept these flags. |
+| `tf32_mode(...)` | `round_even`, `round_away` | Valid only for non-MX `f32 x f32 -> f32`. FP32 inputs are rounded to TF32 precision before multiplication; accumulation and output remain FP32. |
+| `n_dir` | flag | Requests N-direction result production order for schedules that combine compute with unit flags and later layout movement. It does not change `dst[m, n]`. |
+
+Reference semantics for non-MX forms:
+
+```text
+product[m, n] = sum k in 0 .. K-1:
+                  numeric_lhs(lhs[m, k]) * numeric_rhs(rhs[k, n])
+
+pto.mad:      dst[m, n] = product[m, n]
+pto.mad_acc:  dst[m, n] = dst[m, n] + product[m, n]
+pto.mad_bias: dst[m, n] = product[m, n] + bias[n]
+```
+
+For integer forms, the op multiplies the typed values already present in
+`left` and `right`. Per-input offset correction for quantized integer
+algorithms is not an operand of `pto.mad*`; apply such correction before
+loading the Cube operands when the algorithm needs it.
+
+### MX Matmul Model
+
+`pto.mad_mx*` additionally applies microscaling. The scale payloads are loaded
+with `pto.left_load_mx` / `pto.right_load_mx` and are associated with the
+selected `%lhs` / `%rhs` tiles; they are not direct operands of `pto.mad_mx*`.
+
+The K dimension is partitioned into 32-element groups:
+
+```text
+k_group = floor(k / 32)
+
+mx_product[m, n] =
+  sum k in 0 .. K-1:
+    (lhs[m, k] * lhs_scale[m, k_group]) *
+    (rhs[k, n] * rhs_scale[k_group, n])
+```
+
+Current target-profile MX data tiles use `f8E4M3FN`. `%k` must be compatible
+with MX grouping. On the current target profile, MX matmul consumes K in
+64-element multiples, which contain two 32-element scale groups.
 
 ### `pto.mad`
 
@@ -56,35 +120,34 @@ pto.mad %lhs, %rhs, %dst, %m, %n, %k
   n_dir?
   : !pto.ptr<A, left>, !pto.ptr<B, right>, !pto.ptr<C, acc>, i64, i64, i64
 ```
-- **semantics:** Zero-init cube matmul, `dst = lhs * rhs`.
+- **semantics:** Zero-init matrix multiply, `dst[m, n] = sum_k(lhs[m, k] * rhs[k, n])`.
 
 **Parameter Table:**
 
 | Parameter | Width | Description |
 |-----------|-------|-------------|
-| `%lhs` | ptr | L0A input (`left`) |
-| `%rhs` | ptr | L0B input (`right`) |
-| `%dst` | ptr | L0C accumulator (`acc`) |
-| `%m` | i64 | M size |
-| `%n` | i64 | N size |
-| `%k` | i64 | K size |
-| `unit_flag` | clause | Optional unit-flag producer control; see common clauses |
-| `disable_gemv` | flag | Optional GEMV disable; see common clauses |
-| `sat` / `nosat` | flag | Optional floating exceptional-value mode override; see common clauses |
-| `tf32_mode` | clause | Optional TF32 input rounding; see common clauses |
-| `n_dir` | flag | Optional N-direction producer order; see common clauses |
+| `%lhs` | ptr | Left operand tile in `left`, interpreted as logical `M x K` |
+| `%rhs` | ptr | Right operand tile in `right`, interpreted as logical `K x N` |
+| `%dst` | ptr | Accumulator destination tile in `acc`, interpreted as logical `M x N` |
+| `%m` | i64 | Logical M element count |
+| `%n` | i64 | Logical N element count |
+| `%k` | i64 | Logical K element count |
+| optional clauses | - | See [MAD Common Clauses](#mad-common-clauses) |
 
 **Constraints:**
 
-- Address spaces must be `left`, `right`, `acc`.
-- `unit_flag(check_only)` and `unit_flag(check_and_set)` are the supported forms.
+- `%lhs`, `%rhs`, and `%dst` must be in `left`, `right`, and `acc`.
+- `%m`, `%n`, and `%k` must be positive and satisfy the target shape limits
+  for the selected element-type combination.
 - `tf32_mode(...)` requires `f32` lhs, rhs, and dst element types.
-- `sat` / `nosat` requires floating or MX lhs/rhs/dst element types; integer `s8 -> s32` MAD does not accept this clause.
+- `sat` / `nosat` requires a floating element-type combination.
+- Packed 4-bit integer data requires `%k` to select an even number of K
+  elements.
 
 **Example:**
 
 ```mlir
-pto.mad %l0a, %l0b, %l0c, %c16_i64, %c16_i64, %c16_i64
+pto.mad %l0a, %l0b, %l0c, %c16_i64, %c16_i64, %c32_i64
   : !pto.ptr<f16, left>, !pto.ptr<f16, right>, !pto.ptr<f32, acc>, i64, i64, i64
 ```
 
@@ -102,34 +165,17 @@ pto.mad_acc %lhs, %rhs, %dst, %m, %n, %k
   n_dir?
   : !pto.ptr<A, left>, !pto.ptr<B, right>, !pto.ptr<C, acc>, i64, i64, i64
 ```
-- **semantics:** Accumulating cube matmul, `dst += lhs * rhs`.
+- **semantics:** Accumulating matrix multiply,
+  `dst[m, n] = dst[m, n] + sum_k(lhs[m, k] * rhs[k, n])`.
 
-**Parameter Table:**
+**Parameter Table:** same as `pto.mad`.
 
-| Parameter | Width | Description |
-|-----------|-------|-------------|
-| `%lhs` | ptr | L0A input (`left`) |
-| `%rhs` | ptr | L0B input (`right`) |
-| `%dst` | ptr | L0C accumulator (`acc`) |
-| `%m` | i64 | M size |
-| `%n` | i64 | N size |
-| `%k` | i64 | K size |
-| `unit_flag` | clause | Optional unit-flag producer control; see common clauses |
-| `disable_gemv` | flag | Optional GEMV disable; see common clauses |
-| `sat` / `nosat` | flag | Optional floating exceptional-value mode override; see common clauses |
-| `tf32_mode` | clause | Optional TF32 input rounding; see common clauses |
-| `n_dir` | flag | Optional N-direction producer order; see common clauses |
-
-**Constraints:**
-
-- Same address space/type family requirements as `pto.mad`.
-- `tf32_mode(...)` requires `f32` lhs, rhs, and dst element types.
-- `sat` / `nosat` requires floating or MX lhs/rhs/dst element types.
+**Constraints:** same as `pto.mad`.
 
 **Example:**
 
 ```mlir
-pto.mad_acc %l0a, %l0b, %l0c, %c16_i64, %c16_i64, %c16_i64 unit_flag(check_only)
+pto.mad_acc %l0a, %l0b, %l0c, %c16_i64, %c16_i64, %c32_i64 unit_flag(check_only)
   : !pto.ptr<f16, left>, !pto.ptr<f16, right>, !pto.ptr<f32, acc>, i64, i64, i64
 ```
 
@@ -147,38 +193,28 @@ pto.mad_bias %lhs, %rhs, %dst, %bias, %m, %n, %k
   n_dir?
   : !pto.ptr<A, left>, !pto.ptr<B, right>, !pto.ptr<C, acc>, !pto.ptr<C, bias>, i64, i64, i64
 ```
-- **semantics:** Bias-init cube matmul, `dst[m, n] = lhs[m, k] * rhs[k, n] + bias[n]`.
-  The bias operand is not an `M x N` matrix. It points to an `N`-element
-  per-output-channel bias vector in the bias buffer, and that vector is
-  broadcast across the M dimension.
+- **semantics:** Bias-init matrix multiply,
+  `dst[m, n] = sum_k(lhs[m, k] * rhs[k, n]) + bias[n]`.
 
 **Parameter Table:**
 
 | Parameter | Width | Description |
 |-----------|-------|-------------|
-| `%lhs` / `%rhs` / `%dst` / `%m` / `%n` / `%k` | - | Same meaning as `pto.mad` |
-| `%bias` | ptr | Bias-buffer pointer (`!pto.ptr<C, bias>`) for the `N`-element bias vector. |
-| `unit_flag` | clause | Optional unit-flag producer control; see common clauses |
-| `disable_gemv` | flag | Optional GEMV disable; see common clauses |
-| `sat` / `nosat` | flag | Optional floating exceptional-value mode override; see common clauses |
-| `tf32_mode` | clause | Optional TF32 input rounding; see common clauses |
-| `n_dir` | flag | Optional N-direction producer order; see common clauses |
+| `%lhs`, `%rhs`, `%dst`, `%m`, `%n`, `%k` | - | Same as `pto.mad` |
+| `%bias` | ptr | Bias vector in `bias`, interpreted as `N` values and broadcast across M |
+| optional clauses | - | See [MAD Common Clauses](#mad-common-clauses) |
 
 **Constraints:**
 
 - `%bias` must be in `bias` address space.
 - `%bias` element type must match `%dst` element type.
-- `%bias` must satisfy the target alignment requirement for the bias buffer.
-- Only `N` bias values are consumed. To model a logical `M x N` result, use
-  `bias[None, :]` in the reference calculation, not an independent `M x N`
-  bias matrix.
-- `tf32_mode(...)` requires `f32` lhs, rhs, and dst element types.
-- `sat` / `nosat` requires floating or MX lhs/rhs/dst element types.
+- Only `N` bias values are consumed; `%bias` is not an `M x N` matrix.
+- Other constraints match `pto.mad`.
 
 **Example:**
 
 ```mlir
-pto.mad_bias %l0a, %l0b, %l0c, %bt, %c16_i64, %c16_i64, %c16_i64
+pto.mad_bias %l0a, %l0b, %l0c, %bt, %c16_i64, %c16_i64, %c32_i64
   : !pto.ptr<f16, left>, !pto.ptr<f16, right>, !pto.ptr<f32, acc>, !pto.ptr<f32, bias>, i64, i64, i64
 ```
 
@@ -195,28 +231,17 @@ pto.mad_mx %lhs, %rhs, %dst, %m, %n, %k
   n_dir?
   : !pto.ptr<A, left>, !pto.ptr<B, right>, !pto.ptr<C, acc>, i64, i64, i64
 ```
-- **semantics:** Zero-init MX cube matmul, `dst = mx_matmul(lhs, rhs)`.
+- **semantics:** Zero-init MX matrix multiply, `dst[m, n] = mx_product[m, n]`.
 
-**Parameter Table:**
-
-| Parameter | Width | Description |
-|-----------|-------|-------------|
-| `%lhs` | ptr | MX L0A input (`left`) |
-| `%rhs` | ptr | MX L0B input (`right`) |
-| `%dst` | ptr | L0C accumulator (`acc`) |
-| `%m` | i64 | M size |
-| `%n` | i64 | N size |
-| `%k` | i64 | K size; MX scaling groups values in K-direction chunks of 32 |
-| `unit_flag` | clause | Optional unit-flag producer control; see common clauses |
-| `disable_gemv` | flag | Optional GEMV disable; see common clauses |
-| `sat` / `nosat` | flag | Optional floating exceptional-value mode override; see common clauses |
-| `n_dir` | flag | Optional N-direction producer order; see common clauses |
+**Parameter Table:** same as `pto.mad`; `%lhs` and `%rhs` must have matching
+MX scale payloads prepared by the MX load ops.
 
 **Constraints:**
 
 - Operands must use a target-supported MX dtype combination.
-- The corresponding MX scale data for `%lhs` and `%rhs` must already be
-  prepared and aligned with the data tiles selected by those pointers.
+- Matching left and right MX scale payloads must be loaded before this op.
+- `%k` must satisfy the MX grouping rule described in [MX Matmul Model](#mx-matmul-model).
+- `tf32_mode(...)` is not a clause of MX MAD.
 
 **Example:**
 
@@ -238,24 +263,12 @@ pto.mad_mx_acc %lhs, %rhs, %dst, %m, %n, %k
   n_dir?
   : !pto.ptr<A, left>, !pto.ptr<B, right>, !pto.ptr<C, acc>, i64, i64, i64
 ```
-- **semantics:** Accumulating MX cube matmul, `dst += mx_matmul(lhs, rhs)`.
+- **semantics:** Accumulating MX matrix multiply,
+  `dst[m, n] = dst[m, n] + mx_product[m, n]`.
 
-**Parameter Table:**
+**Parameter Table:** same as `pto.mad_mx`.
 
-| Parameter | Width | Description |
-|-----------|-------|-------------|
-| `%lhs` | ptr | MX L0A input (`left`) |
-| `%rhs` | ptr | MX L0B input (`right`) |
-| `%dst` | ptr | L0C accumulator (`acc`) |
-| `%m` | i64 | M size |
-| `%n` | i64 | N size |
-| `%k` | i64 | K size; MX scaling groups values in K-direction chunks of 32 |
-| `unit_flag` | clause | Optional unit-flag producer control; see common clauses |
-| `disable_gemv` | flag | Optional GEMV disable; see common clauses |
-| `sat` / `nosat` | flag | Optional floating exceptional-value mode override; see common clauses |
-| `n_dir` | flag | Optional N-direction producer order; see common clauses |
-
-**Constraints:** same as `pto.mad_mx`; `sat` / `nosat` is valid because MX is a floating exceptional-value mode.
+**Constraints:** same as `pto.mad_mx`.
 
 **Example:**
 
@@ -277,29 +290,13 @@ pto.mad_mx_bias %lhs, %rhs, %dst, %bias, %m, %n, %k
   n_dir?
   : !pto.ptr<A, left>, !pto.ptr<B, right>, !pto.ptr<C, acc>, !pto.ptr<C, bias>, i64, i64, i64
 ```
-- **semantics:** Bias-init MX cube matmul. Like `pto.mad_bias`, the bias is an
-  `N`-element per-output-channel vector in the bias buffer and is broadcast
-  across M:
-  `dst[m, n] = mx_matmul(lhs, rhs)[m, n] + bias[n]`.
+- **semantics:** Bias-init MX matrix multiply,
+  `dst[m, n] = mx_product[m, n] + bias[n]`.
 
-**Parameter Table:**
+**Parameter Table:** same as `pto.mad_bias`, with MX `%lhs` / `%rhs` scale
+payload requirements from `pto.mad_mx`.
 
-| Parameter | Width | Description |
-|-----------|-------|-------------|
-| `%lhs` | ptr | MX L0A input (`left`) |
-| `%rhs` | ptr | MX L0B input (`right`) |
-| `%dst` | ptr | L0C accumulator (`acc`) |
-| `%bias` | ptr | Bias-buffer pointer (`bias`) for the `N`-element bias vector |
-| `%m` | i64 | M size |
-| `%n` | i64 | N size |
-| `%k` | i64 | K size; MX scaling groups values in K-direction chunks of 32 |
-| `unit_flag` | clause | Optional unit-flag producer control; see common clauses |
-| `disable_gemv` | flag | Optional GEMV disable; see common clauses |
-| `sat` / `nosat` | flag | Optional floating exceptional-value mode override; see common clauses |
-| `n_dir` | flag | Optional N-direction producer order; see common clauses |
-
-**Constraints:** same as `pto.mad_mx` plus the `pto.mad_bias` bias-buffer/broadcast
-constraints; `sat` / `nosat` is valid because MX is a floating exceptional-value mode.
+**Constraints:** same as `pto.mad_mx` plus `pto.mad_bias` bias constraints.
 
 **Example:**
 
@@ -310,7 +307,23 @@ pto.mad_mx_bias %l0a, %l0b, %l0c, %bt, %c16_i64, %c16_i64, %c64_i64
 
 ---
 
-## Cube Bridge Wrapper Ops
+## Cube Data Movement Ops
+
+### Cube Burst / Loop Addressing Model
+
+`pto.cube_load` and `pto.cube_store` use the same grouped transfer model:
+
+```text
+burst(row) = len_burst contiguous bytes
+nburst     = innermost repeated burst group
+loop       = optional outer repetition group
+```
+
+For each `nburst` row, the source and destination start addresses advance by
+`src_stride` and `dst_stride` after a burst row. Optional `loop(...)` groups
+wrap the full inner transfer pattern and advance by their own source and
+destination strides between repetitions. All lengths and strides in this model
+are bytes.
 
 ### `pto.cube_load`
 
@@ -321,34 +334,30 @@ pto.cube_load %src, %dst, %len_burst
   [loop(%count_i, %src_stride_i, %dst_stride_i)]*
   : !pto.ptr<T, gm>, !pto.ptr<T, mat>, i64, i64, i64, i64
 ```
-- **semantics:** Structured GM-to-L1 (`cbuf`) wrapper.
-  The op copies one or more contiguous byte ranges from GM to L1. Each inner
-  burst copies `%len_burst` bytes. `nburst` repeats that burst, and each
-  optional `loop(...)` wraps the inner transfer pattern in an outer repeated
-  pattern.
+- **semantics:** Structured GM-to-L1 copy. The op copies grouped byte ranges
+  from `%src` in `gm` to `%dst` in `mat`.
 
 **Parameter Table:**
 
 | Parameter | Width | Description |
 |-----------|-------|-------------|
-| `%src` | ptr | GM source pointer |
-| `%dst` | ptr | L1 destination pointer (`mat`) |
-| `%len_burst` | i64 | Contiguous transfer length in bytes |
-| `nburst(%count, %src_stride, %dst_stride)` | i64 triple | Inner burst count and source/destination gaps between bursts. The gap is applied after each `%len_burst` byte burst. |
-| `loop(%count_i, %src_stride_i, %dst_stride_i)` | i64 triple | Optional outer loop triplet. Strides are byte offsets applied between repetitions of the enclosed transfer pattern. |
+| `%src` | ptr | GM source base pointer |
+| `%dst` | ptr | L1 matrix destination base pointer in `mat` |
+| `%len_burst` | i64 | Bytes copied per burst row |
+| `nburst(%count, %src_stride, %dst_stride)` | i64 triple | Innermost burst count and byte strides between row starts |
+| `loop(%count_i, %src_stride_i, %dst_stride_i)` | i64 triple | Optional outer repetition; strides are byte advances between enclosed patterns |
 
 **Constraints:**
 
-- For a contiguous 16-element f16 vector, use `%len_burst = 32`, not `16`.
-- `%count = 1` with zero gaps describes one contiguous copy of `%len_burst`
-  bytes. Increase `%count` for multiple same-sized bursts; use `loop(...)` for
-  higher-dimensional tiling around the inner burst pattern.
+- `nburst(...)` is required.
+- Each `loop(...)` group must provide all three operands.
+- For a contiguous 16-element f16 vector, use `%len_burst = 32`.
 
 **Example:**
 
 ```mlir
 pto.cube_load %bias_gm, %l1_bias, %c32_i64
-  nburst(%c1_i64, %c0_i64, %c0_i64)
+  nburst(%c4_i64, %c64_i64, %c32_i64)
   : !pto.ptr<f16, gm>, !pto.ptr<f16, mat>, i64, i64, i64, i64
 ```
 
@@ -363,29 +372,23 @@ pto.cube_store %src, %dst, %len_burst
   [loop(%count_i, %src_stride_i, %dst_stride_i)]*
   : !pto.ptr<T, mat>, !pto.ptr<T, ub>, i64, i64, i64, i64
 ```
-- **semantics:** Structured L1 (`cbuf`) to UB wrapper. The transfer shape uses
-  the same burst/repeat model as `pto.cube_load`, but the source is L1 and the
-  destination is UB.
+- **semantics:** Structured L1-to-UB copy. The grouped byte ranges are read
+  from `%src` in `mat` and written to `%dst` in `ub`.
 
-**Parameter Table:**
-
-| Parameter | Width | Description |
-|-----------|-------|-------------|
-| `%src` | ptr | L1 source pointer (`mat`) |
-| `%dst` | ptr | UB destination pointer |
-| `%len_burst` | i64 | Contiguous transfer length in bytes |
-| `nburst(%count, %src_stride, %dst_stride)` | i64 triple | Inner burst count and source/destination gaps between bursts |
-| `loop(%count_i, %src_stride_i, %dst_stride_i)` | i64 triple | Optional outer loop triplet. Strides are byte offsets between repetitions of the enclosed transfer pattern. |
+**Parameter Table:** same grouped byte model as `pto.cube_load`, with source
+and destination address spaces reversed to `mat -> ub`.
 
 **Constraints:**
 
-- The source and destination address spaces must match the L1-to-UB dataflow.
+- `%src` must be in `mat`, `%dst` must be in `ub`.
+- `nburst(...)` is required.
+- Each `loop(...)` group must provide all three operands.
 
 **Example:**
 
 ```mlir
-pto.cube_store %l1_src, %ub_dst, %c16_i64
-  nburst(%c1_i64, %c0_i64, %c0_i64)
+pto.cube_store %l1_src, %ub_dst, %c64_i64
+  nburst(%c2_i64, %c128_i64, %c64_i64)
   : !pto.ptr<f16, mat>, !pto.ptr<f16, ub>, i64, i64, i64, i64
 ```
 
@@ -395,46 +398,89 @@ pto.cube_store %l1_src, %ub_dst, %c16_i64
 
 - **syntax:**
 ```mlir
-pto.cube_load_frac %src, %dst, nd2nz|dn2nz, shape(%n_value, %d_value), src_layout(%src_inner_stride[, %src_outer_stride]), dst_group(%group_count, %dst_loop2_stride, %dst_loop3_stride, %dst_loop4_stride), ctrl(%l2_cache_ctrl, %smallc0_en)
+pto.cube_load_frac %src, %dst, nd2nz|dn2nz,
+  shape(%n_value, %d_value),
+  src_layout(%src_inner_stride[, %src_outer_stride]),
+  dst_group(%group_count, %dst_loop2_stride, %dst_loop3_stride, %dst_loop4_stride),
+  ctrl(%l2_cache_ctrl, %smallc0_en)
   : !pto.ptr<T, gm>, !pto.ptr<T, mat>, ...
 ```
-- **semantics:** Structured fractal-load wrapper for `nd2nz` / `dn2nz`.
-  It copies a logical 2-D source region into L1 using the target fractal
-  layout expected by subsequent cube loads. `nd2nz` treats the source as
-  logical N-major rows with D as the inner dimension; `dn2nz` treats the same
-  logical region with D/N interpretation swapped before writing NZ layout.
+- **semantics:** Load a logical 2-D GM region and write one or more L1 NZ
+  matrix groups. `nd2nz` reads a logical `src[n, d]` matrix. `dn2nz` reads a
+  logical `src[d, n]` matrix and writes the same logical `N x D` result into
+  NZ layout.
 
 **Parameter Table:**
 
 | Parameter | Width | Description |
 |-----------|-------|-------------|
-| `%src` | ptr | GM source pointer |
-| `%dst` | ptr | L1 destination pointer (`mat`) |
-| `nd2nz` / `dn2nz` | enum token | Fractal load mode |
-| `shape(%n_value, %d_value)` | i64 pair | Logical N and D shape of the source region being transformed |
-| `src_layout(%src_inner_stride[, %src_outer_stride])` | i64 / i64 pair | Source address strides in bytes. For row-major f16 `[N, D]`, `%src_inner_stride = D * 2`. |
-| `dst_group(%group_count, %dst_loop2_stride, %dst_loop3_stride, %dst_loop4_stride)` | i64 tuple | Destination fractal grouping and nested destination strides in C0-size units. These values organize where generated NZ fractals land in L1; they do not select a separate destination memory block. |
-| `ctrl(%l2_cache_ctrl, %smallc0_en)` | i64, i1 | L2 cache policy hint and small-C0 mode enable |
+| `%src` | ptr | GM source base pointer |
+| `%dst` | ptr | L1 NZ destination base pointer in `mat` |
+| `nd2nz` / `dn2nz` | keyword | Source logical layout mode |
+| `shape(%n_value, %d_value)` | i64 pair | Logical output shape before NZ packing |
+| `src_layout(%src_inner_stride[, %src_outer_stride])` | i64 / optional i64 | Source row/matrix byte strides |
+| `dst_group(...)` | i64 tuple | Destination group count and placement strides in C0-size units |
+| `ctrl(%l2_cache_ctrl, %smallc0_en)` | i64, i1 | Cache hint and small-C0 packing enable |
+
+`src_layout(%src_inner_stride)` describes one logical source matrix. For
+`nd2nz`, `%src_inner_stride` is the byte distance from `src[n, 0]` to
+`src[n + 1, 0]`. For `dn2nz`, it is the byte distance from `src[d, 0]` to
+`src[d + 1, 0]`. When `%src_outer_stride` is present, it is the byte distance
+between adjacent source matrices. When omitted, the outer source stride is 0.
+
+`dst_group(%group_count, %dst_loop2_stride, %dst_loop3_stride,
+%dst_loop4_stride)` writes `%group_count` logical matrices. Destination strides
+are measured in C0-size units; one C0-size unit is 32 bytes. These strides
+place generated NZ blocks relative to `%dst`. They do not select a separate
+memory block.
+
+Reference addressing:
+
+```text
+for g in 0 .. group_count-1:
+  src_g = src + g * src_outer_stride
+  dst_g = dst + g * dst_loop4_stride * 32
+
+  for n in 0 .. n_value-1:
+    for d in 0 .. d_value-1:
+      if mode == nd2nz:
+        value = load(src_g + n * src_inner_stride + d * sizeof(T))
+      else:
+        value = load(src_g + d * src_inner_stride + n * sizeof(T))
+      store value into NZ position for logical [n, d] under dst_g
+
+  invalid lanes in the final C0 group are written as zero
+```
 
 **Constraints:**
 
-- `src_inner_stride` and `src_outer_stride` are byte strides. Do not pass
-  element counts. For example, a row-major `16 x 16` f16 matrix uses
-  `src_layout(32)`.
-- The destination pointer still selects the base L1 address. Destination
-  grouping/strides are offsets relative to that base.
-- `smallc0_en` is only valid for the target-supported small-C0 cases; the
-  combination is invalid when `d_value > 4`.
+- Source strides are bytes. For row-major `16 x 16` f16 input,
+  `src_layout(32)` describes consecutive rows.
+- Destination strides are C0-size units, not bytes and not elements.
+- `smallc0_en = true` is valid only for target-supported small-C0 cases. The
+  current contract rejects `d_value > 4` in small-C0 mode.
+- In normal C0 mode, each destination C0 burst is padded to 32 bytes. In
+  small-C0 mode, each destination burst is padded to 4 logical channels, and
+  the generated inner-N and C0 destination placement is fixed by that
+  small-C0 packing rule. `%dst_loop4_stride` still places adjacent matrix
+  groups.
+- In small-C0 mode, missing logical `N` rows and invalid `D` lanes are written
+  as zero, and the tail of a generated NZ matrix is padded to the 32-byte C0
+  boundary.
+- Destination regions selected by `%dst` and `dst_group(...)` must not overlap.
+  If two generated writes target the same bytes, the final value is not a
+  stable program result.
 
 **Example:**
 
 ```mlir
 pto.cube_load_frac %src, %dst, nd2nz,
-  shape(%n, %d),
-  src_layout(%sis),
-  dst_group(%g, %l2s, %l3s, %l4s),
-  ctrl(%l2, %small)
-  : !pto.ptr<f16, gm>, !pto.ptr<f16, mat>, nd2nz, shape i64, i64, src_layout(i64), dst_group i64, i64, i64, i64, ctrl i64, i1
+  shape(%c32_i64, %c16_i64),
+  src_layout(%c32_i64, %c1024_i64),
+  dst_group(%c2_i64, %c1_i64, %c16_i64, %c64_i64),
+  ctrl(%c0_i64, %false)
+  : !pto.ptr<f16, gm>, !pto.ptr<f16, mat>, nd2nz, shape i64, i64,
+    src_layout(i64, i64), dst_group i64, i64, i64, i64, ctrl i64, i1
 ```
 
 ---
@@ -447,41 +493,41 @@ pto.bias_load %src, %dst, %len_burst
   nburst(%count, %src_gap, %dst_gap)
   : !pto.ptr<T, mat>, !pto.ptr<U, bias>, i64, i64, i64, i64
 ```
-- **semantics:** Structured helper for L1 (`cbuf`) to bias-buffer load. It
-  prepares the per-output-channel bias vector consumed by `pto.mad_bias` and
-  `pto.mad_mx_bias`. For f16/bf16 sources, the source data in L1 is stored
-  compactly and can be converted to f32 values in the bias buffer.
+- **semantics:** Load an L1 bias payload into the `bias` address space for
+  later `pto.mad_bias` / `pto.mad_mx_bias` consumption. The consumer interprets
+  the result as an `N`-element bias vector `bias[n]`.
 
 **Parameter Table:**
 
 | Parameter | Width | Description |
 |-----------|-------|-------------|
-| `%src` | ptr | L1 source pointer (`mat`) |
-| `%dst` | ptr | Bias destination pointer (`bias`) |
-| `%len_burst` | i64 | Source burst length in the bias-load unit. For `f16->f32`, one unit covers 32B of compact f16 source data and produces 16 f32 bias values. |
+| `%src` | ptr | L1 source pointer in `mat` |
+| `%dst` | ptr | Bias destination pointer in `bias` |
+| `%len_burst` | i64 | Number of bias-load units per burst |
 | `%count` | i64 | Burst count |
-| `%src_gap` | i64 | Source gap between bursts in the bias-load unit |
-| `%dst_gap` | i64 | Destination gap between bursts in the bias-load unit; must preserve target N0 alignment |
+| `%src_gap` | i64 | Source gap between bursts, in bias-load units |
+| `%dst_gap` | i64 | Destination gap between bursts, in bias-load units |
+
+One burst loads `%len_burst` units from `%src` and writes the corresponding
+bias values to `%dst`. After each burst except the last, source and destination
+advance by the burst length plus the corresponding gap.
 
 **Constraints:**
 
 - Supported type pairs: `f32->f32`, `i32->i32`, `f16->f32`, `bf16->f32`.
-- For `f16->f32`, each compact f16 source value is converted to f32 before
-  being written to the bias buffer.
-- This op only prepares the bias buffer. The `mad_bias` consumer reads `N`
-  consecutive bias values and broadcasts them across M.
-- The bias buffer contains channel bias values, not an `M x N` result-shaped
-  tile. Load exactly the N-channel bias data needed by the consumer tile.
+- For `bf16->f32`, compact bf16 source values are always widened to f32 bias
+  values. For `f16->f32`, compact f16 source values are widened when the load
+  is used as an f32 bias payload; otherwise the f16 payload is stored in the
+  32-bit bias slot with unused high bits.
+- Load exactly the channel bias values needed by the consumer tile; the bias
+  payload is not result-shaped.
 
 **Example:**
 
 ```mlir
-pto.bias_load %l1_bias, %bt, %c16_i64 nburst(%c1_i64, %c0_i64, %c0_i64)
+pto.bias_load %l1_bias, %bt, %c1_i64 nburst(%c4_i64, %c0_i64, %c0_i64)
   : !pto.ptr<f16, mat>, !pto.ptr<f32, bias>, i64, i64, i64, i64
 ```
-
-This example loads one 32B source burst, i.e. 16 compact f16 bias values, and
-materializes 16 f32 bias-buffer values for a `N = 16` `mad_bias`.
 
 ---
 
@@ -493,31 +539,56 @@ pto.fp_load %src, %dst, %len_burst
   nburst(%count, %src_gap, %dst_gap)
   : !pto.ptr<T, mat>, !pto.ptr<U, scaling>, i64, i64, i64, i64
 ```
-- **semantics:** Structured helper for L1 (`cbuf`) to Fixpipe Buffer (`scaling`) load.
+- **semantics:** Load FIXPIPE parameter payloads from L1 into `scaling`.
+  Vector `pre_quant(...)` and `pre_relu(...)` clauses in `pto.acc_store*`
+  later consume these payloads through `scaling` pointers.
 
 **Parameter Table:**
 
 | Parameter | Width | Description |
 |-----------|-------|-------------|
-| `%src` | ptr | L1 source pointer (`mat`) |
-| `%dst` | ptr | Fixpipe-buffer destination pointer (`scaling`) |
-| `%len_burst` | i64 | Burst length |
+| `%src` | ptr | L1 source pointer in `mat` |
+| `%dst` | ptr | Scaling destination pointer in `scaling` |
+| `%len_burst` | i64 | Number of parameter-load units per burst |
 | `%count` | i64 | Burst count |
-| `%src_gap` | i64 | Source gap |
-| `%dst_gap` | i64 | Destination gap |
+| `%src_gap` | i64 | Source gap between bursts, in parameter-load units |
+| `%dst_gap` | i64 | Destination gap between bursts, in parameter-load units |
+
+The copy unit of `pto.fp_load` is the parameter-load unit of this op. It is
+separate from the row size consumed by `acc_store*` vector payloads.
+`%len_burst` and the `nburst(...)` gaps are counted in these load units, not
+in bytes and not in destination elements. After `pto.fp_load` materializes the
+payload in `scaling`, vector pre-ReLU consumers read it as 64B parameter rows
+and vector pre-quant consumers read it as 128B parameter rows. The payload
+pointer passed to `acc_store*` must point at the first row for the logical
+output tile, and rows must follow the same channel/NZ order consumed by that
+store.
 
 **Constraints:**
 
 - `%src` must be in `mat`, `%dst` must be in `scaling`.
+- Vector `pre_quant` and `pre_relu` consumers require parameter data prepared
+  in the row order documented by [FIXPIPE MTE Ops](#fixpipe-mte-ops).
 
 **Example:**
 
 ```mlir
-pto.fp_load %l1_fp, %fb_fp, %c2_i64 nburst(%c1_i64, %c0_i64, %c0_i64)
-  : !pto.ptr<f32, mat>, !pto.ptr<ui64, scaling>, i64, i64, i64, i64
+pto.fp_load %l1_fp, %fb_fp, %c2_i64 nburst(%c4_i64, %c0_i64, %c0_i64)
+  : !pto.ptr<f32, mat>, !pto.ptr<f32, scaling>, i64, i64, i64, i64
 ```
 
 ---
+
+### Left / Right Tile Load Model
+
+`pto.left_load` and `pto.right_load` move L1 cube-fractal tiles into the
+compute operand domains. `%src` must already point to an L1 cube-fractal tile;
+these ops do not convert arbitrary row-major matrices. Use
+`pto.cube_load_frac` first when the original data is plain ND/DN layout.
+
+If `transpose = true`, the selected logical source tile is transposed before it
+is placed in the destination operand domain. Omitting the attribute means
+`transpose = false`.
 
 ### `pto.left_load`
 
@@ -526,25 +597,29 @@ pto.fp_load %l1_fp, %fb_fp, %c2_i64 nburst(%c1_i64, %c0_i64, %c0_i64)
 pto.left_load %src, %dst, %m, %k
   : !pto.ptr<T, mat>, !pto.ptr<T, left>, i64, i64
 ```
-- **semantics:** Structured L1-to-L0A wrapper.
+- **semantics:** Load a logical `%m x %k` left tile from L1 `mat` into `left`.
 
 **Parameter Table:**
 
 | Parameter | Width | Description |
 |-----------|-------|-------------|
-| `%src` | ptr | L1 source pointer (`mat`) |
-| `%dst` | ptr | L0A destination pointer (`left`) |
-| `%m` | i64 | M tile size |
-| `%k` | i64 | K tile size |
+| `%src` | ptr | L1 cube-fractal source tile in `mat` |
+| `%dst` | ptr | Left operand destination in `left` |
+| `%m` | i64 | Logical M extent |
+| `%k` | i64 | Logical K extent |
+| `transpose` | attr | Optional boolean source-tile transpose before destination placement |
 
 **Constraints:**
 
 - `%src` must be in `mat`, `%dst` must be in `left`.
+- `%src` and `%dst` must satisfy the target alignment for Cube tile loads.
+- `transpose = true` requires a tile shape supported by the element-type
+  transpose granularity.
 
 **Example:**
 
 ```mlir
-pto.left_load %l1_a, %l0a, %c16_i64, %c16_i64
+pto.left_load %l1_a, %l0a, %c16_i64, %c32_i64
   : !pto.ptr<f16, mat>, !pto.ptr<f16, left>, i64, i64
 ```
 
@@ -557,29 +632,44 @@ pto.left_load %l1_a, %l0a, %c16_i64, %c16_i64
 pto.right_load %src, %dst, %k, %n
   : !pto.ptr<T, mat>, !pto.ptr<T, right>, i64, i64
 ```
-- **semantics:** Structured L1-to-L0B wrapper.
+- **semantics:** Load a logical `%k x %n` right tile from L1 `mat` into
+  `right`.
 
 **Parameter Table:**
 
 | Parameter | Width | Description |
 |-----------|-------|-------------|
-| `%src` | ptr | L1 source pointer (`mat`) |
-| `%dst` | ptr | L0B destination pointer (`right`) |
-| `%k` | i64 | K tile size |
-| `%n` | i64 | N tile size |
+| `%src` | ptr | L1 cube-fractal source tile in `mat` |
+| `%dst` | ptr | Right operand destination in `right` |
+| `%k` | i64 | Logical K extent |
+| `%n` | i64 | Logical N extent |
+| `transpose` | attr | Optional boolean source-tile transpose before destination placement |
 
 **Constraints:**
 
 - `%src` must be in `mat`, `%dst` must be in `right`.
+- `%src` and `%dst` must satisfy the target alignment for Cube tile loads.
+- `transpose = true` requires a tile shape supported by the element-type
+  transpose granularity.
 
 **Example:**
 
 ```mlir
-pto.right_load %l1_b, %l0b, %c16_i64, %c16_i64
+pto.right_load %l1_b, %l0b, %c32_i64, %c16_i64
   : !pto.ptr<f16, mat>, !pto.ptr<f16, right>, i64, i64
 ```
 
 ---
+
+### MX Scale Load Model
+
+MX scale loads prepare the scale payloads consumed by `pto.mad_mx*`. Each scale
+entry applies to one 32-element K group.
+
+- Left scale logical shape: `[M, ceil(K / 32)]`.
+- Right scale logical shape: `[ceil(K / 32), N]`.
+- L1 source data is organized as 32B scale fragments in the same logical order
+  as the associated data tile.
 
 ### `pto.left_load_mx`
 
@@ -588,25 +678,27 @@ pto.right_load %l1_b, %l0b, %c16_i64, %c16_i64
 pto.left_load_mx %src, %dst, %m, %k
   : !pto.ptr<T, mat>, !pto.ptr<T, left>, i64, i64
 ```
-- **semantics:** MX-mode L1-to-L0A wrapper.
+- **semantics:** Load left-side MX scale fragments for a logical `%m x %k`
+  left data tile.
 
 **Parameter Table:**
 
 | Parameter | Width | Description |
 |-----------|-------|-------------|
-| `%src` | ptr | MX-formatted L1 source pointer (`mat`) |
-| `%dst` | ptr | MX L0A destination pointer (`left`) |
-| `%m` | i64 | M tile size |
-| `%k` | i64 | K tile size |
+| `%src` | ptr | L1 MX scale source in `mat` |
+| `%dst` | ptr | Left-side MX payload destination associated with `left` |
+| `%m` | i64 | M extent of the associated left data tile |
+| `%k` | i64 | K extent; scale grouping is by 32 K elements |
 
 **Constraints:**
 
 - `%src` must be in `mat`, `%dst` must be in `left`.
+- `%src` and `%dst` must satisfy 32B MX scale-fragment alignment.
 
 **Example:**
 
 ```mlir
-pto.left_load_mx %l1_a, %l0a, %c16_i64, %c64_i64
+pto.left_load_mx %l1_a_scale, %l0a_scale, %c16_i64, %c64_i64
   : !pto.ptr<f8E4M3FN, mat>, !pto.ptr<f8E4M3FN, left>, i64, i64
 ```
 
@@ -619,99 +711,293 @@ pto.left_load_mx %l1_a, %l0a, %c16_i64, %c64_i64
 pto.right_load_mx %src, %dst, %k, %n
   : !pto.ptr<T, mat>, !pto.ptr<T, right>, i64, i64
 ```
-- **semantics:** MX-mode L1-to-L0B wrapper.
+- **semantics:** Load right-side MX scale fragments for a logical `%k x %n`
+  right data tile.
 
 **Parameter Table:**
 
 | Parameter | Width | Description |
 |-----------|-------|-------------|
-| `%src` | ptr | MX-formatted L1 source pointer (`mat`) |
-| `%dst` | ptr | MX L0B destination pointer (`right`) |
-| `%k` | i64 | K tile size |
-| `%n` | i64 | N tile size |
+| `%src` | ptr | L1 MX scale source in `mat` |
+| `%dst` | ptr | Right-side MX payload destination associated with `right` |
+| `%k` | i64 | K extent; scale grouping is by 32 K elements |
+| `%n` | i64 | N extent of the associated right data tile |
 
 **Constraints:**
 
 - `%src` must be in `mat`, `%dst` must be in `right`.
+- `%src` and `%dst` must satisfy 32B MX scale-fragment alignment.
 
 **Example:**
 
 ```mlir
-pto.right_load_mx %l1_b, %l0b, %c64_i64, %c16_i64
+pto.right_load_mx %l1_b_scale, %l0b_scale, %c64_i64, %c16_i64
   : !pto.ptr<f8E4M3FN, mat>, !pto.ptr<f8E4M3FN, right>, i64, i64
 ```
 
 ---
 
+## FIXPIPE MTE Ops
+
+`pto.acc_store*` writes logical accumulator results from `acc` to `mat`, `gm`,
+or `ub`. The family shares this pipeline order:
+
+```text
+1. Read logical acc[m, n] from %src using the selected layout mode.
+2. Optionally participate in consumer-side unit-flag synchronization.
+3. Optionally apply pre_quant(payload, mode).
+4. Optionally apply pre_relu(payload, mode), then optional clip.
+5. Convert to the destination element type using sat/nosat behavior.
+6. Write to the selected destination layout and address space.
+7. Apply store-target effects such as GM atomic or UB dual destination.
+```
+
+Only the clauses documented here affect `pto.acc_store*`. Other transforms
+must be represented by separate PTO ops before producing `acc` or after the
+writeback destination is materialized.
+
+### FIXPIPE Common Clauses
+
+| Clause | Values | Effect |
+|--------|--------|--------|
+| `unit_flag(...)` | `check_only`, `check_and_clear` | Checks that the accumulator tile is ready for consumption. `check_and_clear` also clears the consumed tile state for later reuse. Omit when the schedule does not use unit flags. |
+| `pre_quant(%payload, mode = ...)` | see below | Applies the selected pre-quantization or conversion before ReLU/clip and final store. |
+| `pre_relu([%payload, ]mode = ...[, clip = %clip])` | `no_relu`, `normal_relu`, `scalar_relu`, `vector_relu` | Applies ReLU-family activation before final destination conversion. `clip` is part of this clause and applies after the selected ReLU mode. |
+| `nz2nd` / `nz2dn(...)` / `nz2nz(...)` | layout modes | Selects how logical `acc[m, n]` is written to the destination layout. |
+| `loop3(%count, %src_stride3, %dst_stride3)` | i64 triple | Repeats the whole selected `m x n` writeback pattern. |
+| `sat` / `sat(preserve_nan)` / `nosat` | flags | Selects final conversion behavior for floating exceptional values and finite overflow where the destination type is affected. |
+
+`pre_quant` legal modes:
+
+```text
+f32_f16,
+qf322hif8_pre_vec, qf322hif8_pre_scalar,
+qf322hif8_pre_hybrid_vec, qf322hif8_pre_hybrid_scalar,
+deqs32_int_vec, deqs32_int_scalar,
+req8_vec, req8_scalar,
+deqf16_vec, deqf16_scalar,
+qf322fp8_pre_vec, qf322fp8_pre_scalar,
+qf322f32_pre_vec, qf322f32_pre_scalar,
+f32_bf16,
+qf162b8_pre_vec, qf162b8_pre_scalar,
+qf162s4_pre_vec, qf162s4_pre_scalar,
+req4_vec, req4_scalar,
+qf322b8_pre_vec, qf322b8_pre_scalar,
+qf322s4_pre_vec, qf322s4_pre_scalar,
+deqs16_vec, deqs16_scalar,
+qf162s16_pre_vec, qf162s16_pre_scalar,
+qf322f16_pre_vec, qf322f16_pre_scalar,
+qf322bf16_pre_vec, qf322bf16_pre_scalar,
+qs322bf16_pre_vec, qs322bf16_pre_scalar
+```
+
+`_scalar` modes take one floating scalar payload (`f16`, `bf16`, or `f32`)
+broadcast to the whole logical output tile. `f16` and `bf16` scalar payloads
+are first interpreted as numeric values and widened to `f32`; `f32` payloads
+are used directly. `_vec` modes take a `!pto.ptr<f16|bf16|f32, scaling>`
+payload pointer. The pointer element type is the logical parameter element
+type, not a packed transport carrier. The pointer names the first parameter
+row for this store; later rows
+advance in the same channel/NZ order as the logical accumulator elements
+consumed by the selected layout mode. Each vector pre-quant row is a 128B
+parameter row prepared by `pto.fp_load`; each row supplies the per-channel
+scale and any mode-specific offset/sign controls used by the selected
+quantization family. Vector pre-ReLU rows are 64B parameter rows and supply
+the per-channel alpha values consumed by `vector_relu`.
+
+`pre_quant` mode families:
+
+| Family | Acc source | Result meaning | Payload |
+|--------|------------|----------------|---------|
+| `f32_f16`, `f32_bf16` | `f32` | Convert f32 accumulator values to f16 or bf16; rounding is nearest, ties to even | Scalar payload is required by syntax but does not select per-channel scaling |
+| `qf322hif8_pre_*`, `qf322fp8_pre_*` | `f32` | Scale and quantize f32 to hif8/fp8-style destination payloads | Scalar scale or vector scale rows; hybrid modes use the target hybrid rule |
+| `qf322f32_pre_*` | `f32` | Apply quant scaling while keeping f32 destination values | Scalar scale or vector scale rows |
+| `qf322f16_pre_*`, `qf322bf16_pre_*` | `f32` | Scale f32, then convert to f16 or bf16 destination values | Scalar scale or vector scale rows |
+| `qf322b8_pre_*`, `qf322s4_pre_*` | `f32` | Scale, offset, round, and narrow f32 to 8-bit or signed 4-bit integer payloads | Scalar or vector scale/offset parameter set |
+| `qf162b8_pre_*`, `qf162s4_pre_*` | `f32` | Convert through an f16-domain pre-stage, then scale/narrow to integer payloads | Scalar or vector scale/offset parameter set |
+| `qf162s16_pre_*` | `i32` | Convert through an f16-domain pre-stage, then scale/narrow to signed 16-bit payloads | Scalar or vector scale/offset parameter set |
+| `deqs32_int_*`, `deqs16_*` | `i32` | Rescale integer accumulator values in an integer destination family | Scalar or vector multiplier/offset parameter set |
+| `req8_*`, `req4_*` | `i32` | Requantize i32 accumulator values to 8-bit or 4-bit integer payloads | Scalar or vector multiplier/offset/sign parameter set |
+| `deqf16_*` | `i32` | Dequantize i32 accumulator values to f16 destination values | Scalar or vector multiplier/offset parameter set |
+| `qs322bf16_pre_*` | `i32` | Scale i32 accumulator values and convert to bf16 destination values | Scalar or vector multiplier/offset parameter set |
+
+The mode name determines the accepted accumulator source family. `f32_f16`,
+`f32_bf16`, `qf322hif8_pre_*`, `qf322fp8_pre_*`, `qf322f32_pre_*`,
+`qf322f16_pre_*`, `qf322bf16_pre_*`, `qf322b8_pre_*`,
+`qf322s4_pre_*`, `qf162b8_pre_*`, and `qf162s4_pre_*` consume `f32`
+accumulator values. `deqs32_int_*`, `deqs16_*`, `req8_*`, `req4_*`,
+`deqf16_*`, `qf162s16_pre_*`, and `qs322bf16_pre_*` consume `i32`
+accumulator values. The final destination element type must match the result
+family implied by the mode name; for example, `qf322f16_pre_*` writes an
+f16-family result, while `req8_*` writes an 8-bit integer-family result.
+
+Integer quantization families with `b8` in the name can produce either signed
+8-bit or unsigned 8-bit results according to the sign control carried by the
+scalar or vector parameter set. Families with `s4` or `s16` produce signed
+4-bit or signed 16-bit results. Offset fields are added after scaling and
+before the final narrow/saturate step. When a family has no offset/sign in its
+payload, the payload scale alone controls the conversion.
+
+`pre_relu` semantics:
+
+```text
+no_relu:      y = x
+normal_relu:  y = max(x, 0)
+scalar_relu:  y = x >= 0 ? x : alpha * x
+vector_relu:  y = x >= 0 ? x : alpha[channel] * x
+```
+
+`scalar_relu` takes a floating scalar payload (`f16`, `bf16`, or `f32`) and
+broadcasts it to all negative values in the logical tile. `vector_relu` takes
+a `!pto.ptr<f16|bf16|f32, scaling>` pointer whose elements are per-channel
+alpha values and whose 64B rows follow the same channel/NZ order as the store.
+`no_relu` and `normal_relu` do not take a payload. If
+`clip = %clip` is present:
+
+```text
+y = min(y, clip)
+```
+
+`sat`, `sat(preserve_nan)`, and `nosat` control final conversion to destination
+element types affected by FIXPIPE saturation:
+
+- `sat`: finite overflow clamps to the destination finite range; `+/-inf`
+  clamps to finite extrema; `nan` writes as 0.
+- `sat(preserve_nan)`: same finite overflow and infinity handling as `sat`,
+  but NaN writes as NaN when the destination format can represent NaN. This is
+  intended for fp8 and hif8 destination families; for formats without a NaN
+  encoding it is equivalent to `sat`.
+- `nosat`: finite overflow may produce destination exceptional values;
+  exceptional input values are preserved where the destination format supports
+  them.
+- For fp8 and hif8 destination families, `nosat` preserves NaN; overflow
+  becomes the destination exceptional value when the destination encoding
+  supports it.
+- For integer destination families, `sat`/`nosat` is not the integer overflow
+  policy; integer narrowing and clipping are determined by the selected
+  pre-quant mode, its payload, and any `clip` clause.
+- For `f32` destinations, floating exceptional values are preserved; `sat`
+  does not force f32 `inf`/`nan` into finite values.
+
+### FIXPIPE Layout Model
+
+`%src` points to the base accumulator tile. `%m` and `%n` select the logical
+result rectangle to write. If the physical accumulator tile contains dummy rows
+or lanes outside that rectangle, they are not written to the destination.
+
+Layout modes:
+
+| Mode | Destination layout | Extra operand |
+|------|--------------------|---------------|
+| omitted | Normal target-profile writeback layout | none |
+| `nz2nd` | Logical ND order | none |
+| `nz2dn(%loop0_src_stride)` | Logical D/N-swapped order | `%loop0_src_stride` in C0-size units |
+| `nz2nz(%split)` | NZ-style destination | `%split`, destination split point |
+
+`%src_stride` is measured in C0-size units and advances the accumulator source
+between adjacent source groups selected by the layout mode. `%dst_stride` is
+measured in destination elements and advances the destination row/group
+selected by the layout mode. In `loop3`, `%src_stride3` is in C0-size units and
+`%dst_stride3` is in destination elements.
+
+Reference semantics:
+
+```text
+repeat_count = loop3.count if loop3 is present else 1
+
+for r in 0 .. repeat_count-1:
+  src_r = src + r * loop3.src_stride * 32
+  dst_r = dst + r * loop3.dst_stride * sizeof(dst_element)
+
+  for m in 0 .. M-1:
+    for n in 0 .. N-1:
+      x = read_acc_logical(src_r, m, n, src_stride, layout_mode)
+
+      if pre_quant:
+        x = apply_pre_quant(x, payload, mode)
+
+      if pre_relu:
+        x = apply_pre_relu(x, payload, mode)
+        if clip:
+          x = min(x, clip)
+
+      y = convert_to_destination_type(x, sat_or_nosat)
+      write_destination(dst_r, y, m, n, dst_stride, layout_mode)
+```
+
+When no layout clause is present, the store uses the target-profile normal
+writeback layout for the destination address space. This mode performs no
+explicit ND/DN/NZ layout transform; `%dst_stride` is still the destination
+start-to-start stride in destination elements for the normal writeback rows or
+groups.
+
+For `nz2nd`, `write_destination` stores logical `y[m, n]` in ND order. For
+`nz2dn`, it stores the same logical result with the D/N dimensions swapped; the
+extra `%loop0_src_stride` selects how the swapped source walk advances through
+the accumulator tile. For `nz2nz`, it preserves NZ-style destination packing
+and uses `%split` as the destination split point.
+
 ### `pto.acc_store`
-
-`pto.acc_store*` 是结构化的 fixpipe 写回族，用来把 `pto.mad*` 产出的 L0C(`acc`) 结果写到不同目标空间。
-从语义上看，这条流水按下面的顺序组织：
-
-1. 读取 `%src` 指向的 L0C 累加结果，并按 `%m/%n` 解释逻辑输出区域。
-2. 如指定 `unit_flag(...)`，在消费这次 L0C 结果前执行完成态检查；`check_and_clear` 还会在消费后清除该完成态，便于后续下一轮生产/消费配对。
-3. 如指定 `pre_quant(%payload, mode = ...)`，先对 L0C 元素做预量化。这里的 `%payload` 是该量化模式所需的标量参数或 scaling 指针；标量模式允许直接传 `f16`、`bf16`、`f32`，向量模式要求 `scaling` 指针。
-4. 如指定 `pre_relu(...)`，在写回前对结果做 ReLU 预处理。`scalar_relu`/`vector_relu` 需要额外 payload；`normal_relu`/`no_relu` 不接 payload。`scalar_relu` 允许直接传 `f16`、`bf16`、`f32` alpha，`vector_relu` 要求 `scaling` 指针。`clip = %clip` 是 `pre_relu(...)` 子句的一部分，用于在支持的目标元素类型上启用 clip 阶段。
-5. 按 `nz2nd` / `nz2dn` / `nz2nz` 将 L0C 中的 NZ 累加布局转换成目标布局，并结合 `%src_stride`、`%dst_stride` 以及可选 `loop3(...)`/`%loop0_src_stride`/`%split` 控制跨 tile 的遍历方式。
-6. 如指定 `sat`，则在最终写回目标元素类型时启用饱和语义。
-7. 将结果写入目标空间。`acc_store` 写 L1(`mat`)，`acc_store_ub` 写 UB，`acc_store_gm` 写 GM；GM 路径还可额外指定原子更新语义。
 
 - **syntax:**
 ```mlir
 pto.acc_store %src, %dst, %m, %n, %src_stride, %dst_stride
     [, unit_flag(check_only | check_and_clear)]?
     [, pre_quant(%payload, mode = <quant_pre_mode>)]?
-    [, pre_relu(%payload, mode = <relu_pre_mode> [, clip = %clip])]?
+    [, pre_relu([%payload, ]mode = <relu_pre_mode> [, clip = %clip])]?
     [, nz2nd | nz2dn(%loop0_src_stride) | nz2nz(%split)?]
     [, loop3(%count, %src_stride3, %dst_stride3)]?
-    [, sat]?
+    [, sat | sat(preserve_nan) | nosat]?
   : ...
 ```
-- **semantics:** Structured L0C (`acc`) to L1 (`cbuf`) wrapper.
+- **semantics:** FIXPIPE writeback from `acc` to L1 `mat`.
 
 **Parameter Table:**
 
 | Parameter | Width | Description |
 |-----------|-------|-------------|
-| `%src` | buffer-like | L0C source buffer (`acc`)，可为 typed `!pto.ptr` 或等价 memref |
-| `%dst` | buffer-like | L1 destination buffer (`mat`)，可为 typed `!pto.ptr` 或等价 memref |
-| `%m` | i64 | M size |
-| `%n` | i64 | N size |
-| `%src_stride` | i64 | 源 NZ 布局在 fixpipe 写回过程中的主 stride 参数 |
-| `%dst_stride` | i64 | 目标布局在 fixpipe 写回过程中的主 stride 参数 |
-| `unit_flag(...)` | optional clause | 是否在消费这次 L0C 结果前检查完成态；`check_and_clear` 还会在消费后清除完成态 |
-| `pre_quant(%payload, mode = ...)` | optional clause | 写回前的预量化；payload 为该量化模式需要的浮点标量或 `scaling` 指针 |
-| `pre_relu(..., mode = ...[, clip = %clip])` | optional clause | 写回前的 ReLU 预处理；`clip` 只能作为 `pre_relu` 的一部分出现 |
-| `nz2nd` / `nz2dn(%loop0_src_stride)` / `nz2nz(%split)?` | mode clause | L0C NZ 布局到目标布局的写回模式 |
-| `loop3(%count, %src_stride3, %dst_stride3)` | optional i64 triple | 额外的外层重复写回控制，用于跨 tile 迭代 |
-| `sat` | optional flag | 最终写回到目标元素类型时启用饱和语义 |
+| `%src` | buffer-like | Accumulator source in `acc` |
+| `%dst` | buffer-like | L1 destination in `mat` |
+| `%m` | i64 | Logical M element count |
+| `%n` | i64 | Logical N element count |
+| `%src_stride` | i64 | Source stride in C0-size units |
+| `%dst_stride` | i64 | Destination stride in destination elements |
+| optional clauses | - | See [FIXPIPE Common Clauses](#fixpipe-common-clauses) and [FIXPIPE Layout Model](#fixpipe-layout-model) |
 
 **Constraints:**
 
-- 子句顺序固定为 `unit_flag` -> `pre_quant` -> `pre_relu` -> `mode` -> `loop3` -> `sat`。
-- `pre_quant` 必须同时提供 payload 和 `mode`。
-- `pre_quant` 仅支持 L0C 源元素类型为 `f32` 或 `i32`。
-- 标量 `pre_quant` 模式要求 payload 为 `f16`/`bf16`/`f32` 标量；其中 `f16`/`bf16` 会在 lowering 中先扩成 `f32`，再以 32-bit 浮点 bit pattern 形式配置到 fixpipe 标量参数寄存器。向量 `pre_quant` 模式要求 `scaling !pto.ptr<ui64>` payload。
-- `pre_relu` 的 payload 规则取决于 `mode`：
-  - `no_relu` / `normal_relu` 不接受 payload。
-  - `scalar_relu` 要求 payload 为 `f16`/`bf16`/`f32` 标量；其中 `f16`/`bf16` 会在 lowering 中先扩成 `f32`，再以 32-bit 浮点 bit pattern 形式配置到 fixpipe 标量参数寄存器。
-  - `vector_relu` 要求 `scaling !pto.ptr<ui64>` payload。
-- `clip` 只能出现在 `pre_relu(...)` 中。
-- `clip` 仅支持目标元素类型为 `f16`、`ui8`、或有符号 `i4/i8/i16`。
-- `clip` payload 必须与目标元素类型匹配：
-  - `f16` 目标要求 `f16` payload。
-  - `ui8` 目标要求 `ui16` 风格的 16-bit payload；在 PTO IR 中通常写成 `signless i16`。
-  - 有符号 `i4/i8/i16` 目标要求有符号或 signless 的 `i4/i8/i16` payload。
-- `loop3(...)` 必须三个操作数同时提供。
-- `nz2dn` 必须提供 `%loop0_src_stride`；`nz2nd`/`nz2nz` 不接受它。
-- 当 `nz2dn(%loop0_src_stride)` 中 `%loop0_src_stride != 1` 时，`unit_flag` 必须关闭。
-- `nz2nz` 不接受 `loop3(...)`，且目标元素类型必须是 `f32`。
+- Clauses must appear in canonical order:
+  `unit_flag` -> `pre_quant` -> `pre_relu` -> layout -> `loop3` -> `sat`/`nosat`.
+- `pre_quant` requires payload and mode together.
+- Vector `pre_quant` modes require a `scaling` pointer with `f16`, `bf16`, or
+  `f32` element type.
+- Scalar `pre_quant` modes require an `f16`, `bf16`, or `f32` scalar payload.
+- `pre_quant` source element type must be `f32` or `i32`, and the selected
+  mode must be compatible with the source and destination element types.
+- `no_relu` and `normal_relu` do not accept a payload.
+- `scalar_relu` requires an `f16`, `bf16`, or `f32` scalar payload.
+- `vector_relu` requires a `scaling` pointer with `f16`, `bf16`, or `f32`
+  element type.
+- `clip` can appear only inside `pre_relu(...)`.
+- `clip` is supported for destination `f16`, `ui8`, and signed/signless
+  4/8/16-bit integer destinations. The clip payload must match the destination
+  family: `f16` for f16, 16-bit unsigned/signless payload for `ui8`, and
+  signed/signless `i4/i8/i16` for signed integer destinations.
+- `nz2dn` requires `%loop0_src_stride`; `nz2nd` and `nz2nz` do not accept it.
+- `unit_flag` must be omitted when `nz2dn(%loop0_src_stride)` uses a value
+  other than 1.
+- `nz2nz` requires `f32` destination element type and does not accept `loop3`.
+- `sat`, `sat(preserve_nan)`, and `nosat` are mutually exclusive.
 
 **Example:**
 
 ```mlir
-pto.acc_store %l0c, %l1_out, %c16_i64, %c16_i64, %c16_i64, %c16_i64, nz2dn(%c64_i64), loop3(%c3_i64, %c4_i64, %c5_i64)
-  : !pto.ptr<f32, acc>, !pto.ptr<f32, mat>, i64, i64, i64, i64, i64, i64, i64, i64
+pto.acc_store %l0c, %l1_out, %c16_i64, %c32_i64, %c16_i64, %c32_i64,
+  pre_quant(%c1_f32, mode = qf322f16_pre_scalar),
+  pre_relu(%c025_f32, mode = scalar_relu),
+  nz2nd,
+  sat
+  : !pto.ptr<f32, acc>, !pto.ptr<f16, mat>, i64, i64, i64, i64, f32, f32
 ```
 
 ---
@@ -723,41 +1009,59 @@ pto.acc_store %l0c, %l1_out, %c16_i64, %c16_i64, %c16_i64, %c16_i64, nz2dn(%c64_
 pto.acc_store_gm %src, %dst, %m, %n, %src_stride, %dst_stride, %sid, %l2_cache_ctrl
     [, unit_flag(check_only | check_and_clear)]?
     [, pre_quant(%payload, mode = <quant_pre_mode>)]?
-    [, pre_relu(%payload, mode = <relu_pre_mode> [, clip = %clip])]?
+    [, pre_relu([%payload, ]mode = <relu_pre_mode> [, clip = %clip])]?
     [, nz2nd | nz2dn(%loop0_src_stride) | nz2nz(%split)?]
     [, loop3(%count, %src_stride3, %dst_stride3)]?
-    [, sat]?
+    [, sat | sat(preserve_nan) | nosat]?
     [, atomic(type = <atomic_type>, op = <atomic_op>)]?
   : ...
 ```
-- **semantics:** Structured L0C (`acc`) to GM wrapper.
+- **semantics:** FIXPIPE writeback from `acc` to GM. The data transform clauses
+  match `pto.acc_store`; GM-specific operands select the GM write path and
+  optional atomic update behavior.
 
 **Parameter Table:**
 
 | Parameter | Width | Description |
 |-----------|-------|-------------|
-| `%src` | buffer-like | L0C source buffer (`acc`)，可为 typed `!pto.ptr` 或等价 memref |
-| `%dst` | buffer-like | GM destination buffer，可为 typed `!pto.ptr` 或等价 memref |
-| `%m` | i64 | M size |
-| `%n` | i64 | N size |
-| `%src_stride` | i64 | 源 NZ 布局在 fixpipe 写回过程中的主 stride 参数 |
-| `%dst_stride` | i64 | 目标布局在 fixpipe 写回过程中的主 stride 参数 |
-| `%sid` | i64 | GM 写回使用的 stream/session 标识参数 |
-| `%l2_cache_ctrl` | i64 | GM 路径的 L2 cache 策略参数 |
-| (optional clauses) | — | 与 `pto.acc_store` 相同的语义子句，外加 GM 独有的 `atomic(...)` |
+| `%src`, `%m`, `%n`, `%src_stride` | - | Same as `pto.acc_store` |
+| `%dst` | buffer-like | GM destination |
+| `%dst_stride` | i64 | GM destination stride in destination elements |
+| `%sid` | i64 | GM stream/session hint for the OUT/GM path; does not change written values |
+| `%l2_cache_ctrl` | i64 | GM store cache hint; does not change written values |
+| `atomic(type = ..., op = ...)` | clause | Optional GM read-modify-write |
+| other optional clauses | - | Same as `pto.acc_store` |
+
+`%sid` and `%l2_cache_ctrl` affect the memory path only. They do not change
+the logical result, destination layout, numeric conversion, or atomic
+operation. For target-profile GM writeback, constant `%sid` values must be in
+`[0, 3]`; use `0` unless the surrounding memory system deliberately assigns a
+different stream/session hint. Constant `%l2_cache_ctrl` values must fit in the
+target cache-control hint range `[0, 15]`.
+
+`atomic(type = T, op = add|max|min)` performs an atomic read-modify-write at
+each GM destination element. `add` accumulates the converted value into the
+existing GM value. `max` and `min` compare using `T` and write the selected
+value. Supported atomic types are `f32`, `f16`, `bf16`, `s32`, `s16`, and `s8`.
 
 **Constraints:**
 
-- GM output path controls (`sid`, `l2_cache_ctrl`) must be provided.
-- `atomic(type = ..., op = ...)` 只允许出现在 `pto.acc_store_gm`。
-- `atomic` 必须同时提供 `type` 和 `op`。
-- 当前 `op` 取值为 `add` / `max` / `min`；`type` 取值为 `f32` / `f16` / `bf16` / `s32` / `s16` / `s8`。
+- `atomic(...)` is valid only on `pto.acc_store_gm`.
+- `atomic` requires both `type` and `op`.
+- Atomic op values are `add`, `max`, and `min`.
+- If `%sid` or `%l2_cache_ctrl` is a constant, it must be in the target range
+  described above.
+- Other constraints match `pto.acc_store`.
 
 **Example:**
 
 ```mlir
-pto.acc_store_gm %l0c, %c_gm, %c16_i64, %c16_i64, %c16_i64, %c16_i64, %c0_i64, %c0_i64, nz2nd
-  : !pto.ptr<f32, acc>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64
+pto.acc_store_gm %l0c, %out, %c16_i64, %c32_i64, %c16_i64, %c32_i64,
+  %c0_i64, %c0_i64,
+  pre_quant(%c1_f32, mode = qf322f16_pre_scalar),
+  nz2nd,
+  atomic(type = f16, op = add)
+  : !pto.ptr<f32, acc>, !pto.ptr<f16, gm>, i64, i64, i64, i64, i64, i64, f32
 ```
 
 ---
@@ -766,38 +1070,96 @@ pto.acc_store_gm %l0c, %c_gm, %c16_i64, %c16_i64, %c16_i64, %c16_i64, %c0_i64, %
 
 - **syntax:**
 ```mlir
-pto.acc_store_ub %src, %dst, %m, %n, %src_stride, %dst_stride, %dual_dst_mode, %sub_blockid
+pto.acc_store_ub %src, %dst, %m, %n, %src_stride, %dst_stride,
+    dst_mode(%sub_blockid | split_m | split_n)
     [, unit_flag(check_only | check_and_clear)]?
     [, pre_quant(%payload, mode = <quant_pre_mode>)]?
-    [, pre_relu(%payload, mode = <relu_pre_mode> [, clip = %clip])]?
+    [, pre_relu([%payload, ]mode = <relu_pre_mode> [, clip = %clip])]?
     [, nz2nd | nz2dn(%loop0_src_stride) | nz2nz(%split)?]
     [, loop3(%count, %src_stride3, %dst_stride3)]?
-    [, sat]?
+    [, sat | sat(preserve_nan) | nosat]?
   : ...
 ```
-- **semantics:** Structured L0C (`acc`) to UB wrapper.
+- **semantics:** FIXPIPE writeback from `acc` to UB. The data transform clauses
+  match `pto.acc_store`; UB-specific operands select single or dual destination
+  behavior.
 
 **Parameter Table:**
 
 | Parameter | Width | Description |
 |-----------|-------|-------------|
-| `%src` | buffer-like | L0C source buffer (`acc`)，可为 typed `!pto.ptr` 或等价 memref |
-| `%dst` | buffer-like | UB destination buffer，可为 typed `!pto.ptr` 或等价 memref |
-| `%m` | i64 | M size |
-| `%n` | i64 | N size |
-| `%src_stride` | i64 | 源 NZ 布局在 fixpipe 写回过程中的主 stride 参数 |
-| `%dst_stride` | i64 | 目标布局在 fixpipe 写回过程中的主 stride 参数 |
-| `%dual_dst_mode` | i64 | UB 路径的双目标写回模式参数 |
-| `%sub_blockid` | i64 | UB 路径的子块选择参数 |
-| (optional clauses) | — | 与 `pto.acc_store` 相同，但不支持 `atomic(...)` |
+| `%src`, `%m`, `%n`, `%src_stride` | - | Same as `pto.acc_store` |
+| `%dst` | buffer-like | UB destination |
+| `%dst_stride` | i64 | UB destination stride in destination elements |
+| `dst_mode(%sub_blockid)` | i64 operand | Single-destination mode. `%sub_blockid` selects UB sub-block `0` or `1`; the value may be dynamic. |
+| `dst_mode(split_m)` | keyword | Dual-destination mode that splits the logical tile along M. |
+| `dst_mode(split_n)` | keyword | Dual-destination mode that splits the logical tile along N. |
+| optional clauses | - | Same as `pto.acc_store`; `atomic(...)` is not supported |
+
+In `dst_mode(%sub_blockid)`, the whole logical result tile is written to the
+selected UB sub-block using the selected layout mode and `%dst` as that
+sub-block's base destination pointer.
+
+In `dst_mode(split_m)`, the logical tile is split into two M ranges:
+`[0, m/2)` and `[m/2, m)`. The first range is written to UB sub-block 0 and the
+second range is written to UB sub-block 1. Each sub-block sees its own
+destination origin at `%dst`; within each sub-block, the written logical tile
+has shape `(m / 2) x n`.
+
+In `dst_mode(split_n)`, the logical tile is split into two N ranges:
+`[0, n/2)` and `[n/2, n)`. The first range is written to UB sub-block 0 and the
+second range is written to UB sub-block 1. Each sub-block sees its own
+destination origin at `%dst`; within each sub-block, the written logical tile
+has shape `m x (n / 2)`.
 
 **Constraints:**
 
-- 不支持 `atomic(...)`。
+- `atomic(...)` is not supported.
+- `dst_mode(%sub_blockid)` writes the whole logical tile to one UB sub-block.
+  Runtime `%sub_blockid` values must be `0` or `1`; constant values are checked
+  statically when available.
+- `dst_mode(split_m)` splits the logical tile along M into two equal-height
+  sub-block regions. `%m` must be even; each sub-block receives an
+  `(m / 2) x n` tile.
+- `dst_mode(split_n)` splits the logical tile along N into two equal-width
+  sub-block regions. `%n` must be a multiple of 32; each sub-block receives an
+  `m x (n / 2)` tile.
+- Dual-destination split modes are valid only for target-supported normal or
+  `nz2nd` writeback cases with pre-quant, pre-ReLU/clip, and other transform
+  clauses omitted.
+- Other constraints match `pto.acc_store`.
 
 **Example:**
 
 ```mlir
-pto.acc_store_ub %l0c, %ub_out, %c16_i64, %c16_i64, %c16_i64, %c16_i64, %c0_i64, %c0_i64, nz2nd
-  : !pto.ptr<f32, acc>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i64
+pto.acc_store_ub %l0c, %ub_out, %c16_i64, %c32_i64, %c16_i64, %c32_i64,
+  dst_mode(%c1_i64),
+  nz2nd
+  : !pto.ptr<f32, acc>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64
 ```
+
+---
+
+## Typical Usage / Patterns
+
+A common Cube matmul flow is:
+
+```text
+GM row/column-major data
+  -> pto.cube_load_frac or pto.cube_load into L1 mat
+  -> pto.left_load / pto.right_load into left/right tiles
+  -> pto.mad* produces acc tile
+  -> pto.acc_store* writes L1, GM, or UB with optional FIXPIPE transforms
+```
+
+For MX matmul, load the data tiles and the matching MX scale payloads before
+calling `pto.mad_mx*`:
+
+```text
+left data tile + left scale payload
+right data tile + right scale payload
+  -> pto.mad_mx*
+```
+
+For bias matmul, prepare the `bias[N]` vector with `pto.bias_load` before the
+`pto.mad_bias` / `pto.mad_mx_bias` consumer.

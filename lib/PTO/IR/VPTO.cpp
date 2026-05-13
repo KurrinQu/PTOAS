@@ -1638,7 +1638,7 @@ struct StructuredAccStoreAsmState {
   std::optional<AccStoreMode> mode;
   std::optional<AccStoreAtomicType> atomicType;
   std::optional<AccStoreAtomicOp> atomicOp;
-  bool sat = false;
+  std::optional<AccStoreSatMode> satMode;
 
   SmallVector<OpAsmParser::UnresolvedOperand, 1> preQuantOperands;
   SmallVector<OpAsmParser::UnresolvedOperand, 1> preReluOperands;
@@ -1697,15 +1697,21 @@ static bool isStructuredAccStoreVectorQuantMode(AccStoreQuantPreMode mode) {
 static bool isStructuredAccStoreScalingPayload(Value value) {
   auto ptrType = dyn_cast_or_null<PtrType>(value.getType());
   return ptrType &&
-         ptrType.getElementType().isUnsignedInteger(64) &&
          ptrType.getMemorySpace().getAddressSpace() == AddressSpace::SCALING;
 }
 
 static bool isStructuredAccStoreScalingPayloadType(Type type) {
   auto ptrType = dyn_cast_or_null<PtrType>(type);
   return ptrType &&
-         ptrType.getElementType().isUnsignedInteger(64) &&
          ptrType.getMemorySpace().getAddressSpace() == AddressSpace::SCALING;
+}
+
+static Type getStructuredAccStoreScalingElementType(Value value) {
+  auto ptrType = dyn_cast_or_null<PtrType>(value.getType());
+  if (!ptrType ||
+      ptrType.getMemorySpace().getAddressSpace() != AddressSpace::SCALING)
+    return {};
+  return ptrType.getElementType();
 }
 
 static bool isStructuredAccStoreIntegerPayload(Value value) {
@@ -2015,7 +2021,7 @@ static ParseResult parseStructuredAccStoreClauses(
       kind = StructuredAccStoreClauseKind::Layout;
     else if (keyword == "loop3")
       kind = StructuredAccStoreClauseKind::Loop3;
-    else if (keyword == "sat")
+    else if (keyword == "sat" || keyword == "nosat")
       kind = StructuredAccStoreClauseKind::Sat;
     else if (keyword == "atomic")
       kind = StructuredAccStoreClauseKind::Atomic;
@@ -2046,9 +2052,23 @@ static ParseResult parseStructuredAccStoreClauses(
       parseResult = parseStructuredAccStoreLoop3(parser, state);
       break;
     case StructuredAccStoreClauseKind::Sat:
-      if (state.sat)
-        return parser.emitError(parser.getCurrentLocation(), "duplicate sat clause");
-      state.sat = true;
+      if (state.satMode)
+        return parser.emitError(parser.getCurrentLocation(), "duplicate sat/nosat clause");
+      if (keyword == "nosat") {
+        state.satMode = AccStoreSatMode::NoSat;
+        break;
+      }
+      if (succeeded(parser.parseOptionalLParen())) {
+        StringRef satOption;
+        if (parser.parseKeyword(&satOption) || satOption != "preserve_nan")
+          return parser.emitError(parser.getCurrentLocation(),
+                                  "expected preserve_nan");
+        if (parser.parseRParen())
+          return failure();
+        state.satMode = AccStoreSatMode::SatPreserveNan;
+      } else {
+        state.satMode = AccStoreSatMode::Sat;
+      }
       break;
     case StructuredAccStoreClauseKind::Atomic:
       parseResult = parseStructuredAccStoreAtomic(parser, state);
@@ -2094,6 +2114,10 @@ static LogicalResult verifyStructuredAccStoreLike(
     if (isStructuredAccStoreVectorQuantMode(*preQuantMode)) {
       if (!isStructuredAccStoreScalingPayload(preQuant))
         return op->emitOpError("vector pre_quant mode requires scaling pointer payload");
+      if (!isStructuredAccStoreFloatScalarPayloadType(
+              getStructuredAccStoreScalingElementType(preQuant)))
+        return op->emitOpError(
+            "vector pre_quant mode requires scaling pointer element type to be f16, bf16, or f32");
     } else if (!isStructuredAccStoreFloatScalarPayload(preQuant)) {
       return op->emitOpError(
           "scalar pre_quant mode requires f16/bf16/f32 payload");
@@ -2153,6 +2177,10 @@ static LogicalResult verifyStructuredAccStoreLike(
         return op->emitOpError("vector_relu requires payload");
       if (!isStructuredAccStoreScalingPayload(preRelu))
         return op->emitOpError("vector_relu requires scaling pointer payload");
+      if (!isStructuredAccStoreFloatScalarPayloadType(
+              getStructuredAccStoreScalingElementType(preRelu)))
+        return op->emitOpError(
+            "vector_relu requires scaling pointer element type to be f16, bf16, or f32");
       break;
     case ReluPreMode::Pwl:
       return op->emitOpError("pwl is not supported for target_profile acc_store");
@@ -2219,7 +2247,8 @@ static void printStructuredAccStoreClauses(
     std::optional<AccStoreQuantPreMode> preQuantMode, Value preRelu,
     std::optional<ReluPreMode> preReluMode, Value clipValue,
     std::optional<AccStoreMode> mode, Value split, Value loop0SrcStride,
-    Value loop3Count, Value loop3SrcStride, Value loop3DstStride, bool sat,
+    Value loop3Count, Value loop3SrcStride, Value loop3DstStride,
+    std::optional<AccStoreSatMode> satMode,
     std::optional<AccStoreAtomicType> atomicType,
     std::optional<AccStoreAtomicOp> atomicOp) {
   if (unitFlag && *unitFlag != AccStoreUnitFlagCtrl::Off) {
@@ -2262,8 +2291,19 @@ static void printStructuredAccStoreClauses(
     printer << ", loop3(" << loop3Count << ", " << loop3SrcStride << ", "
             << loop3DstStride << ")";
   }
-  if (sat)
-    printer << ", sat";
+  if (satMode) {
+    switch (*satMode) {
+    case AccStoreSatMode::Sat:
+      printer << ", sat";
+      break;
+    case AccStoreSatMode::NoSat:
+      printer << ", nosat";
+      break;
+    case AccStoreSatMode::SatPreserveNan:
+      printer << ", sat(preserve_nan)";
+      break;
+    }
+  }
   if (atomicType && atomicOp) {
     printer << ", atomic(type = " << stringifyAccStoreAtomicType(*atomicType)
             << ", op = " << stringifyAccStoreAtomicOp(*atomicOp) << ")";
@@ -2357,8 +2397,10 @@ static void addStructuredAccStoreAttrs(OperationState &result,
     result.addAttribute("atomic_op",
                         AccStoreAtomicOpAttr::get(builder.getContext(),
                                                   *state.atomicOp));
-  if (state.sat)
-    result.addAttribute("sat", builder.getUnitAttr());
+  if (state.satMode)
+    result.addAttribute("sat_mode",
+                        AccStoreSatModeAttr::get(builder.getContext(),
+                                                 *state.satMode));
 }
 
 static ParseResult resolveStructuredAccStoreOptionalOperands(
@@ -6398,7 +6440,7 @@ void AccStoreOp::print(OpAsmPrinter &printer) {
                                  getPreReluMode(), getClipValue(), getMode(),
                                  getSplit(), getLoop0SrcStride(),
                                  getLoop3Count(), getLoop3SrcStride(),
-                                 getLoop3DstStride(), static_cast<bool>(getSat()),
+                                 getLoop3DstStride(), getSatMode(),
                                  getAtomicType(), getAtomicOp());
   printer.printOptionalAttrDict((*this)->getAttrs(),
                                 /*elidedAttrs=*/{"operandSegmentSizes",
@@ -6408,7 +6450,7 @@ void AccStoreOp::print(OpAsmPrinter &printer) {
                                                  "pre_relu_mode",
                                                  "atomic_type",
                                                  "atomic_op",
-                                                 "sat"});
+                                                 "sat_mode"});
   printer << " : " << getSource().getType() << ", " << getDestination().getType()
           << ", " << getM().getType() << ", " << getN().getType() << ", "
           << getSrcStride().getType() << ", " << getDstStride().getType();
@@ -6568,7 +6610,7 @@ void AccStoreGmOp::print(OpAsmPrinter &printer) {
                                  getPreReluMode(), getClipValue(), getMode(),
                                  getSplit(), getLoop0SrcStride(),
                                  getLoop3Count(), getLoop3SrcStride(),
-                                 getLoop3DstStride(), static_cast<bool>(getSat()),
+                                 getLoop3DstStride(), getSatMode(),
                                  getAtomicType(), getAtomicOp());
   printer.printOptionalAttrDict((*this)->getAttrs(),
                                 /*elidedAttrs=*/{"operandSegmentSizes",
@@ -6578,7 +6620,7 @@ void AccStoreGmOp::print(OpAsmPrinter &printer) {
                                                  "pre_relu_mode",
                                                  "atomic_type",
                                                  "atomic_op",
-                                                 "sat"});
+                                                 "sat_mode"});
   printer << " : " << getSource().getType() << ", " << getDestination().getType()
           << ", " << getM().getType() << ", " << getN().getType() << ", "
           << getSrcStride().getType() << ", " << getDstStride().getType()
@@ -6619,35 +6661,66 @@ ParseResult AccStoreUbOp::parse(OpAsmParser &parser, OperationState &result) {
   Builder builder(parser.getContext());
   StructuredAccStoreAsmState state;
   OpAsmParser::UnresolvedOperand source, destination, m, n, srcStride,
-      dstStride, dualDstMode, subBlockId;
+      dstStride, subBlockId;
+  bool hasSubBlockId = false;
+  AccStoreUbDstMode dstMode = AccStoreUbDstMode::Single;
   if (parseRequiredOperandWithComma(parser, source) ||
       parseRequiredOperandWithComma(parser, destination) ||
       parseRequiredOperandWithComma(parser, m) ||
       parseRequiredOperandWithComma(parser, n) ||
       parseRequiredOperandWithComma(parser, srcStride) ||
-      parseRequiredOperandWithComma(parser, dstStride) ||
-      parseRequiredOperandWithComma(parser, dualDstMode) ||
-      parseRequiredOperandWithComma(parser, subBlockId) ||
-      parseStructuredAccStoreClauses(parser, state) ||
-      parser.parseOptionalAttrDict(result.attributes) || parser.parseColon())
+      parseRequiredOperandWithComma(parser, dstStride))
+    return failure();
+  if (parser.parseKeyword("dst_mode") || parser.parseLParen())
+    return failure();
+  OptionalParseResult subBlockIdParse =
+      parser.parseOptionalOperand(subBlockId);
+  if (subBlockIdParse.has_value()) {
+    if (failed(*subBlockIdParse))
+      return failure();
+    hasSubBlockId = true;
+  } else {
+    StringRef dstModeKeyword;
+    if (parser.parseKeyword(&dstModeKeyword))
+      return failure();
+    if (dstModeKeyword == "split_m") {
+      dstMode = AccStoreUbDstMode::SplitM;
+    } else if (dstModeKeyword == "split_n") {
+      dstMode = AccStoreUbDstMode::SplitN;
+    } else {
+      return parser.emitError(
+          parser.getCurrentLocation(),
+          "expected dst_mode(%sub_blockid), dst_mode(split_m), or "
+          "dst_mode(split_n)");
+    }
+  }
+  if (parser.parseRParen())
+    return failure();
+  if (succeeded(parser.parseOptionalComma()) &&
+      parseStructuredAccStoreClauses(parser, state))
+    return failure();
+  if (parser.parseOptionalAttrDict(result.attributes) || parser.parseColon())
     return failure();
 
   Type sourceType, destinationType, mType, nType, srcStrideType, dstStrideType,
-      dualDstModeType, subBlockIdType;
+      subBlockIdType;
   if (parser.parseType(sourceType) || parser.parseComma() ||
       parser.parseType(destinationType) || parser.parseComma() ||
       parser.parseType(mType) || parser.parseComma() || parser.parseType(nType) ||
       parser.parseComma() || parser.parseType(srcStrideType) ||
-      parser.parseComma() || parser.parseType(dstStrideType) ||
-      parser.parseComma() || parser.parseType(dualDstModeType) ||
-      parser.parseComma() || parser.parseType(subBlockIdType) ||
-      parseStructuredAccStoreTailTypes(parser, state))
+      parser.parseComma() || parser.parseType(dstStrideType))
+    return failure();
+  if (hasSubBlockId &&
+      (parser.parseComma() || parser.parseType(subBlockIdType)))
+    return failure();
+  if (parseStructuredAccStoreTailTypes(parser, state))
     return failure();
 
   setStructuredAccStoreSegmentSizes<AccStoreUbOp>(
       result, {1, 1, 1, 1, 1, 1, !state.preQuantOperands.empty() ? 1 : 0,
                !state.preReluOperands.empty() ? 1 : 0,
-               !state.clipValueOperands.empty() ? 1 : 0, 1, 1,
+               !state.clipValueOperands.empty() ? 1 : 0,
+               hasSubBlockId ? 1 : 0,
                !state.splitOperands.empty() ? 1 : 0,
                !state.loop0SrcStrideOperands.empty() ? 1 : 0,
                !state.loop3CountOperands.empty() ? 1 : 0,
@@ -6658,6 +6731,8 @@ ParseResult AccStoreUbOp::parse(OpAsmParser &parser, OperationState &result) {
                             "atomic is only supported for acc_store_gm");
   }
   addStructuredAccStoreAttrs<AccStoreUbOp>(result, builder, state);
+  result.addAttribute("dst_mode",
+                      AccStoreUbDstModeAttr::get(builder.getContext(), dstMode));
 
   if (parser.resolveOperand(source, sourceType, result.operands) ||
       parser.resolveOperand(destination, destinationType, result.operands) ||
@@ -6671,8 +6746,8 @@ ParseResult AccStoreUbOp::parse(OpAsmParser &parser, OperationState &result) {
                              parser.getCurrentLocation(), result.operands) ||
       parser.resolveOperands(state.clipValueOperands, state.clipValueTypes,
                              parser.getCurrentLocation(), result.operands) ||
-      parser.resolveOperand(dualDstMode, dualDstModeType, result.operands) ||
-      parser.resolveOperand(subBlockId, subBlockIdType, result.operands) ||
+      (hasSubBlockId &&
+       parser.resolveOperand(subBlockId, subBlockIdType, result.operands)) ||
       parser.resolveOperands(state.splitOperands, state.splitTypes,
                              parser.getCurrentLocation(), result.operands) ||
       parser.resolveOperands(state.loop0SrcStrideOperands,
@@ -6693,14 +6768,25 @@ ParseResult AccStoreUbOp::parse(OpAsmParser &parser, OperationState &result) {
 void AccStoreUbOp::print(OpAsmPrinter &printer) {
   printer << " " << getSource() << ", " << getDestination() << ", " << getM()
           << ", " << getN() << ", " << getSrcStride() << ", "
-          << getDstStride() << ", " << getDualDstMode() << ", "
-          << getSubBlockid();
+          << getDstStride() << ", dst_mode(";
+  switch (getDstMode()) {
+  case AccStoreUbDstMode::Single:
+    printer << getSubBlockid();
+    break;
+  case AccStoreUbDstMode::SplitM:
+    printer << "split_m";
+    break;
+  case AccStoreUbDstMode::SplitN:
+    printer << "split_n";
+    break;
+  }
+  printer << ")";
   printStructuredAccStoreClauses(printer, getUnitFlag(), getPreQuant(),
                                  getPreQuantMode(), getPreRelu(),
                                  getPreReluMode(), getClipValue(), getMode(),
                                  getSplit(), getLoop0SrcStride(),
                                  getLoop3Count(), getLoop3SrcStride(),
-                                 getLoop3DstStride(), static_cast<bool>(getSat()),
+                                 getLoop3DstStride(), getSatMode(),
                                  std::nullopt, std::nullopt);
   printer.printOptionalAttrDict((*this)->getAttrs(),
                                 /*elidedAttrs=*/{"operandSegmentSizes",
@@ -6708,12 +6794,13 @@ void AccStoreUbOp::print(OpAsmPrinter &printer) {
                                                  "unit_flag",
                                                  "pre_quant_mode",
                                                  "pre_relu_mode",
-                                                 "sat"});
+                                                 "dst_mode",
+                                                 "sat_mode"});
   printer << " : " << getSource().getType() << ", " << getDestination().getType()
           << ", " << getM().getType() << ", " << getN().getType() << ", "
-          << getSrcStride().getType() << ", " << getDstStride().getType()
-          << ", " << getDualDstMode().getType() << ", "
-          << getSubBlockid().getType();
+          << getSrcStride().getType() << ", " << getDstStride().getType();
+  if (getSubBlockid())
+    printer << ", " << getSubBlockid().getType();
   printStructuredAccStoreOptionalTypes(
       printer, getPreQuant(), getPreRelu(), getClipValue(), getSplit(),
       getLoop0SrcStride(), getLoop3Count(), getLoop3SrcStride(),
@@ -6731,12 +6818,46 @@ LogicalResult AccStoreUbOp::verify() {
   if (sourceSpace != AddressSpace::ACC || destinationSpace != AddressSpace::VEC) {
     return emitOpError("requires ACC source and UB destination");
   }
-  return verifyStructuredAccStoreLike(
+  if (failed(verifyStructuredAccStoreLike(
       *this, getSource().getType(), getDestination().getType(), getPreQuant(), getPreRelu(),
       getClipValue(), getSplit(), getLoop0SrcStride(), getLoop3Count(),
       getLoop3SrcStride(), getLoop3DstStride(), getUnitFlag(),
       getPreQuantMode(), getPreReluMode(), getMode(), std::nullopt,
-      std::nullopt, /*allowAtomic=*/false);
+      std::nullopt, /*allowAtomic=*/false)))
+    return failure();
+
+  if (getDstMode() == AccStoreUbDstMode::Single) {
+    if (!getSubBlockid())
+      return emitOpError("dst_mode(%sub_blockid) requires a sub_blockid operand");
+    APInt subBlockId;
+    if (matchPattern(getSubBlockid(), m_ConstantInt(&subBlockId)) &&
+        subBlockId.ugt(1))
+      return emitOpError("sub_blockid must be 0 or 1");
+    return success();
+  }
+  if (getSubBlockid())
+    return emitOpError("split destination modes do not accept sub_blockid");
+
+  if (getPreQuant() || getPreRelu() || getClipValue() || getPreQuantMode() ||
+      getPreReluMode() || getSplit() || getLoop0SrcStride() ||
+      getLoop3Count() || getLoop3SrcStride() || getLoop3DstStride()) {
+    return emitOpError("dual destination mode cannot be combined with "
+                       "pre_quant, pre_relu, clip, nz2dn, nz2nz, or loop3");
+  }
+  if (getMode() && *getMode() != AccStoreMode::Nz2nd)
+    return emitOpError("dual destination mode requires normal or nz2nd layout");
+
+  APInt mValue;
+  APInt nValue;
+  if (getDstMode() == AccStoreUbDstMode::SplitM &&
+      matchPattern(getM(), m_ConstantInt(&mValue)) &&
+      mValue.getZExtValue() % 2 != 0)
+    return emitOpError("split-M dual destination requires m to be even");
+  if (getDstMode() == AccStoreUbDstMode::SplitN &&
+      matchPattern(getN(), m_ConstantInt(&nValue)) &&
+      nValue.getZExtValue() % 32 != 0)
+    return emitOpError("split-N dual destination requires n to be a multiple of 32");
+  return success();
 }
 
 void AccStoreUbOp::getEffects(

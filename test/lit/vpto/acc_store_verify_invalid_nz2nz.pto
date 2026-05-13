@@ -7,9 +7,8 @@ module attributes {"pto.target_arch" = "a5"} {
     %c16_i64 = arith.constant 16 : i64
     %c32_i64 = arith.constant 32 : i64
 
-    pto.acc_store_ub %src, %dst, %c16_i64, %c16_i64, %c16_i64, %c32_i64,
-      %c0_i64, %c0_i64, nz2nz
-      : !pto.ptr<f32, acc>, !pto.ptr<f16, ub>, i64, i64, i64, i64, i64, i64
+    pto.acc_store_ub %src, %dst, %c16_i64, %c16_i64, %c16_i64, %c32_i64, dst_mode(%c0_i64), nz2nz
+      : !pto.ptr<f32, acc>, !pto.ptr<f16, ub>, i64, i64, i64, i64, i64
 
     return
   }

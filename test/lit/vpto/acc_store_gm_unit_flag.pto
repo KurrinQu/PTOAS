@@ -16,8 +16,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
     %c1_i64 = arith.constant 1 : i64
     %c16_i64 = arith.constant 16 : i64
 
-    pto.acc_store_gm %src, %dst, %c16_i64, %c16_i64, %c16_i64, %c16_i64,
-      %c0_i64, %c0_i64,
+    pto.acc_store_gm %src, %dst, %c16_i64, %c16_i64, %c16_i64, %c16_i64, %c0_i64, %c0_i64,
       unit_flag(check_and_clear),
       nz2nd,
       loop3(%c1_i64, %c0_i64, %c16_i64)

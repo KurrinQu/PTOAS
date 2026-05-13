@@ -11,11 +11,6 @@ This document describes the public grouped DMA interfaces:
 - `pto.dma_store`
 - `pto.dma_copy`
 
-This chapter covers the public grouped DMA interfaces. The legacy raw copy
-family remains documented separately; in particular, `pto.copy_ubuf_to_ubuf`
-shares the same UB→UB copy contract as `pto.dma_copy` but remains a legacy
-surface op.
-
 ---
 
 ## DMA Transfer Execution
@@ -124,7 +119,7 @@ pto.dma_copy %ub_src, %dst, %len_burst
   nburst(%n_burst, %src_gap, %dst_gap)
   : !pto.ptr<T, ub>, !pto.ptr<T, ub|mat>, i64, i64, i64, i64
 ```
-- **semantics:** Grouped UB→destination raw copy. When `%dst` is in UB, the transfer is UB→UB. When `%dst` is in MAT/CBUF, the transfer is UB→CBUF.
+- **semantics:** Grouped UB→destination copy. When `%dst` is in UB, the transfer is UB→UB. When `%dst` is in MAT/CBUF, the transfer is UB→CBUF.
 
 **Parameter Table:**
 

@@ -21,6 +21,16 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
       loop3(%c1_i64, %c0_i64, %c16_i64),
       sat
       : !pto.ptr<f32, acc>, !pto.ptr<f32, mat>, i64, i64, i64, i64, i64, i64, i64
+    pto.acc_store %src, %dst, %c16_i64, %c16_i64, %c16_i64, %c16_i64,
+      nz2nd,
+      loop3(%c1_i64, %c0_i64, %c16_i64),
+      sat(preserve_nan)
+      : !pto.ptr<f32, acc>, !pto.ptr<f32, mat>, i64, i64, i64, i64, i64, i64, i64
+    pto.acc_store %src, %dst, %c16_i64, %c16_i64, %c16_i64, %c16_i64,
+      nz2nd,
+      loop3(%c1_i64, %c0_i64, %c16_i64),
+      nosat
+      : !pto.ptr<f32, acc>, !pto.ptr<f32, mat>, i64, i64, i64, i64, i64, i64, i64
 
     return
   }
@@ -28,8 +38,22 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
 
 // ROUNDTRIP-LABEL: func.func @acc_store_sat_probe(
 // ROUNDTRIP: pto.acc_store %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, nz2nd, loop3(%{{.*}}, %{{.*}}, %{{.*}}), sat
+// ROUNDTRIP: pto.acc_store %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, nz2nd, loop3(%{{.*}}, %{{.*}}, %{{.*}}), sat(preserve_nan)
+// ROUNDTRIP: pto.acc_store %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, nz2nd, loop3(%{{.*}}, %{{.*}}, %{{.*}}), nosat
 
 // EXPAND-LABEL: func.func @acc_store_sat_probe(
+// EXPAND: pto.get_ctrl
+// EXPAND: pto.set_ctrl
+// EXPAND: pto.set_loop3_para
+// EXPAND: pto.set_channel_para
+// EXPAND: pto.copy_matrix_cc_to_cbuf
+// EXPAND: pto.set_ctrl
+// EXPAND: pto.get_ctrl
+// EXPAND: pto.set_ctrl
+// EXPAND: pto.set_loop3_para
+// EXPAND: pto.set_channel_para
+// EXPAND: pto.copy_matrix_cc_to_cbuf
+// EXPAND: pto.set_ctrl
 // EXPAND: pto.get_ctrl
 // EXPAND: pto.set_ctrl
 // EXPAND: pto.set_loop3_para

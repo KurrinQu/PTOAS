@@ -10,11 +10,11 @@
 
 ### Overview
 
-This document defines the PTO micro Instruction, a compiler-internal and externally facing specification designed to represent vector compute kernels within the PTO architecture. Much like NVVM provides a robust IR for GPU architectures, the PTO micro Instruction serves as the direct bridge between high-level programming models and the underlying hardware ISA, providing a precise, low-level representation of vector workloads explicitly designed for the Ascend 950 architecture.
+This document defines the PTO micro Instruction, a compiler-internal and externally facing specification designed to represent vector compute kernels within the PTO architecture. Much like NVVM provides a robust IR for GPU architectures, the PTO micro Instruction serves as the direct bridge between high-level programming models and the underlying hardware ISA, providing a precise, architecture-aware representation of vector workloads explicitly designed for the Ascend 950 architecture.
 
 #### Position in the Stack and Layer Modeled
 
-The PTO micro Instruction operates as a very low-level intermediate representation within the PTO compiler stack. It is uniquely designed to accurately and comprehensively express all architectural information of the Ascend 950 hardware. It specifically models the bare-metal vector execution layer, making hardware-specific capabilities and constraints, such as exact vector lane configurations, memory space hierarchies, and hardware-specific fusion semantics, fully transparent and controllable.
+The PTO micro Instruction operates as an explicit intermediate representation within the PTO compiler stack. It is designed to accurately express the user-visible architectural information needed for Ascend 950 kernels, including vector lane organization, memory space hierarchy, synchronization, and hardware-specific fusion semantics.
 
 #### PTO Instruction Modes and Compilation Flows
 
@@ -149,8 +149,7 @@ The PTO micro Instruction enforces a strict memory hierarchy. The Unified Buffer
 
 The grouped DMA surface in this specification covers `pto.dma_load`
 (GM→UB), `pto.dma_store` (UB→GM), and `pto.dma_copy`
-(UB→UB or UB→CBUF). Low-level raw copy families remain available with
-separate operand contracts.
+(UB→UB or UB→CBUF).
 
 **Load/Store Access Patterns**:
 
@@ -401,16 +400,16 @@ AIV1's UB simultaneously, with the tile split in hardware along either the row a
 This 1→2 broadcast with in-hardware tile split is the architectural basis for 1:2
 Cube-to-Vector tile distribution.
 
-##### V→C: Vector UB → Cube L1 (TMOV ub2l1)
+##### V→C: Vector UB → Cube L1
 
-The reverse path uses `TMOV ub2l1` to transfer data from a Vector block's UB into Cube's L1
-buffer. A key architectural constraint: Cube's L1 stores tiles in **NZ fractal layout** (e.g.
+The reverse path transfers data from a Vector block's UB into Cube's L1 buffer.
+A key architectural constraint: Cube's L1 stores tiles in **NZ fractal layout** (e.g.
 `K1M1M0K0` — for fp16: `K0=16`, `M0=16`) so they can be loaded into L0A/L0B for MMAD
 computation. Since Vector produces tiles in **ND layout**, the layout conversion from ND to NZ
 must be applied as part of the V→C transfer:
 
 ```
-Vector UB  (ND layout)  ──[TMOV ub2l1, ND→NZ]──▶  Cube L1  (NZ K1M1M0K0)
+Vector UB  (ND layout)  ──[ND→NZ movement]──▶  Cube L1  (NZ K1M1M0K0)
 ```
 
 For 1:2 mode, both AIV0 and AIV1 each transfer a sub-tile into Cube's L1. The two sub-tiles are
@@ -453,8 +452,8 @@ Physical layout: K1 x M1 x M0 x K0  (last dimension contiguous)
 
 | Buffer | Logical shape | Physical NZ layout | Notes |
 |--------|--------------|-------------------|-------|
-| L1 (cbuf) - Tensor A | `[M, K]` | `K1 M1 M0 K0` | `pto.copy_gm_to_cbuf_multi_nd2nz` of row-major A |
-| L1 (cbuf) - Tensor B | `[K, N]` | `K1 N1 K0 N0` | `pto.copy_gm_to_cbuf_multi_nd2nz` of row-major B |
+| L1 (cbuf) - Tensor A | `[M, K]` | `K1 M1 M0 K0` | Row-major A staged into NZ layout |
+| L1 (cbuf) - Tensor B | `[K, N]` | `K1 N1 K0 N0` | Row-major B staged into NZ layout |
 | L0A (left operand)   | -        | `K1 M1 M0 K0` | FRACTAL_NZ (A5) / FRACTAL_ZZ (A3): same NZ order as L1 cbuf |
 | L0B (right operand)  | -        | `K1 N1 N0 K0` | FRACTAL_ZN: row-major outer, col-major inner (K0 innermost) |
 | L0C (accumulator)    | `[M, N]` | `N1 M1 M0 N0` | output of MMAD (FRACTAL_NZ: col-major outer, row-major inner) |
@@ -483,7 +482,7 @@ row|   +--------------------+         row|   +--------------------+
 
 STEP 2 - GM -> L1 (cbuf): NDtoNZ fractal repack
 -------------------------------------------------
- op: pto.copy_gm_to_cbuf_multi_nd2nz  (A and B; use pto.copy_gm_to_cbuf_multi_dn2nz only for pre-transposed B)
+ Use the structured cube load surface to stage row-major A and B into L1 NZ layout.
 
  A in L1: K1 x M1 x M0 x K0          B in L1: K1 x N1 x K0 x N0
  For each outer block (k1, m1):       For each outer block (k1, n1):
@@ -500,29 +499,23 @@ STEP 2 - GM -> L1 (cbuf): NDtoNZ fractal repack
 
 
 
- NOTE: For GEMM (row-major A/B), prefer pto.copy_gm_to_cbuf_multi_nd2nz for both A and B.
-   pto.copy_gm_to_cbuf_multi_dn2nz is intended for NCHW-layout inputs (e.g. convolution)
-   where the data is already transposed in GM. Using dn2nz for row-major B forces
-   non-contiguous GM access (striding across N to gather K), which hurts burst BW.
-   The B fractal transpose for cube compatibility is done at STEP 3 (L1->L0B).
-   Note: A2/A3 does not have dn2nz, so using nd2nz only is backward compatible
-   across all generations.
+ NOTE: For GEMM with row-major A/B, stage both operands from GM to L1 as
+   logical ND-to-NZ movement. If the source is already in a transposed logical
+   layout, express that at the structured load level instead of relying on a
+   later interpretation of the same bytes.
 
 
 STEP 3 - L1 -> L0A / L0B
 --------------------------
- ops: pto.load_cbuf_to_ca  (no transpose)
-      pto.load_cbuf_to_cb  (transpose via load_2d_v2)
-
- L0A: cbuf K1 M1 M0 K0 -(load_cbuf_to_ca)-> L0A K1 M1 M0 K0  (FRACTAL_NZ on A5)
- L0B: cbuf K1 N1 K0 N0 --(TMOV/ZN)---> L0B K1 N1 N0 K0  (FRACTAL_ZN, K0 innermost)
+ L0A: cbuf K1 M1 M0 K0 --left_load-->  L0A K1 M1 M0 K0  (FRACTAL_NZ on A5)
+ L0B: cbuf K1 N1 K0 N0 --right_load--> L0B K1 N1 N0 K0  (FRACTAL_ZN, K0 innermost)
 
  Why transpose at L1->L0B and not at GM->L1?
  --------------------------------------------
  The cube reduction axis is K. L0B requires K innermost (N1 K1 K0 N0)
  so the cube hardware reads all K0 elements per cycle without striding.
- The inner-box transpose is performed on-the-fly by the MTE hardware
- during the L1->L0B transfer itself — no extra pass required.
+ The inner-box transpose is performed as part of the structured right-load
+ movement itself; no separate user-visible pass is required.
  Each 512B fractal z-block is permuted as it moves from L1 to L0B.
 
   L0A tile (cube LEFT port):           L0B tile (cube RIGHT port):
@@ -548,21 +541,19 @@ STEP 4 - L0C output layout: N1 M1 M0 N0
   +------------------------------+
   Physical: C_nz[n1][m1][m0][n0]  ->  C_nd[m1*M0+m0][n1*N0+n0]
 
-  Writeback: pto.copy_matrix_cc_to_gm   (FRACTAL_NZ -> ND, normal output)
-             pto.copy_matrix_cc_to_cbuf  (stays FRACTAL_NZ, for fused ops)
-             pto.copy_matrix_cc_to_ub    (FRACTAL_NZ -> ND to UB, A5 only;
-                                          used in fixed-point (fixp) datapath)
+  Writeback: FIXPIPE MTE ops convert the L0C NZ result to the requested
+             destination layout and memory space.
 
 
 Full pipeline summary
 ----------------------
   GM (ND)          L1/cbuf (NZ)            L0A/B (NZ)          L0C (NZ)    GM (ND)
 
-  A[M,K] -nd2nz(copy_gm_to_cbuf_multi_nd2nz)-> K1 M1 M0 K0 --load_cbuf_to_ca-> K1 M1 M0 K0 -+
+  A[M,K] --cube_load_frac/cube_load--> K1 M1 M0 K0 --left_load-->  K1 M1 M0 K0 -+
                                                                +-MAD-> N1 M1 M0 N0 --> C[M,N]
-  B[K,N] -nd2nz(copy_gm_to_cbuf_multi_nd2nz)-> K1 N1 K0 N0 --load_cbuf_to_cb-> K1 N1 N0 K0 -+
+  B[K,N] --cube_load_frac/cube_load--> K1 N1 K0 N0 --right_load--> K1 N1 N0 K0 -+
                                  ^
-                      transpose at L1->L0B (load_cbuf_to_cb, load_2d_v2)
+                      transpose as part of right_load when requested
                       NOT at GM->L1
 ```
 
@@ -1162,7 +1153,7 @@ This section provides a categorized overview of all PTO micro Instruction operat
 | 13 | [DSA/SFU Ops](isa/micro-isa/13-dsa-sfu-ops.md) | Specialized ops, index generation, and sorting helpers | 10 | `pto.vlrelu`, `pto.vprelu`, `pto.vexpdif`, `pto.vaxpy`, `pto.vmull`, `pto.vmula`, `pto.vci`, `pto.vbitsort`, `pto.vmrgsort4`, `pto.get_vms4_sr` |
 | 14 | [Arith (Shared MLIR Dialect)](isa/micro-isa/14-shared-arith.md) | Full scalar `arith` surface used around PTO ops; the companion page lists categories and representative examples | all scalar ops | `arith.constant`, `arith.addi`, `arith.addf`, `arith.cmpi`, `arith.cmpf`, `arith.select`, `arith.index_cast`, `arith.extsi`, `arith.trunci`, `arith.andi`, `arith.shli`, etc. |
 | 15 | [SCF (Shared MLIR Dialect)](isa/micro-isa/15-shared-scf.md) | Structured loops, branches, and loop-carried state around PTO regions | 5 | `scf.for`, `scf.if`, `scf.while`, `scf.condition`, `scf.yield` |
-| 16 | [Cube Matrix Multiply (MAT)](isa/micro-isa/16-cube-matmul.md) | GM↔L1 (`cbuf`) staging, L1 (`cbuf`)↔UB side moves, L1→L0A/L0B loads, L0C (`acc`) matmul, and wrapper bridge load/store ops | 16+ | `pto.copy_gm_to_cbuf`, `pto.copy_gm_to_cbuf_multi_nd2nz`, `pto.copy_gm_to_cbuf_multi_dn2nz`, `pto.load_cbuf_to_ca`, `pto.load_cbuf_to_cb`, `pto.load_cbuf_to_ca_mx`, `pto.load_cbuf_to_cb_mx`, `pto.mad`, `pto.mad_acc`, `pto.mad_bias`, `pto.mad_mx`, `pto.mad_mx_acc`, `pto.mad_mx_bias`, `pto.copy_matrix_cc_to_gm`, `pto.copy_matrix_cc_to_cbuf`, `pto.copy_matrix_cc_to_ub`, `pto.copy_cbuf_to_bt`, `pto.copy_cbuf_to_fbuf`, `pto.cube_load`, `pto.cube_store`, `pto.cube_load_frac`, `pto.left_load`, `pto.right_load`, `pto.left_load_mx`, `pto.right_load_mx`, `pto.acc_store`, `pto.acc_store_gm`, `pto.acc_store_ub` |
+| 16 | [Cube Matrix Multiply (MAT)](isa/micro-isa/16-cube-matmul.md) | GM↔L1 (`cbuf`) staging, L1 (`cbuf`)↔UB/BT/FB side moves, L1→L0A/L0B loads, L0C (`acc`) matmul, and FIXPIPE MTE writeback | 19 | `pto.cube_load`, `pto.cube_store`, `pto.cube_load_frac`, `pto.bias_load`, `pto.fp_load`, `pto.left_load`, `pto.right_load`, `pto.left_load_mx`, `pto.right_load_mx`, `pto.mad`, `pto.mad_acc`, `pto.mad_bias`, `pto.mad_mx`, `pto.mad_mx_acc`, `pto.mad_mx_bias`, `pto.acc_store`, `pto.acc_store_gm`, `pto.acc_store_ub` |
 
 ---
 
@@ -1175,20 +1166,12 @@ This section provides a categorized overview of all PTO micro Instruction operat
 | GM→UB DMA | 2 | `pto.dma_load` |
 | UB→GM DMA | 2 | `pto.dma_store` |
 | UB→UB / UB→CBUF copy | 2 | `pto.dma_copy` |
-| GM→L1 | 16 | `pto.copy_gm_to_cbuf` |
-| GM→L1 | 16 | `pto.copy_gm_to_cbuf_multi_nd2nz`, `pto.copy_gm_to_cbuf_multi_dn2nz` |
 | GM→L1 | 16 | `pto.cube_load`, `pto.cube_load_frac` |
-| L1→UB bridge wrapper | 16 | `pto.cube_store` |
-| L1→BT (bridge wrapper) | 16 | `pto.bias_load` |
-| L1→FB (bridge wrapper) | 16 | `pto.fp_load` |
-| L1→L0A / L1→L0B | 16 | `pto.load_cbuf_to_ca`, `pto.load_cbuf_to_cb` |
-| L1→L0A / L1→L0B bridge wrapper | 16 | `pto.left_load`, `pto.right_load`, `pto.left_load_mx`, `pto.right_load_mx` |
-| L0C→GM cube writeback | 16 | `pto.copy_matrix_cc_to_gm` |
-| L0C→L1 bridge wrapper | 16 | `pto.acc_store` |
-| L0C→GM bridge wrapper | 16 | `pto.acc_store_gm` |
-| L0C→UB bridge wrapper | 16 | `pto.acc_store_ub` |
-| L0C→L1 / L0C→UB | 16 | `pto.copy_matrix_cc_to_cbuf`, `pto.copy_matrix_cc_to_ub` |
-| L1→BT / L1→FB | 16 | `pto.copy_cbuf_to_bt`, `pto.copy_cbuf_to_fbuf` |
+| L1→UB | 16 | `pto.cube_store` |
+| L1→BT | 16 | `pto.bias_load` |
+| L1→FB | 16 | `pto.fp_load` |
+| L1→L0A / L1→L0B | 16 | `pto.left_load`, `pto.right_load`, `pto.left_load_mx`, `pto.right_load_mx` |
+| L0C→L1 / GM / UB (FIXPIPE MTE) | 16 | `pto.acc_store`, `pto.acc_store_gm`, `pto.acc_store_ub` |
 | Contiguous Load | 3 | `pto.vlds` with `NORM` dist |
 | Broadcast Load | 3 | `pto.vlds` with `BRC` family dist |
 | Gather | 3 | `pto.vgather2`, `pto.vgatherb` |
@@ -1238,48 +1221,26 @@ Group 14 covers the full scalar `arith` surface. The rows below list common PTO 
 | Conditional Regions | 15 | `scf.if`, `scf.yield` |
 | Break-like Structured Loops | 15 | `scf.while`, `scf.condition`, `scf.yield` |
 
-### Recent A5 Additions (Implemented)
+### Cube Operation Surface
 
-- `pto.set_quant_pre` (lowered to `llvm.hivm.SET.QUANT.PRE.v300`)
-- `pto.set_atomic_s32`, `pto.set_atomic_s8` (A5-selectable atomic mode controls)
-- Cube-side movement additions:
-  - `pto.copy_gm_to_cbuf_multi_nd2nz`
-  - `pto.copy_gm_to_cbuf_multi_dn2nz`
-  - `pto.copy_matrix_cc_to_cbuf`
-  - `pto.copy_matrix_cc_to_ub`
-  - `pto.copy_cbuf_to_bt`
-  - `pto.copy_cbuf_to_fbuf`
-
-### Verified Op List (Current Batch)
-
-- `pto.copy_cbuf_to_bt`
 - `pto.bias_load`
-- `pto.copy_cbuf_to_fbuf`
-- `pto.copy_gm_to_cbuf_multi_dn2nz`
-- `pto.copy_gm_to_cbuf_multi_nd2nz`
+- `pto.fp_load`
+- `pto.cube_load`
+- `pto.cube_load_frac`
+- `pto.cube_store`
+- `pto.left_load`
+- `pto.right_load`
+- `pto.left_load_mx`
+- `pto.right_load_mx`
 - `pto.mad`
 - `pto.mad_acc`
 - `pto.mad_bias`
 - `pto.mad_mx`
 - `pto.mad_mx_acc`
 - `pto.mad_mx_bias`
-- `pto.copy_matrix_cc_to_cbuf`
-- `pto.copy_matrix_cc_to_ub`
-- `pto.load_cbuf_to_ca_mx`
-- `pto.load_cbuf_to_ca_s4`
-- `pto.load_cbuf_to_cb_mx`
-- `pto.load_cbuf_to_cb_s4`
-- `pto.set_atomic_s32`
-- `pto.set_atomic_s8`
-- `pto.set_channel_para`
-- `pto.set_fpc`
-- `pto.set_loop1_stride_outtol1`
-- `pto.set_loop2_stride_outtol1`
-- `pto.set_loop3_para`
-- `pto.set_loop_size_outtol1`
-- `pto.set_mte2_nz_para`
-- `pto.set_pad_val_outtol1`
-- `pto.set_quant_pre`
+- `pto.acc_store`
+- `pto.acc_store_gm`
+- `pto.acc_store_ub`
 
 ---
 

@@ -7,20 +7,27 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // -----------------------------------------------------------------------------
-// case: micro-op/cv-mixed/fixpipe-acc-ub-cv
+// case: micro-op/cv-mixed/fixpipe-acc-store-dual-ub-cv
 // family: cv-mixed
 // target_ops: pto.cube_load_frac, pto.left_load, pto.right_load, pto.mad,
 //   pto.acc_store_ub, pto.dma_store, pto.sync.set, pto.sync.wait
-// scenarios: nd2nz-functional-load, cc-to-ub, ub-to-gm
+// scenarios: nd2nz-functional-load, acc_store_ub split-M, acc_store_ub split-N,
+//   per-subblock UB writeback
 // -----------------------------------------------------------------------------
 
 module attributes {pto.target_arch = "a5"} {
-  func.func @fixpipe_acc_ub_cv_kernel(%src_gm: !pto.ptr<f16, gm>,
-                                      %id_gm: !pto.ptr<f16, gm>,
-                                      %out_gm: !pto.ptr<f32, gm>)
+  func.func @fixpipe_acc_store_dual_ub_cv_kernel(%src_gm: !pto.ptr<f16, gm>,
+                                                 %id_gm: !pto.ptr<f16, gm>,
+                                                 %out_split_m0_gm: !pto.ptr<f32, gm>,
+                                                 %out_split_m1_gm: !pto.ptr<f32, gm>,
+                                                 %out_split_n0_gm: !pto.ptr<f32, gm>,
+                                                 %out_split_n1_gm: !pto.ptr<f32, gm>)
       attributes {pto.aicore} {
     %c0_i64 = arith.constant 0 : i64
     %c1_i64 = arith.constant 1 : i64
+    %c2_i64 = arith.constant 2 : i64
+    %c20_i64 = arith.constant 20 : i64
+    %c32_i64 = arith.constant 32 : i64
     %c40_i64 = arith.constant 40 : i64
     %c48_i64 = arith.constant 48 : i64
     %c50_i64 = arith.constant 50 : i64
@@ -29,15 +36,15 @@ module attributes {pto.target_arch = "a5"} {
     %c100_i64 = arith.constant 100 : i64
     %c128_i64 = arith.constant 128 : i64
     %c256_i64 = arith.constant 256 : i64
-    %c2560_i64 = arith.constant 2560 : i64
-    %c49152_i64 = arith.constant 49152 : i64
+    %c32768_i64 = arith.constant 32768 : i64
     %c65536_i64 = arith.constant 65536 : i64
 
     %false = arith.constant false
 
     %mat_src = pto.castptr %c0_i64 : i64 -> !pto.ptr<f16, mat>
     %mat_id = pto.castptr %c65536_i64 : i64 -> !pto.ptr<f16, mat>
-    %ub_out = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, ub>
+    %ub_split_m = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, ub>
+    %ub_split_n = pto.castptr %c32768_i64 : i64 -> !pto.ptr<f32, ub>
     %l0a = pto.castptr %c0_i64 : i64 -> !pto.ptr<f16, left>
     %l0b = pto.castptr %c0_i64 : i64 -> !pto.ptr<f16, right>
     %l0c = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, acc>
@@ -76,12 +83,14 @@ module attributes {pto.target_arch = "a5"} {
       pto.wait_flag["PIPE_M", "PIPE_FIX", "EVENT_ID1"]
       pto.set_flag["PIPE_MTE2", "PIPE_FIX", "EVENT_ID0"]
       pto.wait_flag["PIPE_MTE2", "PIPE_FIX", "EVENT_ID0"]
-      pto.acc_store_ub %l0c, %ub_out, %c40_i64, %c64b_i64, %c48_i64, %c64b_i64, dst_mode(%c0_i64),
-        unit_flag(check_only),
+      pto.acc_store_ub %l0c, %ub_split_m, %c40_i64, %c64b_i64, %c48_i64, %c64b_i64, dst_mode(split_m),
         nz2nd,
-        loop3(%c1_i64, %c49152_i64, %c2560_i64),
         sat
-        : !pto.ptr<f32, acc>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i64, i64, i64
+        : !pto.ptr<f32, acc>, !pto.ptr<f32, ub>, i64, i64, i64, i64
+      pto.acc_store_ub %l0c, %ub_split_n, %c40_i64, %c64b_i64, %c48_i64, %c64b_i64, dst_mode(split_n),
+        nz2nd,
+        sat
+        : !pto.ptr<f32, acc>, !pto.ptr<f32, ub>, i64, i64, i64, i64
 
       pto.sync.set <PIPE_FIX>, 1
       pto.sync.set <PIPE_FIX>, 17
@@ -90,11 +99,24 @@ module attributes {pto.target_arch = "a5"} {
     pto.section.vector {
       %subblock = pto.get_subblock_idx
       %is_subblock0 = arith.cmpi eq, %subblock, %c0_i64 : i64
+      %is_subblock1 = arith.cmpi eq, %subblock, %c1_i64 : i64
 
       scf.if %is_subblock0 {
         pto.sync.wait <PIPE_MTE3>, 1
-        pto.dma_store %ub_out, %out_gm, %c256_i64
-          nburst(%c40_i64, %c256_i64, %c256_i64)
+        pto.dma_store %ub_split_m, %out_split_m0_gm, %c256_i64
+          nburst(%c20_i64, %c256_i64, %c256_i64)
+          : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64
+        pto.dma_store %ub_split_n, %out_split_n0_gm, %c128_i64
+          nburst(%c40_i64, %c256_i64, %c128_i64)
+          : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64
+      }
+      scf.if %is_subblock1 {
+        pto.sync.wait <PIPE_MTE3>, 1
+        pto.dma_store %ub_split_m, %out_split_m1_gm, %c256_i64
+          nburst(%c20_i64, %c256_i64, %c256_i64)
+          : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64
+        pto.dma_store %ub_split_n, %out_split_n1_gm, %c128_i64
+          nburst(%c40_i64, %c256_i64, %c128_i64)
           : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64
       }
       pto.barrier #pto.pipe<PIPE_ALL>

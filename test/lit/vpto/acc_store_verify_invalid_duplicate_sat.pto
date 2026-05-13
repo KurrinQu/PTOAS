@@ -16,11 +16,11 @@ module attributes {"pto.target_arch" = "a5"} {
     pto.acc_store %src, %dst, %c16_i64, %c16_i64, %c16_i64, %c16_i64,
       nz2nd,
       sat,
-      sat
+      nosat
       : !pto.ptr<f32, acc>, !pto.ptr<f32, mat>, i64, i64, i64, i64
 
     return
   }
 }
 
-// CHECK: duplicate sat clause
+// CHECK: duplicate sat/nosat clause

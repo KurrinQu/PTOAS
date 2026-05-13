@@ -14,15 +14,14 @@ module attributes {"pto.target_arch" = "a5"} {
     %c0_i64 = arith.constant 0 : i64
     %c16_i64 = arith.constant 16 : i64
 
-    pto.acc_store_ub %src, %dst, %c16_i64, %c16_i64, %c16_i64, %c16_i64,
-      %c0_i64, %c0_i64,
+    pto.acc_store_ub %src, %dst, %c16_i64, %c16_i64, %c16_i64, %c16_i64, dst_mode(%c0_i64),
       nz2nd,
       sat,
-      sat
-      : !pto.ptr<f32, acc>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i64
+      nosat
+      : !pto.ptr<f32, acc>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64
 
     return
   }
 }
 
-// CHECK: duplicate sat clause
+// CHECK: duplicate sat/nosat clause

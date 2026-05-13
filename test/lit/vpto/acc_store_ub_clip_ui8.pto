@@ -18,12 +18,11 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
     %c1_f32 = arith.constant 1.000000e+00 : f32
     %c255_i16 = arith.constant 255 : i16
 
-    pto.acc_store_ub %src, %dst, %c16_i64, %c16_i64, %c16_i64, %c32_i64,
-      %c0_i64, %c0_i64,
+    pto.acc_store_ub %src, %dst, %c16_i64, %c16_i64, %c16_i64, %c32_i64, dst_mode(%c0_i64),
       pre_quant(%c1_f32, mode = qf322b8_pre_scalar),
       pre_relu(mode = no_relu, clip = %c255_i16),
       nz2nd
-      : !pto.ptr<f32, acc>, !pto.ptr<ui8, ub>, i64, i64, i64, i64, i64, i64,
+      : !pto.ptr<f32, acc>, !pto.ptr<ui8, ub>, i64, i64, i64, i64, i64,
       f32, i16
 
     return

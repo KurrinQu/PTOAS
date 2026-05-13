@@ -91,16 +91,14 @@ module attributes {pto.target_arch = "a5"} {
       pto.set_flag["PIPE_MTE2", "PIPE_FIX", "EVENT_ID0"]
       pto.wait_flag["PIPE_MTE2", "PIPE_FIX", "EVENT_ID0"]
 
-      pto.acc_store_ub %l0c, %ub_out, %c40_i64, %c64_i64, %c48_i64, %c64_i64,
-        %c0_i64, %c0_i64,
+      pto.acc_store_ub %l0c, %ub_out, %c40_i64, %c64_i64, %c48_i64, %c64_i64, dst_mode(%c0_i64),
         pre_quant(%c1_f32, mode = qf322f16_pre_scalar),
         pre_relu(%c025_f32, mode = scalar_relu),
         nz2nd,
         loop3(%c1_i64, %c49152_i64, %c2560_i64)
-        : !pto.ptr<f32, acc>, !pto.ptr<f16, ub>, i64, i64, i64, i64, i64, i64,
+        : !pto.ptr<f32, acc>, !pto.ptr<f16, ub>, i64, i64, i64, i64, i64,
           f32, f32, i64, i64, i64
-      pto.acc_store_gm %l0c, %out_gm_gm, %c40_i64, %c64_i64, %c48_i64, %c64_i64,
-        %c0_i64, %c0_i64,
+      pto.acc_store_gm %l0c, %out_gm_gm, %c40_i64, %c64_i64, %c48_i64, %c64_i64, %c0_i64, %c0_i64,
         pre_quant(%c1_f16, mode = qf322f16_pre_scalar),
         pre_relu(%c025_f16, mode = scalar_relu),
         nz2nd,

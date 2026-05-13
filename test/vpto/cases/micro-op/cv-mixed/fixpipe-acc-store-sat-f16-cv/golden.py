@@ -19,8 +19,18 @@ N = 64
 K = 50
 FP_QUANT_ELEMS = 64
 FP_TRANSPORT_ELEMS = FP_QUANT_ELEMS * 2
-SRC_VALUE = np.float16(400.0)
-ID_VALUE = np.float16(400.0)
+K_ACTIVE = 6
+CASE_VALUES = np.array(
+    [
+        np.float16(12000.0),
+        np.float16(-12000.0),
+        np.float16(np.inf),
+        np.float16(-np.inf),
+        np.float16(np.nan),
+        np.float16(20.0),
+    ],
+    dtype=np.float16,
+)
 
 
 def encode_scale(scale: float) -> np.uint64:
@@ -30,18 +40,26 @@ def encode_scale(scale: float) -> np.uint64:
 def generate(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    lhs = np.full((M, K), ID_VALUE, dtype=np.float16)
-    rhs = np.full((K, N), SRC_VALUE, dtype=np.float16)
+    lhs = np.zeros((M, K), dtype=np.float16)
+    rhs = np.zeros((K, N), dtype=np.float16)
+    lhs[:, :K_ACTIVE] = np.float16(1.0)
+    for col in range(N):
+        rhs[:K_ACTIVE, col] = CASE_VALUES[col % len(CASE_VALUES)]
     fp = np.full(FP_QUANT_ELEMS, encode_scale(1.0), dtype=np.uint64)
 
     matmul = lhs.astype(np.float32) @ rhs.astype(np.float32)
-    sat_golden = np.clip(
+    sat_golden = np.nan_to_num(
         matmul,
-        np.finfo(np.float16).min,
-        np.finfo(np.float16).max,
-    ).astype(np.float16)
+        nan=np.float32(0.0),
+        posinf=np.finfo(np.float16).max,
+        neginf=np.finfo(np.float16).min,
+    )
+    sat_golden = np.clip(sat_golden, np.finfo(np.float16).min,
+                         np.finfo(np.float16).max).astype(np.float16)
     with np.errstate(over="ignore", invalid="ignore"):
         nosat_golden = matmul.astype(np.float16)
+    if np.array_equal(sat_golden.view(np.uint16), nosat_golden.view(np.uint16)):
+        raise AssertionError("sat and nosat golden outputs must differ")
 
     zero = np.zeros((M, N), dtype=np.float16)
     lhs.reshape(-1).tofile(output_dir / "v1.bin")

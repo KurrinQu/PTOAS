@@ -335,9 +335,9 @@ static void configureAccStoreScalarPreOps(Location loc, Value preQuant,
 static Value configureAccStoreCtrl(Location loc, bool allowAtomic,
                                    std::optional<pto::AccStoreAtomicType> atomicType,
                                    std::optional<pto::AccStoreAtomicOp> atomicOp,
-                                   std::optional<bool> sat,
+                                   std::optional<pto::AccStoreSatMode> satMode,
                                    PatternRewriter &rewriter) {
-  if ((!allowAtomic || !atomicType || !atomicOp) && !sat)
+  if ((!allowAtomic || !atomicType || !atomicOp) && !satMode)
     return {};
 
   Value originalCtrl = rewriter.create<pto::GetCtrlOp>(loc);
@@ -346,8 +346,9 @@ static Value configureAccStoreCtrl(Location loc, bool allowAtomic,
   if (allowAtomic && atomicType && atomicOp)
     clearMaskValue |= (static_cast<uint64_t>(0x7) << 6) |
                       (static_cast<uint64_t>(0x3) << 9);
-  if (sat.has_value())
-    clearMaskValue |= static_cast<uint64_t>(1) << 48;
+  if (satMode)
+    clearMaskValue |= (static_cast<uint64_t>(1) << 48) |
+                      (static_cast<uint64_t>(1) << 50);
   Value clearMask = getI64Constant(loc, rewriter, clearMaskValue);
   Value fullMask = getI64Constant(loc, rewriter, ~static_cast<uint64_t>(0));
   Value keepMask = rewriter.create<arith::XOrIOp>(loc, clearMask, fullMask);
@@ -358,6 +359,16 @@ static Value configureAccStoreCtrl(Location loc, bool allowAtomic,
                           (static_cast<uint64_t>(static_cast<uint32_t>(*atomicOp)) << 9);
     ctrl = rewriter.create<arith::OrIOp>(loc, ctrl,
                                          getI64Constant(loc, rewriter, atomicBits));
+  }
+  if (satMode && *satMode == pto::AccStoreSatMode::NoSat) {
+    ctrl = rewriter.create<arith::OrIOp>(
+        loc, ctrl, getI64Constant(loc, rewriter,
+                                  static_cast<uint64_t>(1) << 48));
+  }
+  if (satMode && *satMode == pto::AccStoreSatMode::SatPreserveNan) {
+    ctrl = rewriter.create<arith::OrIOp>(
+        loc, ctrl, getI64Constant(loc, rewriter,
+                                  static_cast<uint64_t>(1) << 50));
   }
   rewriter.create<pto::SetCtrlOp>(loc, ctrl);
   return originalCtrl;
@@ -1364,7 +1375,7 @@ struct ExpandAccStorePattern : public OpRewritePattern<pto::AccStoreOp> {
       rewriter.create<pto::SetFpcOp>(loc, fpc);
     Value originalCtrl =
         configureAccStoreCtrl(loc, /*allowAtomic=*/false, std::nullopt,
-                              std::nullopt, op.getSat(), rewriter);
+                              std::nullopt, op.getSatMode(), rewriter);
     pto::DmaLoopConfig hwLoop{one, zero, zero};
     if (Value loop3Count = op.getLoop3Count()) {
       hwLoop = {loop3Count, op.getLoop3SrcStride(), op.getLoop3DstStride()};
@@ -1456,7 +1467,7 @@ struct ExpandAccStoreGmPattern : public OpRewritePattern<pto::AccStoreGmOp> {
       rewriter.create<pto::SetFpcOp>(loc, fpc);
     Value originalCtrl =
         configureAccStoreCtrl(loc, /*allowAtomic=*/true, op.getAtomicType(),
-                              op.getAtomicOp(), op.getSat(), rewriter);
+                              op.getAtomicOp(), op.getSatMode(), rewriter);
     pto::DmaLoopConfig hwLoop{one, zero, zero};
     if (Value loop3Count = op.getLoop3Count()) {
       hwLoop = {loop3Count, op.getLoop3SrcStride(), op.getLoop3DstStride()};
@@ -1547,7 +1558,7 @@ struct ExpandAccStoreUbPattern : public OpRewritePattern<pto::AccStoreUbOp> {
       rewriter.create<pto::SetFpcOp>(loc, fpc);
     Value originalCtrl =
         configureAccStoreCtrl(loc, /*allowAtomic=*/false, std::nullopt,
-                              std::nullopt, op.getSat(), rewriter);
+                              std::nullopt, op.getSatMode(), rewriter);
     pto::DmaLoopConfig hwLoop{one, zero, zero};
     if (Value loop3Count = op.getLoop3Count()) {
       hwLoop = {loop3Count, op.getLoop3SrcStride(), op.getLoop3DstStride()};
@@ -1604,10 +1615,13 @@ struct ExpandAccStoreUbPattern : public OpRewritePattern<pto::AccStoreUbOp> {
             : std::nullopt,
         rewriter);
 
+    Value dualDstMode =
+        getI64Constant(loc, rewriter, static_cast<int64_t>(op.getDstMode()));
+    Value subBlockId = op.getSubBlockid() ? op.getSubBlockid() : zero;
     Value config0 = packCopyMatrixCcToGmXm(loc, zero, op.getN(), op.getM(),
                                            op.getDstStride(), rewriter);
     Value config1 = packCopyMatrixCcToUbConfig1(
-        loc, op.getSrcStride(), op.getDualDstMode(), op.getSubBlockid(),
+        loc, op.getSrcStride(), dualDstMode, subBlockId,
         clipReluPre, unitFlagCtrl, quantPreMode, reluPreMode, nz2ndEn,
         channelSplitEn, nz2dnEn, rewriter);
     rewriter.create<pto::CopyMatrixCcToUbOp>(loc, op.getSource(),

@@ -56,7 +56,7 @@ module attributes {pto.target_arch = "a5"} {
     %l1_fp_raw = pto.castptr %c131072_i64 : i64 -> !pto.ptr<ui32, mat>
     %l1_scalar = pto.castptr %c196608_i64 : i64 -> !pto.ptr<f16, mat>
     %l1_vector = pto.castptr %c262144_i64 : i64 -> !pto.ptr<f16, mat>
-    %fb_relu = pto.castptr %c65600_i64 : i64 -> !pto.ptr<ui64, scaling>
+    %fb_relu = pto.castptr %c65600_i64 : i64 -> !pto.ptr<f32, scaling>
     %ub_scalar = pto.castptr %c0_i64 : i64 -> !pto.ptr<f16, ub>
     %ub_vector = pto.castptr %c32768_i64 : i64 -> !pto.ptr<f16, ub>
     %ub_l1_scalar = pto.castptr %c65536_i64 : i64 -> !pto.ptr<f16, ub>
@@ -104,41 +104,37 @@ module attributes {pto.target_arch = "a5"} {
       pto.wait_flag["PIPE_MTE2", "PIPE_FIX", "EVENT_ID0"]
       pto.fp_load %l1_fp_raw, %fb_relu, %c8_i64
         nburst(%c1_i64, %c0_i64, %c0_i64)
-        : !pto.ptr<ui32, mat>, !pto.ptr<ui64, scaling>, i64, i64, i64, i64
+        : !pto.ptr<ui32, mat>, !pto.ptr<f32, scaling>, i64, i64, i64, i64
 
-      pto.acc_store_ub %l0c, %ub_scalar, %c40_i64, %c64_i64, %c48_i64, %c64_i64,
-        %c0_i64, %c0_i64,
+      pto.acc_store_ub %l0c, %ub_scalar, %c40_i64, %c64_i64, %c48_i64, %c64_i64, dst_mode(%c0_i64),
         pre_quant(%c1_f32, mode = qf322f16_pre_scalar),
         pre_relu(%c025_f32, mode = scalar_relu),
         nz2nd,
         loop3(%c1_i64, %c49152_i64, %c2560_i64)
-        : !pto.ptr<f32, acc>, !pto.ptr<f16, ub>, i64, i64, i64, i64, i64, i64,
+        : !pto.ptr<f32, acc>, !pto.ptr<f16, ub>, i64, i64, i64, i64, i64,
           f32, f32, i64, i64, i64
-      pto.acc_store_ub %l0c, %ub_vector, %c40_i64, %c64_i64, %c48_i64, %c64_i64,
-        %c0_i64, %c0_i64,
+      pto.acc_store_ub %l0c, %ub_vector, %c40_i64, %c64_i64, %c48_i64, %c64_i64, dst_mode(%c0_i64),
         pre_quant(%c1_f32, mode = qf322f16_pre_scalar),
         pre_relu(%fb_relu, mode = vector_relu),
         nz2nd,
         loop3(%c1_i64, %c49152_i64, %c2560_i64)
-        : !pto.ptr<f32, acc>, !pto.ptr<f16, ub>, i64, i64, i64, i64, i64, i64,
-          f32, !pto.ptr<ui64, scaling>, i64, i64, i64
+        : !pto.ptr<f32, acc>, !pto.ptr<f16, ub>, i64, i64, i64, i64, i64,
+          f32, !pto.ptr<f32, scaling>, i64, i64, i64
 
-      pto.acc_store_gm %l0c, %out_gm_scalar_gm, %c40_i64, %c64_i64, %c48_i64, %c64_i64,
-        %c0_i64, %c0_i64,
+      pto.acc_store_gm %l0c, %out_gm_scalar_gm, %c40_i64, %c64_i64, %c48_i64, %c64_i64, %c0_i64, %c0_i64,
         pre_quant(%c1_f32, mode = qf322f16_pre_scalar),
         pre_relu(%c025_f32, mode = scalar_relu),
         nz2nd,
         loop3(%c1_i64, %c49152_i64, %c2560_i64)
         : !pto.ptr<f32, acc>, !pto.ptr<f16, gm>, i64, i64, i64, i64, i64, i64,
           f32, f32, i64, i64, i64
-      pto.acc_store_gm %l0c, %out_gm_vector_gm, %c40_i64, %c64_i64, %c48_i64, %c64_i64,
-        %c0_i64, %c0_i64,
+      pto.acc_store_gm %l0c, %out_gm_vector_gm, %c40_i64, %c64_i64, %c48_i64, %c64_i64, %c0_i64, %c0_i64,
         pre_quant(%c1_f32, mode = qf322f16_pre_scalar),
         pre_relu(%fb_relu, mode = vector_relu),
         nz2nd,
         loop3(%c1_i64, %c49152_i64, %c2560_i64)
         : !pto.ptr<f32, acc>, !pto.ptr<f16, gm>, i64, i64, i64, i64, i64, i64,
-          f32, !pto.ptr<ui64, scaling>, i64, i64, i64
+          f32, !pto.ptr<f32, scaling>, i64, i64, i64
 
       pto.acc_store %l0c, %l1_scalar, %c40_i64, %c64_i64, %c48_i64, %c64_i64,
         pre_quant(%c1_f32, mode = qf322f16_pre_scalar),
@@ -153,7 +149,7 @@ module attributes {pto.target_arch = "a5"} {
         nz2nd,
         loop3(%c1_i64, %c49152_i64, %c2560_i64)
         : !pto.ptr<f32, acc>, !pto.ptr<f16, mat>, i64, i64, i64, i64,
-          f32, !pto.ptr<ui64, scaling>, i64, i64, i64
+          f32, !pto.ptr<f32, scaling>, i64, i64, i64
 
       pto.set_flag["PIPE_FIX", "PIPE_MTE1", "EVENT_ID0"]
       pto.wait_flag["PIPE_FIX", "PIPE_MTE1", "EVENT_ID0"]

@@ -42,13 +42,12 @@ def PTO_BufferType : Type<
   "pointer-like buffer type">;
 def PTO_ScalingPtrType : Type<
   CPred<"::llvm::isa<::mlir::pto::PtrType>($_self) && "
-        "::llvm::cast<::mlir::pto::PtrType>($_self).getElementType().isUnsignedInteger(64) && "
         "::llvm::cast<::mlir::pto::PtrType>($_self).getMemorySpace().getAddressSpace() == ::mlir::pto::AddressSpace::SCALING">,
-  "scaling !pto.ptr<ui64> type">;
+  "scaling pointer type">;
 def PTO_BufferLikeType : AnyTypeOf<[AnyMemRef, PTO_BufferType],
                                     "memref or pointer-like buffer type">;
 def PTO_AccStorePayloadType : AnyTypeOf<[AnySignlessInteger, AnyFloat, PTO_ScalingPtrType],
-                                        "signless integer, float scalar, or scaling !pto.ptr<ui64>">;
+                                        "signless integer, float scalar, or scaling pointer">;
 def PTO_AccStoreClipPayloadType : AnyTypeOf<[AnyInteger, AnyFloat],
                                             "integer or float clip scalar">;
 
@@ -2191,7 +2190,7 @@ def PTO_AccStoreOp : PTO_Op<"acc_store", [
     OptionalAttr<PTO_ReluPreModeAttr>:$pre_relu_mode,
     OptionalAttr<PTO_AccStoreAtomicTypeAttr>:$atomic_type,
     OptionalAttr<PTO_AccStoreAtomicOpAttr>:$atomic_op,
-    OptionalAttr<UnitAttr>:$sat
+    OptionalAttr<PTO_AccStoreSatModeAttr>:$sat_mode
   );
 
   let results = (outs);
@@ -2227,7 +2226,7 @@ def PTO_AccStoreGmOp : PTO_Op<"acc_store_gm", [
     OptionalAttr<PTO_ReluPreModeAttr>:$pre_relu_mode,
     OptionalAttr<PTO_AccStoreAtomicTypeAttr>:$atomic_type,
     OptionalAttr<PTO_AccStoreAtomicOpAttr>:$atomic_op,
-    OptionalAttr<UnitAttr>:$sat
+    OptionalAttr<PTO_AccStoreSatModeAttr>:$sat_mode
   );
 
   let results = (outs);
@@ -2250,18 +2249,18 @@ def PTO_AccStoreUbOp : PTO_Op<"acc_store_ub", [
     Optional<PTO_AccStorePayloadType>:$pre_quant,
     Optional<PTO_AccStorePayloadType>:$pre_relu,
     Optional<PTO_AccStoreClipPayloadType>:$clip_value,
-    I64:$dual_dst_mode,
-    I64:$sub_blockid,
+    Optional<I64>:$sub_blockid,
     Optional<I64>:$split,
     Optional<I64>:$loop0_src_stride,
     Optional<I64>:$loop3_count,
     Optional<I64>:$loop3_src_stride,
     Optional<I64>:$loop3_dst_stride,
+    PTO_AccStoreUbDstModeAttr:$dst_mode,
     OptionalAttr<PTO_AccStoreModeAttr>:$mode,
     OptionalAttr<PTO_UnitFlagCtrlAttr>:$unit_flag,
     OptionalAttr<PTO_AccStoreQuantPreModeAttr>:$pre_quant_mode,
     OptionalAttr<PTO_ReluPreModeAttr>:$pre_relu_mode,
-    OptionalAttr<UnitAttr>:$sat
+    OptionalAttr<PTO_AccStoreSatModeAttr>:$sat_mode
   );
 
   let results = (outs);

@@ -11,7 +11,7 @@ pto.acc_store %src, %dst, %m, %n, %src_stride, %dst_stride,
               pre_relu(%alpha_or_fb_addr, mode = ..., clip = %clip_value ?)?,
               nz2nd? | nz2dn(%loop0_src_stride)? | nz2nz(%split)?,
               loop3(%count, %src_stride, %dst_stride)?,
-              sat?
+              (sat | nosat)?
 ```
 
 其中：
@@ -61,9 +61,12 @@ pto.acc_store %src, %dst, %m, %n, %src_stride, %dst_stride,
 - `loop3(%count, %src_stride, %dst_stride)?`
   - 这三个参数都必填
   - 无额外可选子参数
-- `sat?`
+- `(sat | nosat)?`
   - 可选 flag
-  - 不写表示不显式配置饱和控制；写 `sat` 表示选择饱和行为
+  - 不写表示不显式配置饱和控制，沿用进入 op 前的状态
+  - 写 `sat` 表示本 op 内选择饱和行为
+  - 写 `nosat` 表示本 op 内选择非饱和行为
+  - `sat` 和 `nosat` 互斥
 - `atomic(type = ..., op = ...)?`
   - 仅 `acc_store_gm` 支持
   - `type` 必填，可选值：`f32`、`f16`、`s16`、`s32`、`s8`、`bf16`
@@ -81,7 +84,7 @@ pto.acc_store %src, %dst, %m, %n, %src_stride, %dst_stride,
 - `nz2dn(%loop0_src_stride)`
 - `nz2nz(%split)?`
 - `loop3(...)`
-- `sat`
+- `sat` / `nosat`
 - `atomic(...)`（仅 `acc_store_gm`）
 
 其中：
@@ -93,7 +96,7 @@ pto.acc_store %src, %dst, %m, %n, %src_stride, %dst_stride,
 - `pre_relu(..., clip = %clip_value)` 的 `clip` 子句走 `SPR.FIX_CLIP_RELU`
 - `unit_flag` 不走 FB1
 - `split` 不走 FB1
-- `sat` 走 `SPR.CTRL`
+- `sat` / `nosat` 走 `SPR.CTRL`
 - `atomic` 仅在 `acc_store_gm` 上走 `SPR.CTRL`
 - `post-stage`、`element-wise`、`LoopEnhance` 相关扩展不纳入本版接口
 
@@ -114,7 +117,7 @@ pto.acc_store %src, %dst, %m, %n, %src_stride, %dst_stride,
 - `nz2nz(%split)?` 映射到 `X_t[42] / SPLIT_EN`
 - `nz2dn(%loop0_src_stride)` 映射到 `CHANNEL_PARA[63:48]`
 - `loop3(...)` 映射到 `SPR.LOOP3_PARA`
-- `sat?` 映射到 `SPR.CTRL[48] / ctrl_sat_ctrl`
+- `sat` / `nosat` 映射到 `SPR.CTRL[48] / ctrl_sat_ctrl`
 - `atomic(type = ..., op = ...)?` 仅对 `acc_store_gm` 有效，映射到 `SPR.CTRL[8:6] / ctrl_atomic_en` 和 `SPR.CTRL[10:9] / ctrl_atomic_op`
 
 ## 5. Keyword
@@ -187,9 +190,10 @@ pto.acc_store %src, %dst, %m, %n, %src_stride, %dst_stride,
   - `add` -> `2'b00`
   - `max` -> `2'b01`
   - `min` -> `2'b10`
-- `sat`
+- `sat` / `nosat`
   - absent -> no explicit `CTRL[48]` override
-  - present -> `CTRL[48] = 1'b0`
+  - `sat` -> `CTRL[48] = 1'b0`
+  - `nosat` -> `CTRL[48] = 1'b1`
 
 ## 6. 说明
 

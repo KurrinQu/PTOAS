@@ -3,14 +3,14 @@
 
 module attributes {"pto.target_arch" = "a5", pto.kernel_kind = #pto.kernel_kind<cube>} {
   func.func @fp_load_probe(%src: !pto.ptr<f32, mat>,
-                           %dst: !pto.ptr<ui64, scaling>) {
+                           %dst: !pto.ptr<f32, scaling>) {
     %c0_i64 = arith.constant 0 : i64
     %c1_i64 = arith.constant 1 : i64
     %c2_i64 = arith.constant 2 : i64
 
     pto.fp_load %src, %dst, %c2_i64
       nburst(%c1_i64, %c0_i64, %c0_i64)
-      : !pto.ptr<f32, mat>, !pto.ptr<ui64, scaling>, i64, i64, i64, i64
+      : !pto.ptr<f32, mat>, !pto.ptr<f32, scaling>, i64, i64, i64, i64
     return
   }
 }
