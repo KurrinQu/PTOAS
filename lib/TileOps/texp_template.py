@@ -9,16 +9,27 @@
 """TileLang DSL template for pto.texp"""
 
 import tilelang_dsl as pto
+from exp_hp import _tl_exp_precision
 
-# TODO: Add implementation for HIGH_PRECISION type
-@pto.vkernel(
-    target="a5",
-    op="pto.texp"
-)
-def template_texp(src: pto.Tile, dst: pto.Tile):
+@pto.inline_proc
+def template_texp_hp_impl(src: pto.Tile, dst: pto.Tile):
     dtype = dst.element_type
     valid_rows, valid_cols = dst.valid_shape
+    
+    for row in range(0, valid_rows, 1):
+        remained = valid_cols
+        for col in range(0, valid_cols, pto.get_lanes(dtype)):
+            mask, remained = pto.make_mask(dtype, remained)
+            vinput = pto.vlds(src[row, col:])
+            result = _tl_exp_precision(vinput, mask, dtype)
+            pto.vsts(result, dst[row, col:], mask)
+    return
 
+@pto.inline_proc
+def template_texp_impl(src: pto.Tile, dst: pto.Tile):
+    dtype = dst.element_type
+    valid_rows, valid_cols = dst.valid_shape
+    
     for row in range(0, valid_rows, 1):
         remained = valid_cols
         for col in range(0, valid_cols, pto.get_lanes(dtype)):
@@ -26,4 +37,16 @@ def template_texp(src: pto.Tile, dst: pto.Tile):
             vinput = pto.vlds(src[row, col:])
             result = pto.vexp(vinput, mask)
             pto.vsts(result, dst[row, col:], mask)
+    return
+
+@pto.vkernel(
+    target="a5",
+    op="pto.texp"
+)
+def template_texp(src: pto.Tile, dst: pto.Tile):
+    hp_mode = pto.get_op_attr("precision_mode")
+    if pto.constexpr(hp_mode == "HIGH_PRECISION"):
+        template_texp_hp_impl(src, dst)
+    else:
+        template_texp_impl(src, dst)
     return
