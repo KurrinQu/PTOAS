@@ -1,4 +1,4 @@
-// RUN: ptoas --pto-arch=a3 %s 2>&1 | FileCheck %s --check-prefix=A3
+// RUN: ptoas --pto-arch=a3 --pto-level=level3 %s 2>&1 | FileCheck %s --check-prefix=A3
 //
 // Six-way pivot of the TMATMUL / TMATMUL_ACC accumulation-phase template
 // argument matrix:
