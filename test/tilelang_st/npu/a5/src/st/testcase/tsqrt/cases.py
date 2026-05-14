@@ -30,6 +30,7 @@ CASES = [
         "shape": (16, 64),
         "valid_shape": (16, 64),
         "eps": 1e-6,
+        "high_precision": False,
     },
     {
         "name": "f32_32x32",
@@ -37,6 +38,7 @@ CASES = [
         "shape": (32, 32),
         "valid_shape": (32, 32),
         "eps": 1e-6,
+        "high_precision": False,
     },
     {
         "name": "f16_16x64",
@@ -44,6 +46,7 @@ CASES = [
         "shape": (16, 64),
         "valid_shape": (16, 64),
         "eps": 1e-3,
+        "high_precision": False,
     },
     {
         "name": "f16_32x32",
@@ -51,5 +54,22 @@ CASES = [
         "shape": (32, 32),
         "valid_shape": (32, 32),
         "eps": 1e-3,
+        "high_precision": False,
+    },
+    {
+        "name": "f32_64x64_hp1",
+        "dtype": np.float32,
+        "shape": (64, 64),
+        "valid_shape": (64, 64),
+        "eps": 1e-7,
+        "high_precision": True,
+    },
+    {
+        "name": "f16_64x64_hp2",
+        "dtype": np.float16,
+        "shape": (64, 64),
+        "valid_shape": (64, 64),
+        "eps": 1e-7,
+        "high_precision": True,
     },
 ]
