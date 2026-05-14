@@ -21,13 +21,16 @@ for case in CASES:
     dtype = case["dtype"]
     shape = case["shape"]
     valid_shape = case["valid_shape"]
+    high_precision = case.get("high_precision", False)
 
-    # Generate positive random values for sqrt
-    input = np.random.uniform(0.1, 100.0, size=shape).astype(dtype)
+    if high_precision:
+        input = np.random.uniform(0.001, 1.0, size=shape).astype(dtype)
+    else:
+        input = np.random.uniform(0.1, 100.0, size=shape).astype(dtype)
 
     golden = np.zeros(shape, dtype=dtype)
     vr, vc = valid_shape
     golden[:vr, :vc] = np.sqrt(input[:vr, :vc]).astype(dtype, copy=False)
 
     save_case_data(case["name"], {"input": input, "golden": golden})
-    print(f"[INFO] gen_data: {case['name']} shape={shape} valid_shape={valid_shape} dtype={dtype.__name__}")
+    print(f"[INFO] gen_data: {case['name']} shape={shape} valid_shape={valid_shape} dtype={dtype.__name__} high_precision={high_precision}")

@@ -39,3 +39,17 @@ extern "C" __global__ AICORE void TSQRT_f16_32x32(__gm__ uint16_t *a, __gm__ uin
 void LaunchTSQRT_f16_32x32(void *a, void *b, void *stream) {
     TSQRT_f16_32x32<<<1, nullptr, stream>>>((__gm__ uint16_t *)a, (__gm__ uint16_t *)b);
 }
+
+// Case 4: f32 64x64 hp1
+extern "C" __global__ AICORE void TSQRT_f32_64x64_hp1(__gm__ float *a, __gm__ float *b);
+
+void LaunchTSQRT_f32_64x64_hp1(void *a, void *b, void *stream) {
+    TSQRT_f32_64x64_hp1<<<1, nullptr, stream>>>((__gm__ float *)a, (__gm__ float *)b);
+}
+
+// Case 5: f16 64x64 hp2
+extern "C" __global__ AICORE void TSQRT_f16_64x64_hp2(__gm__ uint16_t *a, __gm__ uint16_t *b);
+
+void LaunchTSQRT_f16_64x64_hp2(void *a, void *b, void *stream) {
+    TSQRT_f16_64x64_hp2<<<1, nullptr, stream>>>((__gm__ uint16_t *)a, (__gm__ uint16_t *)b);
+}
