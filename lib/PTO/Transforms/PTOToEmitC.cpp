@@ -9672,6 +9672,12 @@ struct PTOScatterToEmitC : public OpConversionPattern<pto::TScatterOp> {
   LogicalResult matchAndRewrite(pto::TScatterOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
+    const bool hasMaskPattern = static_cast<bool>(op.getMaskPatternAttr());
+    const bool hasIndexes = static_cast<bool>(op.getIndexes());
+    if (hasMaskPattern == hasIndexes) {
+      return rewriter.notifyMatchFailure(
+          op, "expected exactly one of indexes operand or maskPattern attribute");
+    }
 
     Value src = peelUnrealized(adaptor.getSrc());
     Value dst = peelUnrealized(adaptor.getDst());

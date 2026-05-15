@@ -8669,6 +8669,13 @@ mlir::LogicalResult mlir::pto::TRsqrtOp::verify() {
 
 
 mlir::LogicalResult mlir::pto::TScatterOp::verify() {
+  const bool hasIndexes = static_cast<bool>(getIndexes());
+  const bool hasMaskPattern = static_cast<bool>(getMaskPatternAttr());
+  if (hasIndexes == hasMaskPattern) {
+    return emitOpError(
+        "expects exactly one of indexes operand or maskPattern attribute");
+  }
+
   auto isAllowedDataElem = [&](mlir::Type t) -> bool {
     if (t.isF16() || t.isF32() || t.isBF16()) return true;
     if (auto it = mlir::dyn_cast<mlir::IntegerType>(t))
@@ -8765,12 +8772,12 @@ mlir::LogicalResult mlir::pto::TScatterOp::verify() {
   };
 
   auto verifyA2A3 = [&]() -> LogicalResult {
-    if (getMaskPatternAttr())
+    if (hasMaskPattern)
       return verifyMaskForm();
     return verifyIndexedForm();
   };
   auto verifyA5 = [&]() -> LogicalResult {
-    if (getMaskPatternAttr())
+    if (hasMaskPattern)
       return emitOpError("mask-pattern tscatter is not supported on A5 yet");
     return verifyIndexedForm();
   };
