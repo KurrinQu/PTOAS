@@ -54,6 +54,12 @@ constexpr int64_t kA3VecLocalMemBits = 1572864;
 constexpr int64_t kMatLocalMemBits = 4194304;
 constexpr int64_t kLocalMemAlignmentBytes = 256;
 
+static bool isVecScopeIslandOp(Operation *op) {
+  return isa<pto::VecScopeOp, pto::StrictVecScopeOp>(op) ||
+         op->getParentOfType<pto::VecScopeOp>() ||
+         op->getParentOfType<pto::StrictVecScopeOp>();
+}
+
 struct LocalMemSpec {
   int64_t capacityBits = 0;
   int64_t alignBytes = 1;
@@ -640,6 +646,14 @@ LogicalResult
 MemLivenessAnalysis::CheckIfUnknownOpTouchBuffer(Operation *op) const {
   if (isSkippableOp(op) || isGlobalWorkSpaceMemPlan()) {
     // This scene can be ignored.
+    return success();
+  }
+  if (isVecScopeIslandOp(op)) {
+    // Mixed tile-domain + manual VPTO kernels may reach PlanMemory before the
+    // dedicated VPTO backend pipeline runs. The buffers touched inside a
+    // vecscope island are already modeled by the surrounding alloc/tload/tstore
+    // operations, so PlanMemory should not reject the VPTO ops themselves as
+    // unknown local-buffer users.
     return success();
   }
   if (isOpTouchLocalBuffer(op)) {

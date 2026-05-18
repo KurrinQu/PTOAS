@@ -127,6 +127,11 @@ static void lookupValidDims(Value v, Value &vRow, Value &vCol) {
   vCol = Value();
 }
 
+static bool isNestedInVecScope(Operation *op) {
+  return op->getParentOfType<mlir::pto::VecScopeOp>() ||
+         op->getParentOfType<mlir::pto::StrictVecScopeOp>();
+}
+
 // =============================================================================
 // Helper Functions for Layout Normalization
 // =============================================================================
@@ -885,7 +890,11 @@ static void markForceDynamicValidShape(Operation *op, bool force,
   }
 
   SmallVector<Operation *, 8> addPtrs;
-  func.walk([&](mlir::pto::AddPtrOp op) { addPtrs.push_back(op.getOperation()); });
+  func.walk([&](mlir::pto::AddPtrOp op) {
+    if (isNestedInVecScope(op))
+      return;
+    addPtrs.push_back(op.getOperation());
+  });
   bool changed = true;
   while (changed) {
     changed = false;
@@ -1696,7 +1705,11 @@ struct PTOViewToMemrefPass
 
       // Clean up: addptr should be folded into make_tensor_view.
       SmallVector<Operation *, 8> addPtrs;
-      func.walk([&](mlir::pto::AddPtrOp op) { addPtrs.push_back(op.getOperation()); });
+      func.walk([&](mlir::pto::AddPtrOp op) {
+        if (isNestedInVecScope(op))
+          return;
+        addPtrs.push_back(op.getOperation());
+      });
       bool changed = true;
       while (changed) {
         changed = false;
