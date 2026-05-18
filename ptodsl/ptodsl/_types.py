@@ -16,13 +16,14 @@ Context exists – they only resolve to concrete ``mlir.ir.Type`` objects when
         ...
 
 where the annotation is evaluated at *import* time (no active context), and
-the actual type is materialised later by the ``@pto.to_ir`` decorator.
+the actual type is materialised later by the ``@pto.jit`` decorator.
 """
 
 from ._bootstrap import make_context  # ensure MLIR is on sys.path
 
 from mlir.dialects import pto as _pto
 from mlir.ir import (
+    BF16Type,
     F16Type,
     F32Type,
     IndexType,
@@ -37,10 +38,20 @@ _ADDR_SPACE = {
     "gm":  _pto.AddressSpace.GM,
     "vec": _pto.AddressSpace.VEC,
     "mat": _pto.AddressSpace.MAT,
+    "left": _pto.AddressSpace.LEFT,
+    "right": _pto.AddressSpace.RIGHT,
+    "acc": _pto.AddressSpace.ACC,
+    "bias": _pto.AddressSpace.BIAS,
+    "scaling": _pto.AddressSpace.SCALING,
     "GM":  _pto.AddressSpace.GM,
     "UB":  _pto.AddressSpace.VEC,
     "VEC": _pto.AddressSpace.VEC,
     "MAT": _pto.AddressSpace.MAT,
+    "LEFT": _pto.AddressSpace.LEFT,
+    "RIGHT": _pto.AddressSpace.RIGHT,
+    "ACC": _pto.AddressSpace.ACC,
+    "BIAS": _pto.AddressSpace.BIAS,
+    "SCALING": _pto.AddressSpace.SCALING,
 }
 
 
@@ -66,14 +77,26 @@ class _PtrDescriptor(_DType):
 
     def resolve(self) -> Type:
         elem = _resolve(self._elem)
-        space_enum = _ADDR_SPACE.get(self._space)
+        space_enum = _normalize_address_space(self._space)
         if space_enum is None:
             raise ValueError(
                 f"Unknown address space '{self._space}'; "
                 f"known: {list(_ADDR_SPACE)}"
             )
         space_attr = _pto.AddressSpaceAttr.get(space_enum)
-        return _pto.PtrType.get(elem, memory_space=space_attr)
+        try:
+            return _pto.PtrType.get(elem, memory_space=space_attr)
+        except TypeError:
+            ptr_get_impl = getattr(_pto, "_ptr_type_get_impl", None)
+            if ptr_get_impl is None:
+                raise
+            if space_enum != _pto.AddressSpace.GM:
+                raise TypeError(
+                    "The current PTO Python bindings only expose the default-GM "
+                    "PtrType builder. Non-GM pointer construction is not "
+                    "available through ptodsl._types.ptr(...) yet."
+                )
+            return ptr_get_impl(elem)
 
     def __repr__(self):
         return f"<pto.ptr {self._elem} {self._space}>"
@@ -86,10 +109,33 @@ class _VRegDescriptor(_DType):
 
     def resolve(self) -> Type:
         elem = _resolve(self._elem)
-        return Type.parse(f"!pto.vreg<{self._lanes}x{elem}>")
+        vreg_type_cls = getattr(_pto, "VRegType", None)
+        if vreg_type_cls is None:
+            raise TypeError(
+                "The current PTO Python bindings do not expose VRegType. "
+                "Rebuild the PTO Python extension before using pto.vreg_type(...)."
+            )
+        return vreg_type_cls.get(self._lanes, elem)
 
     def __repr__(self):
         return f"<pto.vreg {self._lanes}x{self._elem}>"
+
+
+class _MaskDescriptor(_DType):
+    def __init__(self, bits: str):
+        self._bits = bits
+
+    def resolve(self) -> Type:
+        mask_type_cls = getattr(_pto, "MaskType", None)
+        if mask_type_cls is None:
+            raise TypeError(
+                "The current PTO Python bindings do not expose MaskType. "
+                "Rebuild the PTO Python extension before using pto.mask_type(...)."
+            )
+        return mask_type_cls.get(self._bits)
+
+    def __repr__(self):
+        return f"<pto.mask {self._bits}>"
 
 
 def _resolve(dtype) -> Type:
@@ -99,10 +145,20 @@ def _resolve(dtype) -> Type:
     return dtype  # already an mlir.ir.Type
 
 
+def _normalize_address_space(space):
+    if isinstance(space, str):
+        return _ADDR_SPACE.get(space)
+    if isinstance(space, _pto.AddressSpace):
+        return space
+    return None
+
+
 # ── Scalar dtype singletons ───────────────────────────────────────────────────
 
 float32 = _DType(F32Type.get)
 float16 = _DType(F16Type.get)
+bf16    = _DType(BF16Type.get)
+int1    = _DType(lambda: IntegerType.get_signless(1))
 int8    = _DType(lambda: IntegerType.get_signless(8))
 int16   = _DType(lambda: IntegerType.get_signless(16))
 int32   = _DType(lambda: IntegerType.get_signless(32))
@@ -122,9 +178,9 @@ def vreg_type(lanes: int, elem) -> _VRegDescriptor:
     return _VRegDescriptor(lanes, elem)
 
 
-def mask_type(bits: str = "b32") -> Type:
-    """Return ``!pto.mask<bits>`` (b8 | b16 | b32).  Requires active context."""
-    return Type.parse(f"!pto.mask<{bits}>")
+def mask_type(bits: str = "b32") -> _MaskDescriptor:
+    """Return a lazy descriptor for ``!pto.mask<bits>``."""
+    return _MaskDescriptor(bits)
 
 
 def tile_buf_type(shape, dtype, valid_shape, *,
@@ -142,7 +198,7 @@ def tile_buf_type(shape, dtype, valid_shape, *,
     Requires an active MLIR context.
     """
     elem = _resolve(dtype)
-    space_enum = _ADDR_SPACE.get(address_space)
+    space_enum = _normalize_address_space(address_space)
     if space_enum is None:
         raise ValueError(
             f"Unknown address_space '{address_space}'; known: {list(_ADDR_SPACE)}"
@@ -170,7 +226,7 @@ def part_tensor_view_type(rank: int, elem) -> Type:
 
 __all__ = [
     "_DType", "_resolve",
-    "float32", "float16", "int8", "int16", "int32", "int64", "index",
+    "float32", "float16", "bf16", "int1", "int8", "int16", "int32", "int64", "index",
     "ptr", "vreg_type", "mask_type",
     "tile_buf_type", "tensor_view_type", "part_tensor_view_type",
 ]

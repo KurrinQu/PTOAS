@@ -6,7 +6,7 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 """
-Experimental `ptodsl.vpto` POC for TileLang-style tile templates.
+Tile-template tracing implementation for PTODSL tile templates.
 
 This module keeps the authored Python body close to TileLang-style templates,
 but traces execution directly into MLIR Python bindings instead of going through
@@ -24,9 +24,9 @@ Current scope:
 - ``vadd(lhs, rhs, mask)``
 - ``vsts(vec, tile[row, col:], mask)``
 
-The goal of this POC is to validate a tracing-oriented VPTO frontend shape that
-already builds real MLIR Python objects, while staying intentionally narrow and
-readable for `tadd_template.py`.
+The current goal is to keep a narrow tile-template tracing path that already
+builds real MLIR Python objects, while keeping its scope explicit and aligned
+with the main PTODSL tracing runtime.
 """
 
 from __future__ import annotations
@@ -34,9 +34,15 @@ from __future__ import annotations
 import inspect
 from dataclasses import dataclass
 from pathlib import Path
-
 from . import scalar as _scalar
-from ._bootstrap import make_context
+from ._surface_types import Tile
+from ._tracing import (
+    KernelModuleSpec,
+    ModuleArtifact,
+    ModuleStyle,
+    TracingRuntime,
+    require_active_runtime,
+)
 from ._types import (
     _resolve,
     float16 as _float16,
@@ -52,11 +58,8 @@ from ._types import (
     vreg_type as _vreg_type,
 )
 
-from mlir.dialects import arith, func, pto as _pto, scf
-from mlir.ir import Attribute, InsertionPoint, IntegerType, Location, Module, Operation, StringAttr, Type
-
-
-_ACTIVE_TRACE = None
+from mlir.dialects import arith, pto as _pto, scf
+from mlir.ir import InsertionPoint, IntegerType, Type
 
 
 @dataclass(frozen=True)
@@ -76,10 +79,6 @@ bf16 = ScalarType("bf16", lanes=128, mask_bits=16, bytewidth=2)
 i32 = ScalarType("i32", lanes=64, mask_bits=32, bytewidth=4)
 i16 = ScalarType("i16", lanes=128, mask_bits=16, bytewidth=2)
 i8 = ScalarType("i8", lanes=256, mask_bits=8, bytewidth=1)
-
-
-class Tile:
-    """Tile annotation marker for the tracing POC."""
 
 
 @dataclass(frozen=True)
@@ -182,13 +181,13 @@ class _TileProxy:
             or not _is_index_like(key[0])
             or not isinstance(key[1], slice)
         ):
-            raise TypeError("vpto POC only supports tile[row, col:] indexing")
+            raise TypeError("tile-template tracing only supports tile[row, col:] indexing")
         row, col_slice = key
         if col_slice.stop is not None or col_slice.step is not None:
-            raise TypeError("vpto POC only supports tile[row, col:] slices")
+            raise TypeError("tile-template tracing only supports tile[row, col:] slices")
         col = 0 if col_slice.start is None else col_slice.start
         if not _is_index_like(col):
-            raise TypeError("vpto POC only supports integer/index column offsets")
+            raise TypeError("tile-template tracing only supports integer/index column offsets")
         _validate_static_bound(row, self._spec.shape[0], "row")
         _validate_static_bound(col, self._spec.shape[1], "column")
         return _TileSlice(self, row=row, col=col)
@@ -282,8 +281,16 @@ class _ForCM:
         self._trace._exit_for(self._handle, exc_type, exc, tb)
 
 
-class _TraceBuilder:
-    def __init__(self, descriptor: "TracingKernelDescriptor", tile_specs: dict[str, TileSpec]):
+class _TraceBuilder(TracingRuntime):
+    def __init__(self, descriptor: "TileTemplate", tile_specs: dict[str, TileSpec]):
+        super().__init__(
+            KernelModuleSpec(
+                function_name=descriptor.name,
+                target_arch=descriptor.target,
+                kernel_kind="vector",
+                module_style=ModuleStyle.NESTED,
+            )
+        )
         self.descriptor = descriptor
         self.tile_specs = tile_specs
         self._const_cache: dict[tuple[int, str], _Value] = {}
@@ -291,63 +298,41 @@ class _TraceBuilder:
         self._row_offset_cache: dict[tuple[str, str], _Value] = {}
         self._loop_stack: list[dict] = []
         self._inside_vecscope = False
-
-    def build_module(self):
-        global _ACTIVE_TRACE
-        if _ACTIVE_TRACE is not None:
-            raise RuntimeError("nested vpto builds are not supported")
-
+        self._ordered_specs: list[tuple[str, TileSpec]] = []
         signature = inspect.signature(self.descriptor.py_fn)
-        ctx = make_context()
-        with ctx, Location.unknown():
-            arg_types = []
-            ordered_specs = []
-            for param_name, param in signature.parameters.items():
-                if not _is_tile_annotation(param.annotation):
-                    raise TypeError(
-                        "vpto POC currently only supports Tile parameters; "
-                        f"parameter {param_name!r} uses {param.annotation!r}"
-                    )
-                spec = self.tile_specs.get(param_name)
-                if spec is None:
-                    raise ValueError(f"missing specialization for Tile parameter {param_name!r}")
-                ordered_specs.append((param_name, spec))
-                arg_types.append(spec.mlir_type())
+        self._signature_parameters = tuple(signature.parameters.items())
 
-            module = Module.create()
-            module.operation.attributes["pto.target_arch"] = StringAttr.get(self.descriptor.target)
+    def compute_argument_types(self):
+        arg_types = []
+        ordered_specs = []
+        for param_name, param in self._signature_parameters:
+            if not _is_tile_annotation(param.annotation):
+                raise TypeError(
+                    "tile-template tracing currently only supports Tile parameters; "
+                    f"parameter {param_name!r} uses {param.annotation!r}"
+                )
+            spec = self.tile_specs.get(param_name)
+            if spec is None:
+                raise ValueError(f"missing specialization for Tile parameter {param_name!r}")
+            ordered_specs.append((param_name, spec))
+            arg_types.append(spec.mlir_type())
+        self._ordered_specs = ordered_specs
+        return arg_types
 
-            with InsertionPoint(module.body):
-                inner_op = Operation.create("builtin.module", regions=1)
-                inner_op.attributes["pto.target_arch"] = StringAttr.get(self.descriptor.target)
-                inner_op.attributes["pto.kernel_kind"] = Attribute.parse("#pto.kernel_kind<vector>")
-                inner_body = inner_op.regions[0].blocks.append()
+    def bind_entry_arguments(self, entry_arguments):
+        args = []
+        for arg_value, (_, spec) in zip(entry_arguments, self._ordered_specs):
+            args.append(_TileProxy(self, arg_value, spec))
+        return tuple(args)
 
-                with InsertionPoint(inner_body):
-                    fn_ty = func.FunctionType.get(arg_types, [])
-                    ir_fn = func.FuncOp(self.descriptor.name, fn_ty)
+    def trace_entry(self, *args):
+        self.descriptor.py_fn(*args)
 
-            entry = ir_fn.add_entry_block()
-            with InsertionPoint(entry):
-                args = []
-                for arg_value, (_, spec) in zip(entry.arguments, ordered_specs):
-                    args.append(_TileProxy(self, arg_value, spec))
-
-                _ACTIVE_TRACE = self
-                try:
-                    self.descriptor.py_fn(*args)
-                finally:
-                    _ACTIVE_TRACE = None
-
-                if self._inside_vecscope:
-                    raise RuntimeError("vpto kernel exited with an open vecscope block")
-                if self._loop_stack:
-                    raise RuntimeError("vpto kernel exited with an open scf.for block")
-
-                func.ReturnOp([])
-
-            module.operation.verify()
-            return module
+    def validate_trace_state(self):
+        if self._inside_vecscope:
+            raise RuntimeError("tile-template trace exited with an open vecscope block")
+        if self._loop_stack:
+            raise RuntimeError("tile-template trace exited with an open scf.for block")
 
     def vecscope(self) -> _VecScopeCM:
         return _VecScopeCM(self)
@@ -368,17 +353,19 @@ class _TraceBuilder:
 
     def _yield_loop_values(self, vals, *, surface: str, from_named_state: bool):
         if not self._loop_stack:
-            raise RuntimeError(f"{surface}(...) may only be used inside a vpto for_ block")
+            raise RuntimeError(f"{surface}(...) may only be used inside a tile-template for_ block")
         frame = self._loop_stack[-1]
         if frame["kind"] != "for":
-            raise RuntimeError(f"{surface}(...) may only be used inside a vpto for_ block")
+            raise RuntimeError(f"{surface}(...) may only be used inside a tile-template for_ block")
         if frame["state_names"] and not from_named_state:
             raise RuntimeError(
-                f"{surface}(...) is ambiguous for vpto for_ with named state; "
+                f"{surface}(...) is ambiguous for tile-template for_ with named state; "
                 "use loop.yield_state(...) instead"
             )
         if frame["yielded"]:
-            raise RuntimeError(f"{surface}(...) may only be emitted once per vpto for_ block")
+            raise RuntimeError(
+                f"{surface}(...) may only be emitted once per tile-template for_ block"
+            )
         if len(vals) != len(frame["iter_args"]):
             raise RuntimeError(
                 f"{surface}(...) expected {len(frame['iter_args'])} value(s), got {len(vals)}"
@@ -428,7 +415,9 @@ class _TraceBuilder:
 
     def _enter_vecscope(self):
         if self._inside_vecscope:
-            raise RuntimeError("nested vpto vecscope blocks are not supported in this POC")
+            raise RuntimeError(
+                "nested tile-template vecscope blocks are not supported in the current implementation"
+            )
         vecscope_op = _pto.VecScopeOp()
         vecscope_block = vecscope_op.body.blocks.append()
         vecscope_ip = InsertionPoint(vecscope_block)
@@ -446,7 +435,7 @@ class _TraceBuilder:
             raise RuntimeError("vecscope exit without matching enter")
         frame = self._loop_stack.pop()
         if frame["kind"] != "vecscope":
-            raise RuntimeError("vpto vecscope stack corruption detected")
+            raise RuntimeError("tile-template vecscope stack corruption detected")
         frame["ip"].__exit__(exc_type, exc, tb)
         self._inside_vecscope = False
 
@@ -488,14 +477,14 @@ class _TraceBuilder:
             raise RuntimeError("for_ exit without a loop handle")
         frame = self._loop_stack.pop()
         if frame["kind"] != "for" or frame["handle"] is not handle:
-            raise RuntimeError("vpto for_ stack corruption detected")
+            raise RuntimeError("tile-template for_ stack corruption detected")
         if exc_type is None:
             if frame["iter_args"] and not frame["yielded"]:
                 if frame["state_names"]:
                     raise RuntimeError(
-                        "vpto for_ with named state requires explicit loop.yield_state(...)"
+                        "tile-template for_ with named state requires explicit loop.yield_state(...)"
                     )
-                raise RuntimeError("vpto for_ with iter_args requires explicit yield_(...)")
+                raise RuntimeError("tile-template for_ with iter_args requires explicit yield_(...)")
             if not frame["iter_args"]:
                 scf.YieldOp([])
         frame["ip"].__exit__(exc_type, exc, tb)
@@ -527,7 +516,7 @@ class _TraceBuilder:
             return self.index_const(value)
         if hasattr(value, "type"):
             return _Value(value)
-        raise TypeError(f"unsupported vpto scalar value {value!r}")
+        raise TypeError(f"unsupported tile-template scalar value {value!r}")
 
     def _coerce_like(self, value, ty: str) -> _Value:
         coerced = self._coerce_value(value)
@@ -537,46 +526,35 @@ class _TraceBuilder:
 
 
 @dataclass(frozen=True)
-class TracingKernelDescriptor:
+class TileTemplate:
     py_fn: object
     target: str
     op: str
     name: str
     source_label: str
 
-    def specialize(self, **tile_specs: TileSpec) -> "MaterializedTracingKernel":
-        return MaterializedTracingKernel(self, tile_specs)
+    def specialize(self, **tile_specs: TileSpec) -> "SpecializedTileTemplate":
+        return SpecializedTileTemplate(self, tile_specs)
 
 
-class MaterializedTracingKernel:
-    def __init__(self, descriptor: TracingKernelDescriptor, tile_specs: dict[str, TileSpec]):
+class SpecializedTileTemplate(ModuleArtifact):
+    def __init__(self, descriptor: TileTemplate, tile_specs: dict[str, TileSpec]):
+        super().__init__(
+            descriptor.name,
+            module_factory=lambda: _TraceBuilder(descriptor, tile_specs).build_module(),
+        )
         self.descriptor = descriptor
         self.tile_specs = tile_specs
-        self._cached_module = None
-
-    def build(self):
-        if self._cached_module is None:
-            self._cached_module = _TraceBuilder(self.descriptor, self.tile_specs).build_module()
-        return self._cached_module
-
-    def mlir_text(self) -> str:
-        return str(self.build())
-
-    def emit(self, path: str | Path) -> None:
-        Path(path).write_text(self.mlir_text(), encoding="utf-8")
-
-    def __str__(self) -> str:
-        return self.mlir_text()
 
 
-def vkernel(*, target: str = "a5", op: str, name: str | None = None):
+def tile_template(*, target: str = "a5", op: str, name: str | None = None):
     if target != "a5":
-        raise ValueError("vpto POC currently only supports target='a5'")
+        raise ValueError("tile-template tracing currently only supports target='a5'")
 
     def decorator(fn):
         source_path = Path(inspect.getsourcefile(fn) or "<unknown>")
         descriptor_name = name or fn.__name__
-        return TracingKernelDescriptor(
+        return TileTemplate(
             py_fn=fn,
             target=target,
             op=op,
@@ -588,36 +566,38 @@ def vkernel(*, target: str = "a5", op: str, name: str | None = None):
 
 
 def vecscope() -> _VecScopeCM:
-    return _require_active_trace("vecscope").vecscope()
+    return require_active_runtime("vecscope", expected_type=_TraceBuilder).vecscope()
 
 
 def for_(start, stop, *, step, iter_args=None, state=None) -> _ForCM:
-    return _require_active_trace("for_").for_(start, stop, step=step, iter_args=iter_args, state=state)
+    return require_active_runtime("for_", expected_type=_TraceBuilder).for_(
+        start, stop, step=step, iter_args=iter_args, state=state
+    )
 
 
 def yield_(*vals):
-    _require_active_trace("yield_").yield_(*vals)
+    require_active_runtime("yield_", expected_type=_TraceBuilder).yield_(*vals)
 
 
 def get_lanes(dtype: ScalarType) -> _Value:
-    return _require_active_trace("get_lanes").index_const(dtype.lanes)
+    return require_active_runtime("get_lanes", expected_type=_TraceBuilder).index_const(dtype.lanes)
 
 
 def scalar_const(value: int, dtype: ScalarType) -> _Value:
-    return _require_active_trace("scalar_const").scalar_const(value, dtype)
+    return require_active_runtime("scalar_const", expected_type=_TraceBuilder).scalar_const(value, dtype)
 
 
 def make_mask(dtype: ScalarType, remained) -> tuple[_MaskValue, _Value]:
-    trace = _require_active_trace("make_mask")
+    trace = require_active_runtime("make_mask", expected_type=_TraceBuilder)
     remained_val = trace._coerce_value(remained)
     expected_scalar_ty = str(_resolve(_scalar_descriptor(_scalar_type_for_mask(dtype))))
     if remained_val.type_text != expected_scalar_ty:
         raise TypeError(
-            f"vpto POC expects make_mask remained to use {expected_scalar_ty}, got {remained_val.type_text}"
+            f"tile-template tracing expects make_mask remained to use {expected_scalar_ty}, got {remained_val.type_text}"
         )
     if dtype.mask_bits not in {8, 16, 32}:
         raise ValueError(f"unsupported mask bit-width {dtype.mask_bits}")
-    mask_ty = _mask_type(f"b{dtype.mask_bits}")
+    mask_ty = _resolve(_mask_type(f"b{dtype.mask_bits}"))
     scalar_ty = IntegerType.get_signless(dtype.mask_bits)
     op_cls = getattr(_pto, f"PltB{dtype.mask_bits}Op", None)
     if op_cls is None:
@@ -631,9 +611,9 @@ def make_mask(dtype: ScalarType, remained) -> tuple[_MaskValue, _Value]:
 
 
 def vlds(tile_slice: _TileSlice) -> _VectorValue:
-    trace = _require_active_trace("vlds")
+    trace = require_active_runtime("vlds", expected_type=_TraceBuilder)
     if not isinstance(tile_slice, _TileSlice):
-        raise TypeError("vpto POC only supports vlds(tile[row, col:])")
+        raise TypeError("tile-template tracing only supports vlds(tile[row, col:])")
     ptr_value = trace.ensure_tile_ptr(tile_slice.tile)
     offset = trace.materialize_linear_offset(tile_slice)
     vector_ty = _resolve(_vreg_type(tile_slice.tile.element_type.lanes, _scalar_descriptor(tile_slice.tile.element_type)))
@@ -643,28 +623,22 @@ def vlds(tile_slice: _TileSlice) -> _VectorValue:
 
 def vadd(lhs: _VectorValue, rhs: _VectorValue, mask: _MaskValue) -> _VectorValue:
     if lhs.dtype != rhs.dtype:
-        raise TypeError("vpto POC expects vadd operands to use the same dtype")
+        raise TypeError("tile-template tracing expects vadd operands to use the same dtype")
     if lhs.dtype != mask.dtype:
-        raise TypeError("vpto POC expects vadd mask dtype to match vector dtype")
+        raise TypeError("tile-template tracing expects vadd mask dtype to match vector dtype")
     result = _pto.VaddOp(lhs.value.type, lhs.value, rhs.value, mask.value).result
     return _VectorValue(result, lhs.dtype)
 
 
 def vsts(vec: _VectorValue, tile_slice: _TileSlice, mask: _MaskValue) -> None:
-    trace = _require_active_trace("vsts")
+    trace = require_active_runtime("vsts", expected_type=_TraceBuilder)
     if vec.dtype != mask.dtype:
-        raise TypeError("vpto POC expects vsts mask dtype to match vector dtype")
+        raise TypeError("tile-template tracing expects vsts mask dtype to match vector dtype")
     if vec.dtype != tile_slice.tile.element_type:
-        raise TypeError("vpto POC expects vsts destination dtype to match vector dtype")
+        raise TypeError("tile-template tracing expects vsts destination dtype to match vector dtype")
     ptr_value = trace.ensure_tile_ptr(tile_slice.tile)
     offset = trace.materialize_linear_offset(tile_slice)
     _pto.VstsOp(vec.value, ptr_value.value, offset.value, mask.value)
-
-
-def _require_active_trace(surface: str) -> _TraceBuilder:
-    if _ACTIVE_TRACE is None:
-        raise RuntimeError(f"{surface}() may only be used while tracing a vpto kernel")
-    return _ACTIVE_TRACE
 
 
 def _is_tile_annotation(annotation) -> bool:
@@ -719,8 +693,8 @@ def _scalar_type_for_mask(dtype: ScalarType) -> ScalarType:
 __all__ = [
     "Tile",
     "TileSpec",
-    "TracingKernelDescriptor",
-    "MaterializedTracingKernel",
+    "TileTemplate",
+    "SpecializedTileTemplate",
     "ScalarType",
     "f32",
     "f16",
@@ -728,7 +702,7 @@ __all__ = [
     "i32",
     "i16",
     "i8",
-    "vkernel",
+    "tile_template",
     "vecscope",
     "for_",
     "yield_",

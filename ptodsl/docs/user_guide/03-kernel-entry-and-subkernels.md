@@ -53,7 +53,7 @@ compiled = kernel_name.compile(CONST_A=128, CONST_B=64)
 compiled[grid, stream](tensor_1, tensor_2, ...)
 ```
 
-- `.compile(**constexprs)` — traces the kernel body with the given constexpr values, lowers the IR, and returns a compiled handle. Subsequent calls with the same (function identity, constexpr values) hit the cache.
+- `.compile(**constexprs)` — traces the kernel body with the given constexpr values, lowers the IR, and returns a compiled handle. Subsequent calls with the same specialization key (function identity, tensor ABI signature, constexpr values) hit the cache.
 - `compiled[grid, stream](args...)` — launches the compiled kernel. `grid` is the number of SPMD blocks (an integer); `stream` is the NPU stream (`None` for default).
 
 ### SPMD built-ins
@@ -101,13 +101,13 @@ When you call an L3 sub-kernel directly from `@pto.jit`, data movement is handle
 ```python
 @pto.cube
 def my_matmul(a_tile, b_tile, l0a, l0b, acc, o_tile):
-    m = pto.tile_valid_rows(a_tile)
-    k = pto.tile_valid_cols(a_tile)
-    n = pto.tile_valid_rows(b_tile)
-    pto.mte_l1_l0a(a_tile, l0a, m, k)
-    pto.mte_l1_l0b(b_tile, l0b, k, n, transpose=True)
-    pto.mad(l0a, l0b, acc)
-    pto.mte_l0c_ub(acc, o_tile, m, n)
+    m = a_tile.valid_shape[0]
+    k = a_tile.valid_shape[1]
+    n = b_tile.valid_shape[0]
+    pto.mte_l1_l0a(a_tile.as_ptr(), l0a.as_ptr(), m, k)
+    pto.mte_l1_l0b(b_tile.as_ptr(), l0b.as_ptr(), k, n, transpose=True)
+    pto.mad(l0a.as_ptr(), l0b.as_ptr(), acc.as_ptr(), m, n, k)
+    pto.mte_l0c_ub(acc.as_ptr(), o_tile.as_ptr(), m, n, n, n, 0)
 
 @pto.jit(target="a5")
 def my_kernel(A, B, O, *, BLOCK: pto.constexpr):
@@ -172,14 +172,14 @@ def process_block(k_part, v_part, k_tile, v_tile,
     # Stage current block from GM to UB
     pto.mte_load(k_part, k_tile)
     pto.mte_load(v_part, v_tile)
-    pto.mem_bar(pto.BarrierType.SYNC)
+    pto.pipe_barrier(pto.Pipe.ALL)
 
     # Dispatch sub-kernels
     qk_matmul(q_tile, k_tile, s_tile)
-    pto.mem_bar(pto.BarrierType.SYNC)
+    pto.pipe_barrier(pto.Pipe.ALL)
 
     online_softmax(s_tile, o_tile, rows, cols)
-    pto.mem_bar(pto.BarrierType.SYNC)
+    pto.pipe_barrier(pto.Pipe.ALL)
 
     # Write result back
     pto.mte_store(o_tile, o_part)
@@ -220,14 +220,14 @@ def qk_matmul(
     s_acc: pto.Tile,
     s_tile: pto.Tile,
 ):
-    m = pto.tile_valid_rows(q_tile)
-    k = pto.tile_valid_cols(q_tile)
-    n = pto.tile_valid_rows(k_tile)
+    m = q_tile.valid_shape[0]
+    k = q_tile.valid_shape[1]
+    n = k_tile.valid_shape[0]
 
-    pto.mte_l1_l0a(q_tile, q_l0a, m, k)
-    pto.mte_l1_l0b(k_tile, k_l0b, k, n, transpose=True)
-    pto.mad(q_l0a, k_l0b, s_acc)
-    pto.mte_l0c_ub(s_acc, s_tile, m, n)
+    pto.mte_l1_l0a(q_tile.as_ptr(), q_l0a.as_ptr(), m, k)
+    pto.mte_l1_l0b(k_tile.as_ptr(), k_l0b.as_ptr(), k, n, transpose=True)
+    pto.mad(q_l0a.as_ptr(), k_l0b.as_ptr(), s_acc.as_ptr(), m, n, k)
+    pto.mte_l0c_ub(s_acc.as_ptr(), s_tile.as_ptr(), m, n, n, n, 0)
 ```
 
 Cube-local state (LEFT, RIGHT, ACC, BIAS) never leaks into UB — it is the caller's responsibility to allocate scratch buffers and pass them in explicitly.
@@ -353,10 +353,10 @@ with pto.simt():
 
 ```python
 with pto.cube():
-    pto.mte_l1_l0a(q_tile, q_l0a, m, k)
-    pto.mte_l1_l0b(k_tile, k_l0b, k, n, transpose=True)
-    pto.mad(q_l0a, k_l0b, s_acc)
-    pto.mte_l0c_ub(s_acc, s_tile, m, n)
+    pto.mte_l1_l0a(q_tile.as_ptr(), q_l0a.as_ptr(), m, k)
+    pto.mte_l1_l0b(k_tile.as_ptr(), k_l0b.as_ptr(), k, n, transpose=True)
+    pto.mad(q_l0a.as_ptr(), k_l0b.as_ptr(), s_acc.as_ptr(), m, n, k)
+    pto.mte_l0c_ub(s_acc.as_ptr(), s_tile.as_ptr(), m, n, n, n, 0)
 ```
 
 ### Semantics
@@ -394,7 +394,7 @@ Data crosses decorator boundaries only through UB-backed tiles or typed UB point
 
 ## 3.9 `pto.constexpr`
 
-`pto.constexpr` marks a `@pto.jit` keyword-only parameter as a compile-time constant. The compiler specializes the kernel for each combination of constexpr values, and the compiled artifact is cached by those values.
+`pto.constexpr` marks a `@pto.jit` keyword-only parameter as a compile-time constant. The compiler specializes the kernel for each combination of constexpr values, and the compiled artifact is cached by specialization key together with the kernel's tensor ABI contract.
 
 ```python
 @pto.jit(target="a5")

@@ -142,7 +142,7 @@ O = np.empty_like(A)
 compiled[1, None](A, B, O)
 ```
 
-- `.compile(**constexprs)` traces the kernel body, lowers it through the PTOAS pipeline, and returns a compiled handle. Repeated calls with the same configuration hit the cache.
+- `.compile(**constexprs)` traces the kernel body, lowers it through the PTOAS pipeline, and returns a compiled handle. Repeated calls with the same tensor ABI contract and constexpr configuration hit the cache.
 - `compiled[grid, stream](args...)` launches the compiled kernel. `grid` is the number of SPMD blocks; `stream` is the NPU stream (or `None` for the default).
 
 ## 2.4 SPMD launch
@@ -195,10 +195,10 @@ def add_block(a_part: pto.PartitionTensorView,
               rows: pto.i32, cols: pto.i32):
     pto.mte_load(a_part, a_tile)
     pto.mte_load(b_part, b_tile)
-    pto.mem_bar(pto.BarrierType.SYNC)
+    pto.pipe_barrier(pto.Pipe.ALL)
 
     add_rows(a_tile, b_tile, o_tile, rows, cols)
-    pto.mem_bar(pto.BarrierType.SYNC)
+    pto.pipe_barrier(pto.Pipe.ALL)
 
     pto.mte_store(o_tile, o_part)
 

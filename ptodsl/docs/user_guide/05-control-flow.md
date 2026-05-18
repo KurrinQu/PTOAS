@@ -107,10 +107,10 @@ This pattern is central to algorithms like online softmax, where each KV block u
 
 ```python
 # Allocate ping-pong state tiles
-m_prev = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32)
-m_next = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32)
-l_prev = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32)
-l_next = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32)
+m_prev = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, blayout="ColMajor")
+m_next = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, blayout="ColMajor")
+l_prev = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, blayout="ColMajor")
+l_next = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, blayout="ColMajor")
 
 # Initialize prev tiles
 m_prev.fill(float("-inf"))

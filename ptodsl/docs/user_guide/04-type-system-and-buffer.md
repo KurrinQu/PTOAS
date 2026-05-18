@@ -175,12 +175,18 @@ A `Tile` is an on-chip buffer allocated in UB or cube-local memory. Allocate til
 # UB tile
 a_tile = pto.alloc_tile(shape=[BLOCK, dim], dtype=pto.f32)
 
+# Logical column tile
+m_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, blayout="ColMajor")
+
 # Cube-local scratch with explicit memory space
 q_l0a = pto.alloc_tile(shape=[Br, dim], dtype=pto.f16, memory_space=pto.MemorySpace.LEFT)
 s_acc = pto.alloc_tile(shape=[Br, Bc], dtype=pto.f32, memory_space=pto.MemorySpace.ACC)
 ```
 
 `alloc_tile` returns a `Tile` object. The `shape` must be a compile-time constant. The default memory space is UB.
+For narrow logical column tiles such as `[Br, 1]`, author them with
+`blayout="ColMajor"`. Row-major none-box tiles are validated against a 32-byte
+physical row-alignment rule.
 
 ### Tile attributes
 

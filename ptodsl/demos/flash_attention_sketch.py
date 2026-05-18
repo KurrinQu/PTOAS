@@ -6,13 +6,13 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 """
-Flash Attention redesign sketch.
+Flash Attention compile-only demo.
 
-This file is intentionally a design demo rather than runnable ``ptodsl`` code.
-The goal is to make the *proposed* API layering explicit and keep the semantic
-contracts clean:
+This file is a compileable PTODSL demo whose current milestone is MLIR
+emission, inspection, and API review. The goal is to make the intended API
+layering explicit and keep the semantic contracts clean:
 
-    flash_attention(...)           user-facing wrapper
+    emit_flash_attention_mlir(...) compile/inspect wrapper
       └─ @pto.jit flash_attention_kernel
            ├─ Tile Ops                 tload / tstore at the GM↔UB boundary
            └─ @pto.ukernel  one KV-block worth of MTE/sync orchestration
@@ -23,10 +23,10 @@ contracts clean:
 Design rules illustrated here:
 
 1. ``@pto.jit`` marks a launchable kernel template.  It owns JIT compilation,
-   cache lookup, and runtime launch binding, instead of forcing users to hop
-   through extra builder objects for common cases.
-2. The Python wrapper owns ergonomic runtime concerns such as output allocation,
-   default stream handling, and extracting shape/stride metadata from tensors.
+   cache lookup, and artifact emission, instead of forcing users to hop through
+   extra builder objects for common cases.
+2. The Python wrapper owns compile/inspection concerns such as selecting
+   specialization knobs and returning the emitted MLIR text for review.
 3. ``@pto.jit`` also owns the top-level logical tiling, tile allocation, and
    loop scheduling for one already-selected per-head 2D slice.  It should not
    manually spell low-level DMA details for every micro step.
@@ -52,29 +52,53 @@ Design rules illustrated here:
    Hiding these dependencies with in-place aliases makes the algorithm harder
    to read and obscures what the DSL needs to express.
 
-The API spellings below are approximate and intentionally favor the redesign
-surface over today's exact binding details.
-
-Because this sketch targets a tracing-style frontend, any control flow that
+Because this demo targets a tracing-style frontend, any control flow that
 must reach MLIR is expressed with structured DSL constructs such as
 ``pto.for_`` instead of native Python ``for`` loops.
 
-Scalar literals and simple index/integer conversions are also shown in their
-authored form.  The intended frontend behavior is to lift Python ``int``
-literals and obvious scalar arithmetic into the corresponding MLIR scalar ops
-implicitly, rather than forcing authors to spell ``pto.const(...)`` or
-``index_cast(...)`` at every use site.
+Scalar literals and simple index/integer conversions are also written in the
+authored PTODSL surface. The current frontend lowers these through tracing
+instead of forcing authors to spell ``pto.const(...)`` or ``index_cast(...)``
+at every use site.
 """
 
+from pathlib import Path
+import sys
+
+if __package__ in {None, ""}:
+    here = Path(__file__).resolve()
+    for candidate in here.parents:
+        if (candidate / "ptodsl" / "__init__.py").exists():
+            sys.path.insert(0, str(candidate))
+            break
+    else:
+        raise RuntimeError(
+            "Unable to locate the PTODSL Python package root from flash_attention_sketch.py"
+        )
+
 from ptodsl import pto
+
+scalar = pto.scalar
+
+
+def _min_index(lhs, rhs):
+    return pto.scalar.select(
+        pto.scalar.cmpi("slt", lhs, rhs),
+        lhs,
+        rhs,
+    )
+
+
+def _block_valid_extent(total, block_index, block_size):
+    return _min_index(total - block_index * block_size, pto.const(block_size))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Public API sketch
 # ═══════════════════════════════════════════════════════════════════════════════
 #
-# This section intentionally sketches the *desired* public surface, not today's
-# exact implementation details.  The split follows the common industry pattern:
+# This section shows the current compile-only public surface. The split follows
+# the common industry pattern:
 #
 # - a user-facing tensor wrapper
 # - a launchable JIT kernel entry
@@ -82,66 +106,54 @@ from ptodsl import pto
 #
 # The low-level kernel body should not double as the user-facing runtime API.
 #
-# Two intended usage styles:
+# Two intended usage styles for the current compile-only milestone:
 #
-# 1. Direct call (most users):
-#      out = flash_attention(Q, K, V, causal=True)
+# 1. One-shot MLIR emission:
+#      mlir_text = emit_flash_attention_mlir(head_dim=128, causal=True)
 #
-# 2. Compile first, then launch repeatedly:
+# 2. Compile first, then inspect:
 #      compiled = flash_attention_kernel.compile(BLOCK_Q=128, BLOCK_KV=128, CAUSAL=True)
-#      compiled[batch * heads, stream](
-#          Q, K, V, O,
-#      )
+#      mlir_text = compiled.mlir_text()
 
-def flash_attention(
-    Q,
-    K,
-    V,
+def emit_flash_attention_mlir(
     *,
-    O=None,
+    head_dim=128,
     causal=False,
     block_q=128,
     block_kv=128,
-    stream=None,
 ):
     """
-    User-facing convenience wrapper.
+    Compile the flash-attention sketch and return its MLIR text.
 
-    This is the API most end users should call.  It mirrors mainstream tensor
-    libraries: infer runtime metadata from tensors, allocate the output when the
-    caller does not provide one, then compile and launch the JIT kernel.
+    The current milestone for this demo is compile / inspect / review, not
+    runtime launch. The wrapper therefore only specializes the JIT kernel and
+    returns the emitted MLIR text.
     """
-    if O is None:
-        O = pto.empty_like(Q)
-
-    batch, seq_q, heads, dim = Q.shape
-    _, seq_k, _, _ = K.shape
-
     compiled = flash_attention_kernel.compile(
         BLOCK_Q=block_q,
         BLOCK_KV=block_kv,
+        HEAD_DIM=head_dim,
         CAUSAL=causal,
     )
-
-    compiled[batch * heads, stream](Q, K, V, O)
-    return O
+    return compiled.mlir_text()
 
 @pto.jit(target="a5")
 def flash_attention_kernel(
-    Q,                      # Python/framework tensor, logical [batch, seq_q, heads, dim]
-    K,                      # Python/framework tensor, logical [batch, seq_k, heads, dim]
-    V,                      # Python/framework tensor, logical [batch, seq_k, heads, dim]
-    O,                      # Python/framework tensor, logical [batch, seq_q, heads, dim]
+    Q: pto.tensor_spec(rank=4, dtype=pto.f32),  # Python/framework tensor, logical [batch, seq_q, heads, dim]
+    K: pto.tensor_spec(rank=4, dtype=pto.f32),  # Python/framework tensor, logical [batch, seq_k, heads, dim]
+    V: pto.tensor_spec(rank=4, dtype=pto.f32),  # Python/framework tensor, logical [batch, seq_k, heads, dim]
+    O: pto.tensor_spec(rank=4, dtype=pto.f32),  # Python/framework tensor, logical [batch, seq_q, heads, dim]
     *,
     BLOCK_Q: pto.constexpr = 128,
     BLOCK_KV: pto.constexpr = 128,
+    HEAD_DIM: pto.constexpr = 128,
     CAUSAL: pto.constexpr = False,
     NUM_STAGES: pto.constexpr = 2,
 ):
     """
     Launchable device entry.
 
-    ``@pto.jit`` is the compile + launch boundary.  Inputs/outputs at this
+    ``@pto.jit`` is the compile boundary.  Inputs/outputs at this
     boundary are Python-native tensor objects; PTO-specific ``TensorView``
     descriptors are materialized inside the JIT body rather than exposed in the
     public signature.  Tile sizes and specialization knobs remain constexpr
@@ -153,10 +165,10 @@ def flash_attention_kernel(
     batch, seq_q, heads, dim = Q.shape
     _, seq_k, _, _ = K.shape
 
-    q_view = pto.make_tensor_view(Q, shape=[batch, seq_q, heads, dim], strides=Q.strides)
-    k_view = pto.make_tensor_view(K, shape=[batch, seq_k, heads, dim], strides=K.strides)
-    v_view = pto.make_tensor_view(V, shape=[batch, seq_k, heads, dim], strides=V.strides)
-    o_view = pto.make_tensor_view(O, shape=[batch, seq_q, heads, dim], strides=O.strides)
+    q_view = pto.make_tensor_view(Q)
+    k_view = pto.make_tensor_view(K)
+    v_view = pto.make_tensor_view(V)
+    o_view = pto.make_tensor_view(O)
 
     # Make the SPMD launch contract explicit in the authored surface.
     # This sketch uses one block per (batch, head) slice and does not further
@@ -179,72 +191,116 @@ def flash_attention_kernel(
     batch_idx = block_idx // heads
     head_idx = block_idx % heads
 
-    q_head = pto.select_head_view(
+    q_head = pto.partition_view(
         q_view,
-        batch=batch_idx,
-        head=head_idx,
-        shape=[seq_q, dim],
+        offsets=[batch_idx, 0, head_idx, 0],
+        sizes=[1, seq_q, 1, dim],
     )
-    k_head = pto.select_head_view(
+    k_head = pto.partition_view(
         k_view,
-        batch=batch_idx,
-        head=head_idx,
-        shape=[seq_k, dim],
+        offsets=[batch_idx, 0, head_idx, 0],
+        sizes=[1, seq_k, 1, dim],
     )
-    v_head = pto.select_head_view(
+    v_head = pto.partition_view(
         v_view,
-        batch=batch_idx,
-        head=head_idx,
-        shape=[seq_k, dim],
+        offsets=[batch_idx, 0, head_idx, 0],
+        sizes=[1, seq_k, 1, dim],
     )
-    o_head = pto.select_head_view(
+    o_head = pto.partition_view(
         o_view,
-        batch=batch_idx,
-        head=head_idx,
-        shape=[seq_q, dim],
+        offsets=[batch_idx, 0, head_idx, 0],
+        sizes=[1, seq_q, 1, dim],
     )
 
     Br = BLOCK_Q
     Bc = BLOCK_KV
+    D = HEAD_DIM
+    full_br = pto.const(Br)
+    full_bc = pto.const(Bc)
+    one = pto.const(1)
 
     q_blocks = (seq_q + Br - 1) // Br
     kv_blocks = (seq_k + Bc - 1) // Bc
 
-    # UB resident logical tiles for one selected (batch, head) slice.
-    q_tile = pto.alloc_tile(shape=[Br, dim], dtype=pto.f32)
-    k_tile = pto.alloc_tile(shape=[Bc, dim], dtype=pto.f32)
-    v_tile = pto.alloc_tile(shape=[Bc, dim], dtype=pto.f32)
+    # Physical tile shape remains static. Runtime tails live in valid_shape.
+    # Cube bridge sources are MAT-backed so they can feed LEFT/RIGHT staging.
+    q_mat = pto.alloc_tile(
+        shape=[Br, D],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.MAT,
+        valid_shape=[full_br, dim],
+        blayout="ColMajor",
+        slayout="RowMajor",
+    )
+    k_mat = pto.alloc_tile(
+        shape=[Bc, D],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.MAT,
+        valid_shape=[full_bc, dim],
+        blayout="ColMajor",
+        slayout="RowMajor",
+    )
+    v_mat = pto.alloc_tile(
+        shape=[Bc, D],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.MAT,
+        valid_shape=[full_bc, dim],
+        blayout="ColMajor",
+        slayout="RowMajor",
+    )
 
-    o_prev_tile = pto.alloc_tile(shape=[Br, dim], dtype=pto.f32)
-    o_next_tile = pto.alloc_tile(shape=[Br, dim], dtype=pto.f32)
-    m_prev_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32)
-    m_next_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32)
-    l_prev_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32)
-    l_next_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32)
+    o_prev_tile = pto.alloc_tile(shape=[Br, D], dtype=pto.f32, valid_shape=[full_br, dim])
+    o_next_tile = pto.alloc_tile(shape=[Br, D], dtype=pto.f32, valid_shape=[full_br, dim])
+    m_prev_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, valid_shape=[full_br, one], blayout="ColMajor")
+    m_next_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, valid_shape=[full_br, one], blayout="ColMajor")
+    l_prev_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, valid_shape=[full_br, one], blayout="ColMajor")
+    l_next_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, valid_shape=[full_br, one], blayout="ColMajor")
 
-    s_tile = pto.alloc_tile(shape=[Br, Bc], dtype=pto.f32)
-    p_tile = pto.alloc_tile(shape=[Br, Bc], dtype=pto.f32)
-    pv_tile = pto.alloc_tile(shape=[Br, dim], dtype=pto.f32)
-    alpha_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32)
-    beta_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32)
+    s_tile = pto.alloc_tile(shape=[Br, Bc], dtype=pto.f32, valid_shape=[full_br, full_bc])
+    p_tile = pto.alloc_tile(shape=[Br, Bc], dtype=pto.f32, valid_shape=[full_br, full_bc])
+    p_mat = pto.alloc_tile(
+        shape=[Br, Bc],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.MAT,
+        valid_shape=[full_br, full_bc],
+        blayout="ColMajor",
+        slayout="RowMajor",
+    )
+    pv_tile = pto.alloc_tile(shape=[Br, D], dtype=pto.f32, valid_shape=[full_br, dim])
+    alpha_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, valid_shape=[full_br, one], blayout="ColMajor")
+    beta_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, valid_shape=[full_br, one], blayout="ColMajor")
 
     # Cube-local scratch is explicit; it should not be conflated with UB tiles.
-    q_l0a = pto.alloc_tile(shape=[Br, dim], dtype=pto.f16, memory_space=pto.MemorySpace.LEFT)
-    p_l0a = pto.alloc_tile(shape=[Br, Bc], dtype=pto.f16, memory_space=pto.MemorySpace.LEFT)
-    rhs_l0b = pto.alloc_tile(shape=[Bc, dim], dtype=pto.f16, memory_space=pto.MemorySpace.RIGHT)
-    qk_acc_tile = pto.alloc_tile(shape=[Br, Bc], dtype=pto.f32, memory_space=pto.MemorySpace.ACC)
-    pv_acc_tile = pto.alloc_tile(shape=[Br, dim], dtype=pto.f32, memory_space=pto.MemorySpace.ACC)
+    q_l0a = pto.alloc_tile(shape=[Br, D], dtype=pto.f32, memory_space=pto.MemorySpace.LEFT, valid_shape=[full_br, dim])
+    p_l0a = pto.alloc_tile(shape=[Br, Bc], dtype=pto.f32, memory_space=pto.MemorySpace.LEFT, valid_shape=[full_br, full_bc])
+    rhs_l0b = pto.alloc_tile(shape=[Bc, D], dtype=pto.f32, memory_space=pto.MemorySpace.RIGHT, valid_shape=[full_bc, dim])
+    qk_acc_tile = pto.alloc_tile(shape=[Br, Bc], dtype=pto.f32, memory_space=pto.MemorySpace.ACC, valid_shape=[full_br, full_bc])
+    pv_acc_tile = pto.alloc_tile(shape=[Br, D], dtype=pto.f32, memory_space=pto.MemorySpace.ACC, valid_shape=[full_br, dim])
 
     # SIMT metadata buffer.  A tiny raw-pointer island is acceptable at the
     # ukernel boundary because this is scalar control data, not user-facing math.
-    meta_tile = pto.alloc_tile(shape=[3, 1], dtype=pto.i32)
-    meta_ptr = pto.tile_buf_addr(meta_tile)
+    meta_tile = pto.alloc_tile(shape=[1, 8], dtype=pto.i32, valid_shape=[1, 3])
+    meta_ptr = meta_tile.as_ptr()
 
     with pto.for_(0, q_blocks, step=1) as qi:
-        q_part = pto.partition_view(q_head, offsets=[qi * Br, 0], sizes=[Br, dim])
-        o_part = pto.partition_view(o_head, offsets=[qi * Br, 0], sizes=[Br, dim])
+        q_rows = _block_valid_extent(seq_q, qi, Br)
+        q_part = pto.partition_view(q_head, offsets=[0, qi * Br, 0, 0], sizes=[1, q_rows, 1, dim])
+        o_part = pto.partition_view(o_head, offsets=[0, qi * Br, 0, 0], sizes=[1, q_rows, 1, dim])
 
-        pto.tload(q_part, q_tile)
+        q_mat.valid_shape = [q_rows, dim]
+        o_prev_tile.valid_shape = [q_rows, dim]
+        o_next_tile.valid_shape = [q_rows, dim]
+        m_prev_tile.valid_shape = [q_rows, one]
+        m_next_tile.valid_shape = [q_rows, one]
+        l_prev_tile.valid_shape = [q_rows, one]
+        l_next_tile.valid_shape = [q_rows, one]
+        alpha_tile.valid_shape = [q_rows, one]
+        beta_tile.valid_shape = [q_rows, one]
+        p_mat.valid_shape = [q_rows, full_bc]
+        pv_tile.valid_shape = [q_rows, dim]
+        q_l0a.valid_shape = [q_rows, dim]
+
+        pto.tload(q_part, q_mat)
 
         # Initial online-softmax state for this Q block.
         # ``CAUSAL`` is threaded at the API boundary even though the masking
@@ -263,15 +319,27 @@ def flash_attention_kernel(
             m_cur = kv_loop.m
             l_cur = kv_loop.l
             o_cur = kv_loop.o
-            k_part = pto.partition_view(k_head, offsets=[kj * Bc, 0], sizes=[Bc, dim])
-            v_part = pto.partition_view(v_head, offsets=[kj * Bc, 0], sizes=[Bc, dim])
+            kv_rows = _block_valid_extent(seq_k, kj, Bc)
+            k_part = pto.partition_view(k_head, offsets=[0, kj * Bc, 0, 0], sizes=[1, kv_rows, 1, dim])
+            v_part = pto.partition_view(v_head, offsets=[0, kj * Bc, 0, 0], sizes=[1, kv_rows, 1, dim])
+
+            k_mat.valid_shape = [kv_rows, dim]
+            v_mat.valid_shape = [kv_rows, dim]
+            s_tile.valid_shape = [q_rows, kv_rows]
+            p_tile.valid_shape = [q_rows, kv_rows]
+            p_mat.valid_shape = [q_rows, kv_rows]
+            pv_tile.valid_shape = [q_rows, dim]
+            p_l0a.valid_shape = [q_rows, kv_rows]
+            rhs_l0b.valid_shape = [kv_rows, dim]
+            qk_acc_tile.valid_shape = [q_rows, kv_rows]
+            pv_acc_tile.valid_shape = [q_rows, dim]
 
             kv_block_process(
-                q_tile,
+                q_mat,
                 k_part,
                 v_part,
-                k_tile,
-                v_tile,
+                k_mat,
+                v_mat,
                 o_cur,
                 o_next_tile,
                 m_cur,
@@ -280,6 +348,7 @@ def flash_attention_kernel(
                 l_next_tile,
                 s_tile,
                 p_tile,
+                p_mat,
                 pv_tile,
                 alpha_tile,
                 beta_tile,
@@ -316,8 +385,8 @@ def flash_attention_kernel(
 
 @pto.cube
 def qk_matmul(
-    q_tile: pto.Tile,      # UB, [Br, dim]
-    k_tile: pto.Tile,      # UB, [Bc, dim]
+    q_mat: pto.Tile,       # MAT, [Br, dim]
+    k_mat: pto.Tile,       # MAT, [Bc, dim]
     q_l0a: pto.Tile,       # LEFT scratch
     k_l0b: pto.Tile,       # RIGHT scratch
     s_acc: pto.Tile,       # ACC scratch
@@ -326,25 +395,25 @@ def qk_matmul(
     """
     Compute ``S = Q @ K^T`` for one attention block.
 
-    The key point for the redesign is that the cube kernel consumes UB tiles and
-    explicit cube-local scratch, rather than pretending a UB tile can also stand
+    The key point for the redesign is that the cube kernel consumes MAT tiles and
+    explicit cube-local scratch, rather than pretending a logical scheduling tile can also stand
     in for LEFT/RIGHT/ACC state.
     """
-    m = pto.tile_valid_rows(q_tile)
-    k = pto.tile_valid_cols(q_tile)
-    n = pto.tile_valid_rows(k_tile)
+    m = q_mat.valid_shape[0]
+    k = q_mat.valid_shape[1]
+    n = k_mat.valid_shape[0]
 
     # Caller owns scratch lifetime.  The cube kernel only expresses dataflow.
-    pto.mte_l1_l0a(q_tile, q_l0a, m, k)
-    pto.mte_l1_l0b(k_tile, k_l0b, k, n, transpose=True)
-    pto.mad(q_l0a, k_l0b, s_acc)
-    pto.mte_l0c_ub(s_acc, s_tile, m, n)
+    pto.mte_l1_l0a(q_mat.as_ptr(), q_l0a.as_ptr(), m, k)
+    pto.mte_l1_l0b(k_mat.as_ptr(), k_l0b.as_ptr(), k, n, transpose=True)
+    pto.mad(q_l0a.as_ptr(), k_l0b.as_ptr(), s_acc.as_ptr(), m, n, k)
+    pto.mte_l0c_ub(s_acc.as_ptr(), s_tile.as_ptr(), m, n, n, n, 0)
 
 
 @pto.cube
 def pv_matmul(
-    p_tile: pto.Tile,      # UB, [Br, Bc]
-    v_tile: pto.Tile,      # UB, [Bc, dim]
+    p_mat: pto.Tile,       # MAT, [Br, Bc]
+    v_mat: pto.Tile,       # MAT, [Bc, dim]
     p_l0a: pto.Tile,       # LEFT scratch (reused)
     v_l0b: pto.Tile,       # RIGHT scratch (reused)
     pv_acc: pto.Tile,      # ACC scratch (reused)
@@ -356,14 +425,14 @@ def pv_matmul(
     This keeps the second matrix product on the cube path as well, instead of
     accidentally collapsing it into an elementwise vector expression.
     """
-    m = pto.tile_valid_rows(p_tile)
-    k = pto.tile_valid_cols(p_tile)
-    n = pto.tile_valid_cols(v_tile)
+    m = p_mat.valid_shape[0]
+    k = p_mat.valid_shape[1]
+    n = v_mat.valid_shape[1]
 
-    pto.mte_l1_l0a(p_tile, p_l0a, m, k)
-    pto.mte_l1_l0b(v_tile, v_l0b, k, n)
-    pto.mad(p_l0a, v_l0b, pv_acc)
-    pto.mte_l0c_ub(pv_acc, pv_tile, m, n)
+    pto.mte_l1_l0a(p_mat.as_ptr(), p_l0a.as_ptr(), m, k)
+    pto.mte_l1_l0b(v_mat.as_ptr(), v_l0b.as_ptr(), k, n)
+    pto.mad(p_l0a.as_ptr(), v_l0b.as_ptr(), pv_acc.as_ptr(), m, n, k)
+    pto.mte_l0c_ub(pv_acc.as_ptr(), pv_tile.as_ptr(), m, n, n, n, 0)
 
 
 @pto.simd
@@ -415,10 +484,10 @@ def online_softmax_rows(
         beta = 1.0 / l_next
 
         pto.vsts(p_row, p_tile[row, 0:], col_mask)
-        scalar.sts(m_next_tile[row, 0], m_next)
-        scalar.sts(l_next_tile[row, 0], l_next)
-        scalar.sts(alpha_tile[row, 0], alpha)
-        scalar.sts(beta_tile[row, 0], beta)
+        scalar.store(m_next, m_next_tile[row, 0])
+        scalar.store(l_next, l_next_tile[row, 0])
+        scalar.store(alpha, alpha_tile[row, 0])
+        scalar.store(beta, beta_tile[row, 0])
 
 
 @pto.simt
@@ -451,7 +520,7 @@ def blend_output_rows(
             pv_val = scalar.load(pv_tile[row, col])
 
             o_next = alpha * o_prev + beta * pv_val
-            scalar.sts(o_next_tile[row, col], o_next)
+            scalar.store(o_next, o_next_tile[row, col])
 
 
 @pto.simt
@@ -466,9 +535,9 @@ def materialize_tile_bounds(
     The SIMT kernel stays intentionally small here: it is responsible for
     scalar control metadata, not for rewriting the vector or cube logic.
     """
-    scalar.sts(meta_ptr + 0, 0)
-    scalar.sts(meta_ptr + 4, valid_rows)
-    scalar.sts(meta_ptr + 8, valid_cols)
+    scalar.store(0, meta_ptr + 0)
+    scalar.store(valid_rows, meta_ptr + 1)
+    scalar.store(valid_cols, meta_ptr + 2)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -478,11 +547,11 @@ def materialize_tile_bounds(
 
 @pto.ukernel
 def kv_block_process(
-    q_tile: pto.Tile,                # UB, reused across inner KV loop
+    q_mat: pto.Tile,                 # MAT, reused across inner KV loop
     k_part: pto.PartitionTensorView, # GM view for current K block
     v_part: pto.PartitionTensorView, # GM view for current V block
-    k_tile: pto.Tile,                # UB scratch
-    v_tile: pto.Tile,                # UB scratch
+    k_mat: pto.Tile,                 # MAT scratch
+    v_mat: pto.Tile,                 # MAT scratch
     o_prev_tile: pto.Tile,           # UB state
     o_next_tile: pto.Tile,           # UB state
     m_prev_tile: pto.Tile,           # UB state
@@ -491,6 +560,7 @@ def kv_block_process(
     l_next_tile: pto.Tile,           # UB state
     s_tile: pto.Tile,                # UB scratch for QK^T
     p_tile: pto.Tile,                # UB scratch for probabilities
+    p_mat: pto.Tile,                 # MAT scratch for probabilities
     pv_tile: pto.Tile,               # UB scratch for P@V
     alpha_tile: pto.Tile,            # UB scratch
     beta_tile: pto.Tile,             # UB scratch
@@ -511,23 +581,23 @@ def kv_block_process(
     - wiring together the explicit state transition
       (prev -> next for m/l/o).
     """
-    # Current-block GM->UB staging via MTE micro-instructions.
-    pto.mte_load(k_part, k_tile)
-    pto.mte_load(v_part, v_tile)
-    pto.mem_bar(pto.BarrierType.SYNC)
+    # Current-block GM->MAT staging via MTE micro-instructions.
+    pto.mte_load(k_part, k_mat)
+    pto.mte_load(v_part, v_mat)
+    pto.pipe_barrier(pto.Pipe.ALL)
 
     materialize_tile_bounds(
         meta_ptr,
-        pto.tile_valid_rows(q_tile),
-        pto.tile_valid_rows(k_tile),
+        q_mat.valid_shape[0],
+        k_mat.valid_shape[0],
     )
     row_start = scalar.load(meta_ptr + 0)
-    row_stop = scalar.load(meta_ptr + 4)
-    valid_cols = scalar.load(meta_ptr + 8)
+    row_stop = scalar.load(meta_ptr + 1)
+    valid_cols = scalar.load(meta_ptr + 2)
 
     # 1. S = Q @ K^T
-    qk_matmul(q_tile, k_tile, q_l0a, rhs_l0b, qk_acc_tile, s_tile)
-    pto.mem_bar(pto.BarrierType.SYNC)
+    qk_matmul(q_mat, k_mat, q_l0a, rhs_l0b, qk_acc_tile, s_tile)
+    pto.pipe_barrier(pto.Pipe.ALL)
 
     # 2. Row-wise online softmax over S
     online_softmax_rows(
@@ -543,11 +613,15 @@ def kv_block_process(
         row_stop,
         valid_cols,
     )
-    pto.mem_bar(pto.BarrierType.SYNC)
+    pto.pipe_barrier(pto.Pipe.ALL)
+
+    # Stage the probability tile onto the cube MAT path.
+    pto.tmov(p_tile, p_mat)
+    pto.pipe_barrier(pto.Pipe.ALL)
 
     # 3. PV = P @ V
-    pv_matmul(p_tile, v_tile, p_l0a, rhs_l0b, pv_acc_tile, pv_tile)
-    pto.mem_bar(pto.BarrierType.SYNC)
+    pv_matmul(p_mat, v_mat, p_l0a, rhs_l0b, pv_acc_tile, pv_tile)
+    pto.pipe_barrier(pto.Pipe.ALL)
 
     # 4. O_next = alpha * O_prev + beta * PV
     blend_output_rows(
@@ -558,9 +632,9 @@ def kv_block_process(
         o_next_tile,
         row_start,
         row_stop,
-        pto.tile_valid_cols(v_tile),
+        v_mat.valid_shape[1],
     )
-    pto.mem_bar(pto.BarrierType.SYNC)
+    pto.pipe_barrier(pto.Pipe.ALL)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -568,15 +642,15 @@ def kv_block_process(
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # ┌──────────────────────────────────────────────────────────────────────────┐
-# │ L0  Python wrapper   flash_attention(...)                                 │
+# │ L0  Python wrapper   emit_flash_attention_mlir(...)                       │
 # │                                                                            │
-# │   output allocation, shape/stride extraction, compile, launch             │
+# │   specialize kernel parameters, compile, emit MLIR text                   │
 # │                                                                            │
-# │   Key idea: user-facing tensor API, not IR authoring.                     │
+# │   Key idea: current demo goal is compile/inspect, not runtime launch.     │
 # ├──────────────────────────────────────────────────────────────────────────┤
-# │ L1  @pto.jit         compile + cache + launch + top-level orchestration   │
+# │ L1  @pto.jit         compile + cache + top-level orchestration            │
 # │                                                                            │
-# │   flash_attention_kernel[grid, stream](...)                               │
+# │   flash_attention_kernel.compile(...).mlir_text()                         │
 # │   TensorView metadata / alloc_tile / partition_view / tload / tstore      │
 # │   outer Q loop + inner KV loop + ping-pong state ownership                │
 # │                                                                            │
@@ -628,5 +702,14 @@ def kv_block_process(
 #   After each KV block:
 #     (m_prev, l_prev, o_prev) := (m_next, l_next, o_next)
 #
-# The important part for the redesign is not the exact helper spelling, but
-# that every cross-stage dependency is visible in the surface language.
+# The important part for the demo is that every cross-stage dependency is
+# visible in the surface language and the whole kernel can already be traced to
+# MLIR for review.
+
+
+def main():
+    print(emit_flash_attention_mlir())
+
+
+if __name__ == "__main__":
+    main()

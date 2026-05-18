@@ -11,7 +11,7 @@ Online softmax update kernel – DSL-style builder.
 
 Generates the same IR as
   test/tilelang_st/npu/a5/src/st/testcase/softmax/softmax.pto
-using the ``@pto.to_ir`` decorator and the ``pto.*`` namespace.
+using the ``@pto.jit`` decorator and the ``pto.*`` namespace.
 
 The Python maps almost line-for-line to the target MLIR:
 
@@ -34,7 +34,7 @@ The Python maps almost line-for-line to the target MLIR:
       }                                                #
     }                                                  #
   }                                                    #
-  pto.barrier <PIPE_ALL>                               # pto.barrier_all()
+  pto.barrier <PIPE_ALL>                               # pto.pipe_barrier(pto.Pipe.ALL)
 """
 
 from ptodsl import pto
@@ -42,10 +42,10 @@ from ptodsl import pto
 s = pto.scalar  # arith shorthand alias
 
 
-@pto.to_ir(
+@pto.jit(
     name="online_softmax_update_kernel_2d",
     kernel_kind="vector",
-    arch="a5",
+    target="a5",
     func_attr="pto.aicore",
 )
 def online_softmax_update_kernel_2d(
@@ -155,13 +155,13 @@ def online_softmax_update_kernel_2d(
             ptr_ub = pto.ptr(pto.float32, "ub")
             vf32   = pto.vreg_type(64, pto.float32)
 
-            ub_om  = pto.tile_ptr(oldmax_tile, ptr_ub)
-            ub_os  = pto.tile_ptr(oldsum_tile, ptr_ub)
-            ub_qk  = pto.tile_ptr(qk_tile,     ptr_ub)
-            ub_out = pto.tile_ptr(out_tile,     ptr_ub)
-            ub_nm  = pto.tile_ptr(newmax_tile,  ptr_ub)
-            ub_ns  = pto.tile_ptr(newsum_tile,  ptr_ub)
-            ub_em  = pto.tile_ptr(expmax_tile,  ptr_ub)
+            ub_om  = pto.as_ptr(oldmax_tile, ptr_ub)
+            ub_os  = pto.as_ptr(oldsum_tile, ptr_ub)
+            ub_qk  = pto.as_ptr(qk_tile,     ptr_ub)
+            ub_out = pto.as_ptr(out_tile,     ptr_ub)
+            ub_nm  = pto.as_ptr(newmax_tile,  ptr_ub)
+            ub_ns  = pto.as_ptr(newsum_tile,  ptr_ub)
+            ub_em  = pto.as_ptr(expmax_tile,  ptr_ub)
 
             active      = pto.pset_b32("PAT_ALL")
             one_mask, _ = pto.plt_b32(c1_i32)
@@ -234,11 +234,11 @@ def online_softmax_update_kernel_2d(
         pto.tstore(expmax_tile, expmax_part)
         pto.tstore(out_tile,    out_part)
 
-    pto.barrier_all()
+    pto.pipe_barrier(pto.Pipe.ALL)
 
 
 def build():
-    return online_softmax_update_kernel_2d._ir_module
+    return online_softmax_update_kernel_2d.mlir_module()
 
 
 if __name__ == "__main__":

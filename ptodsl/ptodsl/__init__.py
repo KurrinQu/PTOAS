@@ -9,11 +9,11 @@
 
 from importlib import import_module
 
-__all__ = ["pto", "scalar", "vpto"]
+__all__ = ["pto", "scalar"]
 
 
 def __getattr__(name):
-    if name in {"pto", "scalar", "vpto"}:
+    if name in {"pto", "scalar"}:
         module = import_module(f".{name}", __name__)
         globals()[name] = module
         return module

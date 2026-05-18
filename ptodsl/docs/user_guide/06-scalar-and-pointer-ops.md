@@ -4,9 +4,9 @@ Chapter 5 established the rule: Python constructs are resolved at trace time, PT
 
 ## 6.1 Python scalars vs PTO scalars
 
-A **Python scalar** is any value computed by Python during tracing: a literal (`3.14159`), a shape dimension (`A.shape[0]`), a constexpr parameter (`BLOCK`), or an arithmetic expression built from these (`1.0 / sqrt(dim)`). These are evaluated at trace time and their results are baked into the device code as constants.
+A **Python scalar** is any value computed by Python during tracing: a literal (`3.14159`), a constexpr parameter (`BLOCK`), or an arithmetic expression built only from compile-time-known values (`1.0 / sqrt(128)`). These are evaluated at trace time and their results are baked into the device code as constants.
 
-A **PTO scalar** is a value that lives on the device at runtime. It comes from a `scalar.load` read, a device-side computation (`scalar.max`, `scalar.exp`), or a runtime query (`pto.get_block_idx()`). PTO scalars flow through the recorded program and are not resolved until the kernel executes.
+A **PTO scalar** is a value that lives on the device at runtime. It comes from a `scalar.load` read, a device-side computation (`scalar.max`, `scalar.exp`), a runtime query (`pto.get_block_idx()`), or `@pto.jit` tensor metadata such as `A.shape[0]` / `A.strides[1]`. PTO scalars flow through the recorded program and are not resolved until the kernel executes.
 
 ### The mixed expression
 
@@ -25,9 +25,10 @@ alpha * o_prev + beta * pv_val
 
 | If the value... | Use... | Example |
 |-----------------|--------|---------|
-| Is known at compile time | Python scalar | `BLOCK`, `1.0 / sqrt(dim)`, `A.shape[0]` |
+| Is known at compile time | Python scalar | `BLOCK`, `1.0 / sqrt(128)` |
 | Comes from device memory | PTO scalar | `scalar.load(tile[r, c])` |
 | Depends on a runtime value | PTO scalar | `scalar.max(m_prev, row_max)` |
+| Comes from tensor metadata at the `@pto.jit` boundary | PTO scalar | `A.shape[0]`, `Q.strides[2]` |
 | Is a block/subblock index | PTO scalar | `pto.get_block_idx()` |
 
 When in doubt, ask: *can this value change between launches of the same compiled kernel?* If yes, it must be a PTO scalar.
@@ -125,9 +126,9 @@ When writing to a raw pointer (e.g., a small metadata buffer obtained via `as_pt
 ```python
 meta_ptr = meta_tile.as_ptr()
 scalar.store(0, meta_ptr, 0)                    # store at element offset 0
-scalar.store(valid_rows, meta_ptr, 4)           # store at element offset 4
+scalar.store(valid_rows, meta_ptr, 1)           # store at element offset 1
 row_start = scalar.load(meta_ptr, 0)
-row_stop  = scalar.load(meta_ptr, 4)
+row_stop  = scalar.load(meta_ptr, 1)
 ```
 
 ## 6.3 Scalar arithmetic and comparisons

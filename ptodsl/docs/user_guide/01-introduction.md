@@ -84,15 +84,18 @@ def flash_attention(Q, K, V, *, O=None, causal=False):
 Decorating a function with `@pto.jit` marks it as a launchable PTO kernel. This decoration means:
 
 - **Compilation**: the function body is traced once to record all PTO instructions, then lowered through the PTOAS compiler pipeline into an optimized NPU executable.
-- **Caching**: compiled kernels are cached by key (function identity + constexpr parameter values), so repeated calls with the same configuration skip recompilation.
+- **Caching**: compiled kernels are cached by specialization key (function identity + tensor ABI signature + constexpr parameter values), so repeated calls with the same configuration skip recompilation.
 - **Launch binding**: the compiled kernel can be invoked with a grid and stream — `compiled[grid, stream](args...)` — which launches the executable on the NPU with the given SPMD grid.
 
-The parameters of a `@pto.jit` function are Python-native tensors (not PTODSL-specific descriptors). The kernel body materializes `TensorView` descriptors from them via `make_tensor_view`, then partitions the problem with `partition_view`. Compile-time constants are declared as keyword-only arguments with `pto.constexpr`:
+The parameters of a `@pto.jit` function are Python-native tensors (not PTODSL-specific descriptors). In PTODSL v1, their ABI contract is declared with `pto.tensor_spec(...)` in the function signature; this is a compile-time annotation, not a runtime object the Python wrapper must construct. The kernel body materializes `TensorView` descriptors from the runtime tensors via `make_tensor_view`, then partitions the problem with `partition_view`. Compile-time constants are declared as keyword-only arguments with `pto.constexpr`:
 
 ```python
 @pto.jit(target="a5")
 def flash_attention_kernel(
-    Q, K, V, O,
+    Q: pto.tensor_spec(rank=4, dtype=pto.f32),
+    K: pto.tensor_spec(rank=4, dtype=pto.f32),
+    V: pto.tensor_spec(rank=4, dtype=pto.f32),
+    O: pto.tensor_spec(rank=4, dtype=pto.f32),
     *,
     BLOCK_Q: pto.constexpr = 128,
     BLOCK_KV: pto.constexpr = 128,
@@ -154,7 +157,7 @@ The flash attention kernel from Section 1.2 is not just an architectural diagram
 
 **L1 (`@pto.jit`)** allocates tiles for the Q block, KV block, online-softmax state (m/l/o ping-pong tiles), and cube-local scratch. It loops over Q blocks (outer `pto.for_`) and KV blocks (inner `pto.for_` with carry state), calling `kv_block_process` for each KV block and using `tload`/`tstore` at the GM boundary.
 
-**L2 (`@pto.ukernel`)** stages the current K and V blocks with `mte_load`, issues `mem_bar` for synchronization, then sequences four sub-kernel calls: `qk_matmul` (cube), `online_softmax_rows` (simd), `pv_matmul` (cube), `blend_output_rows` (simt).
+**L2 (`@pto.ukernel`)** stages the current K and V blocks with `mte_load`, issues `pipe_barrier(Pipe.ALL)` at phase boundaries, then sequences four sub-kernel calls: `qk_matmul` (cube), `online_softmax_rows` (simd), `pv_matmul` (cube), `blend_output_rows` (simt).
 
 **L3a (`@pto.cube`)** performs `mte_l1_l0a` / `mte_l1_l0b` / `mad` / `mte_l0c_ub` for both QK^T and P@V products.
 

@@ -153,14 +153,14 @@ This example demonstrates a complete GEMM kernel: `C = A @ B` where A is `[M, K]
 @pto.cube
 def gemm_tile(a_tile: pto.Tile, b_tile: pto.Tile, o_tile: pto.Tile,
               a_l0a: pto.Tile, b_l0b: pto.Tile, o_acc: pto.Tile):
-    m = pto.tile_valid_rows(a_tile)
-    k = pto.tile_valid_cols(a_tile)
-    n = pto.tile_valid_rows(b_tile)
+    m = a_tile.valid_shape[0]
+    k = a_tile.valid_shape[1]
+    n = b_tile.valid_shape[0]
 
-    pto.mte_l1_l0a(a_tile, a_l0a, m, k)
-    pto.mte_l1_l0b(b_tile, b_l0b, k, n, transpose=True)
-    pto.mad(a_l0a, b_l0b, o_acc)
-    pto.mte_l0c_ub(o_acc, o_tile, m, n)
+    pto.mte_l1_l0a(a_tile.as_ptr(), a_l0a.as_ptr(), m, k)
+    pto.mte_l1_l0b(b_tile.as_ptr(), b_l0b.as_ptr(), k, n, transpose=True)
+    pto.mad(a_l0a.as_ptr(), b_l0b.as_ptr(), o_acc.as_ptr(), m, n, k)
+    pto.mte_l0c_ub(o_acc.as_ptr(), o_tile.as_ptr(), m, n, n, n, 0)
 ```
 
 The cube sub-kernel consumes UB tiles and cube-local scratch buffers. The four-step sequence — stage left operand, stage right operand, multiply, writeback — is the canonical cube compute pattern.
@@ -308,12 +308,12 @@ def norm_block(x_part: pto.PartitionTensorView, x_tile: pto.Tile,
                mu_next_tile: pto.Tile, n_next_tile: pto.Tile,
                m2_next_tile: pto.Tile):
     pto.mte_load(x_part, x_tile)
-    pto.mem_bar(pto.BarrierType.SYNC)
+    pto.pipe_barrier(pto.Pipe.ALL)
 
     block_mean_var(x_tile, block_size,
                    mu_prev, n_prev, m2_prev,
                    mu_next_tile, n_next_tile, m2_next_tile)
-    pto.mem_bar(pto.BarrierType.SYNC)
+    pto.pipe_barrier(pto.Pipe.ALL)
 ```
 
 ### 12.4.3 L1: JIT entry with carry state

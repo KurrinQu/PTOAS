@@ -14,12 +14,15 @@ Public API
 ──────────
 ``vecscope()``            – ``pto.vecscope { … }``
 ``for_(lo, hi, step, *, iter_args)``
-                          – ``scf.for`` with optional iter_args
+                          – ``scf.for`` with optional iter_args or named carry state
 ``if_(cond, *, results)`` – ``scf.if`` with optional results + else
 ``yield_(*vals)``         – ``scf.yield``
 """
 
 from ._bootstrap import make_context  # noqa: F401
+from ._runtime_index_ops import coerce_runtime_index
+from ._tracing.active import current_session
+from ._surface_values import unwrap_surface_value, wrap_like_surface_value, wrap_surface_value
 from ._types import _resolve
 
 from mlir.dialects import pto as _pto, scf
@@ -60,20 +63,27 @@ class LoopHandle:
         loop.results    – tuple of ForOp results (after loop exit)
     """
 
-    def __init__(self, for_op):
+    def __init__(self, for_op, *, iter_arg_templates=()):
         self._op = for_op
+        self._iter_arg_templates = tuple(iter_arg_templates)
 
     @property
     def iv(self):
-        return self._op.induction_variable
+        return wrap_surface_value(self._op.induction_variable)
 
     @property
     def iter_args(self):
-        return tuple(self._op.inner_iter_args)
+        return tuple(
+            wrap_like_surface_value(template, value)
+            for template, value in zip(self._iter_arg_templates, self._op.inner_iter_args)
+        )
 
     @property
     def results(self):
-        return tuple(self._op.results)
+        return tuple(
+            wrap_like_surface_value(template, value)
+            for template, value in zip(self._iter_arg_templates, self._op.results)
+        )
 
 
 class _ForCM:
@@ -81,20 +91,23 @@ class _ForCM:
         self._start = start
         self._stop = stop
         self._step = step
-        self._iter_args = list(iter_args) if iter_args is not None else []
+        self._iter_arg_templates = tuple(iter_args) if iter_args is not None else ()
+        self._iter_args = [unwrap_surface_value(value) for value in self._iter_arg_templates]
         self._for_op = None
         self._ip = None
 
     def __enter__(self):
         self._for_op = scf.ForOp(
-            self._start, self._stop, self._step,
+            _coerce_index(self._start),
+            _coerce_index(self._stop),
+            _coerce_index(self._step),
             self._iter_args if self._iter_args else None,
         )
         self._ip = InsertionPoint(self._for_op.body)
         self._ip.__enter__()
         if not self._iter_args:
-            return self._for_op.induction_variable
-        return LoopHandle(self._for_op)
+            return wrap_surface_value(self._for_op.induction_variable)
+        return LoopHandle(self._for_op, iter_arg_templates=self._iter_arg_templates)
 
     def __exit__(self, *exc):
         if not self._iter_args:
@@ -102,7 +115,7 @@ class _ForCM:
         self._ip.__exit__(*exc)
 
 
-def for_(start, stop, *, step, iter_args=None) -> _ForCM:
+def for_(start, stop, *, step, iter_args=None):
     """
     ``scf.for`` context manager.
 
@@ -120,8 +133,153 @@ def for_(start, stop, *, step, iter_args=None) -> _ForCM:
             ...
             pto.yield_(nx, ny)
         fa, fb = loop.results
+
+    Named carry state is expressed with ``.carry(...)``::
+
+        loop = pto.for_(c0, c128, step=c64).carry(acc=tile)
+        with loop:
+            cur = loop.acc
+            loop.update(acc=cur)
+        out = loop.final("acc")
     """
-    return _ForCM(start, stop, step, iter_args)
+    return _ForBuilder(start, stop, step, iter_args)
+
+
+class _CarryLoopStateView:
+    def __init__(self, names, values):
+        self._names = tuple(names)
+        self._values = dict(zip(self._names, values))
+
+    def __getattr__(self, name):
+        try:
+            return self._values[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+
+class _CarryForCM(_ForCM):
+    def __init__(self, start, stop, step, state_items):
+        self._state_items = tuple(state_items)
+        self._state_names = tuple(name for name, _ in self._state_items)
+        self._state_templates = tuple(value for _, value in self._state_items)
+        self._session = None
+        self._session_frame = None
+        super().__init__(start, stop, step, self._state_templates)
+        self._yield_values = None
+        self._entered = False
+
+    def __enter__(self):
+        self._session = current_session()
+        if self._session is not None:
+            self._session_frame = self._session.begin_carry_loop(
+                self._start,
+                self._stop,
+                self._step,
+                self._state_items,
+            )
+            self._for_op = self._session_frame.for_op
+            handle = LoopHandle(self._for_op, iter_arg_templates=self._state_templates)
+        else:
+            handle = super().__enter__()
+        self._entered = True
+        self._yield_values = None
+        self._loop_handle = handle
+        self._state = _CarryLoopStateView(self._state_names, handle.iter_args)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if self._session_frame is not None:
+                self._session.finish_carry_loop(self._session_frame, exc_type, exc, tb)
+                return None
+            if exc_type is None:
+                if self._yield_values is None:
+                    raise RuntimeError(
+                        "pto.for_(...).carry(...) requires loop.update(...) before leaving the loop body"
+                    )
+                scf.YieldOp(self._yield_values)
+            return super().__exit__(exc_type, exc, tb)
+        finally:
+            self._entered = False
+            self._session = None
+            self._session_frame = None
+
+    @property
+    def iv(self):
+        if not self._entered:
+            raise RuntimeError("loop.iv is only available inside an active carry loop body")
+        return self._loop_handle.iv
+
+    def __getattr__(self, name):
+        if name in self._state_names:
+            if not self._entered:
+                raise RuntimeError(f"loop.{name} is only available inside an active carry loop body")
+            return getattr(self._state, name)
+        raise AttributeError(name)
+
+    def update(self, **kwargs):
+        if not self._entered:
+            raise RuntimeError("loop.update(...) may only be called inside the loop body")
+        if self._session_frame is not None:
+            self._session.update_carry_loop(self._session_frame, **kwargs)
+            return
+        missing = [name for name in self._state_names if name not in kwargs]
+        extra = [name for name in kwargs if name not in self._state_names]
+        if missing or extra:
+            pieces = []
+            if missing:
+                pieces.append(f"missing: {', '.join(missing)}")
+            if extra:
+                pieces.append(f"unexpected: {', '.join(extra)}")
+            raise RuntimeError("loop.update(...) must match carry names exactly; " + "; ".join(pieces))
+        if self._yield_values is not None:
+            raise RuntimeError("loop.update(...) may only be called once per loop body")
+        self._yield_values = [
+            unwrap_surface_value(kwargs[name])
+            for name in self._state_names
+        ]
+
+    def final(self, name):
+        if self._for_op is None:
+            raise RuntimeError("loop.final(...) is only available after the loop has been built")
+        try:
+            index = self._state_names.index(name)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"loop.final(...) requested unknown carry state '{name}'; "
+                f"expected one of: {', '.join(self._state_names)}"
+            ) from exc
+        return wrap_like_surface_value(self._state_templates[index], self._for_op.results[index])
+
+
+class _ForBuilder:
+    def __init__(self, start, stop, step, iter_args=None):
+        self._start = start
+        self._stop = stop
+        self._step = step
+        self._iter_args = iter_args
+
+    def __enter__(self):
+        self._cm = _ForCM(self._start, self._stop, self._step, self._iter_args)
+        return self._cm.__enter__()
+
+    def __exit__(self, *exc):
+        return self._cm.__exit__(*exc)
+
+    def carry(self, **kwargs):
+        if self._iter_args is not None:
+            raise RuntimeError("for_(..., iter_args=...) cannot be combined with .carry(...)")
+        if not kwargs:
+            raise ValueError("carry(...) requires at least one named loop-carried value")
+        for name in kwargs:
+            if not isinstance(name, str) or not name:
+                raise TypeError("carry(...) names must be non-empty strings")
+        return _CarryForCM(self._start, self._stop, self._step, tuple(kwargs.items()))
+
+
+def _coerce_index(value):
+    raw_value = unwrap_surface_value(value)
+    return coerce_runtime_index(raw_value, context="pto.for_(...) loop bound")
 
 
 # ── if_ ───────────────────────────────────────────────────────────────────────
@@ -163,7 +321,7 @@ class BranchHandle:
 
     @property
     def results(self):
-        return tuple(self._op.results)
+        return tuple(wrap_surface_value(result) for result in self._op.results)
 
 
 class _IfCM:
@@ -174,14 +332,15 @@ class _IfCM:
         self._ip = None
 
     def __enter__(self):
+        cond = unwrap_surface_value(self._cond)
         if self._result_types:
             # if/else with results: create IfOp but don't enter any block;
             # the caller manages blocks via br.then_ / br.else_
-            self._if_op = scf.IfOp(self._cond, self._result_types, hasElse=True)
+            self._if_op = scf.IfOp(cond, self._result_types, hasElse=True)
             return BranchHandle(self._if_op)
         else:
             # simple if without results: enter then_block automatically
-            self._if_op = scf.IfOp(self._cond)
+            self._if_op = scf.IfOp(cond)
             self._ip = InsertionPoint(self._if_op.then_block)
             self._ip.__enter__()
             return None
@@ -221,7 +380,7 @@ def if_(cond, *, results=None) -> _IfCM:
 
 def yield_(*vals):
     """Emit ``scf.yield`` with the given values."""
-    scf.YieldOp(list(vals))
+    scf.YieldOp([unwrap_surface_value(value) for value in vals])
 
 
 __all__ = [

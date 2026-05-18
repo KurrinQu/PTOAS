@@ -37,17 +37,22 @@ def _candidate_python_roots() -> list[Path]:
 
 
 def _bootstrap_python_paths() -> None:
-    added = set()
+    ordered_roots: list[str] = []
+    seen = set()
     for root in _candidate_python_roots():
         if not root or not root.is_dir():
             continue
         if not (root / "mlir").exists():
             continue
         root_text = str(root)
-        if root_text in added or root_text in sys.path:
+        if root_text in seen:
             continue
+        ordered_roots.append(root_text)
+        seen.add(root_text)
+    for root_text in reversed(ordered_roots):
+        if root_text in sys.path:
+            sys.path.remove(root_text)
         sys.path.insert(0, root_text)
-        added.add(root_text)
 
 
 _bootstrap_python_paths()

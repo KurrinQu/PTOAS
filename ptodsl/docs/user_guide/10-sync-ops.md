@@ -26,9 +26,6 @@ Memory barrier types used with `pto.mem_bar`. Each value specifies which categor
 | `ST_VLD` | Scalar stores before → vector loads after |
 | `LD_VST` | Scalar loads before → vector stores after |
 | `ST_VST` | Scalar stores before → vector stores after |
-| `SYNC` | Full ordering — all prior memory operations (all pipes) complete before any subsequent operation |
-
-`SYNC` is a convenience value equivalent to a full pipeline barrier. It is the idiomatic choice for separating compute phases inside a ukernel when fine-grained barrier types are not needed.
 
 The naming convention: `V` = vector, `S` = scalar, `ST` = store, `LD` = load. `VST_VLD` reads "Vector STore before Vector LoaD."
 
@@ -262,7 +259,8 @@ The most commonly used barrier types in practice:
 
 ### Usage in ukernel blocks
 
-In flash attention, `mem_bar` separates logically independent computation phases within the same ukernel:
+In flash attention, phase boundaries use `pipe_barrier(Pipe.ALL)`, while
+`mem_bar` remains the tool for narrower intra-pipeline ordering:
 
 ```python
 @pto.ukernel
@@ -270,23 +268,23 @@ def flash_attention_block(q_tile, k_tile, v_tile, ...):
     # Phase 1: load K/V
     pto.mte_load(k_part, k_tile)
     pto.mte_load(v_part, v_tile)
-    pto.mem_bar(BarrierType.SYNC)
+    pto.pipe_barrier(Pipe.ALL)
 
     # Phase 2: S = Q @ K^T
     qk_matmul(q_tile, k_tile, ...)
-    pto.mem_bar(BarrierType.SYNC)
+    pto.pipe_barrier(Pipe.ALL)
 
     # Phase 3: softmax(S)
     online_softmax(s_tile, ...)
-    pto.mem_bar(BarrierType.SYNC)
+    pto.pipe_barrier(Pipe.ALL)
 
     # Phase 4: PV = P @ V
     pv_matmul(p_tile, v_tile, ...)
-    pto.mem_bar(BarrierType.SYNC)
+    pto.pipe_barrier(Pipe.ALL)
 
     # Phase 5: blend output
     blend_output(o_prev_tile, pv_tile, ...)
-    pto.mem_bar(BarrierType.SYNC)
+    pto.pipe_barrier(Pipe.ALL)
 ```
 
 ---

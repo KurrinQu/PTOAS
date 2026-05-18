@@ -18,6 +18,7 @@
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 #include "mlir/Bindings/Python/PybindAdaptors.h"
+#include "mlir/CAPI/IR.h"
 #include "pto-c/Dialect/PTO.h"
 #include "mlir-c/IR.h"
 #include "PTO/IR/PTO.h"
@@ -29,6 +30,8 @@
 #include <string>
 namespace py = pybind11;
 using namespace mlir::python::adaptors;
+using llvm::cast;
+using llvm::isa;
 
 static std::vector<int64_t> toInt64Vector(const py::sequence &seq) {
   std::vector<int64_t> out;
@@ -95,6 +98,14 @@ static py::list shapeToPyList(const int64_t *data, intptr_t n) {
   for (intptr_t i = 0; i < n; ++i)
     lst.append(py::int_(data[i]));
   return lst;
+}
+
+static py::object wrapAttributeAs(const py::module_ &m, const char *className,
+                                  MlirAttribute attr) {
+  if (mlirAttributeIsNull(attr))
+    return py::none();
+  py::object cls = m.attr(className);
+  return cls.attr("__call__")(attr);
 }
 
 void populatePTODialectSubmodule(pybind11::module &m);
@@ -774,6 +785,61 @@ static void bindPTOModule(pybind11::module &m) {
             });
 
     mlir_type_subclass(
+        m, "VRegType",
+        [](MlirType type) -> bool { return isa<mlir::pto::VRegType>(unwrap(type)); })
+        .def_classmethod(
+            "get",
+            [](py::object cls, int64_t elementCount, MlirType elementType,
+               MlirContext context) -> py::object {
+                context = inferContextFromElementType(context, elementType);
+                MlirType t = wrap(
+                    mlir::pto::VRegType::get(
+                        unwrap(context), elementCount, unwrap(elementType)));
+                return cls.attr("__call__")(t);
+            },
+            py::arg("cls"), py::arg("element_count"), py::arg("element_type"),
+            py::arg("context") = py::none())
+        .def_property_readonly(
+            "element_count",
+            [](MlirType self) -> int64_t {
+                return cast<mlir::pto::VRegType>(unwrap(self)).getElementCount();
+            })
+        .def_property_readonly(
+            "element_type",
+            [](MlirType self) -> MlirType {
+                return wrap(cast<mlir::pto::VRegType>(unwrap(self)).getElementType());
+            });
+
+    mlir_type_subclass(
+        m, "MaskType",
+        [](MlirType type) -> bool { return isa<mlir::pto::MaskType>(unwrap(type)); })
+        .def_classmethod(
+            "get",
+            [](py::object cls, std::string granularity, MlirContext context) -> py::object {
+                MlirType t = wrap(
+                    mlir::pto::MaskType::get(unwrap(context), granularity));
+                return cls.attr("__call__")(t);
+            },
+            py::arg("cls"), py::arg("granularity"),
+            py::arg("context") = py::none())
+        .def_property_readonly(
+            "granularity",
+            [](MlirType self) -> std::string {
+                return cast<mlir::pto::MaskType>(unwrap(self)).getGranularity().str();
+            });
+
+    mlir_type_subclass(
+        m, "AlignType",
+        [](MlirType type) -> bool { return isa<mlir::pto::AlignType>(unwrap(type)); })
+        .def_classmethod(
+            "get",
+            [](py::object cls, MlirContext context) -> py::object {
+                MlirType t = wrap(mlir::pto::AlignType::get(unwrap(context)));
+                return cls.attr("__call__")(t);
+            },
+            py::arg("cls"), py::arg("context") = py::none());
+
+    mlir_type_subclass(
         m, "AsyncSessionType",
         [](MlirType type) -> bool { return mlirPTOTypeIsAAsyncSessionType(type); })
         .def_classmethod(
@@ -1056,7 +1122,76 @@ static void bindPTOModule(pybind11::module &m) {
                 if (mlirPTOTypeIsATileBufType(t)) return cls(t);
                 return py::none();
             },
-            py::arg("cls"), py::arg("type"));
+            py::arg("cls"), py::arg("type"))
+        .def_property_readonly(
+            "rank",
+            [](MlirType self) -> intptr_t {
+                return static_cast<intptr_t>(
+                    cast<mlir::pto::TileBufType>(unwrap(self)).getRank());
+            })
+        .def_property_readonly(
+            "element_type",
+            [](MlirType self) -> MlirType {
+                return wrap(cast<mlir::pto::TileBufType>(unwrap(self)).getElementType());
+            })
+        .def_property_readonly(
+            "memory_space",
+            [m](MlirType self) -> py::object {
+                MlirAttribute attr =
+                    wrap(cast<mlir::pto::TileBufType>(unwrap(self)).getMemorySpace());
+                return wrapAttributeAs(m, "AddressSpaceAttr", attr);
+            })
+        .def_property_readonly(
+            "shape",
+            [](MlirType self) -> py::list {
+                auto shape = cast<mlir::pto::TileBufType>(unwrap(self)).getShape();
+                return shapeToPyList(shape.data(), static_cast<intptr_t>(shape.size()));
+            })
+        .def_property_readonly(
+            "valid_shape",
+            [](MlirType self) -> py::list {
+                auto validShape = cast<mlir::pto::TileBufType>(unwrap(self)).getValidShape();
+                return shapeToPyList(validShape.data(), static_cast<intptr_t>(validShape.size()));
+            })
+        .def_property_readonly(
+            "blayout_attr",
+            [m](MlirType self) -> py::object {
+                MlirAttribute attr =
+                    wrap(cast<mlir::pto::TileBufType>(unwrap(self)).getBLayoutAttr());
+                return wrapAttributeAs(m, "BLayoutAttr", attr);
+            })
+        .def_property_readonly(
+            "slayout_attr",
+            [m](MlirType self) -> py::object {
+                MlirAttribute attr =
+                    wrap(cast<mlir::pto::TileBufType>(unwrap(self)).getSLayoutAttr());
+                return wrapAttributeAs(m, "SLayoutAttr", attr);
+            })
+        .def_property_readonly(
+            "blayout_value",
+            [](MlirType self) -> int32_t {
+                return cast<mlir::pto::TileBufType>(unwrap(self)).getBLayoutValueI32();
+            })
+        .def_property_readonly(
+            "slayout_value",
+            [](MlirType self) -> int32_t {
+                return cast<mlir::pto::TileBufType>(unwrap(self)).getSLayoutValueI32();
+            })
+        .def_property_readonly(
+            "pad_value",
+            [](MlirType self) -> int32_t {
+                return cast<mlir::pto::TileBufType>(unwrap(self)).getPadValueI32();
+            })
+        .def_property_readonly(
+            "compact_mode",
+            [](MlirType self) -> int32_t {
+                return cast<mlir::pto::TileBufType>(unwrap(self)).getCompactModeI32();
+            })
+        .def_property_readonly(
+            "s_fractal_size",
+            [](MlirType self) -> int32_t {
+                return cast<mlir::pto::TileBufType>(unwrap(self)).getSFractalSizeI32();
+            });
 	
 	populatePTODialectSubmodule(m);
 }

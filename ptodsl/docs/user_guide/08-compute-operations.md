@@ -588,7 +588,7 @@ The Cube unit performs matrix multiplication. Its operands are typed pointers in
 
 ### 8.3.1 Matrix multiply: `pto.mad`
 
-#### `pto.mad(lhs: PtrType, rhs: PtrType, dst: PtrType, m: int, k: int, n: int) -> None`
+#### `pto.mad(lhs: PtrType, rhs: PtrType, dst: PtrType, m: int, n: int, k: int) -> None`
 
 **Description**: Zero-initialized matrix multiply: `dst[M×N] = lhs[M×K] * rhs[K×N]`. `lhs` is an L0A pointer, `rhs` is an L0B pointer, `dst` is an L0C pointer.
 
@@ -626,22 +626,22 @@ A full cube matmul follows a three-stage pattern: stage operands into L0A/L0B, c
 ```python
 @pto.cube
 def qk_matmul(q_tile, k_tile, q_l0a, k_l0b, s_acc, s_tile):
-    m = pto.tile_valid_rows(q_tile)
-    k = pto.tile_valid_cols(q_tile)
-    n = pto.tile_valid_rows(k_tile)
+    m = q_tile.valid_shape[0]
+    k = q_tile.valid_shape[1]
+    n = k_tile.valid_shape[0]
 
     # Stage: UB → L0A / L0B
-    pto.mte_l1_l0a(q_tile, q_l0a, m, k)
-    pto.mte_l1_l0b(k_tile, k_l0b, k, n, transpose=True)
+    pto.mte_l1_l0a(q_tile.as_ptr(), q_l0a.as_ptr(), m, k)
+    pto.mte_l1_l0b(k_tile.as_ptr(), k_l0b.as_ptr(), k, n, transpose=True)
 
     # Compute: L0A × L0B → L0C
-    pto.mad(q_l0a, k_l0b, s_acc, m, k, n)
+    pto.mad(q_l0a.as_ptr(), k_l0b.as_ptr(), s_acc.as_ptr(), m, n, k)
 
     # Writeback: L0C → UB
-    pto.mte_l0c_ub(s_acc, s_tile, m, n)
+    pto.mte_l0c_ub(s_acc.as_ptr(), s_tile.as_ptr(), m, n, n, n, 0)
 ```
 
-The `mte_l1_l0a`/`mte_l1_l0b` stage operands from UB into cube-local buffers. `mad` performs the matrix multiply into L0C. `mte_l0c_ub` writes the result back to a UB tile for downstream processing.
+The `mte_l1_l0a`/`mte_l1_l0b` stage operands from UB into cube-local buffers. `mad` performs the matrix multiply into L0C. `mte_l0c_ub` writes the result back to a UB tile for downstream processing. At this micro-op layer, the operands are explicit pointer views obtained with `.as_ptr()`.
 
 ---
 
@@ -649,7 +649,7 @@ The `mte_l1_l0a`/`mte_l1_l0b` stage operands from UB into cube-local buffers. `m
 
 | Operation | Semantics |
 |-----------|-----------|
-| `pto.mad(lhs, rhs, dst, m, k, n)` | `dst = lhs * rhs` (zero-init) |
+| `pto.mad(lhs, rhs, dst, m, n, k)` | `dst = lhs * rhs` (zero-init) |
 | `pto.mad_acc(lhs, rhs, dst, m, k, n)` | `dst += lhs * rhs` (accumulating) |
 | `pto.mad_bias(lhs, rhs, dst, bias, m, k, n)` | `dst = lhs * rhs + bias` |
 | `pto.mad_mx(lhs, rhs, dst, m, k, n)` | MX-format zero-init matmul |

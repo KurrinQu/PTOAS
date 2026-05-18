@@ -1,8 +1,8 @@
 # ptodsl — PTO Python IR Builders
 
 A lightweight, pip-installable DSL package for building PTO MLIR IR modules
-in Python.  The API is inspired by Triton / CuteDSL: kernels are ordinary
-Python functions decorated with `@pto.to_ir`, type annotations carry PTO
+in Python. PTODSL kernels are ordinary Python functions decorated with
+`@pto.jit`. Type annotations carry PTO
 types as lazy descriptors, and control-flow maps 1-to-1 to MLIR operations.
 
 ---
@@ -19,12 +19,14 @@ ptodsl/
 │   ├── _types.py        # lazy dtype descriptors and type constructors
 │   ├── _ops.py          # PTO operation wrappers
 │   ├── _control_flow.py # vecscope, for_, if_, yield_ context managers
-│   └── _module.py       # @pto.to_ir decorator + module builders
+│   ├── _jit.py          # @pto.jit decorator
+│   ├── _tracing/        # shared tracing runtime building blocks
+│   └── _tile_template_tracing.py # internal tile-template tracing implementation
 ├── examples/
 │   ├── tadd_lowlevel.py    # TADD – raw MLIR Python binding calls
-│   ├── tadd_dsl.py         # TADD – @pto.to_ir DSL style
+│   ├── tadd_dsl.py         # TADD – @pto.jit DSL style
 │   ├── softmax_lowlevel.py # Softmax – raw MLIR Python binding calls
-│   └── softmax_dsl.py      # Softmax – @pto.to_ir DSL style
+│   └── softmax_dsl.py      # Softmax – @pto.jit DSL style
 ├── pyproject.toml       # pip install -e .
 ├── check_ir.py          # IR correctness test runner
 └── README.md
@@ -92,21 +94,24 @@ s = pto.scalar   # arith shorthand alias
 ### Kernel decorator
 
 ```python
-@pto.to_ir(name="MyKernel", kernel_kind="vector", arch="a5")
+@pto.jit(name="MyKernel", kernel_kind="vector", target="a5")
 def MyKernel():
     ...
 
-@pto.to_ir(name="Softmax", kernel_kind="vector", arch="a5", func_attr="pto.aicore")
+@pto.jit(name="Softmax", kernel_kind="vector", target="a5", func_attr="pto.aicore")
 def Softmax(arg0: pto.ptr(pto.float32, "gm"), n: pto.int32):
     ...
 
 print(MyKernel)          # prints MLIR text
-mod = MyKernel.build()   # returns mlir.ir.Module
+mod = MyKernel.mlir_module()   # returns mlir.ir.Module
 ```
 
 `func_attr="pto.aicore"` selects a flat single-module structure with the
 `pto.aicore` function attribute (softmax style).  Without it, a nested
 double-module is emitted (TADD style).
+
+Additional layered kernel decorators are also exported on the public surface:
+`@pto.ukernel`, `@pto.cube`, `@pto.simd`, and `@pto.simt`.
 
 ### Type descriptors (lazy – safe to use in annotations)
 
@@ -190,56 +195,15 @@ pto.vadd(a, b, mask)   # infers result type from a.type
 pto.vmul / vmax / vdiv / vcmax / vcadd / vdup / vexpdif  # similarly
 pto.make_tensor_view(ptr, shape=…, strides=…)    # type inferred
 pto.partition_view(tv, offsets=…, sizes=…)        # type inferred
-pto.alloc_tile(tile_type, addr=…, valid_row=…, valid_col=…)
+pto.alloc_tile(shape=…, dtype=…, memory_space=…)  # authored surface
 pto.tload(part, tile)
 pto.tstore(tile, part)
-pto.tile_ptr(tile, ptr_type)
+tile.as_ptr() / view.as_ptr()
 pto.get_block_idx()           # → i64
 pto.set_flag("MTE2", "V", event_id=0)
 pto.wait_flag("MTE2", "V", event_id=0)
-pto.barrier_all()
+pto.pipe_barrier(pto.Pipe.ALL)
 ```
-
-### Experimental `vpto` POC
-
-For early experiments around AST-free tracing of TileLang-style tile templates,
-`ptodsl` also exposes an experimental namespace:
-
-```python
-from ptodsl import vpto as pto
-
-@pto.vkernel(target="a5", op="pto.tadd")
-def template_tadd(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
-    dtype = dst.element_type
-    valid_rows, valid_cols = dst.valid_shape
-    with pto.for_(0, valid_rows, step=1) as row:
-        remained0 = pto.scalar_const(64, pto.i32)
-        with pto.for_(0, valid_cols, step=pto.get_lanes(dtype), state={"remained": remained0}) as loop:
-            col = loop.iv
-            remained = loop.state.remained
-            mask, next_remained = pto.make_mask(dtype, remained)
-            lhs = pto.vlds(src0[row, col:])
-            rhs = pto.vlds(src1[row, col:])
-            out = pto.vadd(lhs, rhs, mask)
-            pto.vsts(out, dst[row, col:], mask)
-            loop.yield_state(remained=next_remained)
-```
-
-Current limitations:
-
-- pybinding-backed POC only; it still covers a narrow TileLang-shaped subset
-- supports only static 2D `Tile` parameters
-- supports only a narrow vector subset needed by `tadd_template.py`
-- currently uses explicit structured `for_()` builders rather than Python `for range(...)`
-- `vecscope()` remains available, but it is no longer required by the POC
-
-Reference script:
-
-```bash
-python3 lib/TileOps/tadd_template_tracing_poc.py
-```
-
----
 
 ## How the IR check works
 

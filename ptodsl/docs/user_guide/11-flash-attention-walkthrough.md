@@ -102,20 +102,32 @@ head_idx = block_idx % heads
 
 The launch grid is `[batch * heads]`. Each block computes one `(batch, head)` slice. `get_block_idx()` returns the current block's linear index; dividing by `heads` recovers the batch and head indices.
 
-### 11.3.3 Per-head view selection
+### 11.3.3 Per-head view partitioning
 
 ```python
-q_head = pto.select_head_view(q_view, batch=batch_idx, head=head_idx,
-                              shape=[seq_q, dim])
-k_head = pto.select_head_view(k_view, batch=batch_idx, head=head_idx,
-                              shape=[seq_k, dim])
-v_head = pto.select_head_view(v_view, batch=batch_idx, head=head_idx,
-                              shape=[seq_k, dim])
-o_head = pto.select_head_view(o_view, batch=batch_idx, head=head_idx,
-                              shape=[seq_q, dim])
+q_head = pto.partition_view(
+    q_view,
+    offsets=[batch_idx, 0, head_idx, 0],
+    sizes=[1, seq_q, 1, dim],
+)
+k_head = pto.partition_view(
+    k_view,
+    offsets=[batch_idx, 0, head_idx, 0],
+    sizes=[1, seq_k, 1, dim],
+)
+v_head = pto.partition_view(
+    v_view,
+    offsets=[batch_idx, 0, head_idx, 0],
+    sizes=[1, seq_k, 1, dim],
+)
+o_head = pto.partition_view(
+    o_view,
+    offsets=[batch_idx, 0, head_idx, 0],
+    sizes=[1, seq_q, 1, dim],
+)
 ```
 
-`select_head_view` extracts a 2D slice `[seq, dim]` from the 4D tensor view for the current head. The resulting views are the working set for this block's entire computation.
+There is no dedicated `select_head_view` public helper anymore. Each `(batch, head)` working set is sliced from the 4D TensorView with the standard `partition_view(...)` surface, and further logical slicing composes on top of the same primitive.
 
 ### 11.3.4 Tile allocation
 
@@ -124,22 +136,22 @@ Two categories of tiles are allocated:
 **UB-resident tiles** — data tiles that live in the Unified Buffer:
 
 ```python
-q_tile  = pto.alloc_tile(shape=[Br, dim], dtype=pto.f32)
-k_tile  = pto.alloc_tile(shape=[Bc, dim], dtype=pto.f32)
-v_tile  = pto.alloc_tile(shape=[Bc, dim], dtype=pto.f32)
+q_tile  = pto.alloc_tile(shape=[Br, D], dtype=pto.f32, valid_shape=[full_br, dim])
+k_tile  = pto.alloc_tile(shape=[Bc, D], dtype=pto.f32, valid_shape=[full_bc, dim])
+v_tile  = pto.alloc_tile(shape=[Bc, D], dtype=pto.f32, valid_shape=[full_bc, dim])
 
-o_prev_tile = pto.alloc_tile(shape=[Br, dim], dtype=pto.f32)
-o_next_tile = pto.alloc_tile(shape=[Br, dim], dtype=pto.f32)
-m_prev_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32)
-m_next_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32)
-l_prev_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32)
-l_next_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32)
+o_prev_tile = pto.alloc_tile(shape=[Br, D], dtype=pto.f32, valid_shape=[full_br, dim])
+o_next_tile = pto.alloc_tile(shape=[Br, D], dtype=pto.f32, valid_shape=[full_br, dim])
+m_prev_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, valid_shape=[full_br, one], blayout="ColMajor")
+m_next_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, valid_shape=[full_br, one], blayout="ColMajor")
+l_prev_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, valid_shape=[full_br, one], blayout="ColMajor")
+l_next_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, valid_shape=[full_br, one], blayout="ColMajor")
 
-s_tile   = pto.alloc_tile(shape=[Br, Bc], dtype=pto.f32)
-p_tile   = pto.alloc_tile(shape=[Br, Bc], dtype=pto.f32)
-pv_tile  = pto.alloc_tile(shape=[Br, dim], dtype=pto.f32)
-alpha_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32)
-beta_tile  = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32)
+s_tile   = pto.alloc_tile(shape=[Br, Bc], dtype=pto.f32, valid_shape=[full_br, full_bc])
+p_tile   = pto.alloc_tile(shape=[Br, Bc], dtype=pto.f32, valid_shape=[full_br, full_bc])
+pv_tile  = pto.alloc_tile(shape=[Br, D], dtype=pto.f32, valid_shape=[full_br, dim])
+alpha_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, valid_shape=[full_br, one], blayout="ColMajor")
+beta_tile  = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, valid_shape=[full_br, one], blayout="ColMajor")
 ```
 
 The online-softmax algorithm requires **ping-pong state tiles**: `m_prev`/`m_next`, `l_prev`/`l_next`, `o_prev`/`o_next`. After each KV block, `next` becomes `prev` for the following iteration.
@@ -147,16 +159,16 @@ The online-softmax algorithm requires **ping-pong state tiles**: `m_prev`/`m_nex
 **Cube-local scratch tiles** — allocated in specific memory spaces:
 
 ```python
-q_l0a  = pto.alloc_tile(shape=[Br, dim], dtype=pto.f16,
-                        memory_space=pto.MemorySpace.LEFT)
+q_l0a  = pto.alloc_tile(shape=[Br, D], dtype=pto.f16,
+                        memory_space=pto.MemorySpace.LEFT, valid_shape=[full_br, dim])
 p_l0a  = pto.alloc_tile(shape=[Br, Bc], dtype=pto.f16,
-                        memory_space=pto.MemorySpace.LEFT)
-rhs_l0b = pto.alloc_tile(shape=[Bc, dim], dtype=pto.f16,
-                         memory_space=pto.MemorySpace.RIGHT)
+                        memory_space=pto.MemorySpace.LEFT, valid_shape=[full_br, full_bc])
+rhs_l0b = pto.alloc_tile(shape=[Bc, D], dtype=pto.f16,
+                         memory_space=pto.MemorySpace.RIGHT, valid_shape=[full_bc, dim])
 qk_acc_tile = pto.alloc_tile(shape=[Br, Bc], dtype=pto.f32,
-                             memory_space=pto.MemorySpace.ACC)
-pv_acc_tile = pto.alloc_tile(shape=[Br, dim], dtype=pto.f32,
-                             memory_space=pto.MemorySpace.ACC)
+                             memory_space=pto.MemorySpace.ACC, valid_shape=[full_br, full_bc])
+pv_acc_tile = pto.alloc_tile(shape=[Br, D], dtype=pto.f32,
+                             memory_space=pto.MemorySpace.ACC, valid_shape=[full_br, dim])
 ```
 
 Cube scratch tiles are NOT UB buffers. `LEFT`, `RIGHT`, and `ACC` are distinct hardware memory spaces inside the Cube unit. They serve as staging for matrix operands and accumulators.
@@ -164,20 +176,25 @@ Cube scratch tiles are NOT UB buffers. `LEFT`, `RIGHT`, and `ACC` are distinct h
 ### 11.3.5 SIMT metadata buffer
 
 ```python
-meta_tile = pto.alloc_tile(shape=[3, 1], dtype=pto.i32)
-meta_ptr = pto.tile_buf_addr(meta_tile)
+meta_tile = pto.alloc_tile(shape=[1, 8], dtype=pto.i32, valid_shape=[1, 3])
+meta_ptr = meta_tile.as_ptr()
 ```
 
-A small UB tile stores three scalar loop bounds (`row_start`, `row_stop`, `valid_cols`). `tile_buf_addr` materializes a typed UB pointer into it, which is passed to the ukernel as scalar control metadata.
+A small UB tile stores three scalar loop bounds (`row_start`, `row_stop`, `valid_cols`). `meta_tile.as_ptr()` materializes a typed UB pointer into it, which is passed to the ukernel as scalar control metadata.
+
+Notice that the row-wise softmax state tiles (`m_*`, `l_*`, `alpha_tile`,
+`beta_tile`) are authored as `blayout="ColMajor"`. This is the intended public
+surface for logical column vectors; it avoids forcing users to manufacture a
+row-major padded physical width just to satisfy row-byte alignment.
 
 ### 11.3.6 Outer Q loop + inner KV loop
 
 ```python
 with pto.for_(0, q_blocks, step=1) as qi:
-    q_part = pto.partition_view(q_head, offsets=[qi * Br, 0],
-                                sizes=[Br, dim])
-    o_part = pto.partition_view(o_head, offsets=[qi * Br, 0],
-                                sizes=[Br, dim])
+    q_part = pto.partition_view(q_head, offsets=[0, qi * Br, 0, 0],
+                                sizes=[1, Br, 1, dim])
+    o_part = pto.partition_view(o_head, offsets=[0, qi * Br, 0, 0],
+                                sizes=[1, Br, 1, dim])
 
     pto.tload(q_part, q_tile)
 
@@ -194,9 +211,9 @@ with pto.for_(0, q_blocks, step=1) as qi:
         l_cur = kv_loop.l
         o_cur = kv_loop.o
         k_part = pto.partition_view(k_head,
-                    offsets=[kj * Bc, 0], sizes=[Bc, dim])
+                    offsets=[0, kj * Bc, 0, 0], sizes=[1, Bc, 1, dim])
         v_part = pto.partition_view(v_head,
-                    offsets=[kj * Bc, 0], sizes=[Bc, dim])
+                    offsets=[0, kj * Bc, 0, 0], sizes=[1, Bc, 1, dim])
 
         kv_block_process(
             q_tile, k_part, v_part, k_tile, v_tile,
@@ -245,20 +262,20 @@ The ukernel processes one KV block against an already-loaded Q tile. It owns the
 ```python
 pto.mte_load(k_part, k_tile)
 pto.mte_load(v_part, v_tile)
-pto.mem_bar(pto.BarrierType.SYNC)
+pto.pipe_barrier(pto.Pipe.ALL)
 ```
 
-`mte_load` copies the current K and V block from GM to UB. `mem_bar` ensures the DMA stores are visible before the cube unit reads `k_tile`/`v_tile`.
+`mte_load` copies the current K and V block from GM to UB. `pipe_barrier(Pipe.ALL)` makes the phase boundary explicit before the cube unit reads `k_tile`/`v_tile`.
 
 ### Phase 0b — Materialize loop bounds
 
 ```python
 materialize_tile_bounds(meta_ptr,
-    pto.tile_valid_rows(q_tile),
-    pto.tile_valid_rows(k_tile))
+    q_tile.valid_shape[0],
+    k_tile.valid_shape[0])
 row_start = scalar.load(meta_ptr + 0)
-row_stop  = scalar.load(meta_ptr + 4)
-valid_cols = scalar.load(meta_ptr + 8)
+row_stop  = scalar.load(meta_ptr + 1)
+valid_cols = scalar.load(meta_ptr + 2)
 ```
 
 The SIMT sub-kernel `materialize_tile_bounds` writes `{0, valid_rows, valid_cols}` into the metadata buffer. The ukernel then loads these scalars. They control the row iteration range in subsequent sub-kernels, handling partial tail blocks.
@@ -267,10 +284,10 @@ The SIMT sub-kernel `materialize_tile_bounds` writes `{0, valid_rows, valid_cols
 
 ```python
 qk_matmul(q_tile, k_tile, q_l0a, rhs_l0b, qk_acc_tile, s_tile)
-pto.mem_bar(pto.BarrierType.SYNC)
+pto.pipe_barrier(pto.Pipe.ALL)
 ```
 
-Dispatches the cube sub-kernel. `mem_bar` separates the matrix multiply from the subsequent softmax.
+Dispatches the cube sub-kernel. `pipe_barrier(Pipe.ALL)` separates the matrix multiply from the subsequent softmax.
 
 ### Phase 2 — Online softmax
 
@@ -282,7 +299,7 @@ online_softmax_rows(
     alpha_tile, beta_tile,
     row_start, row_stop, valid_cols,
 )
-pto.mem_bar(pto.BarrierType.SYNC)
+pto.pipe_barrier(pto.Pipe.ALL)
 ```
 
 The simd sub-kernel computes per-row softmax on `S`, updates the running `m`/`l` state, and writes `P`, `alpha`, and `beta`.
@@ -291,7 +308,7 @@ The simd sub-kernel computes per-row softmax on `S`, updates the running `m`/`l`
 
 ```python
 pv_matmul(p_tile, v_tile, p_l0a, rhs_l0b, pv_acc_tile, pv_tile)
-pto.mem_bar(pto.BarrierType.SYNC)
+pto.pipe_barrier(pto.Pipe.ALL)
 ```
 
 Second cube dispatch. `rhs_l0b` is reused for `V` (it previously held `K`). `pv_acc_tile` is reused from the QK^T accumulator.
@@ -302,16 +319,16 @@ Second cube dispatch. `rhs_l0b` is reused for `V` (it previously held `K`). `pv_
 blend_output_rows(
     o_prev_tile, pv_tile, alpha_tile, beta_tile,
     o_next_tile, row_start, row_stop,
-    pto.tile_valid_cols(v_tile),
+    v_tile.valid_shape[1],
 )
-pto.mem_bar(pto.BarrierType.SYNC)
+pto.pipe_barrier(pto.Pipe.ALL)
 ```
 
 The simt sub-kernel blends the old output accumulator with the new PV contribution, weighted by `alpha` and `beta`.
 
 ### Why the ukernel owns sync
 
-Each `mem_bar` between phases is explicit in the ukernel body. This is intentional: at the L2 micro-instruction level, the user controls pipeline ordering. There is no auto-sync insertion — the ukernel is the single place where the hardware execution sequence is spelled out.
+Each `pipe_barrier(Pipe.ALL)` between phases is explicit in the ukernel body. This is intentional: at the L2 micro-instruction level, the user controls pipeline ordering. There is no auto-sync insertion — the ukernel is the single place where the hardware execution sequence is spelled out.
 
 ## 11.5 L3a — `@pto.cube` sub-kernels
 
@@ -320,14 +337,14 @@ Each `mem_bar` between phases is explicit in the ukernel body. This is intention
 ```python
 @pto.cube
 def qk_matmul(q_tile, k_tile, q_l0a, k_l0b, s_acc, s_tile):
-    m = pto.tile_valid_rows(q_tile)
-    k = pto.tile_valid_cols(q_tile)
-    n = pto.tile_valid_rows(k_tile)
+    m = q_tile.valid_shape[0]
+    k = q_tile.valid_shape[1]
+    n = k_tile.valid_shape[0]
 
-    pto.mte_l1_l0a(q_tile, q_l0a, m, k)
-    pto.mte_l1_l0b(k_tile, k_l0b, k, n, transpose=True)
-    pto.mad(q_l0a, k_l0b, s_acc)
-    pto.mte_l0c_ub(s_acc, s_tile, m, n)
+    pto.mte_l1_l0a(q_tile.as_ptr(), q_l0a.as_ptr(), m, k)
+    pto.mte_l1_l0b(k_tile.as_ptr(), k_l0b.as_ptr(), k, n, transpose=True)
+    pto.mad(q_l0a.as_ptr(), k_l0b.as_ptr(), s_acc.as_ptr(), m, n, k)
+    pto.mte_l0c_ub(s_acc.as_ptr(), s_tile.as_ptr(), m, n, n, n, 0)
 ```
 
 Four cube ops:
@@ -344,14 +361,14 @@ The cube kernel does not allocate scratch — the caller (L1) owns scratch lifet
 ```python
 @pto.cube
 def pv_matmul(p_tile, v_tile, p_l0a, v_l0b, pv_acc, pv_tile):
-    m = pto.tile_valid_rows(p_tile)
-    k = pto.tile_valid_cols(p_tile)
-    n = pto.tile_valid_cols(v_tile)
+    m = p_tile.valid_shape[0]
+    k = p_tile.valid_shape[1]
+    n = v_tile.valid_shape[1]
 
-    pto.mte_l1_l0a(p_tile, p_l0a, m, k)
-    pto.mte_l1_l0b(v_tile, v_l0b, k, n)
-    pto.mad(p_l0a, v_l0b, pv_acc)
-    pto.mte_l0c_ub(pv_acc, pv_tile, m, n)
+    pto.mte_l1_l0a(p_tile.as_ptr(), p_l0a.as_ptr(), m, k)
+    pto.mte_l1_l0b(v_tile.as_ptr(), v_l0b.as_ptr(), k, n)
+    pto.mad(p_l0a.as_ptr(), v_l0b.as_ptr(), pv_acc.as_ptr(), m, n, k)
+    pto.mte_l0c_ub(pv_acc.as_ptr(), pv_tile.as_ptr(), m, n, n, n, 0)
 ```
 
 Structurally identical to `qk_matmul`, but without transposition and with different input/output tiles. The scratch tiles `p_l0a`, `v_l0b`, and `pv_acc` are reused across KV blocks — the caller (L1) allocates them once.
@@ -415,10 +432,10 @@ This implements the online-softmax update from the Flash Attention paper:
 
 ```python
     pto.vsts(p_row, p_tile[row, 0:], col_mask)
-    scalar.sts(m_next_tile[row, 0], m_next)
-    scalar.sts(l_next_tile[row, 0], l_next)
-    scalar.sts(alpha_tile[row, 0], alpha)
-    scalar.sts(beta_tile[row, 0], beta)
+    scalar.store(m_next, m_next_tile[row, 0])
+    scalar.store(l_next, l_next_tile[row, 0])
+    scalar.store(alpha, alpha_tile[row, 0])
+    scalar.store(beta, beta_tile[row, 0])
 ```
 
 - `vsts` stores the vector `p_row` back to UB under the column mask.
@@ -433,12 +450,12 @@ This implements the online-softmax update from the Flash Attention paper:
 ```python
 @pto.simt
 def materialize_tile_bounds(meta_ptr, valid_rows, valid_cols):
-    scalar.sts(meta_ptr + 0, 0)
-    scalar.sts(meta_ptr + 4, valid_rows)
-    scalar.sts(meta_ptr + 8, valid_cols)
+    scalar.store(0, meta_ptr + 0)
+    scalar.store(valid_rows, meta_ptr + 1)
+    scalar.store(valid_cols, meta_ptr + 2)
 ```
 
-Three scalar stores write the loop bounds into the metadata buffer. `meta_ptr` is a typed UB pointer; `+ 0`, `+ 4`, `+ 8` are byte offsets (three `i32` values). This is the simplest sub-kernel in the sketch — it handles scalar control metadata, not vector math.
+Three scalar stores write the loop bounds into the metadata buffer. `meta_ptr` is a typed UB pointer; `+ 0`, `+ 1`, `+ 2` are element offsets into `i32` storage, not byte offsets. This is the simplest sub-kernel in the sketch — it handles scalar control metadata, not vector math.
 
 ### `blend_output_rows` — output accumulation
 
@@ -454,7 +471,7 @@ def blend_output_rows(o_prev_tile, pv_tile, alpha_tile, beta_tile,
             o_prev = scalar.load(o_prev_tile[row, col])
             pv_val = scalar.load(pv_tile[row, col])
             o_next = alpha * o_prev + beta * pv_val
-            scalar.sts(o_next_tile[row, col], o_next)
+            scalar.store(o_next, o_next_tile[row, col])
 ```
 
 This is a scalar element-wise blend over the tile domain:
@@ -476,15 +493,15 @@ For trivial sub-kernels like `materialize_tile_bounds`, a named function is over
 def kv_block_process(...):
     pto.mte_load(k_part, k_tile)
     pto.mte_load(v_part, v_tile)
-    pto.mem_bar(pto.BarrierType.SYNC)
+    pto.pipe_barrier(pto.Pipe.ALL)
 
     # Inline SIMT: materialize loop bounds (replaces the named @pto.simt function)
     with pto.simt():
-        scalar.sts(meta_ptr + 0, 0)
-        scalar.sts(meta_ptr + 4, valid_rows)
-        scalar.sts(meta_ptr + 8, valid_cols)
+        scalar.store(0, meta_ptr + 0)
+        scalar.store(valid_rows, meta_ptr + 1)
+        scalar.store(valid_cols, meta_ptr + 2)
 
-    pto.mem_bar(pto.BarrierType.SYNC)
+    pto.pipe_barrier(pto.Pipe.ALL)
 
     qk_matmul(q_tile, k_tile, ...)
     ...

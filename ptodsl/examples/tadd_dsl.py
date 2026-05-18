@@ -7,14 +7,14 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 """
-TADD vPTO kernel – DSL-style builder.
+TADD kernel – DSL-style builder.
 
 Generates the same IR as expand_tileop_to_vpto_result.pto using the
-``@pto.to_ir`` decorator and the ``pto.*`` namespace.
+``@pto.jit`` decorator and the ``pto.*`` namespace.
 
 The Python code maps 1-to-1 to the MLIR IR lines:
 
-    func.func @TADD() {                      # @pto.to_ir(name="TADD", …)
+    func.func @TADD() {                      # @pto.jit(name="TADD", …)
       %c0_i64    = arith.constant 0 : i64    # pto.const(0, dtype=pto.int64)
       %c16       = arith.constant 16 : index # pto.const(16, dtype=pto.index)
       …
@@ -33,7 +33,7 @@ from ptodsl import pto
 s = pto.scalar  # arith shorthand alias
 
 
-@pto.to_ir(name="TADD", kernel_kind="vector", arch="a5")
+@pto.jit(name="TADD", kernel_kind="vector", target="a5")
 def TADD():
     c0_i64    = pto.const(0,    dtype=pto.int64)
     c16       = pto.const(16,   dtype=pto.index)
@@ -60,7 +60,7 @@ def TADD():
 
 
 def build():
-    return TADD._ir_module
+    return TADD.mlir_module()
 
 
 if __name__ == "__main__":

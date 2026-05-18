@@ -51,6 +51,9 @@ _export_generated_symbols()
 
 register_dialect = _pto_mod.register_dialect
 PtrType = _pto_mod.PtrType
+VRegType = _pto_mod.VRegType
+MaskType = _pto_mod.MaskType
+AlignType = _pto_mod.AlignType
 AsyncSessionType = _pto_mod.AsyncSessionType
 AsyncEventType = _pto_mod.AsyncEventType
 PrefetchAsyncContextType = _pto_mod.PrefetchAsyncContextType
@@ -130,9 +133,19 @@ def _ptr_type_get_compat(cls, element_type, memory_space=None, context=None):
             raise TypeError("PtrType.get got multiple context arguments")
         context = memory_space
         memory_space = None
-    return _ptr_type_get_impl(
-        element_type, memory_space=memory_space, context=context
-    )
+    if memory_space is None:
+        if context is None:
+            return _ptr_type_get_impl(element_type)
+        return _ptr_type_get_impl(element_type, context=context)
+    try:
+        return _ptr_type_get_impl(
+            element_type, memory_space=memory_space, context=context
+        )
+    except TypeError as exc:
+        raise TypeError(
+            "PtrType.get(element_type, memory_space=...) requires a PTO Python "
+            "extension built with non-default address-space pointer support"
+        ) from exc
 
 
 PtrType.get = classmethod(_ptr_type_get_compat)
@@ -188,6 +201,9 @@ __all__ = [
     "register_dialect",
     # Types
     "PtrType",
+    "VRegType",
+    "MaskType",
+    "AlignType",
     "AsyncSessionType",
     "AsyncEventType",
     "PrefetchAsyncContextType",

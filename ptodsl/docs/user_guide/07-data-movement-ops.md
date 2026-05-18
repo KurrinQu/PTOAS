@@ -258,11 +258,11 @@ def process_block(k_part, v_part, k_tile, v_tile, o_tile, o_part,
                   cols * pto.bytewidth(pto.f16),
                   nburst=(rows, cols * pto.bytewidth(pto.f16),
                           cols * pto.bytewidth(pto.f16)))
-    pto.mem_bar(pto.BarrierType.SYNC)
+    pto.pipe_barrier(pto.Pipe.ALL)
 
     # ... compute on tiles ...
 
-    pto.mem_bar(pto.BarrierType.SYNC)
+    pto.pipe_barrier(pto.Pipe.ALL)
     pto.mte_ub_gm(o_tile.as_ptr(), o_part.as_ptr(),
                   cols * pto.bytewidth(pto.f32),
                   nburst=(rows, cols * pto.bytewidth(pto.f32),
@@ -958,7 +958,7 @@ Inside `@pto.cube`, data flows through a hierarchy of private buffers: GM → L1
 
 ---
 
-#### `pto.mte_l0c_ub(src: PtrType, dst: PtrType, m: int, n: int, src_stride: int, dst_stride: int, *, dual_dst_mode: int = 0, sub_blockid: int = 0, mode: FractalMode = FractalMode.NZ2ND, loop0_src_stride: int | None = None, channel_split_en: int | None = None, loop3: tuple[int, int, int] | None = None) -> None`
+#### `pto.mte_l0c_ub(src: PtrType, dst: PtrType, m: int, n: int, src_stride: int, dst_stride: int, sub_blockid: int = 0, *, dst_mode: str = "single") -> None`
 
 **Description**: Structured L0C (acc) directly to UB. This is the most common writeback path for cube kernels that feed results into subsequent processing.
 
@@ -972,12 +972,8 @@ Inside `@pto.cube`, data flows through a hierarchy of private buffers: GM → L1
 | `n` | `int` | N dimension size |
 | `src_stride` | `int` | Source stride |
 | `dst_stride` | `int` | Destination stride |
-| `dual_dst_mode` | `int` | Dual destination mode (default 0) |
 | `sub_blockid` | `int` | Sub-block ID (default 0) |
-| `mode` | `FractalMode` | `NZ2ND` (default), `NZ2DN`, or `NZ2NZ` |
-| `loop0_src_stride` | `int` or `None` | Loop level 0 source stride |
-| `channel_split_en` | `int` or `None` | Channel split enable (required for `NZ2NZ` mode) |
-| `loop3` | `tuple[int, int, int]` or `None` | Loop level 3 parameters |
+| `dst_mode` | `str` | Destination mode, currently `"single"` by default |
 
 **Returns**: None (side-effect operation).
 
@@ -1010,10 +1006,10 @@ def qk_matmul(q_tile, k_tile, q_l0a, k_l0b, s_acc, s_tile):
     k = q_tile.valid_shape[1]
     n = k_tile.valid_shape[0]
 
-    pto.mte_l1_l0a(q_tile, q_l0a, m, k)          # UB tile → L0A
-    pto.mte_l1_l0b(k_tile, k_l0b, k, n, transpose=True)  # UB tile → L0B
-    pto.mad(q_l0a, k_l0b, s_acc)                # L0A × L0B → L0C
-    pto.mte_l0c_ub(s_acc, s_tile, m, n)       # L0C → UB tile
+    pto.mte_l1_l0a(q_tile.as_ptr(), q_l0a.as_ptr(), m, k)          # UB tile → L0A
+    pto.mte_l1_l0b(k_tile.as_ptr(), k_l0b.as_ptr(), k, n, transpose=True)  # UB tile → L0B
+    pto.mad(q_l0a.as_ptr(), k_l0b.as_ptr(), s_acc.as_ptr(), m, n, k)        # L0A × L0B → L0C
+    pto.mte_l0c_ub(s_acc.as_ptr(), s_tile.as_ptr(), m, n, n, n, 0)          # L0C → UB tile
 ```
 
-The `mte_l1_l0a`/`mte_l1_l0b` operations take UB `Tile` references directly (not raw pointers) — the tile-to-cube-local transfer is implicit. `mad` performs the matrix multiply. `mte_l0c_ub` writes the result back to a UB tile.
+At the cube micro-op boundary, PTODSL currently uses explicit typed pointers. `tile.as_ptr()` materializes the pointer view for UB and cube-local scratch buffers, while the surrounding sub-kernel surface still uses `Tile` values for metadata such as `valid_shape`.
