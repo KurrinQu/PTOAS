@@ -454,12 +454,17 @@ lit test/lit/pto/multi_tile_prefetch_gss.pto
 | **GSS slot-aware**：`SyncSolverIRTranslator::tracebackMemValsStep` 在 `pto.slot_marker` 停步；`MemInfo::getMemInfoForSlotMarker` 按常量 slot 收窄 `PointerLikeInfo::addresses`、按 slot_marker enclosing loop 设 `parentLoop`，让 `getMultiBufferEventIdInfo` 识别多 buffer 并分配 N event ids | ✅ | `lib/PTO/Transforms/GraphSyncSolver/{SyncSolverIRTranslator,MemInfo}.cpp` |
 | **GSS slotSSAExpr 落到 SetWaitOp**：`findSlotSSAExprForRWOp` 沿 `bind_tile` 走回 `pto.slot_marker.slot`，set 端取 `op1` 的 slot SSA、wait 端取 `op2` 的 | ✅ | `include/PTO/Transforms/GraphSyncSolver/SyncSolverIR.h`, `lib/PTO/Transforms/GraphSyncSolver/SyncSolver.cpp` |
 | **GSS dyn flag codegen**：`SyncSolverCodeGen::emitSyncOp` 在 `eventIds.size() > 1 && slotSSAExpr` 时折成单条 `pto.set_flag_dyn` / `pto.wait_flag_dyn`，event_id 用 N-way `arith.select` 链按 `slot % N` 选；`allAtOnce` prime/drain 仍走 N 静态 fanout（语义需要每个 slot 各 prime / drain 一次） | ✅ | `lib/PTO/Transforms/GraphSyncSolver/SyncSolverCodeGen.cpp` |
-| lit 测试（13 个）：parse/print、verifier、const slot lowering、dyn slot lowering、N=3 / N=4 端到端、无 loop unroll、const-slot sync disjoint、dyn-slot sync 编译、GSS multi-buffer compile、prefetch dyn event-id (InsertSync)、prefetch GSS dyn flag | ✅ | `test/lit/pto/multi_tile_*.pto` |
+| **共享 affine slot 分析 `SlotAffineAnalysis`**：`findSlotMarkerExpr` + `compareSlotSSA` 三态（kEqual / kDisjoint / kUnknown），覆盖 `iv % N`、`(iv ± c) % N`、纯常量、相同 SSA 等形态；InsertSync / GSS / EmitC 三处共用 | ✅ | `include/PTO/Transforms/SlotAffineAnalysis.h`, `lib/PTO/Transforms/SlotAffineAnalysis.cpp` |
+| **InsertSync 同 iter forward 提前 drop**：`MemAnalyze` 在 forward dep 上 跑 `isForwardDepDroppableBySlotAffine`，affine 可证 disjoint 的 pair 整对剔除，loop 体内省一对 same-iter set/wait | ✅ | `lib/PTO/Transforms/InsertSync/InsertSyncAnalysis.cpp` |
+| **GSS 同 iter forward 提前 drop**：`checkMemoryConflictsForOcc` 在非 back-edge 路径上同样基于 affine disjoint 把整组 (corePipeSrc, corePipeDst) 过滤掉 | ✅ | `lib/PTO/Transforms/GraphSyncSolver/SyncSolver.cpp` |
+| **GSS 同 SSA 行为对齐 InsertSync**：`getMultiBufferEventIdInfo` 不再因 all-equal slot SSA 早退，对同 SSA 的 producer/consumer 也走 N dyn event id 路径；GSS 同 SSA 现在 emit 与 InsertSync 完全一样的 prefetch pipeline | ✅ | `lib/PTO/Transforms/GraphSyncSolver/SyncSolver.cpp` |
+| **EmitC 穿透 `arith.select`-on-memref**：`PTOMaterializeTileHandles::computeExplicitAddress` 沿 select 两支递归求 i64 地址，配合 dyn slot 路径的 select 链；EmitC TASSIGN 拿到正确地址 | ✅ | `lib/PTO/Transforms/PTOMaterializeTileHandles.cpp` |
+| **`multi_tile_get` lowering 防御**：`op->getOperand(0)` 取 source（绕开类型 cast），因为 alloc_multi_tile replace 之后 source 已经变成 memref，typed accessor `getSource()` 会断言 | ✅ | `lib/PTO/Transforms/PTOViewToMemref.cpp` |
+| lit 测试（17 个）：parse/print、verifier、const slot lowering、dyn slot lowering、N=3 / N=4 端到端、无 loop unroll、const-slot sync disjoint、dyn-slot sync 编译、GSS multi-buffer compile、prefetch dyn event-id (InsertSync)、prefetch GSS dyn flag、affine disjoint slots、const preload + dyn loop select、preload + loop set/wait、unknown slot GSS 保守降级 | ✅ | `test/lit/pto/multi_tile_*.pto` |
 
 ### 当前限制
 
-- **dyn-slot disjoint 证明缺失**：当前 dyn-slot 路径默认两个 dyn access 互相 alias（`baseAddresses` 取所有 slot 的并集），所以 prefetch idiom 中的 `(iv+1)%N` 写 vs `iv%N` 读会通过 N event id pipeline 同步（这是正确的）。但同 iter 同 slot 的两个 dyn access 之间的 RAW 也会走 dyn 路径而非更便宜的静态路径 —— 优化空间。需要 affine analysis 证明 slot 表达式同/异。
-- **GSS 与 InsertSync 现在 multi-buffer 同步行为一致**：均在循环体内发单条 `pto.set_flag_dyn` / `pto.wait_flag_dyn`（event id 由 `slot SSA % N` 选自 N 个分配到的 hardware event id），pre-loop / post-loop 仍是 N 个静态 prime / drain。两条 sync solver 上 prefetch 流水化效果相同。
+- **affine 分析仅覆盖核心几种形态**：`compareSlotSSA` 当前能证 `iv % N` / `(iv ± c) % N` / 同 SSA / 纯常量；不能证 `(iv * c) % N`、跨函数 / 跨循环的 SSA 等价、非 `arith.remui` 包装的 slot 表达式。命中不到时退回 kUnknown / 保守 N dyn event id。
 - **PlanMemory N>2 不复用 Stage1**：N>2 的兄弟 slot 不走 SPEC_LEVEL_1 "ping/pong 相邻摆放"优化，用更多内存。N=2 路径不变。
 - 初版仅支持 `loc=vec` / `loc=mat` local memory。
 - function argument / return 上的 `multi_tile_buf` 不支持（多 buffer 所有权限定在 ptoas 内）。
@@ -467,7 +472,7 @@ lit test/lit/pto/multi_tile_prefetch_gss.pto
 
 ### 后续 PR
 
-1. **同 slot disjoint 证明**：affine analysis 识别 `iv % N`、`(iv ± c) % N`、SSA 等价；区分"同 slot dyn"（可走静态 1 event id）vs"差 1 slot prefetch"（走 N event id）。
+1. **affine 分析扩展**：加 `(iv * c) % N`、跨 loop iter_arg 的 SSA 等价、非 `arith.remui` 形态（`arith.divui` / affine.apply）。
 2. **PlanMemory N > 2 SPEC_LEVEL_1 复用**：扩展 ping/pong 相邻摆放为 N-way 相邻摆放，减少 N > 2 的物理内存压力。
 3. **Python 绑定 + samples**：暴露 `alloc_multi_tile` / `multi_tile_get`，配套 `test/samples` 的 prefetch 示例。
 4. **跨函数 ABI**：把 `multi_tile_buf` 支持成 func arg / return，配套 sync 跨函数传递（v2 议题）。

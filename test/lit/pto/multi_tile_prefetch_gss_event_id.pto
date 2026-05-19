@@ -6,11 +6,15 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// RUN: ptoas --enable-graph-sync-solver --graph-sync-solver-event-id-max=8 --mlir-print-ir-after=pto-graph-sync-solver %s 2>&1 1>/dev/null | FileCheck %s --implicit-check-not=pto.wait_flag_dyn --implicit-check-not=pto.set_flag_dyn --implicit-check-not=EVENT_ID1
+// RUN: ptoas --enable-graph-sync-solver --graph-sync-solver-event-id-max=8 --mlir-print-ir-after=pto-graph-sync-solver %s 2>&1 1>/dev/null | FileCheck %s
 
-// Same-SSA dynamic slot expressions are provably equal in the same loop
-// iteration, so GSS keeps this as a true same-slot dependency and uses one
-// static event id instead of allocating one event id per physical slot.
+// Same-SSA dynamic slot expression: both tload and tstore use `%i % 2` for
+// their slot index. GSS keeps two physical slots (count=2), allocates N=2
+// hardware event ids, and emits dyn `set_flag` / `wait_flag` keyed by the
+// slot SSA -- matching the InsertSync path for the same input. Different
+// iterations touch different physical slots, so the per-slot event id
+// pipeline lets them overlap; collapsing to a single static event id (the
+// earlier GSS behaviour) would have serialised every iteration.
 
 module {
   func.func @prefetch_gss(
@@ -39,10 +43,17 @@ module {
 }
 
 // CHECK-LABEL: func.func @prefetch_gss
-// The loop-carried slot reuse sync uses a single static event id.
+// Pre-loop primes both per-slot events for the cross-iter back-edge.
 // CHECK: pto.set_flag[<PIPE_MTE3>, <PIPE_MTE2>, <EVENT_ID0>]
+// CHECK: pto.set_flag[<PIPE_MTE3>, <PIPE_MTE2>, <EVENT_ID1>]
 // CHECK: scf.for
-// CHECK: pto.wait_flag[<PIPE_MTE3>, <PIPE_MTE2>, <EVENT_ID0>]
+// Loop body uses dyn flag keyed on the slot SSA.
+// CHECK: arith.select
+// CHECK: pto.wait_flag_dyn[<PIPE_MTE3>, <PIPE_MTE2>,
 // CHECK: pto.tload
 // CHECK: pto.tstore
+// CHECK: arith.select
+// CHECK: pto.set_flag_dyn[<PIPE_MTE3>, <PIPE_MTE2>,
+// Post-loop drains both per-slot events.
 // CHECK: pto.wait_flag[<PIPE_MTE3>, <PIPE_MTE2>, <EVENT_ID0>]
+// CHECK: pto.wait_flag[<PIPE_MTE3>, <PIPE_MTE2>, <EVENT_ID1>]

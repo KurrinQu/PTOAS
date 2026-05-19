@@ -485,21 +485,6 @@ Solver::getMultiBufferEventIdInfo(Occurrence *occ1, Occurrence *occ2,
   int64_t lcm = 1;
   int64_t minWriteSize = LONG_MAX;
   LoopLikeOpInterface multibufferLoop{nullptr};
-  bool sawComparableSlotPair = false;
-  bool allComparableSlotPairsEqual = true;
-
-  auto noteSlotRelation = [&](const MemInfo &memInfo1,
-                              const MemInfo &memInfo2) {
-    auto relation = compareMemInfoSlotSSA(memInfo1, memInfo2);
-    if (relation == mlir::pto::SlotRelation::kUnknown) {
-      allComparableSlotPairsEqual = false;
-      return;
-    }
-    sawComparableSlotPair = true;
-    if (relation != mlir::pto::SlotRelation::kEqual) {
-      allComparableSlotPairsEqual = false;
-    }
-  };
 
   if (options.isTestMode()) {
     auto *parLoop1 = occ1->getParentOfType<Loop>();
@@ -531,7 +516,6 @@ Solver::getMultiBufferEventIdInfo(Occurrence *occ1, Occurrence *occ2,
   for (auto &memInfo1 : rwOp1->readMemInfo) {
     for (auto &memInfo2 : rwOp2->writeMemInfo) {
       if (checkMemInfoConflict(rwOp1, rwOp2, memInfo1, memInfo2)) {
-        noteSlotRelation(memInfo1, memInfo2);
         int64_t curLcm = std::lcm(memInfo1.getSz(), memInfo2.getSz());
         lcm = std::lcm(lcm, curLcm);
         minWriteSize = std::min(minWriteSize, memInfo2.getSz());
@@ -541,7 +525,6 @@ Solver::getMultiBufferEventIdInfo(Occurrence *occ1, Occurrence *occ2,
   for (auto &memInfo1 : rwOp1->writeMemInfo) {
     for (auto &memInfo2 : rwOp2->readMemInfo) {
       if (checkMemInfoConflict(rwOp1, rwOp2, memInfo1, memInfo2)) {
-        noteSlotRelation(memInfo1, memInfo2);
         int64_t curLcm = std::lcm(memInfo1.getSz(), memInfo2.getSz());
         lcm = std::lcm(lcm, curLcm);
         minWriteSize = std::min(minWriteSize, memInfo1.getSz());
@@ -551,7 +534,6 @@ Solver::getMultiBufferEventIdInfo(Occurrence *occ1, Occurrence *occ2,
   for (auto &memInfo1 : rwOp1->writeMemInfo) {
     for (auto &memInfo2 : rwOp2->writeMemInfo) {
       if (checkMemInfoConflict(rwOp1, rwOp2, memInfo1, memInfo2)) {
-        noteSlotRelation(memInfo1, memInfo2);
         int64_t curLcm = std::lcm(memInfo1.getSz(), memInfo2.getSz());
         lcm = std::lcm(lcm, curLcm);
         minWriteSize = std::min(minWriteSize, memInfo1.getSz());
@@ -565,9 +547,12 @@ Solver::getMultiBufferEventIdInfo(Occurrence *occ1, Occurrence *occ2,
     minWriteSize = 1;
     return {};
   }
-  if (sawComparableSlotPair && allComparableSlotPairsEqual) {
-    return {};
-  }
+  // (Same-SSA equal-slot accesses used to early-bail here, falling back to
+  // a single static event id. That diverged from InsertSync, which still
+  // allocates N dyn event ids for same-SSA prefetch so different
+  // iterations touching different physical slots can pipeline. The bail
+  // was removed for consistency; the standard N-way deduction below now
+  // also runs for same-SSA pairs.)
 
   int64_t eventIdNum = minWriteSize;
   for (; eventIdNum >= 1; eventIdNum--) {
