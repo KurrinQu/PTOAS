@@ -292,6 +292,8 @@ static bool parseAutoSyncTailHint(llvm::StringRef hintStr, std::string &normaliz
 //   PTOAS__TILE_GET_VALUE(src, offset)      -> src.GetValue(offset)
 //   PTOAS__TILE_DATA(obj)                   -> obj.data()
 //   PTOAS__TILE_SET_VALIDSHAPE(obj, r, c)   -> obj.SetValidShape(r, c)
+//   PTOAS__TILE_GET_VALID_ROW(obj)          -> obj.GetValidRow()
+//   PTOAS__TILE_GET_VALID_COL(obj)          -> obj.GetValidCol()
 //   PTOAS__PTR_LOAD(ptr, offset)            -> ptr[offset]
 //   PTOAS__PTR_STORE(ptr, offset, val)      -> ptr[offset] = val
 //   PTOAS__EVENTID_ARRAY_LOAD(arr, idx)     -> arr[idx]
@@ -448,6 +450,8 @@ static void rewriteTileGetSetValueMarkers(std::string &cpp) {
       {"PTOAS__TILE_GET_VALUE", "GetValue", 2},
       {"PTOAS__TILE_DATA", "data", 1},
       {"PTOAS__TILE_SET_VALIDSHAPE", "SetValidShape", 3},
+      {"PTOAS__TILE_GET_VALID_ROW", "GetValidRow", 1},
+      {"PTOAS__TILE_GET_VALID_COL", "GetValidCol", 1},
   };
   rewriteMarkerCallsToMembers(cpp, kTileMarkerRewrites);
 }

@@ -7778,6 +7778,22 @@ mlir::LogicalResult mlir::pto::SetValidShapeOp::verify() {
   return success();
 }
 
+mlir::LogicalResult mlir::pto::GetValidShapeOp::verify() {
+  if (auto srcTy = llvm::dyn_cast<TileBufType>(getSource().getType())) {
+    if (srcTy.getRank() != 2)
+      return emitOpError("expects rank-2 tile_buf source");
+    if (srcTy.getValidShape().size() != 2)
+      return emitOpError("expects source validShape to be rank-2");
+    return success();
+  }
+  if (auto srcTy = llvm::dyn_cast<MemRefType>(getSource().getType())) {
+    if (srcTy.getRank() != 2)
+      return emitOpError("expects rank-2 memref source after tile lowering");
+    return success();
+  }
+  return emitOpError("expects tile_buf source (or lowered memref source)");
+}
+
 
 mlir::LogicalResult mlir::pto::TReshapeOp::verify() {
   if (shouldBypassDecodedMemrefVerifier(getOperation()))
@@ -10266,6 +10282,12 @@ void TSetValOp::getEffects(
 void SetValidShapeOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_WRITE(getSourceMutable());
+}
+
+// GET_VALIDSHAPE: read runtime valid row/col metadata from source tile.
+void GetValidShapeOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getSourceMutable());
 }
 
 // Elementwise + reductions: mostly PIPE_V tilebuf ops

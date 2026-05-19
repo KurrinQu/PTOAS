@@ -5509,6 +5509,53 @@ struct PTOSetValidShapeToEmitC : public OpConversionPattern<pto::SetValidShapeOp
   }
 };
 
+struct PTOGetValidShapeToEmitC
+    : public OpConversionPattern<pto::GetValidShapeOp> {
+  using OpConversionPattern<pto::GetValidShapeOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::GetValidShapeOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto peelAllCasts = [](Value v) {
+      while (auto castOp = v.getDefiningOp<UnrealizedConversionCastOp>())
+        v = castOp.getOperand(0);
+      if (auto castOp = v.getDefiningOp<emitc::CastOp>())
+        v = castOp.getOperand();
+      return v;
+    };
+    auto isTileLike = [](Value v) -> bool {
+      auto ot = dyn_cast<emitc::OpaqueType>(v.getType());
+      if (!ot)
+        return false;
+      StringRef s = ot.getValue();
+      return s.contains("Tile<") || s.contains("ConvTile<");
+    };
+
+    Value src = peelAllCasts(peelUnrealized(adaptor.getSource()));
+    if (!isTileLike(src))
+      return rewriter.notifyMatchFailure(
+          op, "get_validshape source must lower to a tile-like value");
+
+    auto resultTy = getTypeConverter()->convertType(rewriter.getIndexType());
+    if (!resultTy)
+      return failure();
+
+    Value row = rewriter
+                    .create<emitc::CallOpaqueOp>(
+                        op.getLoc(), resultTy,
+                        "PTOAS__TILE_GET_VALID_ROW", ArrayAttr{},
+                        ArrayAttr{}, ValueRange{src})
+                    .getResult(0);
+    Value col = rewriter
+                    .create<emitc::CallOpaqueOp>(
+                        op.getLoc(), resultTy,
+                        "PTOAS__TILE_GET_VALID_COL", ArrayAttr{},
+                        ArrayAttr{}, ValueRange{src})
+                    .getResult(0);
+    rewriter.replaceOp(op, ValueRange{row, col});
+    return success();
+  }
+};
+
 struct PTOTAssignToEmitC : public OpConversionPattern<pto::TAssignOp> {
   using OpConversionPattern<pto::TAssignOp>::OpConversionPattern;
 
@@ -10535,9 +10582,10 @@ struct PTOBindTileToEmitC : public OpConversionPattern<pto::BindTileOp> {
       return TileBuildSpec{tileTypeStr, useConstructor, constructorArgs};
     };
 
-    auto buildTileValue = [&](const TileBuildSpec &spec) -> Value {
+    auto buildTileValue = [&](const TileBuildSpec &spec,
+                              bool forceDeclaration = false) -> Value {
       auto tileType = emitc::OpaqueType::get(ctx, spec.tileTypeStr);
-      if (spec.useConstructor) {
+      if (spec.useConstructor && !forceDeclaration) {
         return rewriter
             .create<emitc::CallOpaqueOp>(loc, tileType, spec.tileTypeStr,
                                          ArrayAttr{}, ArrayAttr{},
@@ -10619,7 +10667,7 @@ struct PTOBindTileToEmitC : public OpConversionPattern<pto::BindTileOp> {
       FailureOr<TileBuildSpec> tileSpec = buildTileSpec();
       if (failed(tileSpec))
         return failure();
-      Value dstTile = buildTileValue(*tileSpec);
+      Value dstTile = buildTileValue(*tileSpec, /*forceDeclaration=*/true);
 
       rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "TRESHAPE",
                                            ArrayAttr{}, ArrayAttr{},
@@ -11859,7 +11907,7 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<SubviewToEmitCPattern>(typeConverter, ctx);
   patterns.add<PointerCastConversion>(typeConverter, ctx);
   patterns.add<PTOSetValToSETVAL, PTOGetValToGETVAL, PTOSetValidShapeToEmitC,
-               PTOTAssignToEmitC, PTOLoadScalarToEmitC,
+               PTOGetValidShapeToEmitC, PTOTAssignToEmitC, PTOLoadScalarToEmitC,
                PTOStoreScalarToEmitC>(typeConverter, ctx);
   patterns.add<PTOTAxpyToEmitC, PTOHistogramToEmitC, PTOGetScaleAddrToEmitC>(
       typeConverter, ctx);

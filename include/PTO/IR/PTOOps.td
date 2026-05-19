@@ -370,6 +370,30 @@ def SetValidShapeOp : PTO_Op<"set_validshape", [
   }];
 }
 
+def GetValidShapeOp : PTO_Op<"get_validshape", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let summary = "Read runtime valid row/col metadata from a tile";
+  let description = [{
+    Reads the current runtime valid_row/valid_col metadata from a tile_buf
+    handle. This op observes prior set_validshape updates and returns the
+    current values as index-typed SSA values.
+  }];
+
+  let arguments = (ins
+    TileBufOrMemRef:$source
+  );
+
+  let results = (outs
+    Index:$valid_row,
+    Index:$valid_col
+  );
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = "$source attr-dict `:` qualified(type($source))";
+}
+
 // ============================================================================
 // SSA TileBuf Config Ops (aliasing views)
 // ============================================================================
