@@ -339,7 +339,6 @@ static LogicalResult assignAutoReserveBufferBases(
       candidateBase = std::max(candidateBase, range.end);
     }
     candidateBase = alignUpBytes(candidateBase, plan.alignBytes);
-
     if (candidateBase + plan.sizeBytes > plan.capacityBytes) {
       return plan.reserveOp.emitOpError(
           "failed to allocate local memory hole for reserve_buffer");

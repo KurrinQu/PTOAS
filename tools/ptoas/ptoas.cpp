@@ -52,6 +52,23 @@ using namespace pto;
 #define PTOAS_RELEASE_VERSION "unknown"
 #endif
 
+namespace {
+
+constexpr unsigned kSeenCalleeInlineCapacity = 8;
+constexpr int kDefaultGraphSyncSolverEventIdMax = 8;
+constexpr unsigned kStringRefInlineCapacity = 4;
+constexpr unsigned kEmptyExpressionInlineCapacity = 8;
+constexpr unsigned kBranchInlineCapacity = 16;
+constexpr size_t kMarkerCallReserveExtra = 16;
+constexpr size_t kRewriteOutputReserveExtra = 64;
+constexpr size_t kMarkerRewriteMinArgCount = 2;
+constexpr size_t kMarkerRewriteTernaryArgCount = 3;
+
+using StringRefVector =
+    llvm::SmallVector<llvm::StringRef, kStringRefInlineCapacity>;
+
+} // namespace
+
 static void printPTOASVersion(llvm::raw_ostream &os) {
   os << "ptoas " << PTOAS_RELEASE_VERSION << "\n";
 }
@@ -77,7 +94,7 @@ static LogicalResult reorderEmitCFunctions(ModuleOp module) {
 
   for (auto caller : definitions) {
     Operation *callerOp = caller.getOperation();
-    llvm::SmallPtrSet<Operation *, 8> seenCallees;
+    llvm::SmallPtrSet<Operation *, kSeenCalleeInlineCapacity> seenCallees;
     bool hasCycle = false;
     caller.walk([&](emitc::CallOp call) {
       auto calleeAttr = call.getCalleeAttr();
@@ -203,7 +220,7 @@ static llvm::cl::opt<int> graphSyncSolverEventIdMax(
     llvm::cl::desc(
         "Maximum EVENT_ID slots for the graph sync solver (default 8). "
         "Lower values exercise the PIPE_ALL coloring fallback sooner."),
-    llvm::cl::init(8));
+    llvm::cl::init(kDefaultGraphSyncSolverEventIdMax));
 
 static llvm::cl::opt<bool> disableInferLayout(
     "disable-infer-layout",
@@ -285,7 +302,6 @@ static bool parseAutoSyncTailHint(llvm::StringRef hintStr, std::string &normaliz
 
 // --------------------------------------------------------------------------
 // Post-process C++ output: rewrite marker calls into Tile member calls.
-//
 // We emit marker calls in EmitC IR because EmitC currently does not provide a
 // first-class op for member-function invocation. After translation, we rewrite:
 //   PTOAS__TILE_SET_VALUE(dst, offset, val) -> dst.SetValue(offset, val)
@@ -300,7 +316,7 @@ static bool parseAutoSyncTailHint(llvm::StringRef hintStr, std::string &normaliz
 struct ParsedMarkerCall {
   size_t markerPos = std::string::npos;
   size_t rparenPos = std::string::npos;
-  llvm::SmallVector<llvm::StringRef, 4> args;
+  StringRefVector args;
 };
 
 struct MarkerRewriteSpec {
@@ -413,14 +429,14 @@ static bool rewriteMarkerCallToMember(std::string &cpp, llvm::StringRef marker,
           return std::nullopt;
 
         std::string replacement;
-        replacement.reserve(marker.size() + 16);
+        replacement.reserve(marker.size() + kMarkerCallReserveExtra);
         replacement.append(call.args[0].str());
         replacement.push_back('.');
         replacement.append(memberName.str());
         replacement.push_back('(');
-        if (expectedNumArgs >= 2)
+        if (expectedNumArgs >= kMarkerRewriteMinArgCount)
           replacement.append(call.args[1].str());
-        if (expectedNumArgs == 3) {
+        if (expectedNumArgs == kMarkerRewriteTernaryArgCount) {
           replacement.append(", ");
           replacement.append(call.args[2].str());
         }
@@ -462,14 +478,14 @@ static void rewriteAsyncEventMarkers(std::string &cpp) {
 
 // --------------------------------------------------------------------------
 // EmitC cleanup: drop empty emitc.expression ops.
-//
 // After FormExpressions + CSE, EmitC expressions can become empty when their
 // root op is CSE'd with an equivalent dominating value outside the expression
 // region. Such expressions crash mlir::emitc::translateToCpp because
 // ExpressionOp::getRootOp() returns nullptr.
 // --------------------------------------------------------------------------
 static void dropEmptyEmitCExpressions(Operation *rootOp) {
-  llvm::SmallVector<emitc::ExpressionOp, 8> toErase;
+  llvm::SmallVector<emitc::ExpressionOp, kEmptyExpressionInlineCapacity>
+      toErase;
   rootOp->walk([&](emitc::ExpressionOp expr) {
     if (expr.getRootOp())
       return;
@@ -504,7 +520,7 @@ static Attribute getDefaultEmitCVariableInitAttr(OpBuilder &builder, Type type) 
 // recursively emitting an expression. Materialize such operands so CFG-based
 // lowering (e.g. scf.while -> cf.*) stays valid.
 static void materializeControlFlowOperands(Operation *rootOp) {
-  llvm::SmallVector<Operation *, 16> branches;
+  llvm::SmallVector<Operation *, kBranchInlineCapacity> branches;
   rootOp->walk([&](Operation *op) {
     if (isa<cf::BranchOp, cf::CondBranchOp>(op))
       branches.push_back(op);
@@ -587,14 +603,14 @@ static bool rewriteAddPtrTraceMarkers(std::string &cpp, bool showTrace) {
       searchPos = call->markerPos + 1;
       continue;
     }
-    if (call->args.size() != 3) {
+    if (call->args.size() != kMarkerRewriteTernaryArgCount) {
       searchPos = call->rparenPos + 1;
       continue;
     }
 
     std::string replacement;
     if (showTrace) {
-      replacement.reserve(64);
+      replacement.reserve(kRewriteOutputReserveExtra);
       replacement.append("/* ADDPTR_TRACE: ");
       replacement.append(call->args[0].str());
       replacement.append(" = ");
@@ -645,16 +661,12 @@ static void rewriteHoistedGlobalTensorDecls(std::string &cpp) {
   // declarations to the top of the function and emits assignments later. This
   // requires the C++ type to be default-constructible.
   //
-  // `GlobalTensor<...>` from pto-isa does NOT have a default constructor, so a
-  // hoisted declaration like:
-  //   GlobalTensor<...> v42;
-  // fails to compile. Initialize those hoisted temporaries with a null pointer
-  // so they are constructible:
-  //   GlobalTensor<...> v42(nullptr);
-  //
+  // `GlobalTensor<...>` from pto-isa does NOT have a default constructor, so
+  // hoisted declarations of that type must be rewritten with a null-pointer
+  // initializer before the later assignment remains in place.
   // We keep the assignment later; the null-initialized value is never used.
   std::string out;
-  out.reserve(cpp.size() + 64);
+  out.reserve(cpp.size() + kRewriteOutputReserveExtra);
 
   llvm::StringRef ref(cpp);
   while (!ref.empty()) {
@@ -986,7 +998,7 @@ int main(int argc, char **argv) {
     return normalized;
   };
   auto detectTextualModuleArch = [&](llvm::StringRef text) -> std::optional<std::string> {
-    llvm::SmallVector<llvm::StringRef, 4> matches;
+    StringRefVector matches;
     llvm::Regex archRegex(
         R"ptoarch("?(pto\.target_arch)"?[[:space:]]*=[[:space:]]*"([[:alpha:][:digit:]_]+)")ptoarch");
     if (!archRegex.match(text, &matches) || matches.size() < 3)
@@ -1139,7 +1151,7 @@ int main(int argc, char **argv) {
 
   if (failed(applyPassManagerCLOptions(pm)))
     return 1;
-  
+
   pm.addNestedPass<mlir::func::FuncOp>(
       pto::createPTOAssignDefaultFrontendPipeIdPass());
   pm.addNestedPass<mlir::func::FuncOp>(
@@ -1147,7 +1159,6 @@ int main(int argc, char **argv) {
   //pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVerifyTFreePass());
   pm.addPass(pto::createPTOInferValidatePipeInitPass());
   pm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
-  
   if (!disableInferLayout)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
   pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOA5NormalizeTMovPass());
@@ -1177,7 +1188,7 @@ int main(int argc, char **argv) {
         pto::createPTOGraphSyncSolverPass(graphSyncOpts));
   }
 
-  
+
 
   std::unique_ptr<llvm::ToolOutputFile> outputFile;
   llvm::raw_ostream *outputOS = &llvm::outs();
@@ -1245,7 +1256,7 @@ int main(int argc, char **argv) {
   rewriteAddPtrTraceMarkers(cppOutput, emitAddPtrTrace);
   rewriteScalarConstantDecls(cppOutput);
   rewriteHoistedGlobalTensorDecls(cppOutput);
-  
+
   *outputOS << cppOutput;
   outputOS->flush();
 
