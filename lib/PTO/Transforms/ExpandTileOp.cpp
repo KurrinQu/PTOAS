@@ -180,6 +180,7 @@ struct SpecKeyInfo : public llvm::DenseMapInfo<SpecKey> {
 // Helpers
 // ============================================================================
 static std::string getDtypeString(Type elemTy) {
+  if (elemTy.isIndex()) return "i32";
   if (elemTy.isInteger(1)) return "i1";
   if (elemTy.isF32()) return "f32";
   if (elemTy.isF16()) return "f16";
@@ -197,6 +198,19 @@ static std::string getDtypeString(Type elemTy) {
   if (elemTy.isSignlessInteger(16)) return "i16";
   if (elemTy.isSignlessInteger(8)) return "i8";
   return "";
+}
+
+// Cast `operand` to `dstTy`, preferring semantically precise ops over the
+// generic unrealized cast so later lowering passes don't get stuck.
+static Value bridgeOperandToType(OpBuilder &builder, Location loc,
+                                 Value operand, Type dstTy) {
+  Type srcTy = operand.getType();
+  if (srcTy == dstTy)
+    return operand;
+  if (srcTy.isIndex() && isa<IntegerType>(dstTy))
+    return builder.create<arith::IndexCastOp>(loc, dstTy, operand);
+  return builder.create<UnrealizedConversionCastOp>(loc, dstTy, operand)
+      .getResult(0);
 }
 
 static StringRef getTileOpName(Operation *op) {
@@ -986,8 +1000,8 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
     for (unsigned i = 0; i < op->getNumOperands(); ++i) {
       Value operand = op->getOperand(i);
       if (i < fnArgTypes.size() && operand.getType() != fnArgTypes[i]) {
-        operand = builder.create<UnrealizedConversionCastOp>(
-            op->getLoc(), fnArgTypes[i], operand).getResult(0);
+        operand = bridgeOperandToType(builder, op->getLoc(), operand,
+                                      fnArgTypes[i]);
       }
       operands.push_back(operand);
     }
