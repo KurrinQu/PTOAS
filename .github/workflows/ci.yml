@@ -177,7 +177,8 @@ jobs:
           git fetch --depth 1 origin "${LLVM_REF}"
           git checkout --force FETCH_HEAD
 
-      - name: Build LLVM/MLIR
+      - name: Build LLVM/MLIR (only if cache miss)
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
         run: |
           cd llvm-project
           cmake -C "${GITHUB_WORKSPACE}/cmake/LinuxHardeningCache.cmake" -G Ninja -S llvm -B "${LLVM_BUILD_DIR}" \
