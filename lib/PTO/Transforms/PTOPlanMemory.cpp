@@ -11,6 +11,8 @@
 
 #include "PTOPlanMemory.h"
 
+#include "PTO/IR/PTOTypeUtils.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -840,9 +842,12 @@ BufferInfo MemLivenessAnalysis::GetBufferInfo(Operation *op, Value operand,
       getStaticTotalSize(memRefType.getShape());
   if (!totalStaticSize.has_value())
     llvm::report_fatal_error("failed to obtain buffer static shape size");
+  unsigned elemBytes = getPTOStorageElemByteSize(memRefType.getElementType());
+  if (elemBytes == 0)
+    llvm::report_fatal_error("failed to obtain buffer element byte size");
   bufferInfo.constBits =
       totalStaticSize.value() *
-      static_cast<int64_t>(memRefType.getElementTypeBitWidth());
+      static_cast<int64_t>(elemBytes * kBitsPerByte);
   return bufferInfo;
 }
 

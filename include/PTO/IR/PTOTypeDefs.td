@@ -280,6 +280,7 @@ def PrefetchAsyncContextType
 
 // ---- !pto.hif8 ---- Corresponding type name: hifloat8_t (1 byte)
 def HiF8Type : TypeDef<PTO_Dialect, "HiF8", [
+    MemRefElementTypeInterface,
     DeclareTypeInterfaceMethods<DataLayoutTypeInterface,
       ["getTypeSizeInBits", "getABIAlignment", "getPreferredAlignment"]>
 ]> {
@@ -289,6 +290,7 @@ def HiF8Type : TypeDef<PTO_Dialect, "HiF8", [
 
 // ---- !pto.f4E1M2x2 ---- Corresponding type name: float4_e1m2x2_t (1 byte = 2 FP4 packed)
 def F4E1M2x2Type : TypeDef<PTO_Dialect, "F4E1M2x2", [
+    MemRefElementTypeInterface,
     DeclareTypeInterfaceMethods<DataLayoutTypeInterface,
       ["getTypeSizeInBits", "getABIAlignment", "getPreferredAlignment"]>
 ]> {
@@ -300,6 +302,7 @@ def F4E1M2x2Type : TypeDef<PTO_Dialect, "F4E1M2x2", [
 
 // ---- !pto.f4E2M1x2 ---- Corresponding type name: float4_e2m1x2_t (1 byte = 2 FP4 packed)
 def F4E2M1x2Type : TypeDef<PTO_Dialect, "F4E2M1x2", [
+    MemRefElementTypeInterface,
     DeclareTypeInterfaceMethods<DataLayoutTypeInterface,
       ["getTypeSizeInBits", "getABIAlignment", "getPreferredAlignment"]>
 ]> {
