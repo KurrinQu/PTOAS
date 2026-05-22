@@ -424,7 +424,9 @@ process_one_dir() {
     if [[ "$base" == "test_tmov_col_major_16x1_align_a5" || \
           "$base" == "test_tmov_row_major_1x16_control_a5" || \
           "$base" == "decode_projection_incore_0" || \
-          "$base" == "rmsnorm_incore_0" ]]; then
+          "$base" == "rmsnorm_incore_0" || \
+          "$base" == "tprefetch_async_binding" || \
+          "$base" == "syncall_binding" ]]; then
       sample_use_ptobc_roundtrip=0
     fi
     if [[ $sample_use_ptobc_roundtrip -eq 1 ]]; then

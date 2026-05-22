@@ -52,6 +52,7 @@ register_dialect = _pto_mod.register_dialect
 PtrType = _pto_mod.PtrType
 AsyncSessionType = _pto_mod.AsyncSessionType
 AsyncEventType = _pto_mod.AsyncEventType
+PrefetchAsyncContextType = _pto_mod.PrefetchAsyncContextType
 HiF8Type = _pto_mod.HiF8Type
 F4E1M2x2Type = _pto_mod.F4E1M2x2Type
 F4E2M1x2Type = _pto_mod.F4E2M1x2Type
@@ -108,6 +109,7 @@ __all__ = [
     "PtrType",
     "AsyncSessionType",
     "AsyncEventType",
+    "PrefetchAsyncContextType",
     "HiF8Type",
     "F4E1M2x2Type",
     "F4E2M1x2Type",

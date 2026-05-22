@@ -626,6 +626,69 @@ def TPrefetchOp : PTO_TOp<"tprefetch", [
   }];
 }
 
+def MakePrefetchAsyncContextOp : PTO_Op<"make_prefetch_async_context"> {
+  let summary = "Build a PrefetchAsyncContext from GM workspace.";
+  let description = [{
+    Materializes a first-class PTO IR `PrefetchAsyncContext` value from a GM
+    workspace pointer.
+  }];
+
+  let arguments = (ins
+    ScalarPtrOrMemRef:$workspace
+  );
+
+  let results = (outs
+    PrefetchAsyncContextType:$ctx
+  );
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `(` $workspace `:` qualified(type($workspace)) `)`
+    attr-dict `->` qualified(type($ctx))
+  }];
+}
+
+def GetPrefetchAsyncSessionOp : PTO_Op<"get_prefetch_async_session", [Pure]> {
+  let summary = "Project session from a PrefetchAsyncContext.";
+
+  let arguments = (ins
+    PrefetchAsyncContextType:$ctx
+  );
+
+  let results = (outs
+    AsyncSessionType:$session
+  );
+
+  let assemblyFormat = [{
+    $ctx attr-dict `:` qualified(type($ctx)) `->` qualified(type($session))
+  }];
+}
+
+def TPrefetchAsyncOp : PTO_Op<"tprefetch_async"> {
+  let summary = "Asynchronously prefetch global data into L2 cache via SDMA CMO.";
+  let description = [{
+    Starts one asynchronous prefetch operation.
+  }];
+
+  let arguments = (ins
+    PTODpsType:$src,
+    PrefetchAsyncContextType:$ctx
+  );
+
+  let results = (outs
+    AsyncEventType:$event
+  );
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `(` $src `,` $ctx `:`
+        qualified(type($src)) `,` qualified(type($ctx)) `)`
+    attr-dict `->` qualified(type($event))
+  }];
+}
+
 def TStoreOp: PTO_TOp<"tstore", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
@@ -2508,6 +2571,37 @@ def TSyncOp : PTO_TOp<"tsync"> {
   let assemblyFormat = [{
     `ins` `(` $events `:` type($events) `)` attr-dict
   }];
+}
+
+def SyncAllOp : PTO_Op<"syncall", [AttrSizedOperandSegments]> {
+  let summary = "Cross-core all-participant synchronization.";
+  let description = [{
+    Models `pto::SYNCALL`.
+
+    Supported IR forms:
+    - hard sync: no operands, `mode = hard`
+    - soft AIV-only sync: `gm_workspace`, `ub_workspace`, optional `used_cores`
+    - soft AIC-only sync: `gm_workspace`, `l1_workspace`, optional `used_cores`
+    - soft mixed sync: `gm_workspace`, `ub_workspace`, `l1_workspace`,
+      optional `used_cores`
+
+    The verifier mirrors the input-form constraints exposed by the public
+    `pto-isa` API.
+  }];
+
+  let arguments = (ins
+    Optional<PTODpsType>:$gm_workspace,
+    Optional<PTODpsType>:$ub_workspace,
+    Optional<PTODpsType>:$l1_workspace,
+    Optional<I32>:$used_cores,
+    PTO_SyncAllModeAttr:$mode,
+    PTO_SyncCoreTypeAttr:$core_type
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+  let hasCustomAssemblyFormat = 1;
 }
 
 

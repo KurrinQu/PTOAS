@@ -467,6 +467,7 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
                    pto::BuildAsyncSessionOp,
                    pto::TPutAsyncOp, pto::TGetAsyncOp, pto::TPutOp,
                    pto::TGetOp, pto::TNotifyOp, pto::TWaitOp, pto::TTestOp,
+                   pto::SyncAllOp,
                    pto::TBroadcastOp, pto::CommTGatherOp,
                    pto::CommTScatterOp, pto::TReduceOp>(op)) {
       UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
