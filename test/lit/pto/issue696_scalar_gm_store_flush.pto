@@ -33,6 +33,20 @@ module {
     return
   }
 
+  func.func @scalar_gm_store_temp_ptr_after_early_exit(%addr: i64, %src: !pto.ptr<i32>, %idx: index)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %is_zero = arith.cmpi eq, %idx, %c0 : index
+    cf.cond_br %is_zero, ^early, ^tail
+  ^early:
+    return
+  ^tail:
+    %ptr = pto.inttoptr %addr : i64 -> !pto.ptr<i32>
+    %val = pto.load_scalar %src[%c0] : !pto.ptr<i32> -> i32
+    pto.store_scalar %val, %ptr[%idx] : !pto.ptr<i32>, i32
+    return
+  }
+
   func.func @scalar_gm_load_only(%src: !pto.ptr<i32>) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
     %c0 = arith.constant 0 : index
     %val = pto.load_scalar %src[%c0] : !pto.ptr<i32> -> i32
@@ -46,7 +60,7 @@ module {
 // CPP: [[DST1]][{{.*}}] =
 // CPP: [[DST0]][{{.*}}] =
 // CPP: pipe_barrier(PIPE_ALL);
-// CPP-NEXT: dcci([[DST0]], ENTIRE_DATA_CACHE, CACHELINE_OUT);
+// CPP-NEXT: dcci(0, ENTIRE_DATA_CACHE, CACHELINE_OUT);
 // CPP-NEXT: dsb((mem_dsb_t)0);
 // CPP-NEXT: #endif // __DAV_VEC__
 // CPP: return;
@@ -55,11 +69,28 @@ module {
 // CPP-SAME: (__gm__ int32_t* [[ME_DST:v[0-9]+]], __gm__ int32_t* [[ME_SRC:v[0-9]+]], int32_t [[ME_IDX:v[0-9]+]])
 // CPP: [[ME_DST]][[[ME_IDX]]] =
 // CPP: pipe_barrier(PIPE_ALL);
-// CPP-NEXT: dcci([[ME_DST]], ENTIRE_DATA_CACHE, CACHELINE_OUT);
+// CPP-NEXT: dcci(0, ENTIRE_DATA_CACHE, CACHELINE_OUT);
 // CPP-NEXT: dsb((mem_dsb_t)0);
 // CPP-NEXT: return;
 // CPP: pipe_barrier(PIPE_ALL);
-// CPP-NEXT: dcci([[ME_DST]], ENTIRE_DATA_CACHE, CACHELINE_OUT);
+// CPP-NEXT: dcci(0, ENTIRE_DATA_CACHE, CACHELINE_OUT);
+// CPP-NEXT: dsb((mem_dsb_t)0);
+// CPP-NEXT: #endif // __DAV_VEC__
+// CPP: return;
+
+// CPP-LABEL: AICORE void scalar_gm_store_temp_ptr_after_early_exit
+// CPP: if (
+// CPP: goto [[TEMP_EARLY:label[0-9]+]];
+// CPP: goto [[TEMP_TAIL:label[0-9]+]];
+// CPP: [[TEMP_EARLY]]:
+// CPP-NEXT: pipe_barrier(PIPE_ALL);
+// CPP-NEXT: dcci(0, ENTIRE_DATA_CACHE, CACHELINE_OUT);
+// CPP-NEXT: dsb((mem_dsb_t)0);
+// CPP-NEXT: return;
+// CPP: [[TEMP_TAIL]]:
+// CPP: reinterpret_cast<__gm__ int32_t*>
+// CPP: pipe_barrier(PIPE_ALL);
+// CPP-NEXT: dcci(0, ENTIRE_DATA_CACHE, CACHELINE_OUT);
 // CPP-NEXT: dsb((mem_dsb_t)0);
 // CPP-NEXT: #endif // __DAV_VEC__
 // CPP: return;

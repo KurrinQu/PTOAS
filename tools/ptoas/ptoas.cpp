@@ -622,18 +622,6 @@ static std::string getLineIndent(llvm::StringRef line) {
   return line.take_front(firstNonSpace).str();
 }
 
-static void addUniqueFlushPtr(llvm::SmallVectorImpl<std::string> &ptrs,
-                              llvm::StringRef ptr) {
-  std::string trimmed = ptr.trim().str();
-  if (trimmed.empty())
-    return;
-  for (const std::string &seen : ptrs) {
-    if (seen == trimmed)
-      return;
-  }
-  ptrs.push_back(std::move(trimmed));
-}
-
 static bool isAICOREFunctionStart(llvm::StringRef trimmed) {
   if (trimmed.empty() || trimmed.starts_with("#") || trimmed.starts_with("//"))
     return false;
@@ -653,24 +641,16 @@ static int countBraceDelta(llvm::StringRef line) {
   return delta;
 }
 
-static void appendScalarGMFlush(std::string &out, llvm::StringRef indent,
-                                llvm::ArrayRef<std::string> ptrs) {
-  if (ptrs.empty())
-    return;
+static void appendScalarGMFlush(std::string &out, llvm::StringRef indent) {
   out.append(indent.str());
   out.append("pipe_barrier(PIPE_ALL);\n");
   out.append(indent.str());
-  // ENTIRE_DATA_CACHE flushes the full D-cache; one representative GM pointer
-  // is enough even when several scalar stores targeted different GM pointers.
-  out.append("dcci(");
-  out.append(ptrs.front());
-  out.append(", ENTIRE_DATA_CACHE, CACHELINE_OUT);\n");
+  out.append("dcci(0, ENTIRE_DATA_CACHE, CACHELINE_OUT);\n");
   out.append(indent.str());
   out.append("dsb((mem_dsb_t)0);\n");
 }
 
-static bool stripScalarGMFlushMarkersFromLine(
-    std::string &line, llvm::SmallVectorImpl<std::string> &ptrs) {
+static bool stripScalarGMFlushMarkersFromLine(std::string &line) {
   static constexpr llvm::StringLiteral kMarker =
       "PTOAS__SCALAR_GM_STORE_FLUSH";
 
@@ -684,8 +664,6 @@ static bool stripScalarGMFlushMarkersFromLine(
       searchPos = call->markerPos + kMarker.size();
       continue;
     }
-    if (call->args.size() == 1)
-      addUniqueFlushPtr(ptrs, call->args.front());
 
     size_t eraseBegin = call->markerPos;
     while (eraseBegin > 0 &&
@@ -736,20 +714,21 @@ static bool previousSignificantLineIsExitOrTailFlushPoint(
 
 static std::string rewriteScalarGMStoreFlushMarkersInFunction(
     llvm::ArrayRef<std::string> functionLines, bool hasTrailingNewline) {
-  llvm::SmallVector<std::string, 4> flushPtrs;
+  bool needsScalarGMFlush = false;
   llvm::SmallVector<std::string, 32> lines;
   lines.reserve(functionLines.size());
 
   for (const std::string &rawLine : functionLines) {
     std::string line = rawLine;
-    bool hadMarker = stripScalarGMFlushMarkersFromLine(line, flushPtrs);
+    bool hadMarker = stripScalarGMFlushMarkersFromLine(line);
+    needsScalarGMFlush |= hadMarker;
     if (hadMarker && llvm::StringRef(line).trim().empty()) {
       continue;
     }
     lines.push_back(std::move(line));
   }
 
-  if (flushPtrs.empty()) {
+  if (!needsScalarGMFlush) {
     std::string unchanged;
     unchanged.reserve(kRewriteOutputReserveExtra);
     for (size_t i = 0; i < lines.size(); ++i) {
@@ -787,7 +766,7 @@ static std::string rewriteScalarGMStoreFlushMarkersInFunction(
         !previousSignificantLineIsExitOrTailFlushPoint(lines, i))
       insertHere = true;
     if (insertHere) {
-      appendScalarGMFlush(out, getLineIndent(lineRef), flushPtrs);
+      appendScalarGMFlush(out, getLineIndent(lineRef));
       inserted = true;
     }
     out.append(lines[i]);
@@ -796,7 +775,7 @@ static std::string rewriteScalarGMStoreFlushMarkersInFunction(
   }
 
   if (!inserted)
-    appendScalarGMFlush(out, "  ", flushPtrs);
+    appendScalarGMFlush(out, "  ");
   return out;
 }
 
