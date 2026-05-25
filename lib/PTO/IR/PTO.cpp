@@ -6962,9 +6962,9 @@ static ParseResult parseI32LiteralAttr(OpAsmParser &parser, IntegerAttr &attr) {
 static void printLegacySyncTriplet(OpAsmPrinter &p, PipeAttr srcPipe,
                                    PipeAttr dstPipe, EventAttr eventId,
                                    ArrayRef<NamedAttribute> attrs) {
-  p << "[\"" << stringifyPIPE(srcPipe.getPipe()) << "\", \""
-    << stringifyPIPE(dstPipe.getPipe()) << "\", \""
-    << stringifyEVENT(eventId.getEvent()) << "\"]";
+  p << "[<" << stringifyPIPE(srcPipe.getPipe()) << ">, <"
+    << stringifyPIPE(dstPipe.getPipe()) << ">, <"
+    << stringifyEVENT(eventId.getEvent()) << ">]";
   p.printOptionalAttrDict(attrs, {"src_pipe", "dst_pipe", "event_id"});
 }
 
