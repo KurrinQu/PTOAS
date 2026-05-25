@@ -304,6 +304,25 @@ uint64_t mlir::pto::HiF8Type::getPreferredAlignment(
   return 1;
 }
 
+static llvm::TypeSize getTwoByteTypeSize() {
+  return llvm::TypeSize::getFixed(16);
+}
+
+llvm::TypeSize mlir::pto::HiF8x2Type::getTypeSizeInBits(
+    const DataLayout &, DataLayoutEntryListRef) const {
+  return getTwoByteTypeSize();
+}
+
+uint64_t mlir::pto::HiF8x2Type::getABIAlignment(
+    const DataLayout &, DataLayoutEntryListRef) const {
+  return 2;
+}
+
+uint64_t mlir::pto::HiF8x2Type::getPreferredAlignment(
+    const DataLayout &, DataLayoutEntryListRef) const {
+  return 2;
+}
+
 llvm::TypeSize mlir::pto::F4E1M2x2Type::getTypeSizeInBits(
     const DataLayout &, DataLayoutEntryListRef) const {
   return getOneByteTypeSize();
@@ -13588,6 +13607,274 @@ void TFreeOp::print(OpAsmPrinter &p) {
                           /*elidedAttrs=*/{"split"});
 }
 
+static func::FuncOp getParentFunc(Operation *op) {
+  return op ? op->getParentOfType<func::FuncOp>() : func::FuncOp();
+}
+
+static constexpr int64_t kSimtKeepResumeSlotLimit = 123;
+
+static Operation *getFirstNonConstantLikeOp(Block *block) {
+  if (!block)
+    return nullptr;
+  for (Operation &op : *block) {
+    if (!op.hasTrait<OpTrait::ConstantLike>())
+      return &op;
+  }
+  return nullptr;
+}
+
+static bool isOpInRange(Operation *op, Operation *first, Operation *last) {
+  for (Operation *cur = first; cur; cur = cur->getNextNode()) {
+    if (cur == op)
+      return true;
+    if (cur == last)
+      return false;
+  }
+  return false;
+}
+
+static std::optional<unsigned> getSimtKeepResumeRegisterCount(Type type) {
+  if (auto intType = dyn_cast<IntegerType>(type)) {
+    if (intType.getWidth() <= 32)
+      return 1;
+    if (intType.getWidth() == 64)
+      return 2;
+    return std::nullopt;
+  }
+  if (type.isF16() || type.isBF16() || type.isF32())
+    return 1;
+  return std::nullopt;
+}
+
+template <typename OpT>
+static Type getSimtKeepResumeValueType(OpT op);
+
+template <>
+Type getSimtKeepResumeValueType(KeepOp op) {
+  return op.getPayload().getType();
+}
+
+template <>
+Type getSimtKeepResumeValueType(ResumeOp op) {
+  return op.getResult().getType();
+}
+
+template <typename OpT>
+static LogicalResult verifySimtKeepResumeSlotRange(OpT op) {
+  std::optional<unsigned> registerCount =
+      getSimtKeepResumeRegisterCount(getSimtKeepResumeValueType(op));
+  if (!registerCount)
+    return success();
+  int64_t slot = op.getSlot();
+  if (slot < 0 || slot >= kSimtKeepResumeSlotLimit)
+    return op.emitOpError()
+           << "requires slot in range [0, "
+           << (kSimtKeepResumeSlotLimit - 1) << "]";
+  if (*registerCount == 2) {
+    if ((slot % 2) != 0)
+      return op.emitOpError()
+             << "requires an even slot for 64-bit keep/resume values";
+    if (slot + 1 >= kSimtKeepResumeSlotLimit)
+      return op.emitOpError()
+             << "requires slot in range [0, "
+             << (kSimtKeepResumeSlotLimit - 2)
+             << "] for 64-bit keep/resume values";
+  }
+  return success();
+}
+
+template <typename OpT>
+static bool overlapsEarlierSimtKeepResumeSlotUse(OpT op,
+                                                 SmallVectorImpl<int64_t> &used) {
+  std::optional<unsigned> registerCount =
+      getSimtKeepResumeRegisterCount(getSimtKeepResumeValueType(op));
+  if (!registerCount)
+    return false;
+  int64_t slot = op.getSlot();
+  for (int64_t word = slot; word < slot + *registerCount; ++word) {
+    if (llvm::is_contained(used, word))
+      return true;
+  }
+  for (int64_t word = slot; word < slot + *registerCount; ++word)
+    used.push_back(word);
+  return false;
+}
+
+static LogicalResult verifyUniqueResumeGroupSlots(ResumeOp current,
+                                                  Operation *first) {
+  SmallVector<int64_t, 4> slots;
+  for (Operation *cur = first; cur; cur = cur->getNextNode()) {
+    auto resume = dyn_cast<ResumeOp>(cur);
+    if (!resume)
+      break;
+    if (overlapsEarlierSimtKeepResumeSlotUse(resume, slots) &&
+        resume.getOperation() == current.getOperation())
+      return current.emitOpError()
+             << "duplicates an earlier slot " << resume.getSlot()
+             << " in the SIMT resume prologue group";
+  }
+  return success();
+}
+
+static LogicalResult verifyUniqueKeepGroupSlots(KeepOp current,
+                                                Operation *first,
+                                                Operation *last) {
+  SmallVector<int64_t, 4> slots;
+  for (Operation *cur = first; cur; cur = cur->getNextNode()) {
+    auto keep = dyn_cast<KeepOp>(cur);
+    if (!keep)
+      break;
+    if (overlapsEarlierSimtKeepResumeSlotUse(keep, slots) &&
+        keep.getOperation() == current.getOperation())
+      return current.emitOpError()
+             << "duplicates an earlier slot " << keep.getSlot()
+             << " in the SIMT keep epilogue group";
+    if (cur == last)
+      break;
+  }
+  return success();
+}
+
+static LogicalResult verifySimtKeepResumeCommon(Operation *op, int64_t slot) {
+  func::FuncOp func = getParentFunc(op);
+  if (!func || !func->hasAttr(pto::kPTOSimtEntryAttrName))
+    return op->emitOpError("must appear inside a function marked with '")
+           << pto::kPTOSimtEntryAttrName << "'";
+  if (slot < 0 || slot >= kSimtKeepResumeSlotLimit) {
+    return op->emitOpError("requires slot in range [0, ")
+           << (kSimtKeepResumeSlotLimit - 1) << "]";
+  }
+  return success();
+}
+
+static bool isSupportedSimtKeepResumeType(Type type) {
+  if (auto intType = dyn_cast<IntegerType>(type))
+    return intType.getWidth() <= 64;
+  return type.isF16() || type.isBF16() || type.isF32();
+}
+
+static LogicalResult verifyInsideSimtEntry(Operation *op) {
+  func::FuncOp func = getParentFunc(op);
+  if (!func || !func->hasAttr(pto::kPTOSimtEntryAttrName))
+    return op->emitOpError("must appear inside a function marked with '")
+           << pto::kPTOSimtEntryAttrName << "'";
+  return success();
+}
+
+LogicalResult SyncthreadsOp::verify() {
+  return verifyInsideSimtEntry(getOperation());
+}
+
+LogicalResult ThreadfenceOp::verify() {
+  return verifyInsideSimtEntry(getOperation());
+}
+
+LogicalResult ThreadfenceBlockOp::verify() {
+  return verifyInsideSimtEntry(getOperation());
+}
+
+void SyncthreadsOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(),
+                       SideEffects::DefaultResource::get());
+  effects.emplace_back(MemoryEffects::Write::get(),
+                       SideEffects::DefaultResource::get());
+}
+
+void ThreadfenceOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(),
+                       SideEffects::DefaultResource::get());
+  effects.emplace_back(MemoryEffects::Write::get(),
+                       SideEffects::DefaultResource::get());
+}
+
+void ThreadfenceBlockOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(),
+                       SideEffects::DefaultResource::get());
+  effects.emplace_back(MemoryEffects::Write::get(),
+                       SideEffects::DefaultResource::get());
+}
+
+LogicalResult KeepOp::verify() {
+  if (failed(verifySimtKeepResumeCommon(getOperation(), getSlot())))
+    return failure();
+  if (!isSupportedSimtKeepResumeType(getPayload().getType()))
+    return emitOpError()
+           << "supports integer scalar payloads up to 64 bits and "
+              "f16/bf16/f32 payloads";
+  if (failed(verifySimtKeepResumeSlotRange(*this)))
+    return failure();
+
+  Block *block = getOperation()->getBlock();
+  Operation *terminator = block ? block->getTerminator() : nullptr;
+  if (!terminator || !isa<func::ReturnOp>(terminator))
+    return emitOpError(
+        "must be placed in the SIMT epilogue before func.return");
+
+  Operation *cur = terminator->getPrevNode();
+  while (cur && isa<SyncthreadsOp>(cur))
+    cur = cur->getPrevNode();
+  Operation *lastKeep = cur;
+  if (!lastKeep || !isa<KeepOp>(lastKeep))
+    return emitOpError()
+           << "must be placed in the SIMT epilogue before func.return; only "
+              "'pto.syncthreads' may appear between the final 'pto.keep' group "
+              "and func.return";
+
+  Operation *firstKeep = lastKeep;
+  while (Operation *prev = firstKeep->getPrevNode()) {
+    if (!isa<KeepOp>(prev))
+      break;
+    firstKeep = prev;
+  }
+  if (!isOpInRange(getOperation(), firstKeep, lastKeep))
+    return emitOpError()
+           << "must be in the contiguous SIMT keep epilogue group immediately "
+              "before optional 'pto.syncthreads' and func.return";
+  if (failed(verifyUniqueKeepGroupSlots(*this, firstKeep, lastKeep)))
+    return failure();
+  return success();
+}
+
+LogicalResult ResumeOp::verify() {
+  if (failed(verifySimtKeepResumeCommon(getOperation(), getSlot())))
+    return failure();
+  if (!isSupportedSimtKeepResumeType(getResult().getType()))
+    return emitOpError()
+           << "supports integer scalar results up to 64 bits and "
+              "f16/bf16/f32 results";
+  if (failed(verifySimtKeepResumeSlotRange(*this)))
+    return failure();
+  Block *block = getOperation()->getBlock();
+  Operation *first = getFirstNonConstantLikeOp(block);
+  if (!first || !isa<ResumeOp>(first))
+    return emitOpError()
+           << "must be in the contiguous SIMT resume prologue group after "
+              "constant-like operations";
+
+  bool found = false;
+  for (Operation *cur = first; cur; cur = cur->getNextNode()) {
+    if (!isa<ResumeOp>(cur))
+      break;
+    if (cur == getOperation()) {
+      found = true;
+      break;
+    }
+  }
+  if (!found)
+    return emitOpError()
+           << "must be in the contiguous SIMT resume prologue group after "
+              "constant-like operations";
+  if (failed(verifyUniqueResumeGroupSlots(*this, first)))
+    return failure();
+  return success();
+}
+
 void BuildAsyncSessionOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
@@ -13806,6 +14093,165 @@ void TFreeOp::getEffects(
     addEffect(effects, &*entry.begin(), MemoryEffects::Read::get());
   addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Read::get());
   addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Write::get());
+}
+
+static constexpr const char kConvertRoundingKeywords[] = "r/a/f/c/z/o/h";
+
+static ParseResult parseConvertRounding(OpAsmParser &parser,
+                                        RoundingAttr &roundingAttr) {
+  StringRef roundingKeyword;
+  if (parser.parseKeyword("round") || parser.parseLParen() ||
+      parser.parseKeyword(&roundingKeyword) || parser.parseRParen())
+    return failure();
+  std::optional<Rounding> rounding = symbolizeRounding(roundingKeyword);
+  if (!rounding)
+    return parser.emitError(parser.getCurrentLocation())
+           << "expected convert rounding to be one of "
+           << kConvertRoundingKeywords;
+  roundingAttr = RoundingAttr::get(parser.getContext(), *rounding);
+  return success();
+}
+
+static void printConvertRounding(OpAsmPrinter &printer, Operation *op,
+                                 RoundingAttr rounding) {
+  printer << "round(" << stringifyRounding(rounding.getValue()) << ")";
+}
+
+static ParseResult parseConvertSaturation(OpAsmParser &parser,
+                                          SaturationAttr &saturationAttr) {
+  StringRef saturationKeyword;
+  if (parser.parseKeyword(&saturationKeyword))
+    return failure();
+  std::optional<Saturation> saturation =
+      symbolizeSaturation(saturationKeyword);
+  if (!saturation)
+    return parser.emitError(parser.getCurrentLocation())
+           << "expected convert saturation to be sat or nosat";
+  saturationAttr = SaturationAttr::get(parser.getContext(), *saturation);
+  return success();
+}
+
+static void printConvertSaturation(OpAsmPrinter &printer, Operation *op,
+                                   SaturationAttr saturation) {
+  printer << stringifySaturation(saturation.getValue());
+}
+
+static ParseResult parseSignedness(OpAsmParser &parser,
+                                   SignednessAttr &signedness) {
+  StringRef signednessKeyword;
+  if (parser.parseKeyword(&signednessKeyword))
+    return failure();
+  std::optional<Signedness> parsed = symbolizeSignedness(signednessKeyword);
+  if (!parsed)
+    return parser.emitError(parser.getCurrentLocation())
+           << "expected signedness to be signed or unsigned";
+  signedness = SignednessAttr::get(parser.getContext(), *parsed);
+  return success();
+}
+
+static void printSignedness(OpAsmPrinter &printer, Operation *op,
+                            SignednessAttr signedness) {
+  printer << stringifySignedness(signedness.getValue());
+}
+
+static OptionalParseResult parseOptionalSignedness(OpAsmParser &parser,
+                                                   SignednessAttr &signedness) {
+  if (succeeded(parser.parseOptionalKeyword("signed"))) {
+    signedness = SignednessAttr::get(parser.getContext(), Signedness::Signed);
+    return success();
+  }
+  if (succeeded(parser.parseOptionalKeyword("unsigned"))) {
+    signedness =
+        SignednessAttr::get(parser.getContext(), Signedness::Unsigned);
+    return success();
+  }
+  return std::nullopt;
+}
+
+static void printOptionalSignedness(OpAsmPrinter &printer, Operation *op,
+                                    SignednessAttr signedness) {
+  printer << stringifySignedness(signedness.getValue());
+}
+
+static constexpr const char kLdL2CacheKeywords[] =
+    "nmfv/nmlv/nmprs/nmpref/nakeep/naclean/nadrop/idsfv/idslv/idsprs/"
+    "idspref/exfv/exlv/exprs/expref";
+
+static constexpr const char kStL2CacheKeywords[] =
+    "nmfv/nmlv/nmprs/nmred/naci/napw/napi/nared/wbhfv/wbhlv/wbhprs/"
+    "wbhred/wtsfv/wtslv/wtsprs/wtsred";
+
+static ParseResult parseL1Cache(OpAsmParser &parser, L1CacheAttr &l1cache) {
+  if (failed(parser.parseOptionalKeyword("l1cache"))) {
+    l1cache = L1CacheAttr::get(parser.getContext(), L1Cache::Cache);
+    return success();
+  }
+
+  StringRef keyword;
+  if (parser.parseLParen() || parser.parseKeyword(&keyword) ||
+      parser.parseRParen())
+    return failure();
+  std::optional<L1Cache> parsed = symbolizeL1Cache(keyword);
+  if (!parsed)
+    return parser.emitError(parser.getCurrentLocation())
+           << "expected memory l1cache to be cache or uncache";
+  l1cache = L1CacheAttr::get(parser.getContext(), *parsed);
+  return success();
+}
+
+static void printL1Cache(OpAsmPrinter &printer, Operation *op,
+                         L1CacheAttr l1cache) {
+  printer << "l1cache(" << stringifyL1Cache(l1cache.getValue()) << ")";
+}
+
+static ParseResult parseLdL2Cache(OpAsmParser &parser,
+                                  LdL2CacheAttr &l2cache) {
+  if (failed(parser.parseOptionalKeyword("l2cache"))) {
+    l2cache = LdL2CacheAttr::get(parser.getContext(), LdL2Cache::NMFV);
+    return success();
+  }
+
+  StringRef keyword;
+  if (parser.parseLParen() || parser.parseKeyword(&keyword) ||
+      parser.parseRParen())
+    return failure();
+  std::optional<LdL2Cache> parsed = symbolizeLdL2Cache(keyword);
+  if (!parsed)
+    return parser.emitError(parser.getCurrentLocation())
+           << "expected load L2 cache control to be one of "
+           << kLdL2CacheKeywords;
+  l2cache = LdL2CacheAttr::get(parser.getContext(), *parsed);
+  return success();
+}
+
+static void printLdL2Cache(OpAsmPrinter &printer, Operation *op,
+                           LdL2CacheAttr l2cache) {
+  printer << "l2cache(" << stringifyLdL2Cache(l2cache.getValue()) << ")";
+}
+
+static ParseResult parseStL2Cache(OpAsmParser &parser,
+                                  StL2CacheAttr &l2cache) {
+  if (failed(parser.parseOptionalKeyword("l2cache"))) {
+    l2cache = StL2CacheAttr::get(parser.getContext(), StL2Cache::NMFV);
+    return success();
+  }
+
+  StringRef keyword;
+  if (parser.parseLParen() || parser.parseKeyword(&keyword) ||
+      parser.parseRParen())
+    return failure();
+  std::optional<StL2Cache> parsed = symbolizeStL2Cache(keyword);
+  if (!parsed)
+    return parser.emitError(parser.getCurrentLocation())
+           << "expected store L2 cache control to be one of "
+           << kStL2CacheKeywords;
+  l2cache = StL2CacheAttr::get(parser.getContext(), *parsed);
+  return success();
+}
+
+static void printStL2Cache(OpAsmPrinter &printer, Operation *op,
+                           StL2CacheAttr l2cache) {
+  printer << "l2cache(" << stringifyStL2Cache(l2cache.getValue()) << ")";
 }
 
 // [Include 必须放在最后]

@@ -111,9 +111,14 @@ discover_cases() {
     golden.py
     compare.py
   )
+  local onboard_only_prefix="onboard-only/"
 
   if [[ -n "${CASE_NAME}" ]]; then
     [[ "${CASE_NAME}" != /* ]] || die "CASE_NAME must be relative to CASES_ROOT: ${CASE_NAME}"
+    if [[ "${DEVICE}" == "SIM" && "${COMPILE_ONLY}" != "1" &&
+          "${CASE_NAME}" == "${onboard_only_prefix}"* ]]; then
+      die "case ${CASE_NAME} is onboard-only and cannot run with DEVICE=SIM"
+    fi
     local requested_dir="${CASES_ROOT}/${CASE_NAME}"
     [[ -d "${requested_dir}" ]] || die "unknown case: ${CASE_NAME}"
     for f in "${required_files[@]}"; do
@@ -136,9 +141,18 @@ discover_cases() {
     [[ "${ok}" -eq 1 ]] || continue
     [[ -f "${dir}/kernel.pto" ]] || continue
     local rel="${dir#${CASES_ROOT}/}"
+    if [[ "${DEVICE}" == "SIM" && "${COMPILE_ONLY}" != "1" &&
+          "${rel}" == "${onboard_only_prefix}"* ]]; then
+      continue
+    fi
     printf "%s\n" "${rel}"
   done
 }
+
+if [[ "${DEVICE}" == "SIM" && "${COMPILE_ONLY}" != "1" &&
+      "${CASE_NAME}" == onboard-only/* ]]; then
+  die "case ${CASE_NAME} is onboard-only and cannot run with DEVICE=SIM"
+fi
 
 readarray -t CASES < <(discover_cases)
 [[ "${#CASES[@]}" -gt 0 ]] || die "no cases found under ${CASES_ROOT}"

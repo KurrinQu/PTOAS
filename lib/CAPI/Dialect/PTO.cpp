@@ -121,6 +121,14 @@ MlirType mlirPTOHiF8TypeGet(MlirContext ctx) {
   return wrap(mlir::pto::HiF8Type::get(unwrap(ctx)));
 }
 
+bool mlirPTOTypeIsAHiF8x2Type(MlirType type) {
+  return isa<mlir::pto::HiF8x2Type>(unwrap(type));
+}
+
+MlirType mlirPTOHiF8x2TypeGet(MlirContext ctx) {
+  return wrap(mlir::pto::HiF8x2Type::get(unwrap(ctx)));
+}
+
 bool mlirPTOTypeIsAF4E1M2x2Type(MlirType type) {
   return isa<mlir::pto::F4E1M2x2Type>(unwrap(type));
 }

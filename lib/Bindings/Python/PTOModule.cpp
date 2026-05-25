@@ -886,6 +886,17 @@ static void bindPTOModule(pybind11::module &m) {
             py::arg("cls"), py::arg("context") = py::none());
 
     mlir_type_subclass(
+        m, "HiF8x2Type",
+        [](MlirType type) -> bool { return mlirPTOTypeIsAHiF8x2Type(type); })
+        .def_classmethod(
+            "get",
+            [](py::object cls, MlirContext context) -> py::object {
+                MlirType t = mlirPTOHiF8x2TypeGet(context);
+                return cls.attr("__call__")(t);
+            },
+            py::arg("cls"), py::arg("context") = py::none());
+
+    mlir_type_subclass(
         m, "F4E1M2x2Type",
         [](MlirType type) -> bool { return mlirPTOTypeIsAF4E1M2x2Type(type); })
         .def_classmethod(

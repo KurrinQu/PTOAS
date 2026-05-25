@@ -17,6 +17,7 @@
 #include "PTO/IR/PTO.h"
 #include "PTO/IR/PTOTypeUtils.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/Builders.h"
@@ -28,6 +29,7 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -121,14 +123,501 @@ static bool isMaskGranularityAdjacentNarrowing(StringRef inputGranularity,
          (inputGranularity == "b32" && resultGranularity == "b16");
 }
 
+static bool isSupportedShuffleValueType(Type type) {
+  if (auto intType = dyn_cast<IntegerType>(type))
+    return intType.getWidth() == 32 || intType.getWidth() == 64;
+  if (auto vecType = dyn_cast<VectorType>(type))
+    return vecType.getRank() == 1 && vecType.getDimSize(0) == 2 &&
+           vecType.getElementType().isF16();
+  return type.isF16() || type.isF32();
+}
+
+static bool isSupportedReduxValueType(Type type) {
+  if (auto intType = dyn_cast<IntegerType>(type))
+    return intType.getWidth() == 32;
+  return type.isF16() || type.isF32();
+}
+
+static LogicalResult verifyShuffleSemanticControl(Operation *op,
+                                                  Type controlType,
+                                                  IntegerAttr widthAttr,
+                                                  StringRef ctrlName) {
+  if (!isSupportedShuffleValueType(op->getResultTypes().front()))
+    return op->emitOpError()
+           << "requires i32, i64, f16, f32 or vector<2xf16> value/result type";
+  if (!controlType.isInteger(32))
+    return op->emitOpError() << "requires " << ctrlName
+                             << " operand to be i32";
+
+  int64_t width = widthAttr.getInt();
+  if (width != 16 && width != 32)
+    return op->emitOpError() << "requires width to be 16 or 32";
+  return success();
+}
+
+static LogicalResult verifyReduxSemanticType(Operation *op, Type valueType,
+                                             Attribute signednessAttr,
+                                             bool requireSignedness) {
+  if (!isSupportedReduxValueType(valueType))
+    return op->emitOpError()
+           << "requires i32, f16 or f32 value/result type";
+
+  auto intType = dyn_cast<IntegerType>(valueType);
+  if (!intType) {
+    if (signednessAttr)
+      return op->emitOpError()
+             << "does not accept signedness for floating-point redux";
+    return success();
+  }
+
+  if (!signednessAttr && requireSignedness)
+    return op->emitOpError()
+           << "requires explicit signedness for integer redux";
+
+  if (!signednessAttr)
+    return success();
+
+  auto signedness = cast<pto::SignednessAttr>(signednessAttr).getValue();
+  (void)signedness;
+  return success();
+}
+
+static bool isStandardScalarConvertType(Type type) {
+  if (auto intType = dyn_cast<IntegerType>(type))
+    return intType.getWidth() == 32 || intType.getWidth() == 64;
+  return type.isF16() || type.isBF16() || type.isF32();
+}
+
+static bool isIntegerLikeConvertType(Type type) {
+  return isa<IntegerType>(type);
+}
+
+static bool isVector2Of(Type type, llvm::function_ref<bool(Type)> elementPred) {
+  auto vecType = dyn_cast<VectorType>(type);
+  return vecType && vecType.getRank() == 1 && vecType.getDimSize(0) == 2 &&
+         elementPred(vecType.getElementType());
+}
+
+static bool isSupportedPackedConvertType(Type type) {
+  if (pto::isPTOHiFloat8x2Type(type))
+    return true;
+  return isVector2Of(type, [](Type elem) {
+    return elem.isF16() || elem.isBF16() || elem.isF32() ||
+           pto::isPTOFloat8Type(elem) || pto::isPTOHiFloat8Type(elem);
+  });
+}
+
+static bool isSupportedLowPrecisionConvertType(Type type) {
+  return pto::isPTOFloat4PackedType(type);
+}
+
+static bool isVector2F16OrBF16Type(Type type) {
+  return isVector2Of(type, [](Type elem) {
+    return elem.isF16() || elem.isBF16();
+  });
+}
+
+static bool isInsideSimtEntry(Operation *op) {
+  auto funcOp = op->getParentOfType<func::FuncOp>();
+  return funcOp && funcOp->hasAttr(pto::kPTOSimtEntryAttrName);
+}
+
+static bool isSupportedConvertType(Type type) {
+  return isStandardScalarConvertType(type) || isSupportedPackedConvertType(type) ||
+         isSupportedLowPrecisionConvertType(type);
+}
+
+static LogicalResult verifyPackedConvertControls(Operation *op, Type srcType,
+                                                 Type dstType,
+                                                 pto::Rounding rounding) {
+  auto isV2F16 = [](Type type) {
+    return isVector2Of(type, [](Type elem) { return elem.isF16(); });
+  };
+  auto isV2BF16 = [](Type type) {
+    return isVector2Of(type, [](Type elem) { return elem.isBF16(); });
+  };
+  auto isV2F32 = [](Type type) {
+    return isVector2Of(type, [](Type elem) { return elem.isF32(); });
+  };
+  auto isV2F8 = [](Type type) {
+    return isVector2Of(type, [](Type elem) { return pto::isPTOFloat8Type(elem); });
+  };
+  auto isV2HiF8 = [](Type type) {
+    return pto::isPTOHiFloat8x2Type(type);
+  };
+  auto isF4 = [](Type type) { return pto::isPTOFloat4PackedType(type); };
+  auto isRoundRAFZC = [](pto::Rounding rounding) {
+    return rounding == pto::Rounding::R || rounding == pto::Rounding::A ||
+           rounding == pto::Rounding::F || rounding == pto::Rounding::C ||
+           rounding == pto::Rounding::Z;
+  };
+
+  if (isV2F32(srcType) && isV2F16(dstType)) {
+    if (rounding == pto::Rounding::H)
+      return op->emitOpError()
+             << "f32x2-to-f16x2 conversion supports rounding r/a/f/c/z/o";
+    return success();
+  }
+  if (isV2F32(srcType) && isV2BF16(dstType)) {
+    if (rounding == pto::Rounding::O || rounding == pto::Rounding::H)
+      return op->emitOpError()
+             << "f32x2-to-bf16x2 conversion supports rounding r/a/f/c/z";
+    return success();
+  }
+  if ((isV2F16(srcType) || isV2BF16(srcType)) && isV2F32(dstType)) {
+    if (rounding == pto::Rounding::O || rounding == pto::Rounding::H)
+      return op->emitOpError()
+             << "packed-to-f32x2 conversion supports rounding r/a/f/c/z";
+    return success();
+  }
+  if (isV2F32(srcType) && isV2F8(dstType)) {
+    if (rounding != pto::Rounding::R)
+      return op->emitOpError()
+             << "f32x2-to-f8x2 conversion supports rounding r";
+    return success();
+  }
+  if ((isV2F32(srcType) || isV2F16(srcType)) && isV2HiF8(dstType)) {
+    if (rounding != pto::Rounding::A && rounding != pto::Rounding::H)
+      return op->emitOpError()
+             << "f32x2/f16x2-to-hif8x2 conversion supports rounding a/h";
+    return success();
+  }
+  if ((isV2F8(srcType) || isV2HiF8(srcType)) &&
+      (isV2F32(dstType) || isV2F16(dstType))) {
+    if (!isRoundRAFZC(rounding))
+      return op->emitOpError()
+             << "f8x2/hif8x2-to-f32x2/f16x2 conversion supports rounding r/a/f/c/z";
+    return success();
+  }
+  if ((isV2BF16(srcType) && isF4(dstType)) ||
+      (isF4(srcType) && isV2BF16(dstType))) {
+    if (!isRoundRAFZC(rounding))
+      return op->emitOpError()
+             << "bf16x2-to-f4 and f4-to-bf16x2 conversion supports rounding r/a/f/c/z";
+    return success();
+  }
+
+  return op->emitOpError()
+         << "unsupported packed conversion type pair; supported packed pairs are "
+            "f32x2-to-f16x2, f16x2-to-f32x2, f32x2-to-bf16x2, and "
+            "bf16x2-to-f32x2, f32x2-to-f8x2, f32x2/f16x2-to-hif8x2, "
+            "f8x2/hif8x2-to-f32x2/f16x2, and bf16x2-to/from-f4";
+}
+
+static LogicalResult verifyConvertControls(Operation *op, Type srcType,
+                                           Type dstType,
+                                           pto::Rounding rounding,
+                                           pto::Saturation saturation,
+                                           Attribute signednessAttr) {
+  if (!isSupportedConvertType(srcType) || !isSupportedConvertType(dstType))
+    return op->emitOpError()
+           << "requires i32, i64, f16, bf16, f32 or supported vector<2xT> "
+              "conversion types";
+
+  bool srcInt = isIntegerLikeConvertType(srcType);
+  bool dstInt = isIntegerLikeConvertType(dstType);
+  bool srcPacked = isSupportedPackedConvertType(srcType);
+  bool dstPacked = isSupportedPackedConvertType(dstType);
+  bool srcLowPrecision = isSupportedLowPrecisionConvertType(srcType);
+  bool dstLowPrecision = isSupportedLowPrecisionConvertType(dstType);
+  if (srcPacked || dstPacked || srcLowPrecision || dstLowPrecision) {
+    if (srcInt || dstInt)
+      return op->emitOpError()
+             << "does not support mixed integer and packed conversion";
+    if (signednessAttr)
+      return op->emitOpError()
+             << "does not accept signedness for packed floating conversion";
+    if (!((srcPacked || srcLowPrecision) && (dstPacked || dstLowPrecision)))
+      return op->emitOpError()
+             << "does not support mixed scalar and packed conversion";
+    return verifyPackedConvertControls(op, srcType, dstType, rounding);
+  }
+
+  if (srcInt && dstInt)
+    return op->emitOpError()
+           << "does not support integer-to-integer conversion";
+
+  if ((srcInt || dstInt) && !signednessAttr)
+    return op->emitOpError()
+           << "requires signedness when converting to or from integer type";
+  if (!srcInt && !dstInt && signednessAttr)
+    return op->emitOpError()
+           << "does not accept signedness for floating-to-floating conversion";
+
+  if (srcInt) {
+    if (srcType.isInteger(64) && !dstType.isF32())
+      return op->emitOpError()
+             << "supports i64 conversion only to f32 in the confirmed slice";
+    if (srcType.isInteger(32) &&
+        !(dstType.isF32() || dstType.isF16() || dstType.isBF16()))
+      return op->emitOpError()
+             << "unsupported integer-to-floating conversion type pair";
+    if (rounding == pto::Rounding::O || rounding == pto::Rounding::H)
+      return op->emitOpError()
+             << "integer-to-floating conversion supports rounding r/a/f/c/z";
+    (void)saturation;
+    return success();
+  }
+
+  if (dstType.isInteger(64) && !srcType.isF32())
+    return op->emitOpError()
+           << "supports conversion to i64 only from f32 in the confirmed slice";
+  if (srcType.isF32()) {
+    if (dstType.isInteger(32) || dstType.isInteger(64)) {
+      if (saturation != pto::Saturation::Enable)
+        return op->emitOpError()
+               << "fp32-to-integer conversion requires saturation enable";
+      if (rounding == pto::Rounding::O || rounding == pto::Rounding::H)
+        return op->emitOpError()
+               << "fp32-to-integer conversion supports rounding r/a/f/c/z";
+      return success();
+    }
+    if (dstType.isF16() || dstType.isBF16() || dstType.isF32()) {
+      if (dstType.isF16()) {
+        if (rounding == pto::Rounding::H)
+          return op->emitOpError()
+                 << "fp32-to-fp16 conversion supports rounding r/a/f/c/z/o";
+      } else if (rounding == pto::Rounding::O ||
+                 rounding == pto::Rounding::H) {
+        return op->emitOpError()
+               << "fp32-to-floating conversion supports rounding r/a/f/c/z";
+      }
+      return success();
+    }
+  }
+
+  if (srcType.isF16() || srcType.isBF16()) {
+    if (dstType.isInteger(32)) {
+      if (saturation != pto::Saturation::Enable)
+        return op->emitOpError()
+               << "fp16/bf16-to-integer conversion requires saturation enable";
+      if (rounding == pto::Rounding::O || rounding == pto::Rounding::H)
+        return op->emitOpError()
+               << "fp16/bf16-to-integer conversion supports rounding r/a/f/c/z";
+      return success();
+    }
+    if (dstType.isF32() || dstType.isF16() || dstType.isBF16()) {
+      if (rounding == pto::Rounding::O || rounding == pto::Rounding::H)
+        return op->emitOpError()
+               << "fp16/bf16-to-floating conversion supports rounding r/a/f/c/z";
+      return success();
+    }
+  }
+
+  return op->emitOpError() << "unsupported conversion type pair";
+}
+
+static bool isSupportedAtomicScalarType(Type type) {
+  if (auto intType = dyn_cast<IntegerType>(type))
+    return intType.getWidth() == 32 || intType.getWidth() == 64;
+  return type.isF16() || type.isBF16() || type.isF32() ||
+         isVector2F16OrBF16Type(type);
+}
+
+static LogicalResult verifyAtomicCommon(Operation *op, Value ptr, Type valueType,
+                                        Type resultType, bool bitwise,
+                                        Attribute signednessAttr) {
+  if (!isSupportedAtomicScalarType(valueType))
+    return op->emitOpError()
+           << "requires i32, i64, f16, bf16, f32, vector<2xf16> or "
+              "vector<2xbf16> atomic value type";
+  if (resultType != valueType)
+    return op->emitOpError()
+           << "requires atomic result type to match value type";
+
+  auto ptrTy = dyn_cast<PtrType>(ptr.getType());
+  if (!ptrTy)
+    return op->emitOpError() << "requires !pto.ptr pointer operand";
+  if (ptrTy.getElementType() != valueType)
+    return op->emitOpError()
+           << "requires atomic value type to match pointer element type";
+
+  AddressSpace addressSpace = ptrTy.getMemorySpace().getAddressSpace();
+  if (addressSpace != AddressSpace::GM && addressSpace != AddressSpace::VEC)
+    return op->emitOpError() << "requires GM or UB pointer";
+  if (addressSpace == AddressSpace::VEC && valueType.isInteger(64))
+    return op->emitOpError() << "does not support i64 UB-space atomics";
+
+  auto intType = dyn_cast<IntegerType>(valueType);
+  if (bitwise) {
+    if (!intType)
+      return op->emitOpError() << "requires integer type for bitwise atomics";
+    if (addressSpace == AddressSpace::VEC && intType.getWidth() == 64)
+      return op->emitOpError() << "does not support i64 UB-space bitwise atomics";
+  }
+
+  if (signednessAttr && !intType)
+    return op->emitOpError()
+           << "does not accept signedness for floating-point atomics";
+  if (isVector2F16OrBF16Type(valueType)) {
+    if (!isInsideSimtEntry(op))
+      return op->emitOpError()
+             << "requires packed atomics to be inside a pto.simt_entry "
+                "function on beta.1";
+    if (!op->getResult(0).use_empty())
+      return op->emitOpError()
+             << "does not support using the old value result for packed "
+                "atomics on beta.1; leave the result unused";
+  }
+  return success();
+}
+
+static LogicalResult verifyLdgStgAccess(Operation *op, Type ptrType,
+                                        Type valueType) {
+  auto ptrTy = dyn_cast<PtrType>(ptrType);
+  if (!ptrTy)
+    return op->emitOpError() << "requires !pto.ptr operand";
+  if (ptrTy.getMemorySpace().getAddressSpace() != AddressSpace::GM)
+    return op->emitOpError() << "requires GM pointer";
+
+  if (auto intType = dyn_cast<IntegerType>(valueType)) {
+    unsigned width = intType.getWidth();
+    if (width == 8 || width == 16 || width == 32 || width == 64)
+      return success();
+  }
+  if (valueType.isF16() || valueType.isBF16() || valueType.isF32() ||
+      valueType.isF64())
+    return success();
+
+  return op->emitOpError()
+         << "currently supports 8/16/32/64-bit integer and "
+            "f16/bf16/f32/f64 value type";
+}
+
 LogicalResult PTOLoadOp::verify() {
-  return verifyVPTOScalarAccessTypes(getOperation(), getPtr().getType(),
-                                     getValue().getType(), "load");
+  if (failed(verifyVPTOScalarAccessTypes(getOperation(), getPtr().getType(),
+                                         getValue().getType(), "load")))
+    return failure();
+  return success();
 }
 
 LogicalResult PTOStoreOp::verify() {
-  return verifyVPTOScalarAccessTypes(getOperation(), getPtr().getType(),
-                                     getValue().getType(), "store");
+  if (failed(verifyVPTOScalarAccessTypes(getOperation(), getPtr().getType(),
+                                         getValue().getType(), "store")))
+    return failure();
+  return success();
+}
+
+LogicalResult PTOLdgOp::verify() {
+  if (failed(verifyVPTOScalarAccessTypes(getOperation(), getPtr().getType(),
+                                         getValue().getType(), "ldg")))
+    return failure();
+  return verifyLdgStgAccess(getOperation(), getPtr().getType(),
+                            getValue().getType());
+}
+
+LogicalResult PTOStgOp::verify() {
+  if (failed(verifyVPTOScalarAccessTypes(getOperation(), getPtr().getType(),
+                                         getValue().getType(), "stg")))
+    return failure();
+  return verifyLdgStgAccess(getOperation(), getPtr().getType(),
+                            getValue().getType());
+}
+
+LogicalResult ShuffleIdxOp::verify() {
+  return verifyShuffleSemanticControl(getOperation(), getIndex().getType(),
+                                      getWidthAttr(), "index");
+}
+
+LogicalResult ShuffleUpOp::verify() {
+  return verifyShuffleSemanticControl(getOperation(), getOffset().getType(),
+                                      getWidthAttr(), "offset");
+}
+
+LogicalResult ShuffleDownOp::verify() {
+  return verifyShuffleSemanticControl(getOperation(), getOffset().getType(),
+                                      getWidthAttr(), "offset");
+}
+
+LogicalResult ShuffleBflyOp::verify() {
+  return verifyShuffleSemanticControl(getOperation(), getMask().getType(),
+                                      getWidthAttr(), "mask");
+}
+
+LogicalResult ReduxAddOp::verify() {
+  return verifyReduxSemanticType(getOperation(), getValue().getType(),
+                                  getSignednessAttr(), /*requireSignedness=*/false);
+}
+
+LogicalResult ReduxMaxOp::verify() {
+  return verifyReduxSemanticType(getOperation(), getValue().getType(),
+                                  getSignednessAttr(), /*requireSignedness=*/true);
+}
+
+LogicalResult ReduxMinOp::verify() {
+  return verifyReduxSemanticType(getOperation(), getValue().getType(),
+                                  getSignednessAttr(), /*requireSignedness=*/true);
+}
+
+LogicalResult MulhiOp::verify() {
+  if (!getResult().getType().isInteger(32) &&
+      !getResult().getType().isInteger(64))
+    return emitOpError() << "requires i32 or i64 result type";
+  return success();
+}
+
+LogicalResult MulI32ToI64Op::verify() { return success(); }
+
+LogicalResult AtomicCasOp::verify() {
+  if (getCompare().getType() != getValue().getType())
+    return emitOpError() << "requires compare and value types to match";
+  return verifyAtomicCommon(getOperation(), getPtr(), getValue().getType(),
+                            getOld().getType(), /*bitwise=*/false,
+                            getSignednessAttr());
+}
+
+LogicalResult AtomicExchOp::verify() {
+  return verifyAtomicCommon(getOperation(), getPtr(), getValue().getType(),
+                            getOld().getType(), /*bitwise=*/false,
+                            getSignednessAttr());
+}
+
+LogicalResult AtomicAddOp::verify() {
+  return verifyAtomicCommon(getOperation(), getPtr(), getValue().getType(),
+                            getOld().getType(), /*bitwise=*/false,
+                            getSignednessAttr());
+}
+
+LogicalResult AtomicSubOp::verify() {
+  return verifyAtomicCommon(getOperation(), getPtr(), getValue().getType(),
+                            getOld().getType(), /*bitwise=*/false,
+                            getSignednessAttr());
+}
+
+LogicalResult AtomicMinOp::verify() {
+  return verifyAtomicCommon(getOperation(), getPtr(), getValue().getType(),
+                            getOld().getType(), /*bitwise=*/false,
+                            getSignednessAttr());
+}
+
+LogicalResult AtomicMaxOp::verify() {
+  return verifyAtomicCommon(getOperation(), getPtr(), getValue().getType(),
+                            getOld().getType(), /*bitwise=*/false,
+                            getSignednessAttr());
+}
+
+LogicalResult AtomicAndOp::verify() {
+  return verifyAtomicCommon(getOperation(), getPtr(), getValue().getType(),
+                            getOld().getType(), /*bitwise=*/true,
+                            getSignednessAttr());
+}
+
+LogicalResult AtomicOrOp::verify() {
+  return verifyAtomicCommon(getOperation(), getPtr(), getValue().getType(),
+                            getOld().getType(), /*bitwise=*/true,
+                            getSignednessAttr());
+}
+
+LogicalResult AtomicXorOp::verify() {
+  return verifyAtomicCommon(getOperation(), getPtr(), getValue().getType(),
+                            getOld().getType(), /*bitwise=*/true,
+                            getSignednessAttr());
+}
+
+LogicalResult ConvertOp::verify() {
+  return verifyConvertControls(getOperation(), getSrc().getType(),
+                               getDst().getType(), getRounding(),
+                               getSaturation(), getSignednessAttr());
 }
 
 void PTOLoadOp::getEffects(
@@ -141,6 +630,73 @@ void PTOStoreOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
   effects.emplace_back(MemoryEffects::Write::get(), &getPtrMutable());
+}
+
+void PTOLdgOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getPtrMutable());
+}
+
+void PTOStgOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Write::get(), &getPtrMutable());
+}
+
+template <typename OpTy>
+static void getAtomicEffects(
+    OpTy op,
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &op.getPtrMutable());
+  effects.emplace_back(MemoryEffects::Write::get(), &op.getPtrMutable());
+}
+
+void AtomicCasOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  getAtomicEffects(*this, effects);
+}
+void AtomicExchOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  getAtomicEffects(*this, effects);
+}
+void AtomicAddOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  getAtomicEffects(*this, effects);
+}
+void AtomicSubOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  getAtomicEffects(*this, effects);
+}
+void AtomicMinOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  getAtomicEffects(*this, effects);
+}
+void AtomicMaxOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  getAtomicEffects(*this, effects);
+}
+void AtomicAndOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  getAtomicEffects(*this, effects);
+}
+void AtomicOrOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  getAtomicEffects(*this, effects);
+}
+void AtomicXorOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  getAtomicEffects(*this, effects);
 }
 
 static LogicalResult verifyNotNestedInVecScope(Operation *op,

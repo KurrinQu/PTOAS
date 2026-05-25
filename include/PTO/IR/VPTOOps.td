@@ -50,6 +50,62 @@ def PTO_AccStorePayloadType : AnyTypeOf<[AnySignlessInteger, AnyFloat, PTO_Scali
                                         "signless integer, float scalar, or scaling pointer">;
 def PTO_AccStoreClipPayloadType : AnyTypeOf<[AnyInteger, AnyFloat],
                                             "integer or float clip scalar">;
+def PTO_V2F16Type : Type<
+  CPred<"::llvm::isa<::mlir::VectorType>($_self) && "
+        "::llvm::cast<::mlir::VectorType>($_self).getRank() == 1 && "
+        "::llvm::cast<::mlir::VectorType>($_self).getDimSize(0) == 2 && "
+        "::llvm::cast<::mlir::VectorType>($_self).getElementType().isF16()">,
+  "vector<2xf16>">;
+def PTO_V2BF16Type : Type<
+  CPred<"::llvm::isa<::mlir::VectorType>($_self) && "
+        "::llvm::cast<::mlir::VectorType>($_self).getRank() == 1 && "
+        "::llvm::cast<::mlir::VectorType>($_self).getDimSize(0) == 2 && "
+        "::llvm::cast<::mlir::VectorType>($_self).getElementType().isBF16()">,
+  "vector<2xbf16>">;
+def PTO_V2F32Type : Type<
+  CPred<"::llvm::isa<::mlir::VectorType>($_self) && "
+        "::llvm::cast<::mlir::VectorType>($_self).getRank() == 1 && "
+        "::llvm::cast<::mlir::VectorType>($_self).getDimSize(0) == 2 && "
+        "::llvm::cast<::mlir::VectorType>($_self).getElementType().isF32()">,
+  "vector<2xf32>">;
+def PTO_V2F8E4M3FNType : Type<
+  CPred<"::llvm::isa<::mlir::VectorType>($_self) && "
+        "::llvm::cast<::mlir::VectorType>($_self).getRank() == 1 && "
+        "::llvm::cast<::mlir::VectorType>($_self).getDimSize(0) == 2 && "
+        "::llvm::cast<::mlir::VectorType>($_self).getElementType().isFloat8E4M3FN()">,
+  "vector<2xf8E4M3FN>">;
+def PTO_V2F8E5M2Type : Type<
+  CPred<"::llvm::isa<::mlir::VectorType>($_self) && "
+        "::llvm::cast<::mlir::VectorType>($_self).getRank() == 1 && "
+        "::llvm::cast<::mlir::VectorType>($_self).getDimSize(0) == 2 && "
+        "::llvm::cast<::mlir::VectorType>($_self).getElementType().isFloat8E5M2()">,
+  "vector<2xf8E5M2>">;
+def PTO_V2HiF8Type : Type<
+  CPred<"::llvm::isa<::mlir::pto::HiF8x2Type>($_self)">,
+  "!pto.hif8x2">;
+def PTO_LowPrecisionPackedType : AnyTypeOf<[PTO_V2F8E4M3FNType, PTO_V2F8E5M2Type,
+                                            PTO_V2HiF8Type],
+                                           "supported vector<2xFP8/HiF8> packed type">;
+def PTO_SimtF4ValueType : Type<
+  CPred<"::llvm::isa<::mlir::pto::F4E1M2x2Type, ::mlir::pto::F4E2M1x2Type>($_self)">,
+  "!pto.f4E1M2x2 or !pto.f4E2M1x2">;
+def PTO_SimtShuffleValueType : AnyTypeOf<[I32, I64, F16, F32, PTO_V2F16Type],
+                                         "i32, i64, f16, f32 or vector<2xf16>">;
+def PTO_SimtUnaryFloatValueType : AnyTypeOf<[F16, F32, BF16, PTO_V2F16Type, PTO_V2BF16Type],
+                                           "f16, f32, bf16, vector<2xf16> or vector<2xbf16>">;
+def PTO_SimtUnaryF16F32ValueType : AnyTypeOf<[F16, F32, PTO_V2F16Type],
+                                            "f16, f32 or vector<2xf16>">;
+def PTO_SimtBinaryF32BF16ValueType : AnyTypeOf<[F32, BF16, PTO_V2F16Type, PTO_V2BF16Type],
+                                              "f32, bf16, vector<2xf16> or vector<2xbf16>">;
+def PTO_SimtBinaryF16F32ValueType : AnyTypeOf<[F16, F32, PTO_V2F16Type],
+                                             "f16, f32 or vector<2xf16>">;
+def PTO_SimtConvertValueType : AnyTypeOf<[I32, I64, F16, BF16, F32,
+                                          PTO_V2F16Type, PTO_V2BF16Type,
+                                          PTO_V2F32Type, PTO_LowPrecisionPackedType,
+                                          PTO_SimtF4ValueType],
+                                         "standard scalar, low-precision scalar payload, or supported vector<2xT> conversion type">;
+def PTO_AtomicValueType : AnyTypeOf<[I32, I64, F16, BF16, F32, PTO_V2F16Type, PTO_V2BF16Type],
+                                    "i32, i64, f16, bf16, f32, vector<2xf16> or vector<2xbf16>">;
 
 def PTOLoadOp : PTO_Op<"load", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -87,6 +143,51 @@ def PTOStoreOp : PTO_Op<"store", [
 
   let assemblyFormat = [{
     $value `,` $ptr `[` $offset `]` attr-dict `:` type($ptr) `,` type($value)
+  }];
+}
+
+def PTOLdgOp : PTO_Op<"ldg", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let summary = "Load one scalar element from GM with cache controls.";
+
+  let arguments = (ins
+    PTO_BufferType:$ptr,
+    Index:$offset,
+    OptionalAttr<PTO_L1CacheAttr>:$l1cache,
+    OptionalAttr<PTO_LdL2CacheAttr>:$l2cache
+  );
+
+  let results = (outs AnyType:$value);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $ptr `[` $offset `]` custom<L1Cache>($l1cache)
+    custom<LdL2Cache>($l2cache) attr-dict `:` type($ptr) `->` type($value)
+  }];
+}
+
+def PTOStgOp : PTO_Op<"stg", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let summary = "Store one scalar element to GM with cache controls.";
+
+  let arguments = (ins
+    PTO_BufferType:$ptr,
+    Index:$offset,
+    AnyType:$value,
+    OptionalAttr<PTO_L1CacheAttr>:$l1cache,
+    OptionalAttr<PTO_StL2CacheAttr>:$l2cache
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $value `,` $ptr `[` $offset `]` custom<L1Cache>($l1cache)
+    custom<StL2Cache>($l2cache) attr-dict `:` type($ptr) `,` type($value)
   }];
 }
 
@@ -299,6 +400,418 @@ def PTO_SetAtomicS8Op : PTO_NullaryConfigOp<"set_atomic_s8">;
 def PTO_GetTidXOp : PTO_NullaryI32PureOp<"get_tid_x">;
 def PTO_GetTidYOp : PTO_NullaryI32PureOp<"get_tid_y">;
 def PTO_GetTidZOp : PTO_NullaryI32PureOp<"get_tid_z">;
+def PTO_GetBlockDimXOp : PTO_NullaryI32PureOp<"get_block_dim_x">;
+def PTO_GetBlockDimYOp : PTO_NullaryI32PureOp<"get_block_dim_y">;
+def PTO_GetBlockDimZOp : PTO_NullaryI32PureOp<"get_block_dim_z">;
+def PTO_GetGridDimXOp : PTO_NullaryI32PureOp<"get_grid_dim_x">;
+def PTO_GetGridDimYOp : PTO_NullaryI32PureOp<"get_grid_dim_y">;
+def PTO_GetGridDimZOp : PTO_NullaryI32PureOp<"get_grid_dim_z">;
+def PTO_GetBlockIdxXOp : PTO_NullaryI32PureOp<"get_block_idx_x">;
+def PTO_GetBlockIdxYOp : PTO_NullaryI32PureOp<"get_block_idx_y">;
+def PTO_GetBlockIdxZOp : PTO_NullaryI32PureOp<"get_block_idx_z">;
+def PTO_GetVecCoreIdOp : PTO_NullaryI32PureOp<"get_veccoreid">;
+def PTO_GetLaneIdOp : PTO_NullaryI32PureOp<"get_laneid">;
+def PTO_GetClock32Op : PTO_NullaryI32PureOp<"get_clock32">;
+def PTO_GetClock64Op : PTO_NullaryI64PureOp<"get_clock64">;
+def PTO_GetLaneMaskEqOp : PTO_NullaryI32PureOp<"get_lanemask_eq">;
+def PTO_GetLaneMaskLeOp : PTO_NullaryI32PureOp<"get_lanemask_le">;
+def PTO_GetLaneMaskLtOp : PTO_NullaryI32PureOp<"get_lanemask_lt">;
+def PTO_GetLaneMaskGeOp : PTO_NullaryI32PureOp<"get_lanemask_ge">;
+def PTO_GetLaneMaskGtOp : PTO_NullaryI32PureOp<"get_lanemask_gt">;
+
+def PTO_VoteAllOp : PTO_Op<"vote_all", [Pure]> {
+  let arguments = (ins I1:$pred);
+  let results = (outs I1:$result);
+
+  let assemblyFormat = [{
+    $pred attr-dict `:` type($pred) `->` type($result)
+  }];
+}
+
+def PTO_VoteAnyOp : PTO_Op<"vote_any", [Pure]> {
+  let arguments = (ins I1:$pred);
+  let results = (outs I1:$result);
+
+  let assemblyFormat = [{
+    $pred attr-dict `:` type($pred) `->` type($result)
+  }];
+}
+
+def PTO_VoteUniOp : PTO_Op<"vote_uni", [Pure]> {
+  let arguments = (ins I1:$pred);
+  let results = (outs I1:$result);
+
+  let assemblyFormat = [{
+    $pred attr-dict `:` type($pred) `->` type($result)
+  }];
+}
+
+def PTO_VoteBallotOp : PTO_Op<"vote_ballot", [Pure]> {
+  let arguments = (ins I1:$pred);
+  let results = (outs I32:$result);
+
+  let assemblyFormat = [{
+    $pred attr-dict `:` type($pred) `->` type($result)
+  }];
+}
+
+def PTO_ShuffleIdxOp : PTO_Op<"shuffle_idx", [Pure, AllTypesMatch<["value", "result"]>]> {
+  let arguments = (ins
+    PTO_SimtShuffleValueType:$value,
+    I32:$index,
+    DefaultValuedAttr<I32Attr, "32">:$width
+  );
+  let results = (outs PTO_SimtShuffleValueType:$result);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $value `,` $index attr-dict `:` type($value) `,` type($index) `->` type($result)
+  }];
+}
+
+def PTO_ShuffleUpOp : PTO_Op<"shuffle_up", [Pure, AllTypesMatch<["value", "result"]>]> {
+  let arguments = (ins
+    PTO_SimtShuffleValueType:$value,
+    I32:$offset,
+    DefaultValuedAttr<I32Attr, "32">:$width
+  );
+  let results = (outs PTO_SimtShuffleValueType:$result);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $value `,` $offset attr-dict `:` type($value) `,` type($offset) `->` type($result)
+  }];
+}
+
+def PTO_ShuffleDownOp : PTO_Op<"shuffle_down", [Pure, AllTypesMatch<["value", "result"]>]> {
+  let arguments = (ins
+    PTO_SimtShuffleValueType:$value,
+    I32:$offset,
+    DefaultValuedAttr<I32Attr, "32">:$width
+  );
+  let results = (outs PTO_SimtShuffleValueType:$result);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $value `,` $offset attr-dict `:` type($value) `,` type($offset) `->` type($result)
+  }];
+}
+
+def PTO_ShuffleBflyOp : PTO_Op<"shuffle_bfly", [Pure, AllTypesMatch<["value", "result"]>]> {
+  let arguments = (ins
+    PTO_SimtShuffleValueType:$value,
+    I32:$mask,
+    DefaultValuedAttr<I32Attr, "32">:$width
+  );
+  let results = (outs PTO_SimtShuffleValueType:$result);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $value `,` $mask attr-dict `:` type($value) `,` type($mask) `->` type($result)
+  }];
+}
+
+def PTO_ReduxAddOp : PTO_Op<"redux_add", [Pure, AllTypesMatch<["value", "result"]>]> {
+  let arguments = (ins
+    AnyTypeOf<[I32, F16, F32], "integer/float scalar">:$value,
+    OptionalAttr<PTO_SignednessAttr>:$signedness
+  );
+  let results = (outs AnyTypeOf<[I32, F16, F32], "integer/float scalar">:$result);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $value (custom<OptionalSignedness>($signedness)^)? attr-dict
+    `:` type($value) `->` type($result)
+  }];
+}
+
+def PTO_ReduxMaxOp : PTO_Op<"redux_max", [Pure, AllTypesMatch<["value", "result"]>]> {
+  let arguments = (ins
+    AnyTypeOf<[I32, F16, F32], "integer/float scalar">:$value,
+    OptionalAttr<PTO_SignednessAttr>:$signedness
+  );
+  let results = (outs AnyTypeOf<[I32, F16, F32], "integer/float scalar">:$result);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $value (custom<OptionalSignedness>($signedness)^)? attr-dict
+    `:` type($value) `->` type($result)
+  }];
+}
+
+def PTO_ReduxMinOp : PTO_Op<"redux_min", [Pure, AllTypesMatch<["value", "result"]>]> {
+  let arguments = (ins
+    AnyTypeOf<[I32, F16, F32], "integer/float scalar">:$value,
+    OptionalAttr<PTO_SignednessAttr>:$signedness
+  );
+  let results = (outs AnyTypeOf<[I32, F16, F32], "integer/float scalar">:$result);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $value (custom<OptionalSignedness>($signedness)^)? attr-dict
+    `:` type($value) `->` type($result)
+  }];
+}
+
+class PTO_AtomicBinaryOp<string mnemonic>
+    : PTO_Op<mnemonic, [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let arguments = (ins
+    PTO_BufferType:$ptr,
+    PTO_AtomicValueType:$value,
+    OptionalAttr<PTO_StL2CacheAttr>:$l2cache,
+    OptionalAttr<PTO_SignednessAttr>:$signedness
+  );
+  let results = (outs PTO_AtomicValueType:$old);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $ptr `,` $value custom<StL2Cache>($l2cache)
+    (custom<OptionalSignedness>($signedness)^)? attr-dict
+    `:` type($ptr) `,` type($value) `->` type($old)
+  }];
+}
+
+class PTO_AtomicCasLikeOp<string mnemonic>
+    : PTO_Op<mnemonic, [
+        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+        AllTypesMatch<["compare", "value", "old"]>
+      ]> {
+  let arguments = (ins
+    PTO_BufferType:$ptr,
+    PTO_AtomicValueType:$compare,
+    PTO_AtomicValueType:$value,
+    OptionalAttr<PTO_StL2CacheAttr>:$l2cache,
+    OptionalAttr<PTO_SignednessAttr>:$signedness
+  );
+  let results = (outs PTO_AtomicValueType:$old);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $ptr `,` $compare `,` $value custom<StL2Cache>($l2cache)
+    (custom<OptionalSignedness>($signedness)^)? attr-dict
+    `:` type($ptr) `,` type($value) `->` type($old)
+  }];
+}
+
+def PTO_AtomicCasOp : PTO_AtomicCasLikeOp<"atomic_cas">;
+def PTO_AtomicExchOp : PTO_AtomicBinaryOp<"atomic_exch">;
+def PTO_AtomicAddOp : PTO_AtomicBinaryOp<"atomic_add">;
+def PTO_AtomicSubOp : PTO_AtomicBinaryOp<"atomic_sub">;
+def PTO_AtomicMinOp : PTO_AtomicBinaryOp<"atomic_min">;
+def PTO_AtomicMaxOp : PTO_AtomicBinaryOp<"atomic_max">;
+def PTO_AtomicAndOp : PTO_AtomicBinaryOp<"atomic_and">;
+def PTO_AtomicOrOp : PTO_AtomicBinaryOp<"atomic_or">;
+def PTO_AtomicXorOp : PTO_AtomicBinaryOp<"atomic_xor">;
+
+def PTO_PrmtOp : PTO_Op<"prmt", [Pure]> {
+  let arguments = (ins I32:$lhs, I32:$rhs, I32:$selector);
+  let results = (outs I32:$result);
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs `,` $selector attr-dict `:` type($lhs) `,` type($rhs) `,` type($selector) `->` type($result)
+  }];
+}
+
+def PTO_MulhiOp : PTO_Op<"mulhi", [
+    Pure,
+    AllTypesMatch<["lhs", "rhs", "result"]>
+  ]> {
+  let arguments = (ins
+    AnyTypeOf<[I32, I64], "i32 or i64">:$lhs,
+    AnyTypeOf<[I32, I64], "i32 or i64">:$rhs,
+    PTO_SignednessAttr:$signedness
+  );
+  let results = (outs AnyTypeOf<[I32, I64], "i32 or i64">:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs custom<Signedness>($signedness) attr-dict
+    `:` type($lhs) `,` type($rhs) `->` type($result)
+  }];
+}
+
+def PTO_MulI32ToI64Op : PTO_Op<"mul_i32toi64", [Pure]> {
+  let arguments = (ins
+    I32:$lhs,
+    I32:$rhs,
+    PTO_SignednessAttr:$signedness
+  );
+  let results = (outs I64:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs custom<Signedness>($signedness) attr-dict
+    `:` type($lhs) `,` type($rhs) `->` type($result)
+  }];
+}
+
+def PTO_SqrtOp : PTO_Op<"sqrt", [Pure, AllTypesMatch<["value", "result"]>]> {
+  let arguments = (ins PTO_SimtUnaryF16F32ValueType:$value);
+  let results = (outs PTO_SimtUnaryF16F32ValueType:$result);
+
+  let assemblyFormat = [{
+    $value attr-dict `:` type($value) `->` type($result)
+  }];
+}
+
+class PTO_UnaryFloatScalarOp<string mnemonic>
+    : PTO_Op<mnemonic, [Pure, AllTypesMatch<["value", "result"]>]> {
+  let arguments = (ins AnyTypeOf<[F16, F32, BF16], "floating scalar">:$value);
+  let results = (outs AnyTypeOf<[F16, F32, BF16], "floating scalar">:$result);
+
+  let assemblyFormat = [{
+    $value attr-dict `:` type($value) `->` type($result)
+  }];
+}
+
+class PTO_BinaryFloatScalarOp<string mnemonic>
+    : PTO_Op<mnemonic, [Pure, AllTypesMatch<["lhs", "rhs", "result"]>]> {
+  let arguments = (ins
+    AnyTypeOf<[F16, F32, BF16], "floating scalar">:$lhs,
+    AnyTypeOf<[F16, F32, BF16], "floating scalar">:$rhs
+  );
+  let results = (outs AnyTypeOf<[F16, F32, BF16], "floating scalar">:$result);
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)
+  }];
+}
+
+def PTO_AbsFOp : PTO_Op<"absf", [Pure, AllTypesMatch<["value", "result"]>]> {
+  let arguments = (ins AnyTypeOf<[F32, PTO_V2F16Type, PTO_V2BF16Type],
+                                 "f32, vector<2xf16> or vector<2xbf16>">:$value);
+  let results = (outs AnyTypeOf<[F32, PTO_V2F16Type, PTO_V2BF16Type],
+                                "f32, vector<2xf16> or vector<2xbf16>">:$result);
+
+  let assemblyFormat = [{
+    $value attr-dict `:` type($value) `->` type($result)
+  }];
+}
+
+class PTO_UnaryF16F32ScalarOp<string mnemonic>
+    : PTO_Op<mnemonic, [Pure, AllTypesMatch<["value", "result"]>]> {
+  let arguments = (ins PTO_SimtUnaryF16F32ValueType:$value);
+  let results = (outs PTO_SimtUnaryF16F32ValueType:$result);
+
+  let assemblyFormat = [{
+    $value attr-dict `:` type($value) `->` type($result)
+  }];
+}
+
+def PTO_ExpOp : PTO_UnaryF16F32ScalarOp<"exp">;
+def PTO_LogOp : PTO_UnaryF16F32ScalarOp<"log">;
+def PTO_CeilOp : PTO_UnaryFloatScalarOp<"ceil">;
+def PTO_FloorOp : PTO_UnaryFloatScalarOp<"floor">;
+def PTO_RintOp : PTO_UnaryFloatScalarOp<"rint">;
+def PTO_RoundOp : PTO_UnaryFloatScalarOp<"round">;
+
+class PTO_BinaryF32BF16ScalarOp<string mnemonic>
+    : PTO_Op<mnemonic, [Pure, AllTypesMatch<["lhs", "rhs", "result"]>]> {
+  let arguments = (ins
+    PTO_SimtBinaryF32BF16ValueType:$lhs,
+    PTO_SimtBinaryF32BF16ValueType:$rhs
+  );
+  let results = (outs PTO_SimtBinaryF32BF16ValueType:$result);
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)
+  }];
+}
+
+class PTO_BinaryF16F32ScalarOp<string mnemonic>
+    : PTO_Op<mnemonic, [Pure, AllTypesMatch<["lhs", "rhs", "result"]>]> {
+  let arguments = (ins
+    PTO_SimtBinaryF16F32ValueType:$lhs,
+    PTO_SimtBinaryF16F32ValueType:$rhs
+  );
+  let results = (outs PTO_SimtBinaryF16F32ValueType:$result);
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)
+  }];
+}
+
+def PTO_FMinOp : PTO_BinaryF32BF16ScalarOp<"fmin">;
+def PTO_FMaxOp : PTO_BinaryF32BF16ScalarOp<"fmax">;
+def PTO_PowOp : PTO_BinaryF16F32ScalarOp<"pow">;
+
+def PTO_FmaOp : PTO_Op<"fma", [Pure, AllTypesMatch<["lhs", "rhs", "acc", "result"]>]> {
+  let arguments = (ins
+    PTO_SimtUnaryFloatValueType:$lhs,
+    PTO_SimtUnaryFloatValueType:$rhs,
+    PTO_SimtUnaryFloatValueType:$acc
+  );
+  let results = (outs PTO_SimtUnaryFloatValueType:$result);
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs `,` $acc attr-dict `:` type($lhs) `,` type($rhs) `,` type($acc) `->` type($result)
+  }];
+}
+
+def PTO_ConvertOp : PTO_Op<"convert", [Pure]> {
+  let arguments = (ins
+    PTO_SimtConvertValueType:$src,
+    PTO_RoundingAttr:$rounding,
+    PTO_SaturationAttr:$saturation,
+    OptionalAttr<PTO_SignednessAttr>:$signedness
+  );
+  let results = (outs PTO_SimtConvertValueType:$dst);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $src custom<ConvertRounding>($rounding)
+    custom<ConvertSaturation>($saturation)
+    (custom<OptionalSignedness>($signedness)^)? attr-dict
+    `:` type($src) `->` type($dst)
+  }];
+}
+
+def PTO_SyncthreadsOp : PTO_Op<"syncthreads", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let summary = "Synchronize all workitems in a SIMT VF entry";
+  let arguments = (ins);
+  let results = (outs);
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{ attr-dict }];
+}
+
+def PTO_ThreadfenceOp : PTO_Op<"threadfence", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let summary = "Issue a SIMT workitem memory fence";
+  let arguments = (ins);
+  let results = (outs);
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{ attr-dict }];
+}
+
+def PTO_ThreadfenceBlockOp : PTO_Op<"threadfence_block", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let summary = "Issue a SIMT block-scoped workitem memory fence";
+  let arguments = (ins);
+  let results = (outs);
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{ attr-dict }];
+}
+
+def PTO_KeepOp : PTO_Op<"keep"> {
+  let summary = "Preserve one scalar payload across adjacent SIMT VF entries";
+  let arguments = (ins AnyType:$payload, I64Attr:$slot);
+  let results = (outs);
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $payload attr-dict `:` type($payload)
+  }];
+}
+
+def PTO_ResumeOp : PTO_Op<"resume"> {
+  let summary = "Restore one scalar payload preserved by a previous SIMT VF entry";
+  let arguments = (ins I64Attr:$slot);
+  let results = (outs AnyType:$result);
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    attr-dict `:` type($result)
+  }];
+}
 
 def PTO_CopyGmToUbufOp : PTO_Op<"copy_gm_to_ubuf", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>

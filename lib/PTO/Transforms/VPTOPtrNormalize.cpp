@@ -694,8 +694,8 @@ struct ConvertLoadOperandToPtrPattern : public OpConversionPattern<pto::PTOLoadO
     if (!isa<pto::PtrType>(ptr.getType()))
       return rewriter.notifyMatchFailure(op, "expected ptr-form load input");
 
-    rewriter.replaceOpWithNewOp<pto::PTOLoadOp>(op, op.getValue().getType(),
-                                                ptr, adaptor.getOffset());
+    rewriter.replaceOpWithNewOp<pto::PTOLoadOp>(
+        op, op.getValue().getType(), ptr, adaptor.getOffset());
     return success();
   }
 };
@@ -713,8 +713,8 @@ struct ConvertStoreOperandToPtrPattern
     if (!isa<pto::PtrType>(ptr.getType()))
       return rewriter.notifyMatchFailure(op, "expected ptr-form store input");
 
-    rewriter.replaceOpWithNewOp<pto::PTOStoreOp>(op, ptr, adaptor.getOffset(),
-                                                 adaptor.getValue());
+    rewriter.replaceOpWithNewOp<pto::PTOStoreOp>(
+        op, ptr, adaptor.getOffset(), adaptor.getValue());
     return success();
   }
 };

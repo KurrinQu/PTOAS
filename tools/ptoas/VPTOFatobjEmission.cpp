@@ -85,6 +85,17 @@ static bool writeTextFile(StringRef path, StringRef content,
   return true;
 }
 
+static void stripUnsupportedBishengAttrs(llvm::Module &module) {
+  for (llvm::Function &function : module) {
+    // LLVM 19 prints memory effect attributes in textual form like
+    // `memory(none)`. beta.1 Bisheng cannot parse that syntax, so remove only
+    // the unsupported memory-effect attribute before serializing the module.
+    function.setAttributes(
+        function.getAttributes().removeFnAttribute(module.getContext(),
+                                                   llvm::Attribute::Memory));
+  }
+}
+
 static bool writeLLVMModuleFile(llvm::Module &module, StringRef path,
                                 llvm::raw_ostream &diagOS) {
   std::error_code ec;
@@ -94,6 +105,7 @@ static bool writeLLVMModuleFile(llvm::Module &module, StringRef path,
            << ec.message() << "\n";
     return false;
   }
+  stripUnsupportedBishengAttrs(module);
   module.print(os, nullptr);
   os.flush();
   return true;
@@ -398,6 +410,8 @@ static bool compileDeviceLLVMToObject(llvm::StringRef llPath,
       std::string("--cce-aicore-arch=") + targetCPU.str(),
       "--cce-aicore-only",
       "-O2",
+      "-mllvm",
+      "-cce-dyn-kernel-stack-size=true",
       "-c",
       "-x",
       "ir",

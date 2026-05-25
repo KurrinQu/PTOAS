@@ -121,10 +121,9 @@ LogicalResult mlir::pto::emitVPTOHostStubSource(ModuleOp module,
 
   stubSource.clear();
   llvm::raw_string_ostream os(stubSource);
-  os << "#ifndef __global__\n#define __global__\n#endif\n\n";
-  os << "#ifndef __gm__\n#define __gm__\n#endif\n\n";
+  os << "#ifndef AICORE\n#define AICORE [aicore]\n#endif\n\n";
   for (const VPTOKernelStubDecl &decl : stubDecls) {
-    os << "extern \"C\" __global__ [aicore] void " << decl.logicalName << "(";
+    os << "extern \"C\" __global__ AICORE void " << decl.logicalName << "(";
     for (size_t i = 0; i < decl.argTypes.size(); ++i) {
       if (i)
         os << ", ";

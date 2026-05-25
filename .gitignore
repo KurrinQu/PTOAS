@@ -95,5 +95,6 @@ test/samples/**/npu_validation/*
 *.orig
 
 # Local workspace
+.planning/
 .work/
 .local/

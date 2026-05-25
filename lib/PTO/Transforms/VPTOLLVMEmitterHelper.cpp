@@ -533,12 +533,33 @@ LogicalResult attachAIVectorScopeMetadata(llvm::Module &llvmModule,
   return success();
 }
 
-void attachHIVMKernelAnnotations(llvm::Module &llvmModule) {
+void attachHIVMKernelAnnotations(llvm::Module &llvmModule,
+                                 ModuleOp sourceModule) {
+  constexpr uint32_t kDefaultSimtMaxThreads = 1024;
+  constexpr uint32_t kDefaultSimtMaxRegisters = 32;
+
   llvm::NamedMDNode *annotations =
       llvmModule.getOrInsertNamedMetadata("hivm.annotations");
   llvm::LLVMContext &ctx = llvmModule.getContext();
   llvm::Type *i32Ty = llvm::Type::getInt32Ty(ctx);
   llvm::Constant *one = llvm::ConstantInt::get(i32Ty, 1);
+
+  llvm::StringMap<std::pair<uint32_t, uint32_t>> simtConfigByName;
+  sourceModule.walk([&](func::FuncOp funcOp) {
+    if (!funcOp->hasAttr(pto::kPTOSimtEntryAttrName))
+      return;
+
+    uint32_t maxThreads = kDefaultSimtMaxThreads;
+    uint32_t maxRegisters = kDefaultSimtMaxRegisters;
+    if (auto attr =
+            funcOp->getAttrOfType<IntegerAttr>(pto::kPTOSimtMaxThreadsAttrName))
+      maxThreads = static_cast<uint32_t>(attr.getInt());
+    if (auto attr = funcOp->getAttrOfType<IntegerAttr>(
+            pto::kPTOSimtMaxRegistersAttrName))
+      maxRegisters = static_cast<uint32_t>(attr.getInt());
+
+    simtConfigByName[funcOp.getSymName()] = {maxThreads, maxRegisters};
+  });
 
   auto hasInModuleCaller = [](llvm::Function &function) {
     for (llvm::User *user : function.users()) {
@@ -552,6 +573,19 @@ void attachHIVMKernelAnnotations(llvm::Module &llvmModule) {
     return false;
   };
 
+  auto callsSimtEntry = [](llvm::Function &function) {
+    for (llvm::BasicBlock &block : function) {
+      for (llvm::Instruction &inst : block) {
+        auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+        if (!call)
+          continue;
+        if (call->getCallingConv() == llvm::CallingConv::SimtEntry)
+          return true;
+      }
+    }
+    return false;
+  };
+
   auto addAnnotation = [&](llvm::Function &function, llvm::StringRef kind) {
     llvm::Metadata *ops[] = {
         llvm::ValueAsMetadata::get(&function),
@@ -560,9 +594,41 @@ void attachHIVMKernelAnnotations(llvm::Module &llvmModule) {
     annotations->addOperand(llvm::MDNode::get(ctx, ops));
   };
 
+  auto addHIVMModuleI32Annotation = [&](llvm::StringRef kind, uint32_t value) {
+    llvm::Metadata *ops[] = {
+        nullptr, llvm::MDString::get(ctx, kind),
+        llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32Ty, value))};
+    annotations->addOperand(llvm::MDNode::getDistinct(ctx, ops));
+  };
+
+  auto addLLVMFunctionI32Annotation = [&](llvm::Function &function,
+                                          llvm::StringRef kind,
+                                          uint32_t value) {
+    llvm::Metadata *ops[] = {
+        llvm::MDString::get(ctx, kind),
+        llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32Ty, value))};
+    function.addMetadata("annotation", *llvm::MDNode::get(ctx, ops));
+  };
+
   for (llvm::Function &function : llvmModule) {
     if (function.isDeclaration())
       continue;
+    if (function.getCallingConv() == llvm::CallingConv::SimtEntry) {
+      uint32_t maxThreads = kDefaultSimtMaxThreads;
+      uint32_t maxRegisters = kDefaultSimtMaxRegisters;
+      if (auto it = simtConfigByName.find(function.getName());
+          it != simtConfigByName.end()) {
+        maxThreads = it->second.first;
+        maxRegisters = it->second.second;
+      }
+
+      addLLVMFunctionI32Annotation(function, "simt-max-threads", maxThreads);
+      addLLVMFunctionI32Annotation(function, "simt-max-registers",
+                                   maxRegisters);
+      addHIVMModuleI32Annotation("simt-max-threads", maxThreads);
+      addHIVMModuleI32Annotation("simt-max-registers", maxRegisters);
+      continue;
+    }
     if (function.getLinkage() != llvm::GlobalValue::ExternalLinkage)
       continue;
 
@@ -574,7 +640,10 @@ void attachHIVMKernelAnnotations(llvm::Module &llvmModule) {
 
     addAnnotation(function, "kernel");
     addAnnotation(function, "kernel_with_simd");
+    if (callsSimtEntry(function))
+      addAnnotation(function, "kernel_with_simt");
   }
+
 }
 
 LogicalResult

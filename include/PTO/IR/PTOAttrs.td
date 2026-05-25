@@ -74,6 +74,139 @@ def PTO_AddressSpaceAttr : PTO_Attr<"AddressSpace", "address_space"> {
 }
 
 //===----------------------------------------------------------------------===//
+// Signedness
+//===----------------------------------------------------------------------===//
+
+def PTO_Signedness_Signed : I32EnumAttrCase<"Signed", 0, "signed">;
+def PTO_Signedness_Unsigned : I32EnumAttrCase<"Unsigned", 1, "unsigned">;
+
+def PTO_SignednessEnum : PTO_I32Enum<
+  "Signedness", "PTO integer signedness", [
+    PTO_Signedness_Signed,
+    PTO_Signedness_Unsigned
+  ]>;
+
+def PTO_SignednessAttr : PTO_Attr<"Signedness", "signedness"> {
+  let parameters = (ins EnumParameter<PTO_SignednessEnum>:$value);
+  let assemblyFormat = "`<` params `>`";
+  let summary = "Integer signedness control for semantic ops";
+}
+
+//===----------------------------------------------------------------------===//
+// SIMT GM load/store L1 and L2 cache controls
+//===----------------------------------------------------------------------===//
+
+def PTO_LdL2CacheEnum : PTO_I32Enum<
+  "LdL2Cache", "PTO load L2 cache control", [
+    I32EnumAttrCase<"NMFV", 0, "nmfv">,
+    I32EnumAttrCase<"NMLV", 1, "nmlv">,
+    I32EnumAttrCase<"NMPRS", 2, "nmprs">,
+    I32EnumAttrCase<"NMPREF", 3, "nmpref">,
+    I32EnumAttrCase<"NAKEEP", 4, "nakeep">,
+    I32EnumAttrCase<"NACLEAN", 5, "naclean">,
+    I32EnumAttrCase<"NADROP", 6, "nadrop">,
+    I32EnumAttrCase<"IDSFV", 8, "idsfv">,
+    I32EnumAttrCase<"IDSLV", 9, "idslv">,
+    I32EnumAttrCase<"IDSPRS", 10, "idsprs">,
+    I32EnumAttrCase<"IDSPREF", 11, "idspref">,
+    I32EnumAttrCase<"EXFV", 12, "exfv">,
+    I32EnumAttrCase<"EXLV", 13, "exlv">,
+    I32EnumAttrCase<"EXPRS", 14, "exprs">,
+    I32EnumAttrCase<"EXPREF", 15, "expref">
+  ]>;
+
+def PTO_LdL2CacheAttr
+    : EnumAttr<PTO_Dialect, PTO_LdL2CacheEnum, "ld_l2cache"> {
+  let assemblyFormat = "`<` params `>`";
+  let summary = "load L2 cache control";
+}
+
+def PTO_StL2CacheEnum : PTO_I32Enum<
+  "StL2Cache", "PTO store/atomic L2 cache control", [
+    I32EnumAttrCase<"NMFV", 0, "nmfv">,
+    I32EnumAttrCase<"NMLV", 1, "nmlv">,
+    I32EnumAttrCase<"NMPRS", 2, "nmprs">,
+    I32EnumAttrCase<"NMRED", 3, "nmred">,
+    I32EnumAttrCase<"NACI", 4, "naci">,
+    I32EnumAttrCase<"NAPW", 5, "napw">,
+    I32EnumAttrCase<"NAPI", 6, "napi">,
+    I32EnumAttrCase<"NARED", 7, "nared">,
+    I32EnumAttrCase<"WBHFV", 8, "wbhfv">,
+    I32EnumAttrCase<"WBHLV", 9, "wbhlv">,
+    I32EnumAttrCase<"WBHPRS", 10, "wbhprs">,
+    I32EnumAttrCase<"WBHRED", 11, "wbhred">,
+    I32EnumAttrCase<"WTSFV", 12, "wtsfv">,
+    I32EnumAttrCase<"WTSLV", 13, "wtslv">,
+    I32EnumAttrCase<"WTSPRS", 14, "wtsprs">,
+    I32EnumAttrCase<"WTSRED", 15, "wtsred">
+  ]>;
+
+def PTO_StL2CacheAttr
+    : EnumAttr<PTO_Dialect, PTO_StL2CacheEnum, "st_l2cache"> {
+  let assemblyFormat = "`<` params `>`";
+  let summary = "store and atomic L2 cache control";
+}
+
+def PTO_L1CacheEnum : PTO_I32Enum<
+  "L1Cache", "PTO L1 cache control", [
+    I32EnumAttrCase<"Uncache", 0, "uncache">,
+    I32EnumAttrCase<"Cache", 1, "cache">
+  ]>;
+
+def PTO_L1CacheAttr
+    : EnumAttr<PTO_Dialect, PTO_L1CacheEnum, "l1cache"> {
+  let assemblyFormat = "`<` params `>`";
+  let summary = "L1 cache control";
+}
+
+//===----------------------------------------------------------------------===//
+// SIMT conversion controls
+//===----------------------------------------------------------------------===//
+
+// CANN ROUND semantics confirmed from installed beta.1 headers:
+//   R = round to nearest, ties to even
+//   A = round away from zero
+//   F = round toward minus infinity
+//   C = round toward plus infinity
+//   Z = round toward zero
+//   O = round to odd
+//   H = CAST_CEIL (special cast mode observed on H8/HiF8 conversion paths)
+def PTO_RoundingEnum : PTO_I32Enum<
+  "Rounding", "PTO SIMT conversion rounding selector", [
+    // nearest-even
+    I32EnumAttrCase<"R", 0, "r">,
+    // away-zero
+    I32EnumAttrCase<"A", 1, "a">,
+    // floor / toward minus infinity
+    I32EnumAttrCase<"F", 2, "f">,
+    // ceil / toward plus infinity
+    I32EnumAttrCase<"C", 3, "c">,
+    // trunc / toward zero
+    I32EnumAttrCase<"Z", 4, "z">,
+    // round to odd
+    I32EnumAttrCase<"O", 5, "o">,
+    // CAST_CEIL on the confirmed H8/HiF8 conversion slice
+    I32EnumAttrCase<"H", 6, "h">
+  ]>;
+
+def PTO_RoundingAttr : EnumAttr<PTO_Dialect, PTO_RoundingEnum, "rounding"> {
+  let assemblyFormat = "`<` params `>`";
+  let summary = "SIMT conversion rounding selector";
+}
+
+def PTO_SaturationEnum : PTO_I32Enum<
+  "Saturation", "PTO SIMT conversion saturation selector", [
+    I32EnumAttrCase<"Disable", 0, "nosat">,
+    I32EnumAttrCase<"Enable", 1, "sat">
+  ]>;
+
+def PTO_SaturationAttr
+    : EnumAttr<PTO_Dialect, PTO_SaturationEnum, "saturation"> {
+  let assemblyFormat = "`<` params `>`";
+  let summary = "SIMT conversion saturation selector";
+}
+
+//===----------------------------------------------------------------------===//
 // Pipe
 //===----------------------------------------------------------------------===//
 

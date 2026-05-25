@@ -39,9 +39,11 @@ MlirType mlirPTOAsyncEventTypeGet(MlirContext ctx);
 bool mlirPTOTypeIsAPrefetchAsyncContextType(MlirType type);
 MlirType mlirPTOPrefetchAsyncContextTypeGet(MlirContext ctx);
 
-// ---- !pto.hif8 / !pto.f4E1M2x2 / !pto.f4E2M1x2 ----
+// ---- !pto.hif8 / !pto.hif8x2 / !pto.f4E1M2x2 / !pto.f4E2M1x2 ----
 bool mlirPTOTypeIsAHiF8Type(MlirType type);
 MlirType mlirPTOHiF8TypeGet(MlirContext ctx);
+bool mlirPTOTypeIsAHiF8x2Type(MlirType type);
+MlirType mlirPTOHiF8x2TypeGet(MlirContext ctx);
 bool mlirPTOTypeIsAF4E1M2x2Type(MlirType type);
 MlirType mlirPTOF4E1M2x2TypeGet(MlirContext ctx);
 bool mlirPTOTypeIsAF4E2M1x2Type(MlirType type);
