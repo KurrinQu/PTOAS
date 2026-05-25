@@ -2363,10 +2363,23 @@ class _SemanticAnalyzer:
 
         updated_env = dict(env)
         merged_results: list[SemanticIfResult] = []
-        for name, outer_binding in env.items():
+        merge_names = list(env)
+        merge_names.extend(
+            name
+            for name in then_env
+            if name not in env and name in else_env
+        )
+        for name in merge_names:
+            outer_binding = env.get(name)
             then_binding = then_env.get(name, outer_binding)
             else_binding = else_env.get(name, outer_binding)
-            if then_binding is outer_binding and else_binding is outer_binding:
+            if outer_binding is None:
+                if then_binding is None or else_binding is None:
+                    continue
+            else:
+                if then_binding is outer_binding and else_binding is outer_binding:
+                    continue
+            if then_binding is None or else_binding is None:
                 continue
             if then_binding.type != else_binding.type:
                 raise TypeError(

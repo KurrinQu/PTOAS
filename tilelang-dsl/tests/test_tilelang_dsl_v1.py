@@ -7912,6 +7912,48 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             r"pto\.strict_vecscope\(%tmp_\d+, %tmp_\d+, %c0, %upper_\d+, %step_\d+\)",
         )
 
+    def test_explicit_vecscope_if_merges_new_binding_defined_in_both_branches(self) -> None:
+        @pto.vkernel(op="explicit_vecscope_if_result_unique", dtypes=[(pto.f32, pto.f32, pto.i32)])
+        def kernel(src: pto.Tile, dst: pto.Tile, flag: pto.i32):
+            mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+            with pto.vecscope():
+                if flag:
+                    vec = pto.vlds(src, 0)
+                else:
+                    vec = pto.vlds(src, 64)
+                pto.vsts(vec, dst, 0, mask)
+            return None
+
+        specialized = kernel.specialize(
+            src=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+            dst=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+        )
+
+        frontend_kernel = build_frontend_kernel_node(specialized)
+        vecscope_stmt = next(stmt for stmt in frontend_kernel.body if isinstance(stmt, FrontendVecscopeStmt))
+        self.assertIsInstance(vecscope_stmt.body[0], FrontendIfStmt)
+
+        semantic_kernel = analyze_frontend_kernel(frontend_kernel)
+        semantic_vecscope = next(
+            stmt for stmt in semantic_kernel.body if isinstance(stmt, SemanticVecscopeStmt)
+        )
+        if_stmt = semantic_vecscope.body[0]
+        self.assertIsInstance(if_stmt, SemanticIfStmt)
+        self.assertEqual([result.result_binding.name for result in if_stmt.results], ["vec"])
+        self.assertIsInstance(semantic_vecscope.body[1], SemanticVectorStoreStmt)
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.vecscope {", text)
+        self.assertRegex(
+            text,
+            r"%vec_\d+ = scf\.if %tmp_\d+ -> \(!pto\.vreg<64xf32>\) \{",
+        )
+        self.assertRegex(
+            text,
+            r"scf\.yield %vec_\d+ : !pto\.vreg<64xf32>",
+        )
+        self.assertIn("pto.vsts", text)
+
     def test_extended_sync_buffer_ops_lower_to_authoring_surface(self) -> None:
         Pipe = pto.Pipe
         Event = pto.Event

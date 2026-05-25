@@ -178,4 +178,6 @@ else:
 # 'step' here is the merged result from both branches
 ```
 
-Variables defined in only one branch are local to that branch.
+Variables defined in only one branch are local to that branch. Variables assigned
+in both branches with the same name and type are merged even when the binding is
+first introduced inside the `if`/`else`.
