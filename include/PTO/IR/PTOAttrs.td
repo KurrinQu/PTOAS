@@ -528,6 +528,20 @@ def PTO_FmodPrecisionAttr : EnumAttr<PTO_Dialect, PTO_FmodPrecisionEnum, "fmod_p
   let summary = "TFMOD precision mode attribute";
 }
 //===----------------------------------------------------------------------===//
+// Matmul/Gemv accumulate phase controls
+//===----------------------------------------------------------------------===//
+
+def PTO_AccPhaseEnum : PTO_I32Enum<
+  "AccPhase", "PTO matmul/gemv accumulate phase", [
+    I32EnumAttrCase<"Unspecified", 0, "unspecified">,
+    I32EnumAttrCase<"Partial", 2, "partial">,
+    I32EnumAttrCase<"Final", 3, "final">
+  ]>;
+
+def PTO_AccPhaseAttr : EnumAttr<PTO_Dialect, PTO_AccPhaseEnum, "acc_phase"> {
+  let summary = "matmul/gemv accumulate phase attribute";
+}
+//===----------------------------------------------------------------------===//
 // TStore template controls
 //===----------------------------------------------------------------------===//
 

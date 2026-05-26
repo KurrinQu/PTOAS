@@ -817,7 +817,8 @@ def TMatmulBiasOp : PTO_TOp<"tmatmul.bias", [
     PTODpsType:$a,
     PTODpsType:$b,
     PTODpsType:$bias,
-    PTODpsType:$dst
+    PTODpsType:$dst,
+    DefaultValuedAttr<PTO_AccPhaseAttr, "::mlir::pto::AccPhase::Unspecified">:$accPhase
   );
 
   let results = (outs Optional<AnyRankedTensor>:$result);
@@ -856,7 +857,8 @@ def TMatmulMxOp : PTO_TOp<"tmatmul.mx", [
     PTODpsType:$a_scale,
     PTODpsType:$b,
     PTODpsType:$b_scale,
-    PTODpsType:$dst);
+    PTODpsType:$dst,
+    DefaultValuedAttr<PTO_AccPhaseAttr, "::mlir::pto::AccPhase::Unspecified">:$accPhase);
 
   let results = (outs Optional<AnyRankedTensor>:$result);
   let hasVerifier = 1;
@@ -1031,7 +1033,8 @@ def TGemvOp : PTO_TOp<"tgemv", [
   let arguments = (ins
     PTODpsType:$lhs,
     PTODpsType:$rhs,
-    PTODpsType:$dst
+    PTODpsType:$dst,
+    DefaultValuedAttr<PTO_AccPhaseAttr, "::mlir::pto::AccPhase::Unspecified">:$accPhase
   );
 
   let results = (outs
@@ -1067,7 +1070,8 @@ def TGemvAccOp : PTO_TOp<"tgemv.acc", [
     PTODpsType:$acc_in,
     PTODpsType:$lhs,
     PTODpsType:$rhs,
-    PTODpsType:$dst
+    PTODpsType:$dst,
+    DefaultValuedAttr<PTO_AccPhaseAttr, "::mlir::pto::AccPhase::Unspecified">:$accPhase
   );
 
   let results = (outs
@@ -1102,7 +1106,8 @@ def TGemvBiasOp : PTO_TOp<"tgemv.bias", [
     PTODpsType :$a,
     PTODpsType :$b,
     PTODpsType :$bias,
-    PTODpsType :$dst
+    PTODpsType :$dst,
+    DefaultValuedAttr<PTO_AccPhaseAttr, "::mlir::pto::AccPhase::Unspecified">:$accPhase
   );
 
   let results = (outs Optional<AnyRankedTensor>:$result);
@@ -1137,7 +1142,8 @@ def TGemvMxOp : PTO_TOp<"tgemv.mx", [
     PTODpsType:$a_scale,
     PTODpsType:$b,
     PTODpsType:$b_scale,
-    PTODpsType:$dst
+    PTODpsType:$dst,
+    DefaultValuedAttr<PTO_AccPhaseAttr, "::mlir::pto::AccPhase::Unspecified">:$accPhase
   );
 
   let results = (outs Optional<AnyRankedTensor>:$result);
