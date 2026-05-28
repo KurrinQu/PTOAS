@@ -2467,9 +2467,9 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertEqual(specialized.specializations_by_name["acc"].memory_space, pto.MemorySpace.ACC)
 
         text = specialized.mlir_text()
-        self.assertIn("!pto.tile_buf<loc=l0a, dtype=f16, rows=16, cols=32", text)
-        self.assertIn("!pto.tile_buf<loc=l0b, dtype=f16, rows=32, cols=16", text)
-        self.assertIn("!pto.tile_buf<loc=l0c, dtype=f32, rows=16, cols=16", text)
+        self.assertIn("!pto.tile_buf<loc=left, dtype=f16, rows=16, cols=32", text)
+        self.assertIn("!pto.tile_buf<loc=right, dtype=f16, rows=32, cols=16", text)
+        self.assertIn("!pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16", text)
 
     def test_ckernel_select_kernel_uses_shared_registry_mainline(self) -> None:
         @pto.ckernel(
@@ -2638,19 +2638,19 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         )
         self.assertRegex(
             text,
-            r"%l1_ptr_\d+ = pto\.tile_buf_addr %arg2 : !pto\.tile_buf<loc=l1, dtype=f16, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0> -> !pto\.ptr<f16, l1>",
+            r"%l1_ptr_\d+ = pto\.tile_buf_addr %arg2 : !pto\.tile_buf<loc=mat, dtype=f16, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0> -> !pto\.ptr<f16, l1>",
         )
         self.assertRegex(
             text,
-            r"%left_ptr_\d+ = pto\.tile_buf_addr %arg3 : !pto\.tile_buf<loc=l0a, dtype=f16, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0> -> !pto\.ptr<f16, l0a>",
+            r"%left_ptr_\d+ = pto\.tile_buf_addr %arg3 : !pto\.tile_buf<loc=left, dtype=f16, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0> -> !pto\.ptr<f16, l0a>",
         )
         self.assertRegex(
             text,
-            r"%right_ptr_\d+ = pto\.tile_buf_addr %arg4 : !pto\.tile_buf<loc=l0b, dtype=f16, rows=32, cols=16, v_row=32, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0> -> !pto\.ptr<f16, l0b>",
+            r"%right_ptr_\d+ = pto\.tile_buf_addr %arg4 : !pto\.tile_buf<loc=right, dtype=f16, rows=32, cols=16, v_row=32, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0> -> !pto\.ptr<f16, l0b>",
         )
         self.assertRegex(
             text,
-            r"%acc_ptr_\d+ = pto\.tile_buf_addr %arg5 : !pto\.tile_buf<loc=l0c, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0> -> !pto\.ptr<f32, l0c>",
+            r"%acc_ptr_\d+ = pto\.tile_buf_addr %arg5 : !pto\.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0> -> !pto\.ptr<f32, l0c>",
         )
 
     def test_ckernel_full_pipeline_bridge_ops_lower_one_to_one_in_authoring_form(self) -> None:
@@ -2956,9 +2956,9 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertEqual(specialized.specializations_by_name["scaling"].memory_space, pto.MemorySpace.SCALING)
 
         text = specialized.mlir_text()
-        self.assertIn("!pto.tile_buf<loc=l1, dtype=f16, rows=16, cols=32", text)
-        self.assertIn("!pto.tile_buf<loc=l0c, dtype=f32, rows=16, cols=16", text)
-        self.assertIn("!pto.tile_buf<loc=fb, dtype=f16, rows=1, cols=16", text)
+        self.assertIn("!pto.tile_buf<loc=mat, dtype=f16, rows=16, cols=32", text)
+        self.assertIn("!pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16", text)
+        self.assertIn("!pto.tile_buf<loc=scaling, dtype=f16, rows=1, cols=16", text)
 
     def test_vkernel_specialize_still_rejects_gm_bare_tile_profile(self) -> None:
         @pto.vkernel(op="vector_tile_reject_gm_space_unique", dtypes=[(pto.f16,)])
@@ -3086,9 +3086,9 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         text = specialized.mlir_text()
         self.assertIn("// tilelang.op = cube_pure_compute_verify_regression_unique", text)
         self.assertIn("pto.kernel_kind = #pto.kernel_kind<cube>", text)
-        self.assertIn("!pto.tile_buf<loc=l0a, dtype=f16, rows=16, cols=32", text)
-        self.assertIn("!pto.tile_buf<loc=l0b, dtype=f16, rows=32, cols=16", text)
-        self.assertIn("!pto.tile_buf<loc=l0c, dtype=f32, rows=16, cols=16", text)
+        self.assertIn("!pto.tile_buf<loc=left, dtype=f16, rows=16, cols=32", text)
+        self.assertIn("!pto.tile_buf<loc=right, dtype=f16, rows=32, cols=16", text)
+        self.assertIn("!pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16", text)
         self.assertIn("pto.mad_acc ", text)
 
     def test_descriptor_materialization_flows_through_pipeline(self) -> None:
@@ -7579,11 +7579,11 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             return None
 
         text = kernel.mlir_text()
-        self.assertIn("pto.alloc_tile : !pto.tile_buf<loc=l1, dtype=f16, rows=16, cols=32, v_row=16, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>", text)
-        self.assertIn("pto.alloc_tile : !pto.tile_buf<loc=l0a, dtype=f16, rows=16, cols=32, v_row=16, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>", text)
-        self.assertIn("pto.alloc_tile : !pto.tile_buf<loc=l0b, dtype=f16, rows=32, cols=16, v_row=32, v_col=16, blayout=row_major, slayout=col_major, fractal=512, pad=0>", text)
-        self.assertIn("pto.alloc_tile : !pto.tile_buf<loc=l0c, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>", text)
-        self.assertIn("pto.alloc_tile : !pto.tile_buf<loc=bt, dtype=f32, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>", text)
+        self.assertIn("pto.alloc_tile : !pto.tile_buf<loc=mat, dtype=f16, rows=16, cols=32, v_row=16, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>", text)
+        self.assertIn("pto.alloc_tile : !pto.tile_buf<loc=left, dtype=f16, rows=16, cols=32, v_row=16, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>", text)
+        self.assertIn("pto.alloc_tile : !pto.tile_buf<loc=right, dtype=f16, rows=32, cols=16, v_row=32, v_col=16, blayout=row_major, slayout=col_major, fractal=512, pad=0>", text)
+        self.assertIn("pto.alloc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>", text)
+        self.assertIn("pto.alloc_tile : !pto.tile_buf<loc=bias, dtype=f32, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>", text)
 
     def test_set_mov_pad_val_lowers_in_advanced_mode(self) -> None:
         @pto.vkernel(op="set_mov_pad_val_dma_unique", dtypes=[(pto.f32, pto.f32)], advanced=True)
