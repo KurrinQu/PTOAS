@@ -1438,6 +1438,50 @@ class TileLangDSLMatcherEntryTests(unittest.TestCase):
         self.assertIs(selected.py_fn, high_priority_kernel.py_fn)
         self.assertEqual(selected.priority, 100)
 
+    def test_ckernel_constraints_are_forwarded_to_select_kernel(self) -> None:
+        def requires_large_batch(batch=0):
+            return batch >= 1024
+
+        @pto.ckernel(
+            op="cube_constraint_priority_unique",
+            dtypes=[(pto.f16,)],
+            constraints=[requires_large_batch],
+            priority=100,
+        )
+        def high_priority_kernel(inp: pto.TensorView):
+            return None
+
+        @pto.ckernel(
+            op="cube_constraint_priority_unique",
+            dtypes=[(pto.f16,)],
+            constraints=[],
+            priority=10,
+        )
+        def fallback_kernel(inp: pto.TensorView):
+            return None
+
+        registry = pto.KernelRegistry((high_priority_kernel, fallback_kernel))
+
+        selected = pto.select_kernel(
+            "a5",
+            "cube_constraint_priority_unique",
+            (pto.f16,),
+            context_attrs={"batch": 128},
+            registry=registry,
+        )
+        self.assertIs(selected.py_fn, fallback_kernel.py_fn)
+        self.assertEqual(selected.priority, 10)
+
+        selected = pto.select_kernel(
+            "a5",
+            "cube_constraint_priority_unique",
+            (pto.f16,),
+            context_attrs={"batch": 4096},
+            registry=registry,
+        )
+        self.assertIs(selected.py_fn, high_priority_kernel.py_fn)
+        self.assertEqual(selected.priority, 100)
+
     def test_select_kernel_raises_tie_error_for_equal_highest_priority(self) -> None:
         @pto.vkernel(
             op="matcher_priority_tie_unique",
@@ -9985,6 +10029,10 @@ class TileLangDSLDiagnosticsTests(unittest.TestCase):
         with self.assertRaises(TypeError) as constraints_ctx:
             pto.vkernel(op="x", dtypes=[(pto.f32,)], constraints=[123])(kernel)
         self.assertIn("constraints[0] must be callable", str(constraints_ctx.exception))
+
+        with self.assertRaises(TypeError) as cube_constraints_ctx:
+            pto.ckernel(op="x", dtypes=[(pto.f32,)], constraints=[123])(kernel)
+        self.assertIn("constraints[0] must be callable", str(cube_constraints_ctx.exception))
 
         with self.assertRaises(TypeError) as priority_ctx:
             pto.vkernel(op="x", dtypes=[(pto.f32,)], priority=True)(kernel)
