@@ -114,6 +114,7 @@ static bool isTileLikeType(Type ty);
 static SmallVector<int64_t, 4> getShapeVec(Type ty);
 static SmallVector<int64_t, 4> getValidShapeVec(Type ty);
 static SmallVector<int64_t, 4> getValidShapeVec(Value value);
+static bool isKnownZeroOrUnitExtent(int64_t value);
 static bool isByteIntegerType(Type ty);
 static LogicalResult verifyTileBufCommon(Operation *op, Type ty, StringRef name,
                                          bool allowLowPrecision = false);
@@ -2399,8 +2400,8 @@ LogicalResult TLoadOp::verify() {
     }
     auto dstValid = dstTile.getValidShape();
     for (unsigned i = 0; i < dstValid.size(); ++i) {
-      if (dstValid[i] != ShapedType::kDynamic && dstValid[i] <= 0) {
-        emitOpError() << "expects dst valid_shape[" << i << "] to be positive";
+      if (dstValid[i] != ShapedType::kDynamic && dstValid[i] < 0) {
+        emitOpError() << "expects dst valid_shape[" << i << "] to be non-negative";
         return failure();
       }
     }
@@ -2494,8 +2495,9 @@ LogicalResult TPrefetchOp::verify() {
         return failure();
       auto dstValid = dstTile.getValidShape();
       for (unsigned i = 0; i < dstValid.size(); ++i) {
-        if (dstValid[i] != ShapedType::kDynamic && dstValid[i] <= 0)
-          return emitOpError() << "expects dst valid_shape[" << i << "] to be positive";
+        if (dstValid[i] != ShapedType::kDynamic && dstValid[i] < 0)
+          return emitOpError() << "expects dst valid_shape[" << i
+                               << "] to be non-negative";
       }
       auto dstSpace = getPTOMemorySpaceEnum(dstTile);
       if (!dstSpace || (*dstSpace != pto::AddressSpace::VEC &&
@@ -2805,8 +2807,8 @@ LogicalResult TStoreOp::verify() {
     }
     auto srcValid = srcTile.getValidShape();
     for (auto [idx, dim] : llvm::enumerate(srcValid)) {
-      if (dim != ShapedType::kDynamic && dim <= 0) {
-        emitOpError() << "expects src valid_shape[" << idx << "] to be positive";
+      if (dim != ShapedType::kDynamic && dim < 0) {
+        emitOpError() << "expects src valid_shape[" << idx << "] to be non-negative";
         return failure();
       }
     }
@@ -2899,8 +2901,8 @@ LogicalResult TStoreOp::verify() {
       return emitOpError("expects A2/A3 acc tstore src cols to be in [1, 4095]");
     auto srcValid = srcTile.getValidShape();
     if (srcValid[1] != ShapedType::kDynamic &&
-        (srcValid[1] < 1 || srcValid[1] > 4095))
-      return emitOpError("expects A2/A3 acc tstore src valid_shape[1] to be in [1, 4095]");
+        (srcValid[1] < 0 || srcValid[1] > 4095))
+      return emitOpError("expects A2/A3 acc tstore src valid_shape[1] to be in [0, 4095]");
     return success();
   };
 
@@ -3393,6 +3395,8 @@ static LogicalResult verifyMGatherMScatterMemOperand(Operation *op,
 
 static bool hasCompatibleKnownExtent(int64_t lhs, int64_t rhs);
 static bool isKnownUnitExtent(int64_t value);
+static bool isKnownZeroOrUnitExtent(int64_t value);
+static bool hasCompatibleKnownExtentOrZero(int64_t lhs, int64_t rhs);
 
 static LogicalResult verifyMGatherMScatterTileShape(Operation *op, Type dataTy,
                                                     Type idxTy,
@@ -3415,20 +3419,20 @@ static LogicalResult verifyMGatherMScatterTileShape(Operation *op, Type dataTy,
       static_cast<int32_t>(pto::BLayout::ColMajor);
 
   const bool rowCoalesce1xR =
-      idxRowMajor && isKnownUnitExtent(idxValid[0]) &&
+      idxRowMajor && isKnownZeroOrUnitExtent(idxValid[0]) &&
       hasCompatibleKnownExtent(idxValid[1], dataValid[0]);
   const bool rowCoalesceRx1 =
       idxColMajor && hasCompatibleKnownExtent(idxValid[0], dataValid[0]) &&
-      isKnownUnitExtent(idxValid[1]);
+      isKnownZeroOrUnitExtent(idxValid[1]);
   const bool elemCoalesce =
       hasCompatibleKnownExtent(idxValid[0], dataValid[0]) &&
       hasCompatibleKnownExtent(idxValid[1], dataValid[1]);
 
   if (!(rowCoalesce1xR || rowCoalesceRx1 || elemCoalesce))
     return op->emitOpError()
-           << "expects idx valid_shape to be [1, " << dataName
+           << "expects idx valid_shape to be [0|1, " << dataName
            << ".valid_row], [" << dataName
-           << ".valid_row, 1], or match " << dataName << " valid_shape";
+           << ".valid_row, 0|1], or match " << dataName << " valid_shape";
 
   return success();
 }
@@ -3917,6 +3921,15 @@ static bool isKnownUnitExtent(int64_t value) {
   return value == ShapedType::kDynamic || value == 1;
 }
 
+static bool isKnownZeroOrUnitExtent(int64_t value) {
+  return value == ShapedType::kDynamic || value == 0 || value == 1;
+}
+
+static bool hasCompatibleKnownExtentOrZero(int64_t lhs, int64_t rhs) {
+  return lhs == ShapedType::kDynamic || rhs == ShapedType::kDynamic ||
+         lhs == 0 || lhs == rhs;
+}
+
 static LogicalResult verifyVecTileStorage(Operation *op, Type ty, StringRef name) {
   if (failed(verifyTileBufCommon(op, ty, name)))
     return failure();
@@ -4021,10 +4034,10 @@ static LogicalResult verifyMatTileOperandsA2A3(Operation *op, Type lhsTy,
     int64_t m = lhsValid[0];
     int64_t k = lhsValid[1];
     int64_t n = rhsValid[1];
-    if ((m != ShapedType::kDynamic && (m < 1 || m > 4095)) ||
-        (k != ShapedType::kDynamic && (k < 1 || k > 4095)) ||
-        (n != ShapedType::kDynamic && (n < 1 || n > 4095)))
-      return op->emitOpError("expects m, k, and n valid sizes to be in [1, 4095]");
+    if ((m != ShapedType::kDynamic && (m < 0 || m > 4095)) ||
+        (k != ShapedType::kDynamic && (k < 0 || k > 4095)) ||
+        (n != ShapedType::kDynamic && (n < 0 || n > 4095)))
+      return op->emitOpError("expects m, k, and n valid sizes to be in [0, 4095]");
   }
   return success();
 }
@@ -6226,10 +6239,10 @@ mlir::LogicalResult mlir::pto::TLReluOp::verify() {
     auto valid = getValidShapeVec(srcTy);
     if (valid.size() != 2)
       return emitOpError("expects src to have rank-2 valid_shape");
-    if (valid[0] != ShapedType::kDynamic && valid[0] <= 0)
-      return emitOpError("expects src valid_shape[0] to be positive");
-    if (valid[1] != ShapedType::kDynamic && valid[1] <= 0)
-      return emitOpError("expects src valid_shape[1] to be positive");
+    if (valid[0] != ShapedType::kDynamic && valid[0] < 0)
+      return emitOpError("expects src valid_shape[0] to be non-negative");
+    if (valid[1] != ShapedType::kDynamic && valid[1] < 0)
+      return emitOpError("expects src valid_shape[1] to be non-negative");
     Type elemTy = getElemTy(srcTy);
     if (!(elemTy.isF16() || elemTy.isF32()))
       return emitOpError() << "expects A2/A3 tlrelu element type to be f16 or f32";
@@ -6884,8 +6897,8 @@ LogicalResult THistogramOp::verify() {
       if (!hasCompatibleKnownExtent(srcShape[0], idxShape[0]) ||
           !hasCompatibleKnownExtent(srcValid[0], idxValid[0]))
         return emitOpError("expects idx rows and valid rows to match src when src element type is ui16");
-      if (!isKnownUnitExtent(idxShape[1]) || !isKnownUnitExtent(idxValid[1]))
-        return emitOpError("expects idx to have exactly one column when src element type is ui16");
+      if (!isKnownUnitExtent(idxShape[1]) || !isKnownZeroOrUnitExtent(idxValid[1]))
+        return emitOpError("expects idx to have exactly one physical column and 0 or 1 valid column when src element type is ui16");
     } else {
       if (byte != 3) {
         if (idxTB.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) ||
@@ -6903,15 +6916,16 @@ LogicalResult THistogramOp::verify() {
         else if (byte == 0)
           expectedIdxRows = 3;
         if (!hasCompatibleKnownExtent(idxShape[0], expectedIdxRows) ||
-            !hasCompatibleKnownExtent(idxValid[0], expectedIdxRows))
+            !hasCompatibleKnownExtentOrZero(idxValid[0], expectedIdxRows))
           return emitOpError(
-              "expects idx rows/valid rows to match the byte-selected filter depth when src element type is ui32 and byte is 0, 1, or 2");
+              "expects idx rows to match the byte-selected filter depth and idx valid rows to be 0 or match it when src element type is ui32 and byte is 0, 1, or 2");
       }
     }
     if (dstShape[1] != ShapedType::kDynamic && dstShape[1] < 256)
       return emitOpError("expects dst shape[1] to be at least 256");
-    if (dstValid[1] != ShapedType::kDynamic && dstValid[1] < 256)
-      return emitOpError("expects dst valid_shape[1] to be at least 256");
+    if (dstValid[1] != ShapedType::kDynamic && dstValid[1] != 0 &&
+        dstValid[1] < 256)
+      return emitOpError("expects dst valid_shape[1] to be 0 or at least 256");
     return success();
   };
 
@@ -8030,8 +8044,8 @@ mlir::LogicalResult mlir::pto::TRemOp::verify() {
   auto tmpValid = getValidShapeVec(tmpTy);
   if (dstValid.size() != 2 || tmpValid.size() != 2)
     return emitOpError("expects tmp and dst to be rank-2 tiles");
-  if (tmpValid[0] != ShapedType::kDynamic && tmpValid[0] < 1)
-    return emitOpError("expects tmp to have at least 1 valid row");
+  if (tmpValid[0] != ShapedType::kDynamic && tmpValid[0] < 0)
+    return emitOpError("expects tmp to have non-negative valid rows");
   if (dstValid[1] != ShapedType::kDynamic && tmpValid[1] != ShapedType::kDynamic &&
       tmpValid[1] < dstValid[1])
     return emitOpError("expects tmp valid columns to cover dst valid columns");
@@ -8083,8 +8097,8 @@ mlir::LogicalResult mlir::pto::TRemSOp::verify() {
   auto tmpValid = getValidShapeVec(tt);
   if (dstValid.size() != 2 || tmpValid.size() != 2)
     return emitOpError("expects tmp and dst to be rank-2 tiles");
-  if (tmpValid[0] != ShapedType::kDynamic && tmpValid[0] < 1)
-    return emitOpError("expects tmp to have at least 1 valid row");
+  if (tmpValid[0] != ShapedType::kDynamic && tmpValid[0] < 0)
+    return emitOpError("expects tmp to have non-negative valid rows");
   if (dstValid[1] != ShapedType::kDynamic && tmpValid[1] != ShapedType::kDynamic &&
       tmpValid[1] < dstValid[1])
     return emitOpError("expects tmp valid columns to cover dst valid columns");
@@ -9481,9 +9495,9 @@ mlir::LogicalResult mlir::pto::TStoreFPOp::verify() {
     if (srcValid.size() != 2)
       return emitOpError() << "expects src to have a rank-2 valid_shape";
     if (srcValid[1] != ShapedType::kDynamic &&
-        (srcValid[1] < 1 || srcValid[1] > 4095))
+        (srcValid[1] < 0 || srcValid[1] > 4095))
       return emitOpError()
-             << "expects src.valid_shape[1] to be in the range [1, 4095]";
+             << "expects src.valid_shape[1] to be in the range [0, 4095]";
     return mlir::success();
   };
   auto verifyA5 = [&]() -> LogicalResult {
@@ -10557,14 +10571,14 @@ mlir::LogicalResult mlir::pto::SubViewOp::verify() {
   if (hasValidRow) {
     int64_t vRow = 0, vCol = 0;
     if (getConstIndex(getValidRow(), vRow)) {
-      if (vRow <= 0)
-        return emitOpError("valid_row must be positive when constant");
+      if (vRow < 0)
+        return emitOpError("valid_row must be non-negative when constant");
       if (vRow > sizeR)
         return emitOpError("valid_row must be <= subview row size");
     }
     if (getConstIndex(getValidCol(), vCol)) {
-      if (vCol <= 0)
-        return emitOpError("valid_col must be positive when constant");
+      if (vCol < 0)
+        return emitOpError("valid_col must be non-negative when constant");
       if (vCol > sizeC)
         return emitOpError("valid_col must be <= subview col size");
     }

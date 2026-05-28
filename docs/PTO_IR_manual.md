@@ -154,7 +154,11 @@ A logical partition (slice) of a `tensor_view`. Holds shape and stride informati
 | `fractal` | `int32` | Fractal size |
 | `pad` | `PadValue` mnemonic or integer literal | Padding policy/value selector (tests commonly use `pad=0`) |
 
-Here, `?` denotes a dynamic symbol resolved at runtime.
+Here, `?` denotes a dynamic symbol resolved at runtime. Static and dynamic
+valid dimensions are non-negative counts; a static `v_row=0` or `v_col=0`
+represents an empty valid region. Physical `rows`/`cols` may still describe the
+storage extent, for example an even physical row count with an odd or zero
+`v_row` on a tail tile.
 
 For `dtype=!pto.f4E1M2x2` and `dtype=!pto.f4E2M1x2`, the `rows`/`cols` and
 `v_row`/`v_col` values are physical packed extents. In other words, the packed
@@ -657,7 +661,7 @@ result.valid = clip(explicit_valid_or_sizes, sizes)
 - `valid_row` and `valid_col` must be both present or both absent.
 - If `valid_row/valid_col` are omitted, result `valid_shape` defaults to `sizes`.
 - If `valid_row/valid_col` are provided:
-  - constant values must be positive and `<= sizes` in each dimension
+  - constant values must be non-negative and `<= sizes` in each dimension
   - non-constant values are represented as dynamic valid dims in the result type
 - The inferred result type uses:
   - `shape = sizes` (logical subview size)
@@ -667,6 +671,8 @@ result.valid = clip(explicit_valid_or_sizes, sizes)
   - if explicit `valid_row/valid_col` are provided, `valid_shape` is clipped by `sizes`
 - Lowering keeps parent physical stride/base semantics for non-compact access,
   so EmitC behavior remains unchanged from the previous implementation.
+- If an explicit valid dimension is zero, the subview still has the requested
+  physical `sizes`, but its valid region is empty in that dimension.
 
 **Hardware Mapping:**
 
@@ -856,7 +862,7 @@ For each element (i, j) in the tile valid region:
   - Tile element type must be one of: `i8`, `i16`, `i32`, `i64`, `f16`, `bf16`, `f32`.
   - The destination tile must use `loc=vec` or `loc=mat`.
   - The destination tile element type and source partition element type must have the same bitwidth.
-  - Runtime: all source partition extents and the destination valid region must be positive.
+  - Runtime: all source partition extents must be positive; the destination valid region must be non-negative.
 - **Implementation checks (A5)**
   - The source partition and destination tile element types must be one of `i8/i16/i32/i64/f16/bf16/f32/f8E4M3*/f8E5M2*/!pto.hif8/!pto.f4E1M2x2/!pto.f4E2M1x2`.
   - The destination tile element size must be `1`, `2`, `4`, or `8` bytes, and must match the source partition element size.
@@ -902,7 +908,7 @@ op is modeled as writing the prefetched data into `dst`.
 - `src` must be a partition view before lowering, or the corresponding lowered ranked memref form after `PTOViewToMemref`.
 - `dst` must be a tile buffer before lowering, or the corresponding lowered ranked memref form after `PTOViewToMemref`.
 - `dst` must use `loc=vec` or `loc=mat`.
-- Static source extents and static destination valid extents must be positive when known.
+- Static source extents must be positive when known; static destination valid extents must be non-negative when known.
 - `src` and `dst` element types must have the same element size in bytes.
 - Low-precision element types (`f8E4M3*`, `f8E5M2*`, `!pto.hif8`, `!pto.f4E1M2x2`, `!pto.f4E2M1x2`) are only accepted on A5.
 
@@ -1000,7 +1006,8 @@ For each element (i, j) in the tile valid region:
 
 - Common checks:
   - `src` must be `!pto.tile_buf`, `dst` must be `!pto.partition_tensor_view`.
-  - Static `dst` shape dims and static `src` valid-shape dims must be positive.
+  - Static `dst` shape dims must be positive, and static `src` valid-shape dims
+    must be non-negative.
   - If `preQuantScalar` is present, `src` must be `loc=acc`.
   - If `reluPreMode != no_relu`, `src` must be `loc=acc`.
 - A2/A3 checks:
@@ -1324,7 +1331,7 @@ For each (i, j):
     - `(f32, bf16, bf16)`
   - Shape constraints: `lhs.rows == dst.rows`, `lhs.cols == rhs.rows`, and `rhs.cols == dst.cols`.
   - Tile locations: `lhs.loc=left`, `rhs.loc=right`, `dst.loc=acc`.
-  - Runtime: `m/k/n` (taken from `lhs valid row`, `lhs valid column`, `rhs valid column`) must be in `[1, 4095]`.
+  - Runtime: `m/k/n` (taken from `lhs valid row`, `lhs valid column`, `rhs valid column`) must be in `[0, 4095]`.
 - **Implementation checks (A5)**
   - The destination element type must be `i32` or `f32`.
     - If the destination element type is `i32`, the lhs and rhs element types must both be `i8`.
@@ -1334,7 +1341,7 @@ For each (i, j):
     - `lhs.loc=left`, `lhs.blayout=col_major`, `lhs.slayout=row_major`
     - `rhs.loc=right`, `rhs.blayout=row_major`, `rhs.slayout=col_major`
     - `dst.loc=acc`, `dst.blayout=col_major`, `dst.slayout=row_major`
-  - Runtime: `m/k/n` (taken from `lhs valid row`, `lhs valid column`, `rhs valid column`) must be in `[1, 4095]`.
+  - Runtime: `m/k/n` (taken from `lhs valid row`, `lhs valid column`, `rhs valid column`) must be in `[0, 4095]`.
 
 **Hardware Mapping:**
 
@@ -1601,7 +1608,7 @@ For each row i:
     - `(f32, bf16, bf16)`
   - Shape constraints: `lhs.rows == dst.rows`, `lhs.cols == rhs.rows`, and `rhs.cols == dst.cols`.
   - Tile locations: `lhs.loc=left`, `rhs.loc=right`, `dst.loc=acc`.
-  - Runtime: `m` must be `1`; `k/n` (taken from `rhs valid row`, `rhs valid column`) must be in `[1, 4095]`.
+  - Runtime: `m` must be `1`; `k/n` (taken from `rhs valid row`, `rhs valid column`) must be in `[0, 4095]`.
 - **Implementation checks (A5)**
   - The destination element type must be `i32` or `f32`.
     - If the destination element type is `i32`, the lhs and rhs element types must both be `i8`.
@@ -1612,7 +1619,7 @@ For each row i:
     - `rhs.loc=right`, `rhs.blayout=row_major`, `rhs.slayout=col_major`
     - `dst.loc=acc`, `dst.blayout=col_major`, `dst.slayout=row_major`
   - No explicit runtime range checks on `m/k/n` are enforced in `TMATMUL_IMPL` on this target.
-  - Runtime: `m` must be `1`; `k/n` (taken from `rhs valid row`, `rhs valid column`) must be in `[1, 4095]`.
+  - Runtime: `m` must be `1`; `k/n` (taken from `rhs valid row`, `rhs valid column`) must be in `[0, 4095]`.
 
 **Hardware Mapping:**
 
@@ -1659,7 +1666,7 @@ dst = acc_in + (lhs * rhs)
     - `(f32, bf16, bf16)`
   - Shape constraints: `lhs.rows == dst.rows`, `lhs.cols == rhs.rows`, and `rhs.cols == dst.cols`.
   - Tile locations: `lhs.loc=left`, `rhs.loc=right`, `dst.loc=acc`.
-  - Runtime: `m` must be `1`; `k/n` (taken from `rhs valid row`, `rhs valid column`) must be in `[1, 4095]`.
+  - Runtime: `m` must be `1`; `k/n` (taken from `rhs valid row`, `rhs valid column`) must be in `[0, 4095]`.
 - **Implementation checks (A5)**
   - The destination element type must be `i32` or `f32`.
     - If the destination element type is `i32`, the lhs and rhs element types must both be `i8`.
@@ -1670,7 +1677,7 @@ dst = acc_in + (lhs * rhs)
     - `rhs.loc=right`, `rhs.blayout=row_major`, `rhs.slayout=col_major`
     - `dst.loc=acc`, `dst.blayout=col_major`, `dst.slayout=row_major`
   - No explicit runtime range checks on `m/k/n` are enforced in `TMATMUL_IMPL` on this target.
-  - Runtime: `m` must be `1`; `k/n` (taken from `rhs valid row`, `rhs valid column`) must be in `[1, 4095]`.
+  - Runtime: `m` must be `1`; `k/n` (taken from `rhs valid row`, `rhs valid column`) must be in `[0, 4095]`.
 
 **Hardware Mapping:**
 
@@ -1716,7 +1723,7 @@ dst = (lhs * rhs) + bias
     - `(f32, bf16, bf16)`
   - Shape constraints: `lhs.rows == dst.rows`, `lhs.cols == rhs.rows`, and `rhs.cols == dst.cols`.
   - Tile locations: `lhs.loc=left`, `rhs.loc=right`, `dst.loc=acc`.
-  - Runtime: `m` must be `1`; `k/n` (taken from `rhs valid row`, `rhs valid column`) must be in `[1, 4095]`.
+  - Runtime: `m` must be `1`; `k/n` (taken from `rhs valid row`, `rhs valid column`) must be in `[0, 4095]`.
   - Bias checks:
     - The bias tile element type must exactly match the result tile element type.
     - The bias tile must be configured as a single row.
@@ -1731,7 +1738,7 @@ dst = (lhs * rhs) + bias
     - `rhs.loc=right`, `rhs.blayout=row_major`, `rhs.slayout=col_major`
     - `dst.loc=acc`, `dst.blayout=col_major`, `dst.slayout=row_major`
   - No explicit runtime range checks on `m/k/n` are enforced in `TMATMUL_IMPL` on this target.
-  - Runtime: `m` must be `1`; `k/n` (taken from `rhs valid row`, `rhs valid column`) must be in `[1, 4095]`.
+  - Runtime: `m` must be `1`; `k/n` (taken from `rhs valid row`, `rhs valid column`) must be in `[0, 4095]`.
   - Bias checks:
     - The bias tile element type must exactly match the result tile element type.
     - The bias tile must be configured as a single row.
@@ -4091,7 +4098,7 @@ pto.tlrelu ins(<src>, <slope> : <src_type>, <slope_type>)
 - **Implementation checks (A2A3)**
   - Tile element type must be one of: `f16`, `f32`.
   - Tile must use `loc=vec`.
-  - Valid bounds: `0 < valid row <= rows` and `0 < valid column <= cols`.
+  - Valid bounds: `0 <= valid row <= rows` and `0 <= valid column <= cols`.
   - Runtime: `src` and `dst` tiles should have the same `validRow/validCol`.
 - **Implementation checks (A5)**
   - Tile element type must be one of: `f16`, `f32`.
