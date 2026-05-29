@@ -3601,9 +3601,9 @@ static bool isKnownUnitExtent(int64_t value);
 static bool isKnownZeroOrUnitExtent(int64_t value);
 static bool hasCompatibleKnownExtentOrZero(int64_t lhs, int64_t rhs);
 
-static LogicalResult verifyMGatherMScatterTileShape(Operation *op, Type dataTy,
-                                                    Type idxTy,
-                                                    StringRef dataName) {
+static LogicalResult verifyMGatherMScatterTileShape(
+    Operation *op, Type dataTy, Type idxTy, StringRef dataName,
+    std::optional<pto::Coalesce> explicitCoalesce = std::nullopt) {
   auto dataValid = getValidShapeVec(dataTy);
   auto idxValid = getValidShapeVec(idxTy);
   if (dataValid.size() != 2 || idxValid.size() != 2)
@@ -3630,6 +3630,25 @@ static LogicalResult verifyMGatherMScatterTileShape(Operation *op, Type dataTy,
   const bool elemCoalesce =
       hasCompatibleKnownExtent(idxValid[0], dataValid[0]) &&
       hasCompatibleKnownExtent(idxValid[1], dataValid[1]);
+
+  if (explicitCoalesce) {
+    switch (*explicitCoalesce) {
+    case pto::Coalesce::Row:
+      if (!(rowCoalesce1xR || rowCoalesceRx1))
+        return op->emitOpError()
+               << "expects idx valid_shape to be [0|1, " << dataName
+               << ".valid_row] or [" << dataName
+               << ".valid_row, 0|1] when coalesce=row";
+      return success();
+    case pto::Coalesce::Elem:
+      if (!elemCoalesce)
+        return op->emitOpError()
+               << "expects idx valid_shape to match " << dataName
+               << " valid_shape when coalesce=elem";
+      return success();
+    }
+    llvm_unreachable("unknown Coalesce");
+  }
 
   if (!(rowCoalesce1xR || rowCoalesceRx1 || elemCoalesce))
     return op->emitOpError()
@@ -6296,8 +6315,23 @@ static mlir::LogicalResult verifyTFillPadLike(Operation *op, Type srcTy, Type ds
 }
 
 mlir::LogicalResult mlir::pto::TFillPadOp::verify() {
-  return verifyTFillPadLike(getOperation(), getSrc().getType(), getDst().getType(),
-                            /*allowDstExpand=*/false, "tfillpad");
+  if (failed(verifyTFillPadLike(getOperation(), getSrc().getType(), getDst().getType(),
+                                /*allowDstExpand=*/false, "tfillpad")))
+    return failure();
+
+  if (auto padValueAttr = getPadValueAttr()) {
+    auto dstSpace = getPTOMemorySpaceEnum(getDst().getType());
+    if (!dstSpace || *dstSpace != pto::AddressSpace::MAT)
+      return emitOpError("expects padValue attribute only for loc=mat tfillpad");
+    if (auto dstTileTy = dyn_cast<pto::TileBufType>(getDst().getType())) {
+      if (dstTileTy.getPadValueI32() != static_cast<int32_t>(padValueAttr.getValue()))
+        return emitOpError("expects padValue attribute to match dst tile pad configuration");
+    } else if (!isa<MemRefType>(getDst().getType())) {
+      return emitOpError("expects dst to be tile_buf or memref when padValue is specified");
+    }
+  }
+
+  return success();
 }
 
 mlir::LogicalResult mlir::pto::TFillPadExpandOp::verify() {
@@ -7573,9 +7607,6 @@ LogicalResult MScatterOp::verify() {
   if (shouldBypassDecodedMemrefVerifier(getOperation()))
     return success();
 
-  if (!isTargetArchA5(getOperation()))
-    return emitOpError("pto.mscatter is only supported on A5 targets");
-
   Type srcTy = getSrc().getType();
   Type idxTy = getIdx().getType();
   Type memTy = getMem().getType();
@@ -7605,19 +7636,20 @@ LogicalResult MScatterOp::verify() {
                                              "src")))
     return failure();
 
-  if (getScatterAtomicOp() != pto::ScatterAtomicOp::None ||
-      getScatterOob() != pto::ScatterOOB::Undefined) {
-    if (!isTargetArchA5(getOperation()))
-      return emitOpError(
-          "expects non-default scatterAtomicOp/scatterOob only on A5 targets");
-  }
+  if (getScatterConflictAttr() && !isTargetArchA5(getOperation()))
+    return emitOpError("expects scatterConflict only on A5 targets");
 
   if (!isSupportedMScatterAtomicPayloadElemType(srcElem, getScatterAtomicOp()))
     return emitOpError(
         "expects scatterAtomicOp-compatible src element type: add supports "
         "i32/ui32/f16/f32, max/min support signless i32/f32");
 
-  if (failed(verifyMGatherMScatterTileShape(getOperation(), srcTy, idxTy, "src")))
+  std::optional<pto::Coalesce> explicitCoalesce;
+  if (auto coalesceAttr = getCoalesceAttr())
+    explicitCoalesce = coalesceAttr.getValue();
+
+  if (failed(verifyMGatherMScatterTileShape(getOperation(), srcTy, idxTy, "src",
+                                            explicitCoalesce)))
     return failure();
 
   return success();
@@ -7627,9 +7659,6 @@ LogicalResult MScatterOp::verify() {
 LogicalResult MGatherOp::verify() {
   if (shouldBypassDecodedMemrefVerifier(getOperation()))
     return success();
-
-  if (!isTargetArchA5(getOperation()))
-    return emitOpError("pto.mgather is only supported on A5 targets");
 
   Type memTy = getMem().getType();
   Type idxTy = getIdx().getType();
@@ -7660,12 +7689,12 @@ LogicalResult MGatherOp::verify() {
                                              "dst")))
     return failure();
 
-  if (getGatherOob() != pto::GatherOOB::Undefined &&
-      !isTargetArchA5(getOperation()))
-    return emitOpError(
-        "expects non-default gatherOob only on A5 targets");
+  std::optional<pto::Coalesce> explicitCoalesce;
+  if (auto coalesceAttr = getCoalesceAttr())
+    explicitCoalesce = coalesceAttr.getValue();
 
-  if (failed(verifyMGatherMScatterTileShape(getOperation(), dstTy, idxTy, "dst")))
+  if (failed(verifyMGatherMScatterTileShape(getOperation(), dstTy, idxTy, "dst",
+                                            explicitCoalesce)))
     return failure();
 
   return success();

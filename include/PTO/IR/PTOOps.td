@@ -2799,6 +2799,7 @@ def MGatherOp : PTO_TOp<"mgather", [
     PTODpsType:$mem,
     PTODpsType:$idx,
     PTODpsType:$dst,
+    OptionalAttr<PTO_CoalesceAttr>:$coalesce,
     DefaultValuedAttr<PTO_GatherOOBAttr, "::mlir::pto::GatherOOB::Undefined">:$gatherOob);
 
   let results = (outs);
@@ -2977,8 +2978,10 @@ def MScatterOp : PTO_TOp<"mscatter", [
     PTODpsType:$src,
     PTODpsType:$idx,
     PTODpsType:$mem,               // outs target
+    OptionalAttr<PTO_CoalesceAttr>:$coalesce,
     DefaultValuedAttr<PTO_ScatterAtomicOpAttr, "::mlir::pto::ScatterAtomicOp::None">:$scatterAtomicOp,
-    DefaultValuedAttr<PTO_ScatterOOBAttr, "::mlir::pto::ScatterOOB::Undefined">:$scatterOob
+    DefaultValuedAttr<PTO_ScatterOOBAttr, "::mlir::pto::ScatterOOB::Undefined">:$scatterOob,
+    OptionalAttr<PTO_ScatterConflictAttr>:$scatterConflict
   );
 
   let results = (outs);
@@ -4348,7 +4351,8 @@ def TFillPadOp : PTO_TOp<"tfillpad", [
 
   let arguments = (ins
     PTODpsType:$src,
-    PTODpsType:$dst
+    PTODpsType:$dst,
+    OptionalAttr<PTO_PadValueAttr>:$padValue
   );
 
   let results = (outs);

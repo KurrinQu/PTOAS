@@ -2933,7 +2933,8 @@ struct PTOViewToMemrefPass
             op,
             TypeRange{},
             src,
-            dst);
+            dst,
+            op.getPadValueAttr());
       }
 
       DefaultInlineVector<mlir::pto::TFillPadInplaceOp> fillpadInplaceOps;
@@ -3630,6 +3631,7 @@ struct PTOViewToMemrefPass
             mem,
             idx,
             dst,
+            op.getCoalesceAttr(),
             op.getGatherOobAttr());
       }
 
@@ -3659,8 +3661,10 @@ struct PTOViewToMemrefPass
             src,
             idx,
             mem,
+            op.getCoalesceAttr(),
             op.getScatterAtomicOpAttr(),
-            op.getScatterOobAttr());
+            op.getScatterOobAttr(),
+            op.getScatterConflictAttr());
       }
       DefaultInlineVector<mlir::pto::TPrintOp> printops;
       func.walk([&](mlir::pto::TPrintOp op) { printops.push_back(op); });

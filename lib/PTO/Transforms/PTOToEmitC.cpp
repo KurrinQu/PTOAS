@@ -2902,12 +2902,27 @@ struct PTOMGatherToMGATHER : public OpConversionPattern<pto::MGatherOp> {
       }
       llvm_unreachable("unknown GatherOOB");
     };
+    auto coalesceTok = [&](pto::Coalesce mode) -> StringRef {
+      switch (mode) {
+      case pto::Coalesce::Row:
+        return "pto::Coalesce::Row";
+      case pto::Coalesce::Elem:
+        return "pto::Coalesce::Elem";
+      }
+      llvm_unreachable("unknown Coalesce");
+    };
 
     SmallVector<Attribute, 2> templateArgVec;
-    const bool rowCoalesce =
-        isRowCoalescedMGatherIndexType(op.getDst().getType(), op.getIdx().getType());
-    templateArgVec.push_back(emitc::OpaqueAttr::get(
-        ctx, rowCoalesce ? "pto::Coalesce::Row" : "pto::Coalesce::Elem"));
+    pto::Coalesce coalesce = pto::Coalesce::Elem;
+    if (auto coalesceAttr = op.getCoalesceAttr()) {
+      coalesce = coalesceAttr.getValue();
+    } else {
+      const bool rowCoalesce =
+          isRowCoalescedMGatherIndexType(op.getDst().getType(), op.getIdx().getType());
+      coalesce = rowCoalesce ? pto::Coalesce::Row : pto::Coalesce::Elem;
+    }
+    templateArgVec.push_back(
+        emitc::OpaqueAttr::get(ctx, coalesceTok(coalesce)));
     if (op.getGatherOob() != pto::GatherOOB::Undefined) {
       templateArgVec.push_back(
           emitc::OpaqueAttr::get(ctx, gatherOobTok(op.getGatherOob())));
@@ -5845,19 +5860,48 @@ struct PTOMScatterToMSCATTER : public OpConversionPattern<pto::MScatterOp> {
       }
       llvm_unreachable("unknown ScatterOOB");
     };
+    auto coalesceTok = [&](pto::Coalesce mode) -> StringRef {
+      switch (mode) {
+      case pto::Coalesce::Row:
+        return "pto::Coalesce::Row";
+      case pto::Coalesce::Elem:
+        return "pto::Coalesce::Elem";
+      }
+      llvm_unreachable("unknown Coalesce");
+    };
+    auto scatterConflictTok = [&](pto::ScatterConflict mode) -> StringRef {
+      switch (mode) {
+      case pto::ScatterConflict::Default:
+        return "pto::ScatterConflict::Default";
+      case pto::ScatterConflict::Last:
+        return "pto::ScatterConflict::Last";
+      }
+      llvm_unreachable("unknown ScatterConflict");
+    };
 
-    SmallVector<Attribute, 3> templateArgVec;
-    const bool rowCoalesce =
-        isRowCoalescedMGatherIndexType(op.getSrc().getType(), op.getIdx().getType());
-    templateArgVec.push_back(emitc::OpaqueAttr::get(
-        ctx, rowCoalesce ? "pto::Coalesce::Row" : "pto::Coalesce::Elem"));
+    SmallVector<Attribute, 4> templateArgVec;
+    pto::Coalesce coalesce = pto::Coalesce::Elem;
+    if (auto coalesceAttr = op.getCoalesceAttr()) {
+      coalesce = coalesceAttr.getValue();
+    } else {
+      const bool rowCoalesce =
+          isRowCoalescedMGatherIndexType(op.getSrc().getType(), op.getIdx().getType());
+      coalesce = rowCoalesce ? pto::Coalesce::Row : pto::Coalesce::Elem;
+    }
+    templateArgVec.push_back(
+        emitc::OpaqueAttr::get(ctx, coalesceTok(coalesce)));
     if (op.getScatterAtomicOp() != pto::ScatterAtomicOp::None ||
-        op.getScatterOob() != pto::ScatterOOB::Undefined) {
+        op.getScatterOob() != pto::ScatterOOB::Undefined ||
+        op.getScatterConflictAttr()) {
       templateArgVec.push_back(emitc::OpaqueAttr::get(
           ctx, scatterAtomicTok(op.getScatterAtomicOp())));
-      if (op.getScatterOob() != pto::ScatterOOB::Undefined)
+      if (op.getScatterOob() != pto::ScatterOOB::Undefined ||
+          op.getScatterConflictAttr())
         templateArgVec.push_back(
             emitc::OpaqueAttr::get(ctx, scatterOobTok(op.getScatterOob())));
+      if (auto scatterConflictAttr = op.getScatterConflictAttr())
+        templateArgVec.push_back(emitc::OpaqueAttr::get(
+            ctx, scatterConflictTok(scatterConflictAttr.getValue())));
     }
     ArrayAttr templateArgs = rewriter.getArrayAttr(templateArgVec);
 
@@ -7866,12 +7910,20 @@ struct PTOTCIToEmitC : public OpConversionPattern<pto::TCIOp> {
 
     ArrayAttr targs;
     if (auto ot = mlir::dyn_cast<emitc::OpaqueType>(dst.getType())) {
-      std::string tileTok = ot.getValue().str(); // "Tile<...>"
-      targs = rewriter.getArrayAttr({
-          emitc::OpaqueAttr::get(ctx, tileTok),
-          emitc::OpaqueAttr::get(ctx, scalarTok),
-          emitc::OpaqueAttr::get(ctx, descTok),
-      });
+      SmallVector<Attribute, 4> templateArgVec;
+      templateArgVec.push_back(
+          emitc::OpaqueAttr::get(ctx, ot.getValue().str()));
+      if (tmp) {
+        auto tmpOt = mlir::dyn_cast<emitc::OpaqueType>(tmp.getType());
+        if (!tmpOt)
+          return rewriter.notifyMatchFailure(
+              op, "expected tmp tile to lower to emitc::OpaqueType");
+        templateArgVec.push_back(
+            emitc::OpaqueAttr::get(ctx, tmpOt.getValue().str()));
+      }
+      templateArgVec.push_back(emitc::OpaqueAttr::get(ctx, scalarTok));
+      templateArgVec.push_back(emitc::OpaqueAttr::get(ctx, descTok));
+      targs = rewriter.getArrayAttr(templateArgVec);
     } else {
       targs = rewriter.getArrayAttr({});
     }
@@ -8667,13 +8719,38 @@ struct PTOFillPadToEmitC : public OpConversionPattern<pto::TFillPadOp> {
   LogicalResult matchAndRewrite(pto::TFillPadOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
+    auto *ctx = rewriter.getContext();
 
     Value src = peelUnrealized(adaptor.getSrc());
     Value dst = peelUnrealized(adaptor.getDst());
 
+    auto padValueTok = [&](pto::PadValue mode) -> StringRef {
+      switch (mode) {
+      case pto::PadValue::Null:
+        return "pto::PadValue::Null";
+      case pto::PadValue::Zero:
+        return "pto::PadValue::Zero";
+      case pto::PadValue::Max:
+        return "pto::PadValue::Max";
+      case pto::PadValue::Min:
+        return "pto::PadValue::Min";
+      }
+      llvm_unreachable("unknown PadValue");
+    };
+
+    ArrayAttr templateArgs{};
+    if (auto padValueAttr = op.getPadValueAttr()) {
+      // The verifier only accepts explicit padValue for loc=mat tile-form
+      // tfillpad. PTOViewToMemref preserves that attribute after rewriting the
+      // operands to memref form, so lowering must trust the preserved semantic
+      // contract instead of re-checking the now-erased TileBufType.
+      templateArgs = rewriter.getArrayAttr(
+          {emitc::OpaqueAttr::get(ctx, padValueTok(padValueAttr.getValue()))});
+    }
+
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TFILLPAD",
-        /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
+        /*args=*/ArrayAttr{}, /*templateArgs=*/templateArgs,
         /*operands=*/ValueRange{dst, src});
 
     rewriter.eraseOp(op);
