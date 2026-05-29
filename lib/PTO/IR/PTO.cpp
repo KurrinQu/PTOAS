@@ -1718,27 +1718,28 @@ static LogicalResult verifyRowReductionDstLayout(Operation *op, Type ty,
       return op->emitOpError() << "expects " << name
                                << " to use a DN-style column vector tile or legacy ND-style tile";
   }
-  return success();
-  auto valid = getValidShapeVec(ty);
-  if (valid.size() != 2)
-    return op->emitOpError() << "expects " << name << " to have rank-2 valid_shape";
-  if (valid[1] != ShapedType::kDynamic && valid[1] != 1)
-    return op->emitOpError() << "expects " << name << " valid_shape[1] to be 1";
+  // The dst valid_shape[1] == 1 constraint for row reductions is enforced in
+  // verifyRowReductionValidRegion (it must be conditional on the no-op-marker
+  // path), so it is intentionally not duplicated here. A previous unreachable
+  // copy of that check lived after this return and has been removed.
   return success();
 }
 
 static LogicalResult verifyRowReductionValidRegion(Operation *op, Type srcTy,
-                                                   Type dstTy) {
+                                                   Type dstTy,
+                                                   bool allowEmptyMarker) {
   auto srcValid = getValidShapeVec(srcTy);
   auto dstValid = getValidShapeVec(dstTy);
   if (srcValid.size() != 2 || dstValid.size() != 2)
     return op->emitOpError("expects src and dst to have rank-2 valid_shape");
   // A fully-empty dst valid region (0x0) is PyPTO's dual-AIV no-op replay
   // marker: the op writes no elements, so accept it and skip the non-empty
-  // structural constraints. One-sided empties (only one dim 0) still fall
-  // through and are rejected below. Hardware Rv=0 no-op is tracked in
-  // pto-isa#143; PTOAS only guarantees the IR is legal here.
-  if (dstValid[0] == 0 && dstValid[1] == 0)
+  // structural constraints. Only plain reductions opt in (allowEmptyMarker);
+  // arg reductions (trowargmax/trowargmin) still produce a real per-row index,
+  // so they stay strict. One-sided empties (only one dim 0) still fall through
+  // and are rejected below. Hardware Rv=0 no-op is tracked in pto-isa#143;
+  // PTOAS only guarantees the IR is legal here.
+  if (allowEmptyMarker && dstValid[0] == 0 && dstValid[1] == 0)
     return success();
   if (srcValid[0] != ShapedType::kDynamic && srcValid[0] == 0)
     return op->emitOpError("expects src valid_shape[0] to be non-zero");
@@ -1765,7 +1766,8 @@ static LogicalResult verifyTRowReductionNoTmpCommon(Operation *op, Type srcTy,
     return failure();
   if (getElemTy(srcTy) != getElemTy(dstTy))
     return op->emitOpError("expects src and dst to have the same element type");
-  if (failed(verifyRowReductionValidRegion(op, srcTy, dstTy)))
+  if (failed(verifyRowReductionValidRegion(op, srcTy, dstTy,
+                                           /*allowEmptyMarker=*/true)))
     return failure();
   if (!isSupportedRowReductionElemType(getElemTy(srcTy)))
     return op->emitOpError(elemTypeError);
@@ -1784,7 +1786,8 @@ static LogicalResult verifyTRowReductionWithTmpCommon(Operation *op, Type srcTy,
     return failure();
   if (getElemTy(srcTy) != getElemTy(dstTy))
     return op->emitOpError("expects src and dst to have the same element type");
-  if (failed(verifyRowReductionValidRegion(op, srcTy, dstTy)))
+  if (failed(verifyRowReductionValidRegion(op, srcTy, dstTy,
+                                           /*allowEmptyMarker=*/true)))
     return failure();
   if (!isSupportedRowReductionElemType(getElemTy(srcTy)))
     return op->emitOpError(elemTypeError);
@@ -1800,7 +1803,10 @@ static LogicalResult verifyTRowArgReductionCommon(Operation *op, Type srcTy,
   if (failed(verifyTileBufSameElemType(op, srcTy, tmpTy, "src", "tmp")) ||
       failed(verifyTileBufSameValidShape(op, srcTy, tmpTy, "src", "tmp")))
     return failure();
-  if (failed(verifyRowReductionValidRegion(op, srcTy, dstTy)))
+  // Arg reductions still emit a real per-row index, so the empty-region no-op
+  // marker is not accepted here (unlike plain trowmax/trowsum above).
+  if (failed(verifyRowReductionValidRegion(op, srcTy, dstTy,
+                                           /*allowEmptyMarker=*/false)))
     return failure();
   Type srcElem = getElemTy(srcTy);
   if (!isSupportedRowReductionElemType(srcElem))
@@ -1836,6 +1842,10 @@ static LogicalResult verifyColReductionValidRegion(Operation *op, Type srcTy,
   // Fully-empty dst valid region (0x0): dual-AIV no-op replay marker. The op
   // writes no elements; accept and skip the non-empty constraints. One-sided
   // empties still fall through. See pto-isa#143 for hardware Rv=0 no-op.
+  // Col arg reductions (tcolargmax/tcolargmin) never reach this point with a
+  // 0x0 dst: verifyColArgReductionDstLayout enforces dst valid_shape[0] == 1
+  // first, so they stay strict without needing a flag here (unlike the row
+  // path, whose dst-layout check does not constrain valid).
   if (dstValid[0] == 0 && dstValid[1] == 0)
     return success();
   if (requireNonZeroSrc) {
