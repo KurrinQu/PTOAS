@@ -45,27 +45,42 @@ void addBidirectionalHiddenEvent(SyncMacroModel &model, PipelineType firstPipe,
   addHiddenEvent(model, secondPipe, firstPipe, eventIds);
 }
 
+SmallVector<Value> getPingPongValues(Value ping, Value pong = {}) {
+  SmallVector<Value> values;
+  values.push_back(ping);
+  if (pong)
+    values.push_back(pong);
+  return values;
+}
+
 std::optional<SyncMacroModel> getP2PCommSyncMacroModel(Operation *op) {
   Value dst;
   Value src;
+  Value ping;
+  Value pong;
   unsigned laneCount = 1;
   if (auto tput = dyn_cast<pto::TPutOp>(op)) {
     dst = tput.getDst();
     src = tput.getSrc();
+    ping = tput.getPing();
+    pong = tput.getPong();
     laneCount = tput.getPong() ? 2U : 1U;
   } else if (auto tget = dyn_cast<pto::TGetOp>(op)) {
     dst = tget.getDst();
     src = tget.getSrc();
+    ping = tget.getPing();
+    pong = tget.getPong();
     laneCount = tget.getPong() ? 2U : 1U;
   } else {
     return std::nullopt;
   }
 
   SyncMacroModel model;
+  SmallVector<Value> staging = getPingPongValues(ping, pong);
   // P2P comm library calls first read the source GM through MTE2, then write
-  // the destination GM through MTE3.
-  addPhase(model, PipelineType::PIPE_MTE2, ValueRange{}, ValueRange{src});
-  addPhase(model, PipelineType::PIPE_MTE3, ValueRange{dst}, ValueRange{});
+  // the destination GM through MTE3, using ping/pong as staging tiles.
+  addPhase(model, PipelineType::PIPE_MTE2, staging, ValueRange{src});
+  addPhase(model, PipelineType::PIPE_MTE3, ValueRange{dst}, staging);
   addBidirectionalHiddenEvent(model, PipelineType::PIPE_MTE2,
                               PipelineType::PIPE_MTE3,
                               getSequentialEventIds(laneCount));
@@ -79,27 +94,33 @@ std::optional<SyncMacroModel> getCollectiveCommSyncMacroModel(Operation *op) {
   if (auto tgather = dyn_cast<pto::CommTGatherOp>(op)) {
     laneCount = tgather.getPong() ? 2U : 1U;
     // TGATHER_IMPL reads each group source through MTE2 and writes the gathered
-    // result into dst through MTE3.
-    addPhase(model, PipelineType::PIPE_MTE2, ValueRange{},
+    // result into dst through MTE3, using ping/pong as staging tiles.
+    SmallVector<Value> staging =
+        getPingPongValues(tgather.getPing(), tgather.getPong());
+    addPhase(model, PipelineType::PIPE_MTE2, staging,
              tgather.getGroup());
     addPhase(model, PipelineType::PIPE_MTE3, ValueRange{tgather.getDst()},
-             ValueRange{});
+             staging);
   } else if (auto tscatter = dyn_cast<pto::CommTScatterOp>(op)) {
     laneCount = tscatter.getPong() ? 2U : 1U;
     // TSCATTER_IMPL reads the source through MTE2 and writes every group
-    // destination through MTE3.
-    addPhase(model, PipelineType::PIPE_MTE2, ValueRange{},
+    // destination through MTE3, using ping/pong as staging tiles.
+    SmallVector<Value> staging =
+        getPingPongValues(tscatter.getPing(), tscatter.getPong());
+    addPhase(model, PipelineType::PIPE_MTE2, staging,
              ValueRange{tscatter.getSrc()});
     addPhase(model, PipelineType::PIPE_MTE3, tscatter.getGroup(),
-             ValueRange{});
+             staging);
   } else if (auto tbroadcast = dyn_cast<pto::TBroadcastOp>(op)) {
     laneCount = tbroadcast.getPong() ? 2U : 1U;
     // TBROADCAST_IMPL reads the source through MTE2 and writes every group
-    // destination through MTE3.
-    addPhase(model, PipelineType::PIPE_MTE2, ValueRange{},
+    // destination through MTE3, using ping/pong as staging tiles.
+    SmallVector<Value> staging =
+        getPingPongValues(tbroadcast.getPing(), tbroadcast.getPong());
+    addPhase(model, PipelineType::PIPE_MTE2, staging,
              ValueRange{tbroadcast.getSrc()});
     addPhase(model, PipelineType::PIPE_MTE3, tbroadcast.getGroup(),
-             ValueRange{});
+             staging);
   } else if (auto treduce = dyn_cast<pto::TReduceOp>(op)) {
     laneCount = treduce.getRecvPong() ? 3U : 2U;
     // TREDUCE_IMPL reads group sources through MTE2, reduces into acc on the
