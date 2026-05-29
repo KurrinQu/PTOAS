@@ -201,6 +201,16 @@ static llvm::cl::opt<bool> enableInsertSync("enable-insert-sync",
                                             llvm::cl::desc("Enable automatic synchronization insertion pass"),
                                             llvm::cl::init(false));
 
+static llvm::cl::opt<bool> enableBufidSync(
+    "enable-bufid_sync",
+    llvm::cl::desc("Enable A5 buffer-id synchronization insertion pass"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> enableBufidSyncDebug(
+    "enable-bufid-sync-debug",
+    llvm::cl::desc("Enable verbose debug printing for --enable-bufid_sync"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<bool> enableInjectBarrierAllSync(
     "enable-inject-barrier-all-sync",
     llvm::cl::desc("Enable conservative synchronization by inserting "
@@ -211,7 +221,7 @@ static llvm::cl::opt<bool> enableGraphSyncSolver(
     "enable-graph-sync-solver",
     llvm::cl::desc("Enable the graph-based intra-core sync solver "
                    "(experimental). Mutually exclusive with "
-                   "--enable-insert-sync and "
+                   "--enable-insert-sync, --enable-bufid_sync, and "
                    "--enable-inject-barrier-all-sync."),
     llvm::cl::init(false));
 
@@ -1308,6 +1318,10 @@ int main(int argc, char **argv) {
                  << "'. Expected 'level1', 'level2', or 'level3'.\n";
     return 1;
   }
+  if (enableBufidSync && arch != "a5") {
+    llvm::errs() << "Error: --enable-bufid_sync requires --pto-arch=a5.\n";
+    return 1;
+  }
 
   bool invalidAutoSyncTailHint = false;
   module->walk([&](mlir::func::FuncOp func) {
@@ -1347,10 +1361,10 @@ int main(int argc, char **argv) {
   }
 
   int enabledAutoSyncModes =
-      (enableInsertSync ? 1 : 0) + (enableInjectBarrierAllSync ? 1 : 0) +
-      (enableGraphSyncSolver ? 1 : 0);
+      (enableInsertSync ? 1 : 0) + (enableBufidSync ? 1 : 0) +
+      (enableInjectBarrierAllSync ? 1 : 0) + (enableGraphSyncSolver ? 1 : 0);
   if (enabledAutoSyncModes > 1) {
-    llvm::errs() << "Error: --enable-insert-sync, "
+    llvm::errs() << "Error: --enable-insert-sync, --enable-bufid_sync, "
                     "--enable-inject-barrier-all-sync, and "
                     "--enable-graph-sync-solver are mutually exclusive.\n";
     return 1;
@@ -1363,6 +1377,11 @@ int main(int argc, char **argv) {
   if (hasTAssign && enableGraphSyncSolver) {
     llvm::errs() << "Error: pto.tassign requires --enable-graph-sync-solver "
                     "to be disabled.\n";
+    return 1;
+  }
+  if (hasTAssign && enableBufidSync) {
+    llvm::errs() << "Error: pto.tassign requires --enable-bufid_sync to be "
+                    "disabled.\n";
     return 1;
   }
 
@@ -1420,10 +1439,15 @@ int main(int argc, char **argv) {
 
   // Conditionally add one automatic synchronization mode. Barrier-all is a
   // conservative standalone pass; InsertSync and GraphSyncSolver are set/wait
-  // solvers.
+  // solvers, while BufidSync is A5-only get_buf/rls_buf synchronization.
   if (enableInsertSync)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
-  else if (enableInjectBarrierAllSync)
+  else if (enableBufidSync) {
+    PTOBufidSyncOptions bufidOptions;
+    bufidOptions.enableBufidSyncDebug = enableBufidSyncDebug;
+    pm.addNestedPass<mlir::func::FuncOp>(
+        pto::createPTOBufidSyncPass(bufidOptions));
+  } else if (enableInjectBarrierAllSync)
     pm.addNestedPass<mlir::func::FuncOp>(
         pto::createPTOInjectBarrierAllSyncPass());
   else if (enableGraphSyncSolver) {

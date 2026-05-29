@@ -57,6 +57,30 @@ def PTOInjectBarrierAllSync : Pass<"pto-inject-barrier-all-sync", "func::FuncOp"
   ];
 }
 
+def PTOBufidSync : Pass<"pto-bufid-sync", "func::FuncOp"> {
+  let summary = "Insert get_buf/rls_buf synchronization for PTO dialect";
+  let description = [{
+    Analyzes cross-pipeline local buffer dependencies and wraps dependent
+    operations with A5 buffer-id synchronization. Unlike pto-insert-sync, this
+    pass emits get_buf/rls_buf pairs instead of set_flag/wait_flag events.
+  }];
+
+  let constructor = "mlir::pto::createPTOBufidSyncPass()";
+
+  let options = [
+    Option<"enableBufidSyncDebug", "enable-bufid-sync-debug",
+           "bool", "false",
+           "Enable verbose debug printing for the bufid_sync pass">
+  ];
+
+  let dependentDialects = [
+    "mlir::pto::PTODialect",
+    "mlir::memref::MemRefDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::scf::SCFDialect"
+  ];
+}
+
 // Define PTOGraphSyncSolver Pass (graph-based intra-core sync solver).
 // Coexists with PTOInsertSync; selectable via the driver flag
 // `--enable-graph-sync-solver`. Ported from bishengir's GraphSyncSolver core:
