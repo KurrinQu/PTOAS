@@ -43,22 +43,6 @@ using namespace mlir;
 using namespace pto::syncsolver;
 
 namespace {
-// Pick a slot SSA expression that this access touches, scanning the
-// rwOp's read + write memrefs. Returns null if none of them reach a
-// slot_marker -- in that case codegen falls back to the existing N-static
-// `set_flag` / `wait_flag` fanout.
-mlir::Value findSlotSSAExprForRWOp(RWOperation *rwOp) {
-  if (!rwOp)
-    return {};
-  for (auto &v : rwOp->readMemVals)
-    if (auto slot = mlir::pto::findSlotMarkerExpr(v))
-      return slot;
-  for (auto &v : rwOp->writeMemVals)
-    if (auto slot = mlir::pto::findSlotMarkerExpr(v))
-      return slot;
-  return {};
-}
-
 mlir::pto::SlotRelation compareMemInfoSlotSSA(const MemInfo &memInfo1,
                                               const MemInfo &memInfo2) {
   size_t n = std::max<size_t>(memInfo1.getSz(), memInfo2.getSz());
@@ -514,12 +498,32 @@ Solver::getMultiBufferEventIdInfo(Occurrence *occ1, Occurrence *occ2,
     }
   }
 
+  // Capture the slot SSA of the conflicting multi-buffer per side, so dyn
+  // event-id codegen keys the event lane off the *hazard* buffer rather than
+  // the op's first slot_marker memref. `slotOpN` is the slot as accessed by
+  // rwOpN; ambiguity (more than one distinct slot participating in this
+  // pair's conflicts) collapses to null, making codegen fall back to the
+  // safe N-static fanout.
+  Value slotOp1, slotOp2;
+  bool slotOp1Ambiguous = false, slotOp2Ambiguous = false;
+  auto collectSlot = [](const MemInfo &mi, Value &slot, bool &ambiguous) {
+    Value s = mlir::pto::findSlotMarkerExpr(mi.value);
+    if (!s)
+      return;
+    if (!slot)
+      slot = s;
+    else if (slot != s)
+      ambiguous = true;
+  };
+
   for (auto &memInfo1 : rwOp1->readMemInfo) {
     for (auto &memInfo2 : rwOp2->writeMemInfo) {
       if (checkMemInfoConflict(rwOp1, rwOp2, memInfo1, memInfo2)) {
         int64_t curLcm = std::lcm(memInfo1.getSz(), memInfo2.getSz());
         lcm = std::lcm(lcm, curLcm);
         minWriteSize = std::min(minWriteSize, memInfo2.getSz());
+        collectSlot(memInfo1, slotOp1, slotOp1Ambiguous);
+        collectSlot(memInfo2, slotOp2, slotOp2Ambiguous);
       }
     }
   }
@@ -529,6 +533,8 @@ Solver::getMultiBufferEventIdInfo(Occurrence *occ1, Occurrence *occ2,
         int64_t curLcm = std::lcm(memInfo1.getSz(), memInfo2.getSz());
         lcm = std::lcm(lcm, curLcm);
         minWriteSize = std::min(minWriteSize, memInfo1.getSz());
+        collectSlot(memInfo1, slotOp1, slotOp1Ambiguous);
+        collectSlot(memInfo2, slotOp2, slotOp2Ambiguous);
       }
     }
   }
@@ -539,6 +545,8 @@ Solver::getMultiBufferEventIdInfo(Occurrence *occ1, Occurrence *occ2,
         lcm = std::lcm(lcm, curLcm);
         minWriteSize = std::min(minWriteSize, memInfo1.getSz());
         minWriteSize = std::min(minWriteSize, memInfo2.getSz());
+        collectSlot(memInfo1, slotOp1, slotOp1Ambiguous);
+        collectSlot(memInfo2, slotOp2, slotOp2Ambiguous);
       }
     }
   }
@@ -574,6 +582,8 @@ Solver::getMultiBufferEventIdInfo(Occurrence *occ1, Occurrence *occ2,
   }
   EventIdInfo eventIdInfo(eventIdNum);
   eventIdInfo.multibufferLoop = multibufferLoop;
+  eventIdInfo.slotExprOp1 = slotOp1Ambiguous ? Value() : slotOp1;
+  eventIdInfo.slotExprOp2 = slotOp2Ambiguous ? Value() : slotOp2;
   return eventIdInfo;
 }
 
@@ -2360,13 +2370,28 @@ SyncBeforeAfterMap Solver::getBeforeAfterSyncMaps() {
       waitOp->eventIdInfo = conflictPair->eventIdInfo;
       setOp->checkLastIter = conflictPair->setOnLastIterOnly;
       waitOp->checkFirstIter = conflictPair->waitOnFirstIterOnly;
-      // For multi-buffer back-edge syncs, plumb each side's slot SSA. The
-      // set side sits at op1 (producer); the wait side sits at op2
-      // (consumer). Codegen uses these to lower into `pto.set_flag_dyn` /
-      // `pto.wait_flag_dyn`.
+      // For multi-buffer back-edge syncs, plumb each side's slot SSA so
+      // codegen can lower into `pto.set_flag_dyn` / `pto.wait_flag_dyn`.
+      // The slots were captured in `getMultiBufferEventIdInfo` from the
+      // actual conflicting MemInfo pair, so the dyn event lane is indexed by
+      // the *hazard* buffer's slot -- not the op's first slot_marker memref.
+      // `slotExprOp1/Op2` are keyed to op1(==rwOp1)/op2(==rwOp2); the set
+      // side may land on either op depending on the program order resolved
+      // by `getSetWaitOcc`, so map by op identity. A null slot (absent or
+      // ambiguous) leaves slotSSAExpr unset, so codegen degrades to the safe
+      // N-static fanout instead of selecting a wrong event lane.
       if (conflictPair->eventIdInfo.eventIdNum > 1) {
-        setOp->slotSSAExpr = findSlotSSAExprForRWOp(conflictPair->op1);
-        waitOp->slotSSAExpr = findSlotSSAExprForRWOp(conflictPair->op2);
+        Value slotOp1 = conflictPair->eventIdInfo.slotExprOp1;
+        Value slotOp2 = conflictPair->eventIdInfo.slotExprOp2;
+        if (conflictPair->setOp == conflictPair->op1) {
+          setOp->slotSSAExpr = slotOp1;
+          waitOp->slotSSAExpr = slotOp2;
+        } else if (conflictPair->setOp == conflictPair->op2) {
+          setOp->slotSSAExpr = slotOp2;
+          waitOp->slotSSAExpr = slotOp1;
+        }
+        // else: set/wait not aligned to op1/op2 (e.g. a transformed pair) --
+        // leave both null so codegen uses the safe N-static fanout.
       }
       LLVM_DEBUG({
         setOp->debugId = conflictPair->id;
