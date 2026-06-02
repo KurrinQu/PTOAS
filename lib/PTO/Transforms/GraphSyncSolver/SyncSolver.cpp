@@ -582,8 +582,21 @@ Solver::getMultiBufferEventIdInfo(Occurrence *occ1, Occurrence *occ2,
   }
   EventIdInfo eventIdInfo(eventIdNum);
   eventIdInfo.multibufferLoop = multibufferLoop;
-  eventIdInfo.slotExprOp1 = slotOp1Ambiguous ? Value() : slotOp1;
-  eventIdInfo.slotExprOp2 = slotOp2Ambiguous ? Value() : slotOp2;
+  // A dyn flag is only valid when BOTH sides can key off their own slot of
+  // the shared hazard buffer. An op may have several inputs/outputs, so a
+  // side is dropped to null when it touches multiple multi-buffers at
+  // different slots (ambiguous) or none at all. If either side ends up
+  // without a slot, drop both: codegen then emits the symmetric N-static
+  // set_flag/wait_flag fanout on both sides. A mixed static-set / dyn-wait
+  // pair would not rendezvous on a consistent event lane.
+  Value s1 = slotOp1Ambiguous ? Value() : slotOp1;
+  Value s2 = slotOp2Ambiguous ? Value() : slotOp2;
+  if (!s1 || !s2) {
+    s1 = Value();
+    s2 = Value();
+  }
+  eventIdInfo.slotExprOp1 = s1;
+  eventIdInfo.slotExprOp2 = s2;
   return eventIdInfo;
 }
 
