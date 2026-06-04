@@ -12212,20 +12212,6 @@ static bool isInsideSectionVector(Operation *op) {
 }
 
 static std::optional<FunctionKernelKind>
-getEnclosingModuleKernelKind(Operation *op) {
-  for (Operation *parent = op; parent; parent = parent->getParentOp()) {
-    auto moduleOp = dyn_cast<ModuleOp>(parent);
-    if (!moduleOp)
-      continue;
-    auto kernelKindAttr = moduleOp->getAttrOfType<FunctionKernelKindAttr>(
-        FunctionKernelKindAttr::name);
-    if (kernelKindAttr)
-      return kernelKindAttr.getKernelKind();
-  }
-  return std::nullopt;
-}
-
-static std::optional<FunctionKernelKind>
 getEnclosingFunctionKernelKind(Operation *op) {
   auto funcOp = op->getParentOfType<func::FuncOp>();
   if (!funcOp)
@@ -12242,8 +12228,7 @@ getEnclosingFunctionKernelKind(Operation *op) {
 
 static bool isInsideSectionOrAttributedKernel(Operation *op) {
   return isInsideSectionCube(op) || isInsideSectionVector(op) ||
-         getEnclosingFunctionKernelKind(op).has_value() ||
-         getEnclosingModuleKernelKind(op).has_value();
+         getEnclosingFunctionKernelKind(op).has_value();
 }
 
 static LogicalResult verifySplitAttr(Operation *op, int64_t split) {
@@ -12270,11 +12255,7 @@ static LogicalResult verifyFrontendKernelKind(Operation *op,
 
   std::optional<FunctionKernelKind> kernelKind =
       getEnclosingFunctionKernelKind(op);
-  if (!kernelKind)
-    kernelKind = getEnclosingModuleKernelKind(op);
-  if (!kernelKind)
-    return success();
-  if (*kernelKind != expected) {
+  if (!kernelKind || *kernelKind != expected) {
     return op->emitOpError("must be inside a ")
            << kernelName << " kernel function or section";
   }
