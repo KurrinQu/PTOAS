@@ -565,12 +565,14 @@ static LogicalResult resolveSingleBackend(
     mlir::pto::PTOBackend defaultBackend, ModuleOp module,
     std::optional<mlir::pto::PTOBackend> &singleBackend) {
   singleBackend = std::nullopt;
-  if (cliBackendSpecified)
+  if (cliBackendSpecified) {
     singleBackend = defaultBackend;
-  if (moduleBackend)
-    singleBackend = *moduleBackend;
-  if (singleBackend)
     return success();
+  }
+  if (moduleBackend) {
+    singleBackend = *moduleBackend;
+    return success();
+  }
 
   std::optional<mlir::pto::PTOBackend> firstChildBackend;
   for (ModuleOp child : module.getOps<ModuleOp>()) {

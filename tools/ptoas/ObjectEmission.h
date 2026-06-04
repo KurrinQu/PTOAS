@@ -56,6 +56,12 @@ public:
 
 class TempFileRegistry {
 public:
+  TempFileRegistry() = default;
+  TempFileRegistry(const TempFileRegistry &) = delete;
+  TempFileRegistry &operator=(const TempFileRegistry &) = delete;
+  TempFileRegistry(TempFileRegistry &&) = delete;
+  TempFileRegistry &operator=(TempFileRegistry &&) = delete;
+
   ~TempFileRegistry();
 
   void cleanup();

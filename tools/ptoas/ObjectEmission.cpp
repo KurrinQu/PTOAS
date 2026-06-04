@@ -52,6 +52,11 @@ static bool writeTextFile(StringRef path, StringRef content,
   }
   os << content;
   os.flush();
+  if (os.has_error()) {
+    diagOS << "Error: failed to write to " << path << "\n";
+    os.clear_error();
+    return false;
+  }
   return true;
 }
 
@@ -78,6 +83,11 @@ static bool writeLLVMModuleFile(llvm::Module &module, StringRef path,
   stripUnsupportedBishengAttrs(module);
   module.print(os, nullptr);
   os.flush();
+  if (os.has_error()) {
+    diagOS << "Error: failed to write LLVM module to " << path << "\n";
+    os.clear_error();
+    return false;
+  }
   return true;
 }
 
@@ -387,7 +397,7 @@ static bool runCommandWithStderr(llvm::StringRef program,
   for (const std::string &arg : ownedArgs)
     args.push_back(arg);
   llvm::SmallVector<std::optional<llvm::StringRef>, 3> redirects = {
-      stdinPath, std::nullopt, stderrPath};
+      stdinPath, stderrPath, stderrPath};
 
   std::string execErr;
   bool execFailed = false;
