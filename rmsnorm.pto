@@ -1,0 +1,322 @@
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+func.func @simt_vf_0(%arg0: !pto.ptr<i8, ub>, %arg1: f32, %arg2: i32) attributes {pto.simt_entry} {
+  %c32 = arith.constant 32 : index
+  %c8 = arith.constant 8 : index
+  %c12304_i32 = arith.constant 12304 : i32
+  %c3_i32 = arith.constant 3 : i32
+  %undef = llvm.mlir.undef : vector<4xf32>
+  %c12288_i32 = arith.constant 12288 : i32
+  %one = arith.constant 1.000000e+00 : f32
+  %c4096_f32 = arith.constant 4.096000e+03 : f32
+  %c128 = arith.constant 128 : index
+  %c0 = arith.constant 0 : index
+  %c20496 = arith.constant 20496 : index
+  %zero = arith.constant 0.000000e+00 : f32
+  %c4 = arith.constant 4 : index
+  %c4_i32 = arith.constant 4 : i32
+  %c512_i32 = arith.constant 512 : i32
+  %c4096_i32 = arith.constant 4096 : i32
+  %c2_i32 = arith.constant 2 : i32
+  %c1 = arith.constant 1 : index
+  %c8_i32 = arith.constant 8 : i32
+  %c0_i32 = arith.constant 0 : i32
+  %c1_i32 = arith.constant 1 : i32
+  %c32_i32 = arith.constant 32 : i32
+  %tid = pto.get_tid_x : i32
+  %x_frag = llvm.alloca %c32_i32 x f32 : (i32) -> !llvm.ptr
+  %sum_sq = llvm.alloca %c1_i32 x f32 : (i32) -> !llvm.ptr
+  scf.for %i_load = %c0 to %c8 step %c1 {
+    %i_load_i32 = arith.index_cast %i_load : index to i32
+    %ping = arith.remsi %arg2, %c2_i32 : i32
+    %ping_4096 = arith.muli %ping, %c4096_i32 : i32
+    %i512 = arith.muli %i_load_i32, %c512_i32 : i32
+    %x_base0 = arith.addi %ping_4096, %i512 : i32
+    %tid4 = arith.muli %tid, %c4_i32 : i32
+    %x_base1 = arith.addi %x_base0, %tid4 : i32
+    %x_base2 = arith.addi %x_base1, %c4096_i32 : i32
+    %x_idx = arith.index_cast %x_base2 : i32 to index
+    %ub_int = pto.castptr %arg0 : !pto.ptr<i8, ub> -> i64
+    %ub_llvm = llvm.inttoptr %ub_int : i64 to !llvm.ptr<6>
+    %x_byte_idx = arith.muli %x_idx, %c4 : index
+    %x_byte_i64 = arith.index_cast %x_byte_idx : index to i64
+    %x_ptr = llvm.getelementptr %ub_llvm[%x_byte_i64] : (!llvm.ptr<6>, i64) -> !llvm.ptr<6>, i8
+    %x_vec = llvm.load %x_ptr : !llvm.ptr<6> -> vector<4xf32>
+    %frag_i32 = arith.muli %i_load_i32, %c4_i32 : i32
+    %frag_idx = arith.index_cast %frag_i32 : i32 to index
+    %frag_i64 = arith.index_cast %frag_idx : index to i64
+    %frag_ptr = llvm.getelementptr %x_frag[%frag_i64] : (!llvm.ptr, i64) -> !llvm.ptr, f32
+    llvm.store %x_vec, %frag_ptr : vector<4xf32>, !llvm.ptr
+  }
+  llvm.store %zero, %sum_sq : f32, !llvm.ptr
+  scf.for %i_sum = %c0 to %c32 step %c1 {
+    %acc = llvm.load %sum_sq : !llvm.ptr -> f32
+    %frag_i64 = arith.index_cast %i_sum : index to i64
+    %frag_ptr = llvm.getelementptr %x_frag[%frag_i64] : (!llvm.ptr, i64) -> !llvm.ptr, f32
+    %x = llvm.load %frag_ptr : !llvm.ptr -> f32
+    %x_sq = arith.mulf %x, %x : f32
+    %acc_next = arith.addf %acc, %x_sq : f32
+    llvm.store %acc_next, %sum_sq : f32, !llvm.ptr
+  }
+  %local_sum = llvm.load %sum_sq : !llvm.ptr -> f32
+  %ub_f32 = pto.castptr %arg0 : !pto.ptr<i8, ub> -> !pto.ptr<f32, ub>
+  %tid_idx = arith.index_castui %tid : i32 to index
+  %scratch_tid = arith.addi %tid_idx, %c20496 : index
+  pto.store %local_sum, %ub_f32[%scratch_tid] : !pto.ptr<f32, ub>, f32
+  pto.syncthreads
+  %is_t0 = arith.cmpi eq, %tid, %c0_i32 : i32
+  scf.if %is_t0 {
+    %sum = scf.for %i_reduce = %c0 to %c128 step %c1 iter_args(%acc_reduce = %zero) -> (f32) {
+      %scratch_i = arith.addi %i_reduce, %c20496 : index
+      %part = pto.load %ub_f32[%scratch_i] : !pto.ptr<f32, ub> -> f32
+      %next = arith.addf %acc_reduce, %part : f32
+      scf.yield %next : f32
+    }
+    pto.store %sum, %ub_f32[%c20496] : !pto.ptr<f32, ub>, f32
+  }
+  pto.syncthreads
+  %reduce = pto.load %ub_f32[%c20496] : !pto.ptr<f32, ub> -> f32
+  llvm.store %reduce, %sum_sq : f32, !llvm.ptr
+  %reduce_reload = llvm.load %sum_sq : !llvm.ptr -> f32
+  %mean = arith.divf %reduce_reload, %c4096_f32 : f32
+  %biased = arith.addf %mean, %arg1 : f32
+  %sqrt = llvm.intr.sqrt(%biased) : (f32) -> f32
+  %rsqrt = arith.divf %one, %sqrt : f32
+  %ping_out = arith.remsi %arg2, %c2_i32 : i32
+  %ping8 = arith.muli %ping_out, %c8_i32 : i32
+  %rstd_i32 = arith.addi %ping8, %c12288_i32 : i32
+  %rstd_idx = arith.index_cast %rstd_i32 : i32 to index
+  pto.store %rsqrt, %ub_f32[%rstd_idx] : !pto.ptr<f32, ub>, f32
+  scf.for %i_out = %c0 to %c8 step %c1 {
+    %i_out_i32 = arith.index_cast %i_out : index to i32
+    %frag_i32 = arith.muli %i_out_i32, %c4_i32 : i32
+    %frag_idx = arith.index_cast %frag_i32 : i32 to index
+    %frag_i64 = arith.index_cast %frag_idx : index to i64
+    %frag_ptr = llvm.getelementptr %x_frag[%frag_i64] : (!llvm.ptr, i64) -> !llvm.ptr, f32
+    %x_vec = llvm.load %frag_ptr : !llvm.ptr -> vector<4xf32>
+    %rsqrt0 = llvm.insertelement %rsqrt, %undef[%c0_i32 : i32] : vector<4xf32>
+    %rsqrt1 = llvm.insertelement %rsqrt, %rsqrt0[%c1_i32 : i32] : vector<4xf32>
+    %rsqrt2 = llvm.insertelement %rsqrt, %rsqrt1[%c2_i32 : i32] : vector<4xf32>
+    %rsqrt3 = llvm.insertelement %rsqrt, %rsqrt2[%c3_i32 : i32] : vector<4xf32>
+    %xr = arith.mulf %x_vec, %rsqrt3 : vector<4xf32>
+    %i512 = arith.muli %i_out_i32, %c512_i32 : i32
+    %tid4 = arith.muli %tid, %c4_i32 : i32
+    %lane_base = arith.addi %i512, %tid4 : i32
+    %w_idx = arith.index_cast %lane_base : i32 to index
+    %ub_int = pto.castptr %arg0 : !pto.ptr<i8, ub> -> i64
+    %ub_llvm = llvm.inttoptr %ub_int : i64 to !llvm.ptr<6>
+    %w_byte_idx = arith.muli %w_idx, %c4 : index
+    %w_byte_i64 = arith.index_cast %w_byte_idx : index to i64
+    %w_ptr = llvm.getelementptr %ub_llvm[%w_byte_i64] : (!llvm.ptr<6>, i64) -> !llvm.ptr<6>, i8
+    %w_vec = llvm.load %w_ptr : !llvm.ptr<6> -> vector<4xf32>
+    %y_vec = arith.mulf %xr, %w_vec : vector<4xf32>
+    %ping_4096 = arith.muli %ping_out, %c4096_i32 : i32
+    %y_base0 = arith.addi %ping_4096, %i512 : i32
+    %y_base1 = arith.addi %y_base0, %tid4 : i32
+    %y_base2 = arith.addi %y_base1, %c12304_i32 : i32
+    %y_idx = arith.index_cast %y_base2 : i32 to index
+    %y_byte_idx = arith.muli %y_idx, %c4 : index
+    %y_byte_i64 = arith.index_cast %y_byte_idx : index to i64
+    %y_ptr = llvm.getelementptr %ub_llvm[%y_byte_i64] : (!llvm.ptr<6>, i64) -> !llvm.ptr<6>, i8
+    llvm.store %y_vec, %y_ptr : vector<4xf32>, !llvm.ptr<6>
+  }
+  return
+}
+
+func.func @main_kernel(%arg0: !pto.ptr<f32, gm>, %arg1: !pto.ptr<f32, gm>, %arg2: !pto.ptr<f32, gm>, %arg3: !pto.ptr<f32, gm>, %arg4: f32) attributes {dyn_shared_memory_buf = 82496 : i64, pto.aicore} {
+  %c0_i64_0 = arith.constant 0 : i64
+  %ub_base_1 = pto.castptr %c0_i64_0 : i64 -> !pto.ptr<i8, ub>
+  %bx_2 = "pto.get_block_idx"() : () -> i64
+  %cast_3 = arith.trunci %bx_2 : i64 to i32
+  %ub_cast_4 = "pto.castptr"(%ub_base_1) : (!pto.ptr<i8, ub>) -> !pto.ptr<f32, ub>
+  %c0_i64_5 = arith.constant 0 : i64
+  %c1_i32_6 = arith.constant 1 : i32
+  %cast_7 = arith.extui %c1_i32_6 : i32 to i64
+  %c512_i32_8 = arith.constant 512 : i32
+  %cast_9 = arith.extui %c512_i32_8 : i32 to i64
+  %c32_i64_10 = arith.constant 32 : i64
+  %len_bytes_11 = arith.muli %cast_9, %c32_i64_10 : i64
+  %c0_i32_12 = arith.constant 0 : i32
+  %cast_13 = arith.extui %c0_i32_12 : i32 to i64
+  %src_stride_14 = arith.muli %cast_13, %c32_i64_10 : i64
+  %c0_i32_15 = arith.constant 0 : i32
+  %cast_16 = arith.extui %c0_i32_15 : i32 to i64
+  %dst_stride_17 = arith.muli %cast_16, %c32_i64_10 : i64
+  pto.mte_gm_ub %arg2, %ub_cast_4, %c0_i64_5, %len_bytes_11
+    nburst(%cast_7, %src_stride_14, %dst_stride_17)
+    : !pto.ptr<f32, gm>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64
+  "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_MTE2>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID3>} : () -> ()
+  "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_MTE2>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID3>} : () -> ()
+  "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID0>} : () -> ()
+  "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID0>} : () -> ()
+  "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID1>} : () -> ()
+  "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID1>} : () -> ()
+  %c0_i32_18 = arith.constant 0 : i32
+  %cast_19 = arith.index_cast %c0_i32_18 : i32 to index
+  %c64_i32_20 = arith.constant 64 : i32
+  %cast_21 = arith.index_cast %c64_i32_20 : i32 to index
+  %c1_22 = arith.constant 1 : index
+  %ub_23 = arith.addi %cast_19, %cast_21 : index
+  scf.for %t_24 = %cast_19 to %ub_23 step %c1_22 {
+    %cast_25 = arith.index_cast %t_24 : index to i32
+    %c2_i32_26 = arith.constant 2 : i32
+    %floormod_27 = arith.remsi %cast_25, %c2_i32_26 : i32
+    %cast_28 = arith.index_cast %floormod_27 : i32 to index
+    "pto.wait_flag_dyn"(%cast_28) {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>} : (index) -> ()
+    %c2_i32_29 = arith.constant 2 : i32
+    %floormod_30 = arith.remsi %cast_25, %c2_i32_29 : i32
+    %c4096_i32_31 = arith.constant 4096 : i32
+    %mul_32 = arith.muli %floormod_30, %c4096_i32_31 : i32
+    %c4096_i32_33 = arith.constant 4096 : i32
+    %add_34 = arith.addi %mul_32, %c4096_i32_33 : i32
+    %cast_35 = arith.index_cast %add_34 : i32 to index
+    %c4_36 = arith.constant 4 : index
+    %byte_off_37 = arith.muli %cast_35, %c4_36 : index
+    %ptr_elem_38 = "pto.addptr"(%ub_base_1, %byte_off_37) : (!pto.ptr<i8, ub>, index) -> !pto.ptr<i8, ub>
+    %c262144_i32_39 = arith.constant 262144 : i32
+    %mul_40 = arith.muli %cast_25, %c262144_i32_39 : i32
+    %c4096_i32_41 = arith.constant 4096 : i32
+    %mul_42 = arith.muli %cast_3, %c4096_i32_41 : i32
+    %add_43 = arith.addi %mul_40, %mul_42 : i32
+    %cast_44 = arith.index_cast %add_43 : i32 to index
+    %c4_45 = arith.constant 4 : index
+    %byte_off_46 = arith.muli %cast_44, %c4_45 : index
+    %cast_base_47 = "pto.castptr"(%arg0) : (!pto.ptr<f32, gm>) -> !pto.ptr<i8, gm>
+    %ptr_elem_48 = "pto.addptr"(%cast_base_47, %byte_off_46) : (!pto.ptr<i8, gm>, index) -> !pto.ptr<i8, gm>
+    %c0_i64_49 = arith.constant 0 : i64
+    %c1_i32_50 = arith.constant 1 : i32
+    %cast_51 = arith.extui %c1_i32_50 : i32 to i64
+    %c512_i32_52 = arith.constant 512 : i32
+    %cast_53 = arith.extui %c512_i32_52 : i32 to i64
+    %c32_i64_54 = arith.constant 32 : i64
+    %len_bytes_55 = arith.muli %cast_53, %c32_i64_54 : i64
+    %c0_i32_56 = arith.constant 0 : i32
+    %cast_57 = arith.extui %c0_i32_56 : i32 to i64
+    %src_stride_58 = arith.muli %cast_57, %c32_i64_54 : i64
+    %c0_i32_59 = arith.constant 0 : i32
+    %cast_60 = arith.extui %c0_i32_59 : i32 to i64
+    %dst_stride_61 = arith.muli %cast_60, %c32_i64_54 : i64
+    pto.mte_gm_ub %ptr_elem_48, %ptr_elem_38, %c0_i64_49, %len_bytes_55
+    nburst(%cast_51, %src_stride_58, %dst_stride_61)
+    : !pto.ptr<i8, gm>, !pto.ptr<i8, ub>, i64, i64, i64, i64, i64
+    %c2_i32_62 = arith.constant 2 : i32
+    %floormod_63 = arith.remsi %cast_25, %c2_i32_62 : i32
+    %cast_64 = arith.index_cast %floormod_63 : i32 to index
+    "pto.set_flag_dyn"(%cast_64) {src_pipe = #pto.pipe<PIPE_MTE2>, dst_pipe = #pto.pipe<PIPE_V>} : (index) -> ()
+    %c2_i32_65 = arith.constant 2 : i32
+    %floormod_66 = arith.remsi %cast_25, %c2_i32_65 : i32
+    %cast_67 = arith.index_cast %floormod_66 : i32 to index
+    "pto.wait_flag_dyn"(%cast_67) {src_pipe = #pto.pipe<PIPE_MTE2>, dst_pipe = #pto.pipe<PIPE_V>} : (index) -> ()
+    %c2_i32_68 = arith.constant 2 : i32
+    %floormod_69 = arith.remsi %cast_25, %c2_i32_68 : i32
+    %cast_70 = arith.index_cast %floormod_69 : i32 to index
+    "pto.wait_flag_dyn"(%cast_70) {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>} : (index) -> ()
+    %c128_i32_250 = arith.constant 128 : i32
+    %c1_i32_251 = arith.constant 1 : i32
+    %c1_i32_252 = arith.constant 1 : i32
+    pto.simt_launch @simt_vf_0<<<%c128_i32_250, %c1_i32_251, %c1_i32_252>>>(%ub_base_1, %arg4, %cast_25) : (!pto.ptr<i8, ub>, f32, i32) -> ()
+    %c2_i32_253 = arith.constant 2 : i32
+    %floormod_254 = arith.remsi %cast_25, %c2_i32_253 : i32
+    %cast_255 = arith.index_cast %floormod_254 : i32 to index
+    "pto.set_flag_dyn"(%cast_255) {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE3>} : (index) -> ()
+    %c2_i32_256 = arith.constant 2 : i32
+    %floormod_257 = arith.remsi %cast_25, %c2_i32_256 : i32
+    %cast_258 = arith.index_cast %floormod_257 : i32 to index
+    "pto.set_flag_dyn"(%cast_258) {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>} : (index) -> ()
+    %c2_i32_259 = arith.constant 2 : i32
+    %floormod_260 = arith.remsi %cast_25, %c2_i32_259 : i32
+    %cast_261 = arith.index_cast %floormod_260 : i32 to index
+    "pto.wait_flag_dyn"(%cast_261) {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE3>} : (index) -> ()
+    %c262144_i32_262 = arith.constant 262144 : i32
+    %mul_263 = arith.muli %cast_25, %c262144_i32_262 : i32
+    %c4096_i32_264 = arith.constant 4096 : i32
+    %mul_265 = arith.muli %cast_3, %c4096_i32_264 : i32
+    %add_266 = arith.addi %mul_263, %mul_265 : i32
+    %cast_267 = arith.index_cast %add_266 : i32 to index
+    %c4_268 = arith.constant 4 : index
+    %byte_off_269 = arith.muli %cast_267, %c4_268 : index
+    %cast_base_270 = "pto.castptr"(%arg1) : (!pto.ptr<f32, gm>) -> !pto.ptr<i8, gm>
+    %ptr_elem_271 = "pto.addptr"(%cast_base_270, %byte_off_269) : (!pto.ptr<i8, gm>, index) -> !pto.ptr<i8, gm>
+    %c2_i32_272 = arith.constant 2 : i32
+    %floormod_273 = arith.remsi %cast_25, %c2_i32_272 : i32
+    %c4096_i32_274 = arith.constant 4096 : i32
+    %mul_275 = arith.muli %floormod_273, %c4096_i32_274 : i32
+    %c12304_i32_276 = arith.constant 12304 : i32
+    %add_277 = arith.addi %mul_275, %c12304_i32_276 : i32
+    %cast_278 = arith.index_cast %add_277 : i32 to index
+    %c4_279 = arith.constant 4 : index
+    %byte_off_280 = arith.muli %cast_278, %c4_279 : index
+    %ptr_elem_281 = "pto.addptr"(%ub_base_1, %byte_off_280) : (!pto.ptr<i8, ub>, index) -> !pto.ptr<i8, ub>
+    %c1_i32_282 = arith.constant 1 : i32
+    %cast_283 = arith.extui %c1_i32_282 : i32 to i64
+    %c16384_i32_284 = arith.constant 16384 : i32
+    %cast_285 = arith.extui %c16384_i32_284 : i32 to i64
+    %c32_i64_286 = arith.constant 32 : i64
+    %c31_i64_287 = arith.constant 31 : i64
+    %len_plus_31_288 = arith.addi %cast_285, %c31_i64_287 : i64
+    %len_aligned_289 = arith.divui %len_plus_31_288, %c32_i64_286 : i64
+    %len_burst_290 = arith.muli %len_aligned_289, %c32_i64_286 : i64
+    %c16384_i32_291 = arith.constant 16384 : i32
+    %cast_292 = arith.extui %c16384_i32_291 : i32 to i64
+    %c16384_i32_293 = arith.constant 16384 : i32
+    %cast_294 = arith.extui %c16384_i32_293 : i32 to i64
+    %src_stride_plus_31_295 = arith.addi %cast_294, %c31_i64_287 : i64
+    %src_stride_aligned_296 = arith.divui %src_stride_plus_31_295, %c32_i64_286 : i64
+    %src_stride_297 = arith.muli %src_stride_aligned_296, %c32_i64_286 : i64
+    %dst_stride_plus_31_298 = arith.addi %cast_292, %c31_i64_287 : i64
+    %dst_stride_aligned_299 = arith.divui %dst_stride_plus_31_298, %c32_i64_286 : i64
+    %dst_stride_300 = arith.muli %dst_stride_aligned_299, %c32_i64_286 : i64
+    pto.mte_ub_gm %ptr_elem_281, %ptr_elem_271, %len_burst_290
+    nburst(%cast_283, %src_stride_297, %dst_stride_300)
+    : !pto.ptr<i8, ub>, !pto.ptr<i8, gm>, i64, i64, i64, i64
+    %c64_i32_301 = arith.constant 64 : i32
+    %mul_302 = arith.muli %cast_25, %c64_i32_301 : i32
+    %add_303 = arith.addi %mul_302, %cast_3 : i32
+    %cast_304 = arith.index_cast %add_303 : i32 to index
+    %c4_305 = arith.constant 4 : index
+    %byte_off_306 = arith.muli %cast_304, %c4_305 : index
+    %cast_base_307 = "pto.castptr"(%arg3) : (!pto.ptr<f32, gm>) -> !pto.ptr<i8, gm>
+    %ptr_elem_308 = "pto.addptr"(%cast_base_307, %byte_off_306) : (!pto.ptr<i8, gm>, index) -> !pto.ptr<i8, gm>
+    %c2_i32_309 = arith.constant 2 : i32
+    %floormod_310 = arith.remsi %cast_25, %c2_i32_309 : i32
+    %c8_i32_311 = arith.constant 8 : i32
+    %mul_312 = arith.muli %floormod_310, %c8_i32_311 : i32
+    %c12288_i32_313 = arith.constant 12288 : i32
+    %add_314 = arith.addi %mul_312, %c12288_i32_313 : i32
+    %cast_315 = arith.index_cast %add_314 : i32 to index
+    %c4_316 = arith.constant 4 : index
+    %byte_off_317 = arith.muli %cast_315, %c4_316 : index
+    %ptr_elem_318 = "pto.addptr"(%ub_base_1, %byte_off_317) : (!pto.ptr<i8, ub>, index) -> !pto.ptr<i8, ub>
+    %c1_i32_319 = arith.constant 1 : i32
+    %cast_320 = arith.extui %c1_i32_319 : i32 to i64
+    %c4_i32_321 = arith.constant 4 : i32
+    %cast_322 = arith.extui %c4_i32_321 : i32 to i64
+    %c32_i64_323 = arith.constant 32 : i64
+    %c31_i64_324 = arith.constant 31 : i64
+    %len_plus_31_325 = arith.addi %cast_322, %c31_i64_324 : i64
+    %len_aligned_326 = arith.divui %len_plus_31_325, %c32_i64_323 : i64
+    %len_burst_327 = arith.muli %len_aligned_326, %c32_i64_323 : i64
+    %c4_i32_328 = arith.constant 4 : i32
+    %cast_329 = arith.extui %c4_i32_328 : i32 to i64
+    %c4_i32_330 = arith.constant 4 : i32
+    %cast_331 = arith.extui %c4_i32_330 : i32 to i64
+    %src_stride_plus_31_332 = arith.addi %cast_331, %c31_i64_324 : i64
+    %src_stride_aligned_333 = arith.divui %src_stride_plus_31_332, %c32_i64_323 : i64
+    %src_stride_334 = arith.muli %src_stride_aligned_333, %c32_i64_323 : i64
+    %dst_stride_plus_31_335 = arith.addi %cast_329, %c31_i64_324 : i64
+    %dst_stride_aligned_336 = arith.divui %dst_stride_plus_31_335, %c32_i64_323 : i64
+    %dst_stride_337 = arith.muli %dst_stride_aligned_336, %c32_i64_323 : i64
+    pto.mte_ub_gm %ptr_elem_318, %ptr_elem_308, %cast_322
+    nburst(%cast_320, %cast_331, %cast_329)
+    : !pto.ptr<i8, ub>, !pto.ptr<i8, gm>, i64, i64, i64, i64
+    %c2_i32_338 = arith.constant 2 : i32
+    %floormod_339 = arith.remsi %cast_25, %c2_i32_338 : i32
+    %cast_340 = arith.index_cast %floormod_339 : i32 to index
+    "pto.set_flag_dyn"(%cast_340) {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>} : (index) -> ()
+  }
+  "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID0>} : () -> ()
+  "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID1>} : () -> ()
+  "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID0>} : () -> ()
+  "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID1>} : () -> ()
+  return
+}
+}
