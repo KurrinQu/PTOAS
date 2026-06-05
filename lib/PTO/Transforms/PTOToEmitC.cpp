@@ -6631,18 +6631,28 @@ static void emitPipeBarrier(ConversionPatternRewriter &rewriter, Location loc,
                                        ArrayAttr{}, ValueRange{});
 }
 
+static void emitDsbDdr(ConversionPatternRewriter &rewriter, Location loc) {
+  auto *ctx = rewriter.getContext();
+  auto args = rewriter.getArrayAttr({emitc::OpaqueAttr::get(ctx, "DSB_DDR")});
+  rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "dsb", args,
+                                       ArrayAttr{}, ValueRange{});
+}
+
 // Issue #711: TNOTIFY writes its signal on the scalar pipe, and
 // TNOTIFY_IMPL's trailing pipe_barrier(PIPE_ALL) runs *after* that store.
 // If prior pto.tload / pto.tstore work is still in flight on an MTE pipe when
 // the signal lands, the receiver's matching TWAIT can return before the data
 // is visible. Emit only the MTE pipe drains that the pre-lowering analysis
-// proved may be needed before this TNotify.
+// proved may be needed before this TNotify. Issue #744: prior MTE3 stores also
+// need a DDR-domain release fence before publishing the notification signal.
 static void emitTNotifyMteDrain(ConversionPatternRewriter &rewriter,
                                 Location loc, unsigned mask) {
   if (mask & kDrainMte2)
     emitPipeBarrier(rewriter, loc, "PIPE_MTE2");
-  if (mask & kDrainMte3)
+  if (mask & kDrainMte3) {
     emitPipeBarrier(rewriter, loc, "PIPE_MTE3");
+    emitDsbDdr(rewriter, loc);
+  }
 }
 
 static std::string waitCmpTok(pto::WaitCmp cmp) {
