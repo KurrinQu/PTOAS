@@ -14043,6 +14043,43 @@ static AICORE inline void ptoas_auto_sync_tail(
       }
     }
 
+    // --- Step A3: Sink PTOAS__TILE_DATA reads of emitc.variable to use sites ---
+    //
+    // Tile-like emitc.variable values are mutable handles whose backing address
+    // is typically established by a later `TASSIGN`. If we materialize
+    // `PTOAS__TILE_DATA(tileVar)` right after declaration, we snapshot an
+    // uninitialized/stale address. Re-materialize each read at the use site so
+    // it observes the post-TASSIGN state of the tile variable.
+    {
+      SmallVector<emitc::CallOpaqueOp> tileDataReadsToSink;
+      mop.walk([&](emitc::CallOpaqueOp callOp) {
+        if (callOp.getCallee() != "PTOAS__TILE_DATA")
+          return;
+        if (callOp.getNumOperands() != 1 || callOp.getNumResults() != 1)
+          return;
+        if (callOp.getOperand(0).getDefiningOp<emitc::VariableOp>())
+          tileDataReadsToSink.push_back(callOp);
+      });
+
+      for (emitc::CallOpaqueOp callOp : tileDataReadsToSink) {
+        Value src = callOp.getOperand(0);
+        Type dstTy = callOp.getResult(0).getType();
+        Value oldRes = callOp.getResult(0);
+
+        for (OpOperand &use : llvm::make_early_inc_range(oldRes.getUses())) {
+          Operation *user = use.getOwner();
+          OpBuilder b(user);
+          b.setInsertionPoint(user);
+          auto newRead = b.create<emitc::CallOpaqueOp>(
+              callOp.getLoc(), dstTy, "PTOAS__TILE_DATA", ArrayAttr{},
+              ArrayAttr{}, ValueRange{src});
+          use.set(newRead.getResult(0));
+        }
+
+        callOp.erase();
+      }
+    }
+
     // --- Step B: 修复 Loop 归纳变量 (IV) ---
     // 此时 emitc.for 的 operand 已经是 int32 了，我们检查 IV 是否匹配，不匹配则修正
     mop.walk([&](emitc::ForOp forOp) {
