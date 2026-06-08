@@ -6044,6 +6044,30 @@ mlir::LogicalResult mlir::pto::TExtractFPOp::verify() {
       return emitOpError(
           "expects A5 textract_fp element types to be (src=f32,dst=i8/fp8/f16/bf16/f32) "
           "or (src=i32,dst=i8/f16/bf16)");
+    auto indexRowVal = getConstantIntegerValueEx(
+        getIndexRow(), /*includeIndexAndIntOpsInConstFold=*/true);
+    auto indexColVal = getConstantIntegerValueEx(
+        getIndexCol(), /*includeIndexAndIntOpsInConstFold=*/true);
+    
+    // Hard reject: indexRow/indexCol must be compile-time constant 0
+    // because mte_l0c_l1 does not support start-position yet.
+    // Non-constant values would be silently treated as (0, 0), producing wrong results.
+    if (!indexRowVal)
+      return emitOpError(
+          "expects A5 textract_fp indexRow to be a compile-time constant 0 "
+          "(mte_l0c_l1 does not support start-position yet)");
+    if (*indexRowVal != 0)
+      return emitOpError(
+          "expects A5 textract_fp to have indexRow=0 "
+          "(mte_l0c_l1 does not support start-position yet)");
+    if (!indexColVal)
+      return emitOpError(
+          "expects A5 textract_fp indexCol to be a compile-time constant 0 "
+          "(mte_l0c_l1 does not support start-position yet)");
+    if (*indexColVal != 0)
+      return emitOpError(
+          "expects A5 textract_fp to have indexCol=0 "
+          "(mte_l0c_l1 does not support start-position yet)");
     return success();
   };
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
