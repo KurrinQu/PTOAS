@@ -114,6 +114,7 @@ from ._ops import (             # noqa: F401
 # ── Control flow ──────────────────────────────────────────────────────────────
 from ._control_flow import (    # noqa: F401
     for_, if_, yield_,
+    const_expr, static_range,
     LoopHandle, BranchHandle,
 )
 
