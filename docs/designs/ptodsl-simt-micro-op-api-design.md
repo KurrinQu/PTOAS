@@ -55,9 +55,12 @@ does not yet expose user-controlled launch dimensions and does not use
 
 ## 4. Full Migration Plan
 
-The full SIMT micro-op PTO-DSL surface can be migrated in staged batches.
+The full SIMT micro-op PTO-DSL surface is migrated in staged batches.
 
 ### Batch 1: Launch and Query Ops
+
+Status: implemented in `ptodsl/ptodsl/_ops.py`, exported from
+`ptodsl/ptodsl/pto.py`, and covered by `ptodsl/tests/test_jit_compile.py`.
 
 Expose launch configuration and nullary thread/lane query wrappers:
 
@@ -75,6 +78,9 @@ Expose launch configuration and nullary thread/lane query wrappers:
 
 ### Batch 2: Lane Collective Ops
 
+Status: implemented as direct VPTO wrappers and covered by the full SIMT
+surface compile test.
+
 Expose direct wrappers for:
 
 - `pto.vote_all/any/uni/ballot(pred)`
@@ -82,6 +88,10 @@ Expose direct wrappers for:
 - `pto.redux_add/max/min(value, *, signedness=None)`
 
 ### Batch 3: SIMT Scalar Memory and Atomics
+
+Status: implemented as direct VPTO wrappers. `pto.ldg`/`pto.stg` reuse the
+same address-access normalization as `scalar.load`/`scalar.store`; atomics
+operate on explicit pointer operands.
 
 Expose direct wrappers for:
 
@@ -94,6 +104,9 @@ Plain scalar memory remains available through `scalar.load(...)` and
 `scalar.store(...)`.
 
 ### Batch 4: SIMT Scalar Math, Convert, Sync, and State
+
+Status: implemented as direct VPTO wrappers. `pto.keep`/`pto.resume` expose
+explicit slot attributes and leave placement validation to VPTO.
 
 Expose direct wrappers for:
 

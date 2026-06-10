@@ -618,6 +618,101 @@ visible to the current SIMT work-item.
 | `pto.get_laneid()` | `i32` | Physical SIMT lane id |
 | `pto.get_lanemask_eq()` / `pto.get_lanemask_le()` / `pto.get_lanemask_lt()` / `pto.get_lanemask_ge()` / `pto.get_lanemask_gt()` | `i32` | Lane masks derived from the current lane id |
 
+#### SIMT lane collective ops
+
+These wrappers map directly to VPTO SIMT lane collective micro-ops.
+
+```python
+pto.vote_all(pred)
+pto.vote_any(pred)
+pto.vote_uni(pred)
+pto.vote_ballot(pred)
+
+pto.shuffle_idx(value, index, *, width=32)
+pto.shuffle_up(value, offset, *, width=32)
+pto.shuffle_down(value, offset, *, width=32)
+pto.shuffle_bfly(value, mask, *, width=32)
+
+pto.redux_add(value, *, signedness=None)
+pto.redux_max(value, *, signedness=None)
+pto.redux_min(value, *, signedness=None)
+```
+
+`pred` must be an `i1` predicate. Shuffle control operands are coerced to
+`i32`; `width` must be `16` or `32`. Integer `redux_max` and `redux_min`
+require `signedness="signed"` or `signedness="unsigned"`; floating-point redux
+does not accept signedness.
+
+#### SIMT scalar GM memory and atomic ops
+
+```python
+pto.ldg(ptr, offset=0, *, l1cache="cache", l2cache="nmfv")
+pto.stg(value, ptr, offset=0, *, l1cache="cache", l2cache="nmfv")
+
+pto.atomic_exch(ptr, value, *, l2cache="nmfv", signedness=None)
+pto.atomic_add(ptr, value, *, l2cache="nmfv", signedness=None)
+pto.atomic_sub(ptr, value, *, l2cache="nmfv", signedness=None)
+pto.atomic_min(ptr, value, *, l2cache="nmfv", signedness=None)
+pto.atomic_max(ptr, value, *, l2cache="nmfv", signedness=None)
+pto.atomic_and(ptr, value, *, l2cache="nmfv", signedness=None)
+pto.atomic_or(ptr, value, *, l2cache="nmfv", signedness=None)
+pto.atomic_xor(ptr, value, *, l2cache="nmfv", signedness=None)
+pto.atomic_cas(ptr, compare, value, *, l2cache="nmfv", signedness=None)
+```
+
+`pto.ldg` and `pto.stg` are GM scalar memory micro-ops with cache-control
+clauses. Plain scalar memory remains available through `scalar.load(...)` and
+`scalar.store(...)`.
+
+`l1cache` accepts `"cache"` or `"uncache"`. Load `l2cache` accepts the VPTO
+load L2 cache tokens; store and atomic `l2cache` accept the VPTO store/atomic
+L2 cache tokens. Atomic pointers must point to GM or UB scalar storage accepted
+by the VPTO verifier. Integer atomics may pass `signedness`; floating-point and
+packed atomics must omit it.
+
+#### SIMT scalar math, conversion, sync, and state ops
+
+```python
+pto.prmt(lhs, rhs, selector)
+pto.mulhi(lhs, rhs, *, signedness)
+pto.mul_i32toi64(lhs, rhs, *, signedness)
+
+pto.absf(value)
+pto.sqrt(value)
+pto.exp(value)
+pto.log(value)
+pto.pow(lhs, rhs)
+pto.ceil(value)
+pto.floor(value)
+pto.rint(value)
+pto.round(value)
+pto.fmin(lhs, rhs)
+pto.fmax(lhs, rhs)
+pto.fma(lhs, rhs, acc)
+
+pto.convert(src, dst_type, *, rounding, saturation, signedness=None)
+
+pto.syncthreads()
+pto.threadfence()
+pto.threadfence_block()
+pto.keep(payload, *, slot)
+pto.resume(result_type, *, slot)
+```
+
+`pto.sqrt`, `pto.exp`, `pto.log`, and related functions are VPTO SIMT
+micro-ops. They are distinct from the generic `scalar.sqrt`, `scalar.exp`, and
+`scalar.log` helpers in Chapter 6.
+
+`pto.convert` requires an explicit destination type plus VPTO conversion
+controls. `rounding` accepts `"r"`, `"a"`, `"f"`, `"c"`, `"z"`, `"o"`, or
+`"h"`. `saturation` accepts `"sat"`/`"nosat"` or `"on"`/`"off"`.
+`signedness` is required when converting to or from integer types and omitted
+for floating-to-floating or packed floating conversion. Integer-to-integer
+conversion is not supported by `pto.convert`.
+
+`pto.keep` and `pto.resume` use explicit non-negative Python integer slots.
+Keep/resume placement constraints are enforced by the VPTO verifier.
+
 ## 3.4 Inline context manager syntax
 
 In addition to the decorator form, each sub-kernel unit provides a context

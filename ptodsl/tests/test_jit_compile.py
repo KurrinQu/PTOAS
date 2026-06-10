@@ -425,6 +425,96 @@ def simt_query_probe():
     pto.get_lanemask_gt()
 
 
+@pto.simt
+def simt_collective_math_probe():
+    lane = pto.get_laneid()
+    pred = pto.const(1, dtype=pto.i1)
+
+    pto.vote_all(pred)
+    pto.vote_any(pred)
+    pto.vote_uni(pred)
+    pto.vote_ballot(pred)
+
+    pto.shuffle_idx(lane, lane, width=32)
+    pto.shuffle_up(lane, 1, width=32)
+    pto.shuffle_down(lane, 1, width=32)
+    pto.shuffle_bfly(lane, 1, width=32)
+
+    pto.redux_add(lane, signedness="signed")
+    pto.redux_max(lane, signedness="signed")
+    pto.redux_min(lane, signedness="signed")
+
+    pto.prmt(lane, lane, lane)
+    pto.mulhi(lane, lane, signedness="signed")
+    pto.mul_i32toi64(lane, lane, signedness="unsigned")
+
+    as_f32 = pto.convert(lane, pto.f32, rounding="r", saturation="nosat", signedness="signed")
+    pto.convert(as_f32, pto.i32, rounding="z", saturation="sat", signedness="signed")
+    pto.absf(as_f32)
+    pto.sqrt(as_f32)
+    pto.exp(as_f32)
+    pto.log(as_f32)
+    pto.pow(as_f32, as_f32)
+    pto.ceil(as_f32)
+    pto.floor(as_f32)
+    pto.rint(as_f32)
+    pto.round(as_f32)
+    pto.fmin(as_f32, as_f32)
+    pto.fmax(as_f32, as_f32)
+    pto.fma(as_f32, as_f32, as_f32)
+
+
+@pto.simt
+def simt_memory_atomic_probe(
+    gm: pto.ptr(pto.i32, "gm"),
+):
+    idx = scalar.index_cast(pto.get_tid_x())
+    value = pto.ldg(gm, idx, l1cache="cache", l2cache="nmfv")
+    pto.stg(value, gm, idx, l1cache="uncache", l2cache="wtsred")
+
+    old = pto.atomic_add(gm, value, l2cache="nmfv", signedness="signed")
+    pto.atomic_exch(gm, value, signedness="signed")
+    pto.atomic_sub(gm, value, signedness="signed")
+    pto.atomic_min(gm, value, signedness="signed")
+    pto.atomic_max(gm, value, signedness="signed")
+    pto.atomic_and(gm, value, signedness="unsigned")
+    pto.atomic_or(gm, value, signedness="unsigned")
+    pto.atomic_xor(gm, value, signedness="unsigned")
+    pto.atomic_cas(gm, old, value, signedness="signed")
+
+    pto.syncthreads()
+    pto.threadfence()
+    pto.threadfence_block()
+
+
+@pto.simt
+def simt_keep_stage():
+    pto.keep(pto.get_tid_x(), slot=0)
+
+
+@pto.simt
+def simt_resume_stage(gm: pto.ptr(pto.i32, "gm")):
+    resumed = pto.resume(pto.i32, slot=0)
+    idx = scalar.index_cast(pto.get_tid_x())
+    scalar.store(resumed, gm, idx)
+
+
+@pto.simt
+def simt_invalid_redux_signedness_probe():
+    pto.redux_max(pto.get_laneid())
+
+
+@pto.simt
+def simt_invalid_convert_signedness_probe():
+    pto.convert(pto.get_laneid(), pto.f32, rounding="r", saturation="nosat")
+
+
+@pto.simt
+def simt_invalid_atomic_signedness_probe(gm: pto.ptr(pto.f32, "gm")):
+    value = pto.ldg(gm, 0)
+    pto.atomic_add(gm, value, signedness="signed")
+
+
 @pto.simd
 def ast_subkernel_runtime_for_helper(rows: pto.i32):
     for row in range(0, rows, 1):
@@ -441,6 +531,37 @@ def simt_helper_lowering_probe(*, TRACE_TOKEN: pto.const_expr = 0):
 @pto.jit(target="a5")
 def simt_explicit_launch_probe(*, TRACE_TOKEN: pto.constexpr = 0):
     pto.simt_launch(simt_query_probe, dims=(32, 2, 1))
+
+
+@pto.jit(target="a5")
+def simt_full_surface_probe(
+    gm: pto.ptr(pto.i32, "gm"),
+    *,
+    TRACE_TOKEN: pto.constexpr = 0,
+):
+    pto.simt_launch(simt_collective_math_probe, dims=(32, 1, 1))
+    pto.simt_launch(simt_memory_atomic_probe, gm, dims=(32, 1, 1))
+    pto.simt_launch(simt_keep_stage, dims=(32, 1, 1))
+    pto.simt_launch(simt_resume_stage, gm, dims=(32, 1, 1))
+
+
+@pto.jit(target="a5")
+def simt_invalid_redux_signedness_launch(*, TRACE_TOKEN: pto.constexpr = 0):
+    pto.simt_launch(simt_invalid_redux_signedness_probe, dims=(32, 1, 1))
+
+
+@pto.jit(target="a5")
+def simt_invalid_convert_signedness_launch(*, TRACE_TOKEN: pto.constexpr = 0):
+    pto.simt_launch(simt_invalid_convert_signedness_probe, dims=(32, 1, 1))
+
+
+@pto.jit(target="a5")
+def simt_invalid_atomic_signedness_launch(
+    gm: pto.ptr(pto.f32, "gm"),
+    *,
+    TRACE_TOKEN: pto.constexpr = 0,
+):
+    pto.simt_launch(simt_invalid_atomic_signedness_probe, gm, dims=(32, 1, 1))
 
 
 @pto.jit(target="a5")
@@ -2533,6 +2654,71 @@ def main() -> None:
         "pto.get_lanemask_gt",
     ):
         expect(op_name in simt_launch_text, f"SIMT query body should contain {op_name}")
+
+    simt_full_text = simt_full_surface_probe.compile(TRACE_TOKEN=1).mlir_text()
+    expect_parse_roundtrip_and_verify(simt_full_text, "full simt surface specialization")
+    for op_name in (
+        "pto.vote_all",
+        "pto.vote_any",
+        "pto.vote_uni",
+        "pto.vote_ballot",
+        "pto.shuffle_idx",
+        "pto.shuffle_up",
+        "pto.shuffle_down",
+        "pto.shuffle_bfly",
+        "pto.redux_add",
+        "pto.redux_max",
+        "pto.redux_min",
+        "pto.ldg",
+        "pto.stg",
+        "pto.atomic_exch",
+        "pto.atomic_add",
+        "pto.atomic_sub",
+        "pto.atomic_min",
+        "pto.atomic_max",
+        "pto.atomic_and",
+        "pto.atomic_or",
+        "pto.atomic_xor",
+        "pto.atomic_cas",
+        "pto.prmt",
+        "pto.mulhi",
+        "pto.mul_i32toi64",
+        "pto.absf",
+        "pto.sqrt",
+        "pto.exp",
+        "pto.log",
+        "pto.pow",
+        "pto.ceil",
+        "pto.floor",
+        "pto.rint",
+        "pto.round",
+        "pto.fmin",
+        "pto.fmax",
+        "pto.fma",
+        "pto.convert",
+        "pto.syncthreads",
+        "pto.threadfence",
+        "pto.threadfence_block",
+        "pto.keep",
+        "pto.resume",
+    ):
+        expect(op_name in simt_full_text, f"full SIMT surface should contain {op_name}")
+
+    expect_raises(
+        TypeError,
+        lambda: simt_invalid_redux_signedness_launch.compile(TRACE_TOKEN=1).mlir_text(),
+        "requires signedness",
+    )
+    expect_raises(
+        TypeError,
+        lambda: simt_invalid_convert_signedness_launch.compile(TRACE_TOKEN=1).mlir_text(),
+        "requires signedness",
+    )
+    expect_raises(
+        TypeError,
+        lambda: simt_invalid_atomic_signedness_launch.compile(TRACE_TOKEN=1).mlir_text(),
+        "does not accept signedness",
+    )
 
     ast_subkernel_runtime_for_text = ast_subkernel_runtime_for_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(
