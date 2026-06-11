@@ -14105,6 +14105,10 @@ static AICORE inline void ptoas_auto_sync_tail(
       StringRef value = opaqueTy.getValue();
       return value.contains("Tile<") || value.contains("ConvTile<");
     };
+    auto isLoweredIndexType = [](Type ty) {
+      auto opaqueTy = dyn_cast<emitc::OpaqueType>(ty);
+      return opaqueTy && opaqueTy.getValue() == "int64_t";
+    };
 
     llvm::SmallVector<UnrealizedConversionCastOp> castsToErase;
     bool castCleanupFailed = false;
@@ -14129,6 +14133,17 @@ static AICORE inline void ptoas_auto_sync_tail(
       }
 
       if (inTy == outTy) {
+        output.replaceAllUsesWith(input);
+        castsToErase.push_back(cast);
+        return;
+      }
+
+      // IndexType is lowered to int64_t for EmitC. SCF structural conversion
+      // can still materialize temporary index<->int64_t bridges; keeping them
+      // as emitc.cast leaves illegal index-typed EmitC IR for LLVM 21's C++
+      // emitter, so fold the bridge back to the lowered value.
+      if ((isa<IndexType>(inTy) && isLoweredIndexType(outTy)) ||
+          (isLoweredIndexType(inTy) && isa<IndexType>(outTy))) {
         output.replaceAllUsesWith(input);
         castsToErase.push_back(cast);
         return;
