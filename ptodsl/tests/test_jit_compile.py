@@ -402,15 +402,9 @@ def simt_tid_probe():
 
 @pto.simt
 def simt_query_probe():
-    pto.get_tid_x()
-    pto.get_tid_y()
-    pto.get_tid_z()
-    pto.get_block_dim_x()
-    pto.get_block_dim_y()
-    pto.get_block_dim_z()
-    pto.get_grid_dim_x()
-    pto.get_grid_dim_y()
-    pto.get_grid_dim_z()
+    pto.get_tid()
+    pto.get_block_dim()
+    pto.get_grid_dim()
     pto.get_block_idx_x()
     pto.get_block_idx_y()
     pto.get_block_idx_z()
@@ -423,6 +417,22 @@ def simt_query_probe():
     pto.get_lanemask_lt()
     pto.get_lanemask_ge()
     pto.get_lanemask_gt()
+
+
+@pto.simt
+def simt_grouped_query_probe():
+    tid_x, tid_y, tid_z = pto.get_tid()
+    block_x, block_y, block_z = pto.get_block_dim()
+    grid_x, grid_y, grid_z = pto.get_grid_dim()
+    pto.keep(tid_x, slot=0)
+    pto.keep(tid_y, slot=1)
+    pto.keep(tid_z, slot=2)
+    pto.keep(block_x, slot=3)
+    pto.keep(block_y, slot=4)
+    pto.keep(block_z, slot=5)
+    pto.keep(grid_x, slot=6)
+    pto.keep(grid_y, slot=7)
+    pto.keep(grid_z, slot=8)
 
 
 @pto.simt(max_threads=256, max_regs=48)
@@ -548,12 +558,22 @@ def simt_helper_lowering_probe(*, TRACE_TOKEN: pto.const_expr = 0):
 
 
 @pto.jit(target="a5")
-def simt_explicit_launch_probe(*, TRACE_TOKEN: pto.constexpr = 0):
+def simt_explicit_launch_probe(*, TRACE_TOKEN: pto.const_expr = 0):
     pto.simt_launch(simt_query_probe, dims=(32, 2, 1))
 
 
 @pto.jit(target="a5")
-def simt_resource_attr_launch_probe(*, TRACE_TOKEN: pto.constexpr = 0):
+def simt_launch_index_sugar_probe(*, TRACE_TOKEN: pto.const_expr = 0):
+    simt_query_probe[32, 2, 1]()
+
+
+@pto.jit(target="a5")
+def simt_grouped_query_launch_probe(*, TRACE_TOKEN: pto.const_expr = 0):
+    simt_grouped_query_probe[32, 1, 1]()
+
+
+@pto.jit(target="a5")
+def simt_resource_attr_launch_probe(*, TRACE_TOKEN: pto.const_expr = 0):
     pto.simt_launch(simt_resource_attr_probe, dims=(128, 1, 1))
 
 
@@ -561,7 +581,7 @@ def simt_resource_attr_launch_probe(*, TRACE_TOKEN: pto.constexpr = 0):
 def simt_full_surface_probe(
     gm: pto.ptr(pto.i32, "gm"),
     *,
-    TRACE_TOKEN: pto.constexpr = 0,
+    TRACE_TOKEN: pto.const_expr = 0,
 ):
     pto.simt_launch(simt_collective_math_probe, dims=(32, 1, 1))
     pto.simt_launch(simt_memory_atomic_probe, gm, dims=(32, 1, 1))
@@ -574,25 +594,25 @@ def simt_specialized_arg_type_probe(
     gm_i32: pto.ptr(pto.i32, "gm"),
     gm_f32: pto.ptr(pto.f32, "gm"),
     *,
-    TRACE_TOKEN: pto.constexpr = 0,
+    TRACE_TOKEN: pto.const_expr = 0,
 ):
     pto.simt_launch(simt_specialized_ptr_probe, gm_i32, dims=(32, 1, 1))
     pto.simt_launch(simt_specialized_ptr_probe, gm_f32, dims=(32, 1, 1))
 
 
 @pto.jit(target="a5")
-def simt_specialized_static_kwarg_probe(*, TRACE_TOKEN: pto.constexpr = 0):
+def simt_specialized_static_kwarg_probe(*, TRACE_TOKEN: pto.const_expr = 0):
     pto.simt_launch(simt_specialized_flag_probe, dims=(32, 1, 1), FLAG=False)
     pto.simt_launch(simt_specialized_flag_probe, dims=(32, 1, 1), FLAG=True)
 
 
 @pto.jit(target="a5")
-def simt_invalid_redux_signedness_launch(*, TRACE_TOKEN: pto.constexpr = 0):
+def simt_invalid_redux_signedness_launch(*, TRACE_TOKEN: pto.const_expr = 0):
     pto.simt_launch(simt_invalid_redux_signedness_probe, dims=(32, 1, 1))
 
 
 @pto.jit(target="a5")
-def simt_invalid_convert_signedness_launch(*, TRACE_TOKEN: pto.constexpr = 0):
+def simt_invalid_convert_signedness_launch(*, TRACE_TOKEN: pto.const_expr = 0):
     pto.simt_launch(simt_invalid_convert_signedness_probe, dims=(32, 1, 1))
 
 
@@ -600,7 +620,7 @@ def simt_invalid_convert_signedness_launch(*, TRACE_TOKEN: pto.constexpr = 0):
 def simt_invalid_atomic_signedness_launch(
     gm: pto.ptr(pto.f32, "gm"),
     *,
-    TRACE_TOKEN: pto.constexpr = 0,
+    TRACE_TOKEN: pto.const_expr = 0,
 ):
     pto.simt_launch(simt_invalid_atomic_signedness_probe, gm, dims=(32, 1, 1))
 
@@ -2702,6 +2722,47 @@ def main() -> None:
     expect(
         re.search(r"func\.func @simt_query_probe__simt_\d+\(\) attributes \{pto\.simt_entry\}", simt_launch_text) is not None,
         "explicit pto.simt_launch should materialize a reusable pto.simt_entry helper",
+    )
+    simt_launch_sugar_text = simt_launch_index_sugar_probe.compile(TRACE_TOKEN=1).mlir_text()
+    expect_parse_roundtrip_and_verify(simt_launch_sugar_text, "indexed simt launch specialization")
+    expect(
+        re.search(r"pto\.simt_launch @simt_query_probe__simt_\d+<<<", simt_launch_sugar_text) is not None,
+        "@pto.simt helper[x, y, z](...) should emit VPTO simt_launch sugar",
+    )
+    simt_grouped_query_text = simt_grouped_query_launch_probe.compile(TRACE_TOKEN=1).mlir_text()
+    expect_parse_roundtrip_and_verify(simt_grouped_query_text, "grouped simt query specialization")
+    expect(
+        re.search(r"pto\.simt_launch @simt_grouped_query_probe__simt_\d+<<<", simt_grouped_query_text) is not None,
+        "grouped SIMT query probe should be launchable through helper[x, y, z](...)",
+    )
+    for op_name in (
+        "pto.get_tid_x",
+        "pto.get_tid_y",
+        "pto.get_tid_z",
+        "pto.get_block_dim_x",
+        "pto.get_block_dim_y",
+        "pto.get_block_dim_z",
+        "pto.get_grid_dim_x",
+        "pto.get_grid_dim_y",
+        "pto.get_grid_dim_z",
+    ):
+        expect(
+            simt_grouped_query_text.count(op_name) == 1,
+            f"grouped SIMT query helpers should lower exactly once to {op_name}",
+        )
+    expect(
+        simt_grouped_query_text.count("pto.keep") == 9,
+        "grouped SIMT query helpers should return values that can be consumed by later micro-ops",
+    )
+    expect_raises(
+        TypeError,
+        lambda: simt_query_probe[32, 1](),
+        "helper[dim_x, dim_y, dim_z]",
+    )
+    expect_raises(
+        TypeError,
+        lambda: ast_subkernel_runtime_for_helper[32, 1, 1](pto.const(1, dtype=pto.i32)),
+        "only @pto.simt",
     )
     simt_resource_attr_text = simt_resource_attr_launch_probe.compile(TRACE_TOKEN=1).mlir_text()
     expect_parse_roundtrip_and_verify(simt_resource_attr_text, "simt resource attr launch specialization")

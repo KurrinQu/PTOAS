@@ -76,6 +76,18 @@ class SubkernelTemplate:
         self._validate_invocation(*args, **kwargs)
         return runtime.dispatch_subkernel_call(self, *args, **kwargs)
 
+    def __getitem__(self, dims):
+        if self.spec.role != KernelRole.SIMT:
+            raise TypeError(
+                f"@pto.{self.spec.role.value} kernels do not support launch dimensions; "
+                "only @pto.simt helpers support helper[dim_x, dim_y, dim_z](...)"
+            )
+        if not isinstance(dims, tuple):
+            dims = (dims,)
+        if len(dims) != 3:
+            raise TypeError("@pto.simt launch syntax expects helper[dim_x, dim_y, dim_z](...)")
+        return _SimtLaunchTemplate(self, dims)
+
     def _validate_definition(self) -> None:
         for param in self.signature.parameters.values():
             if isinstance(param.annotation, TensorSpec):
@@ -97,6 +109,19 @@ class SubkernelTemplate:
         escaped_type = _find_transient_simd_escape(result)
         if escaped_type is not None:
             raise simd_value_escape_error(escaped_type)
+
+
+class _SimtLaunchTemplate:
+    """Callable ``helper[x, y, z]`` launch descriptor for a decorated SIMT helper."""
+
+    def __init__(self, body: SubkernelTemplate, dims):
+        self._body = body
+        self._dims = dims
+
+    def __call__(self, *args, **kwargs):
+        from ._ops import simt_launch
+
+        return simt_launch(self._body, *args, dims=self._dims, **kwargs)
 
 
 def _find_transient_simd_escape(value):

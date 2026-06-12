@@ -4433,6 +4433,11 @@ def get_tid_z():
     return wrap_surface_value(_pto.GetTidZOp().result)
 
 
+def get_tid():
+    """``pto.get_tid`` → ``(x, y, z)`` SIMT lane coordinates."""
+    return get_tid_x(), get_tid_y(), get_tid_z()
+
+
 def get_block_dim_x():
     """``pto.get_block_dim_x`` → i32 SIMT block X dimension."""
     return wrap_surface_value(_pto.GetBlockDimXOp().result)
@@ -4448,6 +4453,11 @@ def get_block_dim_z():
     return wrap_surface_value(_pto.GetBlockDimZOp().result)
 
 
+def get_block_dim():
+    """``pto.get_block_dim`` → ``(x, y, z)`` SIMT block dimensions."""
+    return get_block_dim_x(), get_block_dim_y(), get_block_dim_z()
+
+
 def get_grid_dim_x():
     """``pto.get_grid_dim_x`` → i32 SIMT grid X dimension."""
     return wrap_surface_value(_pto.GetGridDimXOp().result)
@@ -4461,6 +4471,11 @@ def get_grid_dim_y():
 def get_grid_dim_z():
     """``pto.get_grid_dim_z`` → i32 SIMT grid Z dimension."""
     return wrap_surface_value(_pto.GetGridDimZOp().result)
+
+
+def get_grid_dim():
+    """``pto.get_grid_dim`` → ``(x, y, z)`` SIMT grid dimensions."""
+    return get_grid_dim_x(), get_grid_dim_y(), get_grid_dim_z()
 
 
 def get_block_idx_x():
@@ -5144,9 +5159,9 @@ __all__ = [
     "mad", "mad_acc", "mad_bias", "mad_mx", "mad_mx_acc", "mad_mx_bias",
     "get_block_idx", "get_block_num", "get_subblock_idx", "get_subblock_num",
     "store_vfsimt_info", "simt_launch",
-    "get_tid_x", "get_tid_y", "get_tid_z",
-    "get_block_dim_x", "get_block_dim_y", "get_block_dim_z",
-    "get_grid_dim_x", "get_grid_dim_y", "get_grid_dim_z",
+    "get_tid", "get_tid_x", "get_tid_y", "get_tid_z",
+    "get_block_dim", "get_block_dim_x", "get_block_dim_y", "get_block_dim_z",
+    "get_grid_dim", "get_grid_dim_x", "get_grid_dim_y", "get_grid_dim_z",
     "get_block_idx_x", "get_block_idx_y", "get_block_idx_z",
     "get_veccoreid", "get_clock32", "get_clock64",
     "get_laneid", "get_lanemask_eq", "get_lanemask_le", "get_lanemask_lt",
