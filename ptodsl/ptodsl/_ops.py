@@ -406,7 +406,7 @@ def _normalize_vcvt_round_mode(mode, *, context: str):
         if "." in token:
             token = token.rsplit(".", 1)[-1]
     normalized = token.strip().upper()
-    allowed = {"R", "A", "F", "C", "Z", "O"}
+    allowed = {"R", "A", "F", "C", "Z", "O", "H"}
     if normalized not in allowed:
         expected = ", ".join(sorted(allowed))
         raise ValueError(f"{context} does not support rnd {mode!r}; expected one of {expected}")
@@ -441,6 +441,19 @@ def _normalize_vcvt_part_mode(mode, *, context: str):
     return normalized
 
 
+def _normalize_enum_attr(value, *, enum_cls, attr_cls, context: str):
+    if value is None or isinstance(value, Attribute):
+        return value
+    if isinstance(value, str):
+        token = value.strip().upper()
+        try:
+            value = getattr(enum_cls, token)
+        except AttributeError as exc:
+            allowed = ", ".join(name for name in dir(enum_cls) if name.isupper())
+            raise ValueError(f"{context} does not support {value!r}; expected one of {allowed}") from exc
+    return attr_cls.get(value)
+
+
 def _normalize_vpack_part(part, *, context: str):
     token = part
     if not isinstance(token, str):
@@ -456,6 +469,16 @@ def _normalize_vpack_part(part, *, context: str):
 
 
 def _classify_vcvt_elem_kind(elem_type):
+    if Float8E4M3FNType.isinstance(elem_type):
+        return "f8e4m3"
+    if Float8E5M2Type.isinstance(elem_type):
+        return "f8e5m2"
+    if _isinstance_pto_type(elem_type, "HiF8Type"):
+        return "hif8"
+    if _isinstance_pto_type(elem_type, "F4E1M2x2Type"):
+        return "f4e1m2x2"
+    if _isinstance_pto_type(elem_type, "F4E2M1x2Type"):
+        return "f4e2m1x2"
     if F16Type.isinstance(elem_type):
         return "f16"
     if BF16Type.isinstance(elem_type):
@@ -476,47 +499,151 @@ def _classify_vcvt_elem_kind(elem_type):
     return None
 
 
+def _vcvt_contract(requires_rnd, requires_sat, requires_part, *, part_family=None, allowed_rnd=None):
+    return {
+        "requires_rnd": requires_rnd,
+        "requires_sat": requires_sat,
+        "requires_part": requires_part,
+        "part_family": part_family,
+        "allowed_rnd": set(allowed_rnd) if allowed_rnd is not None else None,
+    }
+
+
 _VCVT_CONTRACTS = {
-    ("f32", "f16"): (True, True, True),
-    ("f32", "bf16"): (True, True, True),
-    ("f32", "s16"): (True, True, True),
-    ("f32", "s64"): (True, True, True),
-    ("f32", "s32"): (True, True, False),
-    ("f16", "f32"): (False, False, True),
-    ("f16", "s32"): (True, False, True),
-    ("f16", "s16"): (True, True, False),
-    ("f16", "s8"): (True, True, True),
-    ("f16", "u8"): (True, True, True),
-    ("bf16", "f16"): (True, True, False),
-    ("bf16", "f32"): (False, False, True),
-    ("bf16", "s32"): (True, True, True),
-    ("u8", "f16"): (False, False, True),
-    ("u8", "u16"): (False, False, True),
-    ("u8", "u32"): (False, False, True),
-    ("s8", "f16"): (False, False, True),
-    ("s8", "s16"): (False, False, True),
-    ("s8", "s32"): (False, False, True),
-    ("u16", "u8"): (False, True, True),
-    ("u16", "u32"): (False, False, True),
-    ("s16", "f16"): (True, False, False),
-    ("s16", "f32"): (False, False, True),
-    ("s16", "u32"): (False, False, True),
-    ("s16", "s32"): (False, False, True),
-    ("s16", "u8"): (False, True, True),
-    ("u32", "u8"): (False, True, True),
-    ("u32", "u16"): (False, True, True),
-    ("u32", "s16"): (False, True, True),
-    ("s32", "f32"): (True, False, False),
-    ("s32", "u8"): (False, True, True),
-    ("s32", "u16"): (False, True, True),
-    ("s32", "s16"): (False, True, True),
-    ("s32", "s64"): (False, False, True),
-    ("s64", "f32"): (True, False, True),
-    ("s64", "s32"): (False, True, True),
+    ("f32", "f8e4m3"): _vcvt_contract(True, True, True, part_family="packed4", allowed_rnd="R"),
+    ("f32", "f8e5m2"): _vcvt_contract(True, True, True, part_family="packed4", allowed_rnd="R"),
+    ("f32", "hif8"): _vcvt_contract(True, True, True, part_family="packed4", allowed_rnd="AH"),
+    ("f32", "f16"): _vcvt_contract(True, True, True),
+    ("f32", "bf16"): _vcvt_contract(True, True, True),
+    ("f32", "s16"): _vcvt_contract(True, True, True),
+    ("f32", "s64"): _vcvt_contract(True, True, True),
+    ("f32", "s32"): _vcvt_contract(True, True, False),
+    ("f16", "f8e4m3"): _vcvt_contract(True, True, True, allowed_rnd="RAFZC"),
+    ("f16", "f8e5m2"): _vcvt_contract(True, True, True, allowed_rnd="RAFZC"),
+    ("f16", "hif8"): _vcvt_contract(True, True, True, allowed_rnd="AH"),
+    ("f16", "f32"): _vcvt_contract(False, False, True),
+    ("f16", "s32"): _vcvt_contract(True, False, True),
+    ("f16", "s16"): _vcvt_contract(True, True, False),
+    ("f16", "s8"): _vcvt_contract(True, True, True),
+    ("f16", "u8"): _vcvt_contract(True, True, True),
+    ("bf16", "f8e4m3"): _vcvt_contract(True, True, True, allowed_rnd="RAFZC"),
+    ("bf16", "f8e5m2"): _vcvt_contract(True, True, True, allowed_rnd="RAFZC"),
+    ("bf16", "f4e1m2x2"): _vcvt_contract(True, False, True, part_family="packed4", allowed_rnd="RAFZC"),
+    ("bf16", "f4e2m1x2"): _vcvt_contract(True, False, True, part_family="packed4", allowed_rnd="RAFZC"),
+    ("bf16", "f16"): _vcvt_contract(True, True, False),
+    ("bf16", "f32"): _vcvt_contract(False, False, True),
+    ("bf16", "s32"): _vcvt_contract(True, True, True),
+    ("u8", "f16"): _vcvt_contract(False, False, True),
+    ("u8", "u16"): _vcvt_contract(False, False, True),
+    ("u8", "u32"): _vcvt_contract(False, False, True),
+    ("s8", "f16"): _vcvt_contract(False, False, True),
+    ("s8", "s16"): _vcvt_contract(False, False, True),
+    ("s8", "s32"): _vcvt_contract(False, False, True),
+    ("u16", "u8"): _vcvt_contract(False, True, True),
+    ("u16", "u32"): _vcvt_contract(False, False, True),
+    ("s16", "f16"): _vcvt_contract(True, False, False),
+    ("s16", "f32"): _vcvt_contract(False, False, True),
+    ("s16", "u32"): _vcvt_contract(False, False, True),
+    ("s16", "s32"): _vcvt_contract(False, False, True),
+    ("s16", "u8"): _vcvt_contract(False, True, True),
+    ("u32", "u8"): _vcvt_contract(False, True, True),
+    ("u32", "u16"): _vcvt_contract(False, True, True),
+    ("u32", "s16"): _vcvt_contract(False, True, True),
+    ("s32", "f32"): _vcvt_contract(True, False, False),
+    ("s32", "u8"): _vcvt_contract(False, True, True),
+    ("s32", "u16"): _vcvt_contract(False, True, True),
+    ("s32", "s16"): _vcvt_contract(False, True, True),
+    ("s32", "s64"): _vcvt_contract(False, False, True),
+    ("s64", "f32"): _vcvt_contract(True, False, True),
+    ("s64", "s32"): _vcvt_contract(False, True, True),
+    ("f8e4m3", "f32"): _vcvt_contract(False, False, True, part_family="packed4"),
+    ("f8e5m2", "f32"): _vcvt_contract(False, False, True, part_family="packed4"),
+    ("hif8", "f32"): _vcvt_contract(False, False, True, part_family="packed4"),
+    ("f4e1m2x2", "bf16"): _vcvt_contract(False, False, True, part_family="packed4"),
+    ("f4e2m1x2", "bf16"): _vcvt_contract(False, False, True, part_family="packed4"),
 }
 
 
-def _validate_vcvt_dtype_pair(src, result_dtype, *, context: str):
+_VCVT_ELEM_BITS = {
+    "f4e1m2x2": 8,
+    "f4e2m1x2": 8,
+    "f8e4m3": 8,
+    "f8e5m2": 8,
+    "hif8": 8,
+    "u8": 8,
+    "s8": 8,
+    "f16": 16,
+    "bf16": 16,
+    "u16": 16,
+    "s16": 16,
+    "f32": 32,
+    "u32": 32,
+    "s32": 32,
+    "s64": 64,
+}
+
+
+def _infer_vcvt_part_family(src_kind, result_kind):
+    src_bits = _VCVT_ELEM_BITS.get(src_kind)
+    result_bits = _VCVT_ELEM_BITS.get(result_kind)
+    if src_bits is None or result_bits is None:
+        return None
+    larger = max(src_bits, result_bits)
+    smaller = min(src_bits, result_bits)
+    if larger == smaller * 2:
+        return "even_odd"
+    if larger == smaller * 4:
+        return "packed4"
+    return None
+
+
+def _validate_vcvt_attrs(src_kind, result_kind, contract, *, rnd, sat, part, context: str):
+    if rnd is None:
+        if contract["requires_rnd"]:
+            raise ValueError(f"{context} requires rnd for dtype pair {src_kind} -> {result_kind}")
+    elif not contract["requires_rnd"]:
+        raise ValueError(f"{context} does not support rnd for dtype pair {src_kind} -> {result_kind}")
+
+    if sat is None:
+        if contract["requires_sat"]:
+            raise ValueError(f"{context} requires sat for dtype pair {src_kind} -> {result_kind}")
+    elif not contract["requires_sat"]:
+        raise ValueError(f"{context} does not support sat for dtype pair {src_kind} -> {result_kind}")
+
+    if part is None:
+        if contract["requires_part"]:
+            raise ValueError(f"{context} requires part for dtype pair {src_kind} -> {result_kind}")
+    elif not contract["requires_part"]:
+        raise ValueError(f"{context} does not support part for dtype pair {src_kind} -> {result_kind}")
+
+    allowed_rnd = contract["allowed_rnd"]
+    if rnd is not None and allowed_rnd is not None and rnd not in allowed_rnd:
+        expected = ", ".join(sorted(allowed_rnd))
+        raise ValueError(
+            f"{context} does not support rnd {rnd!r} for dtype pair "
+            f"{src_kind} -> {result_kind}; expected one of {expected}"
+        )
+
+    if part is None:
+        return
+    part_family = contract["part_family"] or _infer_vcvt_part_family(src_kind, result_kind)
+    if part_family == "even_odd":
+        if part not in {"EVEN", "ODD"}:
+            raise ValueError(
+                f"{context} part must be EVEN or ODD for dtype pair "
+                f"{src_kind} -> {result_kind}"
+            )
+    elif part_family == "packed4":
+        if part not in {"P0", "P1", "P2", "P3"}:
+            raise ValueError(
+                f"{context} part must be P0, P1, P2, or P3 for dtype pair "
+                f"{src_kind} -> {result_kind}"
+            )
+    elif part_family is None:
+        raise ValueError(f"{context} part is not supported for dtype pair {src_kind} -> {result_kind}")
+
+
+def _validate_vcvt_dtype_pair(src, result_dtype, *, rnd=None, sat=None, part=None, context: str):
     _, src_elem_type = _infer_vreg_metadata(src)
     resolved_result_dtype = _resolve(result_dtype)
     src_kind = _classify_vcvt_elem_kind(src_elem_type)
@@ -526,16 +653,25 @@ def _validate_vcvt_dtype_pair(src, result_dtype, *, context: str):
             f"{context} does not support source/result element types "
             f"{src_elem_type} -> {resolved_result_dtype}"
         )
-    if (src_kind, result_kind) not in _VCVT_CONTRACTS:
+    contract = _VCVT_CONTRACTS.get((src_kind, result_kind))
+    if contract is None:
         raise TypeError(
             f"{context} currently does not support the dtype pair "
             f"{src_kind} -> {result_kind}"
         )
+    _validate_vcvt_attrs(src_kind, result_kind, contract, rnd=rnd, sat=sat, part=part, context=context)
     return resolved_result_dtype
 
 
-def _infer_result_vreg_type_for_element_dtype(src, result_dtype, *, context: str):
-    resolved_type = _validate_vcvt_dtype_pair(src, result_dtype, context=context)
+def _infer_result_vreg_type_for_element_dtype(src, result_dtype, *, rnd=None, sat=None, part=None, context: str):
+    resolved_type = _validate_vcvt_dtype_pair(
+        src,
+        result_dtype,
+        rnd=rnd,
+        sat=sat,
+        part=part,
+        context=context,
+    )
     try:
         _pto.VRegType(resolved_type)
         return resolved_type
@@ -599,7 +735,14 @@ def vcvt(src, to_dtype, mask, *, rnd=None, sat=None, part=None):
         kwargs["part"] = _normalize_vcvt_part_mode(part, context="vcvt(..., part=...)")
     return wrap_surface_value(
         _pto.VcvtOp(
-            _infer_result_vreg_type_for_element_dtype(src, to_dtype, context="vcvt(src, to_dtype, mask)"),
+            _infer_result_vreg_type_for_element_dtype(
+                src,
+                to_dtype,
+                rnd=kwargs.get("rnd"),
+                sat=kwargs.get("sat"),
+                part=kwargs.get("part"),
+                context="vcvt(src, to_dtype, mask)",
+            ),
             unwrap_surface_value(src),
             unwrap_surface_value(mask),
             **kwargs,
@@ -2978,17 +3121,28 @@ def tsels(mask, src, scalar, dst, *, tmp=None):
 
 
 def tcvt(src, dst, *, tmp=None, rmode=None, sat_mode=None):
-    """``pto.tcvt ins(src) outs(dst)`` with optional legacy ``tmp`` validation."""
+    """``pto.tcvt ins(src) outs(dst)``.
+
+    The ``tmp`` parameter is retained for backward compatibility but is not
+    supported by the current PTO backend; passing a non-None value raises.
+    """
     if tmp is not None:
-        raise TypeError(
-            "ptodsl.tcvt(..., tmp=...) is no longer supported because "
-            "the canonical PTO tcvt op only accepts src/dst plus attributes"
-        )
+        raise TypeError("pto.tile.cvt(..., tmp=...) is not supported by the current PTO Python bindings")
     _pto.tcvt(
         unwrap_surface_value(src),
         unwrap_surface_value(dst),
-        rmode=rmode,
-        sat_mode=sat_mode,
+        rmode=_normalize_enum_attr(
+            rmode,
+            enum_cls=_pto.RoundMode,
+            attr_cls=_pto.RoundModeAttr,
+            context="tile.cvt(..., rmode=...)",
+        ),
+        sat_mode=_normalize_enum_attr(
+            sat_mode,
+            enum_cls=_pto.SaturationMode,
+            attr_cls=_pto.SaturationModeAttr,
+            context="tile.cvt(..., sat_mode=...)",
+        ),
     )
 
 

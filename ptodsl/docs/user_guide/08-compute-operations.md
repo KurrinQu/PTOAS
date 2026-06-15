@@ -352,7 +352,7 @@ Same pattern as row-expand arithmetic, but `src1` is a per-column coefficient ti
 
 #### `pto.tile.cvt(src: Tile, dst: Tile, *, rmode: RoundMode = RoundMode.NONE) -> None`
 
-**Description**: Element-wise type conversion. The destination tile's `dtype` determines the target type.
+**Description**: Element-wise type conversion. The destination tile's `dtype` determines the target type. Low-precision tile conversion follows the TileOps backend support, including `f32 -> f8e4m3/f8e5m2/hif8`, `f16 -> hif8`, and `bf16 -> f4e1m2x2/f4e2m1x2`.
 
 **Parameters**:
 
@@ -363,6 +363,15 @@ Same pattern as row-expand arithmetic, but `src1` is a per-column coefficient ti
 | `rmode` | `RoundMode` | Rounding mode: `NONE`, `RINT`, `ROUND`, `FLOOR`, `CEIL`, `TRUNC`, `ODD`, `CAST_RINT` |
 
 **Returns**: None.
+
+**Example**:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"compute_ops.tile_low_precision_cvt","symbol":"compute_ops_tile_low_precision_cvt_probe","compile":{}} -->
+```python
+src = pto.alloc_tile(shape=[128, 64], dtype=pto.f32)
+dst = pto.alloc_tile(shape=[128, 64], dtype=pto.f8e4m3)
+pto.tile.cvt(src, dst, rmode=pto.RoundMode.RINT)
+```
 
 ---
 
@@ -1132,6 +1141,12 @@ These ops change the element type or layout of vector registers. They are distin
 
 **Constraints**:
 - Source and result dtype pair must be a legal hardware conversion. Illegal pairs (e.g., unsupported narrowing/widening combinations) are rejected at frontend time.
+- `f32 -> f8e4m3/f8e5m2` requires `rnd=R`, `sat`, and `part=P0/P1/P2/P3`.
+- `f32 -> hif8` requires `rnd=A/H`, `sat`, and `part=P0/P1/P2/P3`.
+- `f16/bf16 -> f8e4m3/f8e5m2` requires `rnd=R/A/F/Z/C`, `sat`, and `part=EVEN/ODD`.
+- `f16 -> hif8` requires `rnd=A/H`, `sat`, and `part=EVEN/ODD`.
+- `bf16 -> f4e1m2x2/f4e2m1x2` requires `rnd=R/A/F/Z/C` and `part=P0/P1/P2/P3`; it does not take `sat`.
+- `f8e4m3/f8e5m2/hif8 -> f32` and `f4e1m2x2/f4e2m1x2 -> bf16` require `part=P0/P1/P2/P3`; they do not take `rnd` or `sat`.
 
 **Example**:
 
@@ -1145,6 +1160,21 @@ vec_f16 = pto.vcvt(
     sat=pto.VcvtSatMode.SAT,
     part=pto.VcvtPartMode.EVEN,
 )
+```
+
+Low-precision packed conversion:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"compute_ops.vector_compute","symbol":"compute_ops_vector_probe","compile":{"BLOCK":128}} -->
+```python
+vec_f8 = pto.vcvt(
+    vec_f32,
+    pto.f8e4m3,
+    mask32_full,
+    rnd=pto.VcvtRoundMode.R,
+    sat=pto.VcvtSatMode.NOSAT,
+    part=pto.VcvtPartMode.P0,
+)
+vec_f32_roundtrip = pto.vcvt(vec_f8, pto.f32, pto.pset_b8(pto.MaskPattern.ALL), part=pto.VcvtPartMode.P0)
 ```
 
 ---

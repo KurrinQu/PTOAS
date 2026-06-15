@@ -264,6 +264,26 @@ module attributes {pto.backend = "emitc", pto.target_arch = "a5"} {
 """
 
 
+@pto.jit(target="a5", mode="explicit")
+def low_precision_vcvt_frontend():
+    zero = pto.const(0, dtype=pto.ui64)
+    src_ptr = pto.castptr(zero, pto.ptr(pto.f32, "ub"))
+    dst_ptr = pto.castptr(zero, pto.ptr(pto.f32, "ub"))
+    mask_b8 = pto.pset_b8(pto.MaskPattern.ALL)
+    mask_b32 = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_f32 = pto.vlds(src_ptr, pto.const(0))
+    vec_f8 = pto.vcvt(
+        vec_f32,
+        pto.f8e4m3,
+        mask_b32,
+        rnd=pto.VcvtRoundMode.R,
+        sat=pto.VcvtSatMode.NOSAT,
+        part=pto.VcvtPartMode.P0,
+    )
+    roundtrip = pto.vcvt(vec_f8, pto.f32, mask_b8, part=pto.VcvtPartMode.P0)
+    pto.vsts(roundtrip, dst_ptr, pto.const(0), mask_b32)
+
+
 def main() -> None:
     ptoas_bin = resolve_ptoas_binary()
     mixed_backend_example = REPO_ROOT / "ptodsl" / "examples" / "mixed_backend_kernel_module.py"
@@ -498,6 +518,26 @@ def main() -> None:
         and cv_split_frontend_text.count("pto.tpush_to_aic") >= 2
         and "pto.tpop_from_aic" in cv_split_frontend_text,
         "cv-split frontend verification should keep the vector helper pipe init, push, and receive paths intact",
+    )
+
+    lowp_text = low_precision_vcvt_frontend.compile().mlir_text()
+    lowp_frontend_texts = run_ptoas_frontend_verify(
+        ptoas_bin,
+        lowp_text,
+        "low_precision_vcvt_frontend PTODSL artifact",
+    )
+    expect(
+        len(lowp_frontend_texts) == 1,
+        "low_precision_vcvt_frontend PTODSL artifact should lower to exactly one backend child module",
+    )
+    lowp_frontend_text = lowp_frontend_texts[0]
+    expect(
+        "pto.vcvt" in lowp_frontend_text,
+        "low_precision_vcvt_frontend output should preserve vcvt ops after frontend verification",
+    )
+    expect(
+        "f8E4M3FN" in lowp_frontend_text,
+        "low_precision_vcvt_frontend output should preserve f8e4m3 type information",
     )
     print("ptodsl_ptoas_frontend_verify: PASS")
 

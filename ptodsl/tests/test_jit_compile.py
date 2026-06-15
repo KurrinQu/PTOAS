@@ -2271,6 +2271,59 @@ def public_vector_conversion_surface_probe():
 
 
 @pto.jit(target="a5", mode="explicit")
+def low_precision_vector_memory_surface_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    f8_src = pto.castptr(zero_u64, pto.ptr(pto.f8e4m3, "ub"))
+    f8_dst = pto.castptr(zero_u64, pto.ptr(pto.f8e4m3, "ub"))
+    hif8_src = pto.castptr(zero_u64, pto.ptr(pto.hif8, "ub"))
+    hif8_dst = pto.castptr(zero_u64, pto.ptr(pto.hif8, "ub"))
+    mask_b8 = pto.pset_b8(pto.MaskPattern.ALL)
+    f8 = pto.vlds(f8_src, pto.const(0))
+    hif8 = pto.vlds(hif8_src, pto.const(0))
+    pto.vsts(f8, f8_dst, pto.const(0), mask_b8)
+    pto.vsts(hif8, hif8_dst, pto.const(0), mask_b8)
+
+
+@pto.jit(target="a5", mode="explicit")
+def low_precision_vcvt_surface_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    ub_bf16 = pto.castptr(zero_u64, pto.ptr(pto.bf16, "ub"))
+    mask_b8 = pto.pset_b8(pto.MaskPattern.ALL)
+    mask_b16 = pto.pset_b16(pto.MaskPattern.ALL)
+    mask_b32 = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_f32 = pto.vlds(ub_f32, pto.const(0))
+    vec_bf16 = pto.vlds(ub_bf16, pto.const(0))
+
+    f8e4 = pto.vcvt(
+        vec_f32,
+        pto.f8e4m3,
+        mask_b32,
+        rnd=pto.VcvtRoundMode.R,
+        sat=pto.VcvtSatMode.NOSAT,
+        part=pto.VcvtPartMode.P0,
+    )
+    _ = pto.vcvt(f8e4, pto.f32, mask_b8, part=pto.VcvtPartMode.P0)
+    hif8 = pto.vcvt(
+        vec_f32,
+        pto.hif8,
+        mask_b32,
+        rnd=pto.VcvtRoundMode.H,
+        sat=pto.VcvtSatMode.NOSAT,
+        part=pto.VcvtPartMode.P0,
+    )
+    _ = pto.vcvt(hif8, pto.f32, mask_b8, part=pto.VcvtPartMode.P0)
+    f4e1 = pto.vcvt(
+        vec_bf16,
+        pto.f4e1m2x2,
+        mask_b16,
+        rnd=pto.VcvtRoundMode.R,
+        part=pto.VcvtPartMode.P0,
+    )
+    _ = pto.vcvt(f4e1, pto.bf16, mask_b8, part=pto.VcvtPartMode.P0)
+
+
+@pto.jit(target="a5", mode="explicit")
 def vdup_surface_probe():
     zero_u64 = pto.const(0, dtype=pto.ui64)
     ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
@@ -2313,6 +2366,31 @@ def vcvt_surface_invalid_dtype_pair_probe():
     mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
     vec_f32 = pto.vlds(ub_f32, pto.const(0))
     _ = pto.vcvt(vec_f32, pto.ui16, mask32_full)
+
+
+@pto.jit(target="a5", mode="explicit")
+def vcvt_low_precision_invalid_part_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_f32 = pto.vlds(ub_f32, pto.const(0))
+    _ = pto.vcvt(
+        vec_f32,
+        pto.f8e4m3,
+        mask32_full,
+        rnd=pto.VcvtRoundMode.R,
+        sat=pto.VcvtSatMode.NOSAT,
+        part=pto.VcvtPartMode.EVEN,
+    )
+
+
+@pto.jit(target="a5", mode="explicit")
+def vcvt_low_precision_missing_attr_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_f32 = pto.vlds(ub_f32, pto.const(0))
+    _ = pto.vcvt(vec_f32, pto.f8e4m3, mask32_full, rnd=pto.VcvtRoundMode.R)
 
 
 @pto.jit(target="a5", mode="explicit")
@@ -2431,6 +2509,7 @@ def main() -> None:
         "VcvtRoundMode",
         "VcvtSatMode",
         "VcvtPartMode",
+        "RoundMode",
         "AlignType",
         "init_align",
         "plt_b8",
@@ -2728,15 +2807,13 @@ def main() -> None:
             "internal partition tensor-view type helper should preserve low-precision element types",
         )
 
-        expect_raises(
-            TypeError,
-            lambda: pto.ptr(pto.hif8).resolve(),
-            "Tile / TensorView / PartitionTensorView construction",
+        expect(
+            "!pto.ptr<!pto.hif8, ub>" == str(pto.ptr(pto.hif8).resolve()),
+            "low-precision pointer types should be valid for device storage",
         )
-        expect_raises(
-            TypeError,
-            lambda: pto.vreg_type(64, pto.f8e4m3).resolve(),
-            "Tile / TensorView / PartitionTensorView construction",
+        expect(
+            str(pto.vreg_type(256, pto.f8e4m3).resolve()) == "!pto.vreg<256xf8E4M3FN>",
+            "low-precision vreg types should be valid for vector micro-ops",
         )
         expect_raises(
             TypeError,
@@ -4413,6 +4490,10 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(data_movement_surface_text, "public data movement surface specialization")
     vector_conversion_surface_text = public_vector_conversion_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(vector_conversion_surface_text, "public vector conversion surface specialization")
+    low_precision_memory_surface_text = low_precision_vector_memory_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(low_precision_memory_surface_text, "low-precision vector memory surface specialization")
+    low_precision_vcvt_surface_text = low_precision_vcvt_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(low_precision_vcvt_surface_text, "low-precision vcvt surface specialization")
     vdup_surface_text = vdup_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(vdup_surface_text, "public vdup surface specialization")
     vmulscvt_surface_text = vmulscvt_surface_probe.compile().mlir_text()
@@ -4523,6 +4604,14 @@ def main() -> None:
     expect('dist = "PK_B32"' in vector_conversion_surface_text, "vsts(..., dist=VStoreDist.PK_B32) should preserve the authored store distribution")
     expect("pto.vpack" in vector_conversion_surface_text, "vpack(...) should lower to pto.vpack")
     expect("!pto.vreg<128xui16>" in vector_conversion_surface_text, "vpack(i32/u32 -> u16) should infer the unsigned packed result type")
+    expect("!pto.vreg<256xf8E4M3FN>" in low_precision_memory_surface_text, "vlds/vsts should support f8e4m3 vreg storage")
+    expect("!pto.vreg<256x!pto.hif8>" in low_precision_memory_surface_text, "vlds/vsts should support hif8 vreg storage")
+    expect("!pto.ptr<f8E4M3FN, ub>" in low_precision_memory_surface_text, "low-precision f8 pointers should lower as UB pointers")
+    expect("!pto.vreg<256xf8E4M3FN>" in low_precision_vcvt_surface_text, "vcvt(f32 -> f8e4m3) should infer the packed low-precision result type")
+    expect("!pto.vreg<256x!pto.hif8>" in low_precision_vcvt_surface_text, "vcvt(f32 -> hif8) should infer the packed HiF8 result type")
+    expect("!pto.vreg<256x!pto.f4E1M2x2>" in low_precision_vcvt_surface_text, "vcvt(bf16 -> f4e1m2x2) should infer the packed 4-bit result type")
+    expect('rnd = "H"' in low_precision_vcvt_surface_text, "vcvt(..., rnd=VcvtRoundMode.H) should preserve the H rounding token")
+    expect(low_precision_vcvt_surface_text.count('part = "P0"') >= 6, "low-precision packed vcvt forms should preserve P0 part selectors")
     expect(vdup_surface_text.count("pto.vdup") == 3, "vdup(...) should lower once per authored scalar/vector duplication")
     expect("f32, !pto.mask<b32> -> !pto.vreg<64xf32>" in vdup_surface_text, "vdup(scalar_f32, mask_b32) should infer an f32 vector result type")
     expect(vdup_surface_text.count('position = "LOWEST"') >= 1, "vdup(vec, mask) should default position to LOWEST")
@@ -4573,6 +4662,16 @@ def main() -> None:
         TypeError,
         lambda: vcvt_surface_invalid_dtype_pair_probe.compile(),
         "vcvt(src, to_dtype, mask) currently does not support the dtype pair f32 -> u16",
+    )
+    expect_raises(
+        ValueError,
+        lambda: vcvt_low_precision_invalid_part_probe.compile(),
+        "part must be P0, P1, P2, or P3",
+    )
+    expect_raises(
+        ValueError,
+        lambda: vcvt_low_precision_missing_attr_probe.compile(),
+        "requires sat for dtype pair f32 -> f8e4m3",
     )
     expect_raises(
         TypeError,
