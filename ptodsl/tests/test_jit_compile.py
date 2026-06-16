@@ -2982,21 +2982,17 @@ def main() -> None:
         kernel_module_return_probe.compile,
         "is not directly compilable from Python",
     )
-    with make_context(), Location.unknown():
-        kernel_module_runtime = SignatureTracingRuntime(
-            kernel_module_return_probe._compiler._module_spec,
-            kernel_module_return_probe._compiler._kernel_signature,
-            kernel_module_return_probe._compiler._callback,
-            constexpr_bindings={},
-        )
-        expect_raises(
-            RuntimeError,
-            lambda: kernel_module_runtime.trace_entry(
-                pto.castptr(pto.ui64(0), pto.ptr(pto.f32, "gm")),
-                pto.const(1, dtype=pto.i32),
-            ),
-            "@pto.jit(entry=False) kernel modules must return None",
-        )
+    kernel_module_runtime = SignatureTracingRuntime(
+        kernel_module_return_probe._compiler._module_spec,
+        kernel_module_return_probe._compiler._kernel_signature,
+        kernel_module_return_probe._compiler._callback,
+        constexpr_bindings={},
+    )
+    expect_raises(
+        RuntimeError,
+        lambda: kernel_module_runtime.trace_entry(None, 1),
+        "@pto.jit(entry=False) kernel modules must return None",
+    )
     expect(
         host_vec_copy.compile()._module_spec.insert_sync is None,
         "default @pto.jit insert_sync should stay unset and follow mode defaults",
