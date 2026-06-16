@@ -1,0 +1,763 @@
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+func.func @simt_vf_0(%arg0: !pto.ptr<i8, ub>, %arg1: f32, %arg2: i32) attributes {pto.simt_entry, pto.simt_max_regs = 64 : i32} {
+  %tid_129 = pto.get_tid_x : i32
+  %tid_130 = pto.get_tid_y : i32
+  %tid_131 = pto.get_tid_z : i32
+  %c32_i32_133 = arith.constant 32 : i32
+  %local_132 = llvm.alloca %c32_i32_133 x f32 : (i32) -> !llvm.ptr
+  %c1_i32_135 = arith.constant 1 : i32
+  %local_134 = llvm.alloca %c1_i32_135 x f32 : (i32) -> !llvm.ptr
+  %c0_i32_136 = arith.constant 0 : i32
+  %cast_137 = arith.index_cast %c0_i32_136 : i32 to index
+  %c16_i32_138 = arith.constant 16 : i32
+  %cast_139 = arith.index_cast %c16_i32_138 : i32 to index
+  %c1_140 = arith.constant 1 : index
+  %ub_141 = arith.addi %cast_137, %cast_139 : index
+  scf.for %i_142 = %cast_137 to %ub_141 step %c1_140 {
+    %cast_143 = arith.index_cast %i_142 : index to i32
+    %c1_i32_144 = arith.constant 1 : i32
+    %band_145 = arith.andi %arg2, %c1_i32_144 : i32
+    %c8192_i32_146 = arith.constant 8192 : i32
+    %mul_147 = arith.muli %band_145, %c8192_i32_146 : i32
+    %c512_i32_148 = arith.constant 512 : i32
+    %mul_149 = arith.muli %cast_143, %c512_i32_148 : i32
+    %add_150 = arith.addi %mul_147, %mul_149 : i32
+    %c2_i32_151 = arith.constant 2 : i32
+    %mul_152 = arith.muli %tid_129, %c2_i32_151 : i32
+    %add_153 = arith.addi %add_150, %mul_152 : i32
+    %c5120_i32_154 = arith.constant 5120 : i32
+    %add_155 = arith.addi %add_153, %c5120_i32_154 : i32
+    %cast_156 = arith.index_cast %add_155 : i32 to index
+    %pto_int_157 = "pto.castptr"(%arg0) : (!pto.ptr<i8, ub>) -> i64
+    %llvm_ub_ptr_158 = "llvm.inttoptr"(%pto_int_157) : (i64) -> !llvm.ptr<6>
+    %cast_159 = arith.index_cast %cast_156 : index to i64
+    %c4_i64_160 = arith.constant 4 : i64
+    %byte_off_161 = arith.muli %cast_159, %c4_i64_160 : i64
+    %gep_ub_ptr_162 = "llvm.getelementptr"(%llvm_ub_ptr_158, %byte_off_161) {elem_type = i8, rawConstantIndices = array<i32: -2147483648>} : (!llvm.ptr<6>, i64) -> !llvm.ptr<6>
+    %load_163 = "llvm.load"(%gep_ub_ptr_162) : (!llvm.ptr<6>) -> vector<2xf32>
+    %c2_i32_164 = arith.constant 2 : i32
+    %mul_165 = arith.muli %cast_143, %c2_i32_164 : i32
+    %cast_166 = arith.index_cast %mul_165 : i32 to index
+    %cast_167 = arith.index_cast %cast_166 : index to i64
+    %gep_168 = "llvm.getelementptr"(%local_132, %cast_167) {elem_type = f32, rawConstantIndices = array<i32: -2147483648>} : (!llvm.ptr, i64) -> !llvm.ptr
+    "llvm.store"(%load_163, %gep_168) : (vector<2xf32>, !llvm.ptr) -> ()
+  }
+  %fpconst_169 = arith.constant 0.00000000 : f32
+  %c0_i32_170 = arith.constant 0 : i32
+  %cast_171 = arith.index_cast %c0_i32_170 : i32 to index
+  %cast_172 = arith.index_cast %cast_171 : index to i64
+  %gep_173 = "llvm.getelementptr"(%local_134, %cast_172) {elem_type = f32, rawConstantIndices = array<i32: -2147483648>} : (!llvm.ptr, i64) -> !llvm.ptr
+  "llvm.store"(%fpconst_169, %gep_173) : (f32, !llvm.ptr) -> ()
+  %c0_i32_174 = arith.constant 0 : i32
+  %cast_175 = arith.index_cast %c0_i32_174 : i32 to index
+  %c32_i32_176 = arith.constant 32 : i32
+  %cast_177 = arith.index_cast %c32_i32_176 : i32 to index
+  %c1_178 = arith.constant 1 : index
+  %ub_179 = arith.addi %cast_175, %cast_177 : index
+  scf.for %i_180 = %cast_175 to %ub_179 step %c1_178 {
+    %cast_181 = arith.index_cast %i_180 : index to i32
+    %c20_i32_182 = arith.constant 20 : i32
+    %cmp_183 = arith.cmpi slt, %cast_181, %c20_i32_182 : i32
+    scf.if %cmp_183 {
+      %c0_i32_184 = arith.constant 0 : i32
+      %cast_185 = arith.index_cast %c0_i32_184 : i32 to index
+      %cast_186 = arith.index_cast %cast_185 : index to i64
+      %gep_187 = "llvm.getelementptr"(%local_134, %cast_186) {elem_type = f32, rawConstantIndices = array<i32: -2147483648>} : (!llvm.ptr, i64) -> !llvm.ptr
+      %load_188 = "llvm.load"(%gep_187) : (!llvm.ptr) -> f32
+      %cast_189 = arith.index_cast %cast_181 : i32 to index
+      %cast_190 = arith.index_cast %cast_189 : index to i64
+      %gep_191 = "llvm.getelementptr"(%local_132, %cast_190) {elem_type = f32, rawConstantIndices = array<i32: -2147483648>} : (!llvm.ptr, i64) -> !llvm.ptr
+      %load_192 = "llvm.load"(%gep_191) : (!llvm.ptr) -> f32
+      %cast_193 = arith.index_cast %cast_181 : i32 to index
+      %cast_194 = arith.index_cast %cast_193 : index to i64
+      %gep_195 = "llvm.getelementptr"(%local_132, %cast_194) {elem_type = f32, rawConstantIndices = array<i32: -2147483648>} : (!llvm.ptr, i64) -> !llvm.ptr
+      %load_196 = "llvm.load"(%gep_195) : (!llvm.ptr) -> f32
+      %mul_197 = arith.mulf %load_192, %load_196 : f32
+      %add_198 = arith.addf %load_188, %mul_197 : f32
+      %c0_i32_199 = arith.constant 0 : i32
+      %cast_200 = arith.index_cast %c0_i32_199 : i32 to index
+      %cast_201 = arith.index_cast %cast_200 : index to i64
+      %gep_202 = "llvm.getelementptr"(%local_134, %cast_201) {elem_type = f32, rawConstantIndices = array<i32: -2147483648>} : (!llvm.ptr, i64) -> !llvm.ptr
+      "llvm.store"(%add_198, %gep_202) : (f32, !llvm.ptr) -> ()
+    }
+  }
+  %c0_i32_203 = arith.constant 0 : i32
+  %cast_204 = arith.index_cast %c0_i32_203 : i32 to index
+  %cast_205 = arith.index_cast %cast_204 : index to i64
+  %gep_206 = "llvm.getelementptr"(%local_134, %cast_205) {elem_type = f32, rawConstantIndices = array<i32: -2147483648>} : (!llvm.ptr, i64) -> !llvm.ptr
+  %load_207 = "llvm.load"(%gep_206) : (!llvm.ptr) -> f32
+  %ws_cast_208 = "pto.castptr"(%arg0) : (!pto.ptr<i8, ub>) -> !pto.ptr<f32, ub>
+  %tid_210 = pto.get_tid_x : i32
+  %tid_idx_211 = arith.index_castui %tid_210 : i32 to index
+  %c32_i32_212 = arith.constant 32 : i32
+  %reduce_wid_213 = arith.divsi %tid_210, %c32_i32_212 : i32
+  %reduce_laneid_214 = pto.get_laneid : i32
+  %reduce_lid_215 = arith.remui %reduce_laneid_214, %c32_i32_212 : i32
+  %reduce_wid_idx_216 = arith.index_castui %reduce_wid_213 : i32 to index
+  %c0_i32_217 = arith.constant 0 : i32
+  %reduce_lane0_218 = arith.cmpi eq, %reduce_lid_215, %c0_i32_217 : i32
+  %c0_219 = arith.constant 0 : index
+  %c8_i32_220 = arith.constant 8 : i32
+  %reduce_warp_sum_221 = pto.redux_add %load_207 : f32 -> f32
+  scf.if %reduce_lane0_218 {
+    %c37904_222 = arith.constant 37904 : index
+    %offset_wid_idx_223 = arith.addi %reduce_wid_idx_216, %c37904_222 : index
+    pto.store %reduce_warp_sum_221, %ws_cast_208[%offset_wid_idx_223] : !pto.ptr<f32, ub>, f32
+  }
+  pto.syncthreads
+  %reduce_group0_224 = arith.cmpi eq, %reduce_wid_213, %c0_i32_217 : i32
+  %reduce_lid_has_partial_225 = arith.cmpi slt, %reduce_lid_215, %c8_i32_220 : i32
+  %reduce_load_partial_226 = arith.andi %reduce_group0_224, %reduce_lid_has_partial_225 : i1
+  %reduce_partial_input_227 = scf.if %reduce_load_partial_226 -> (f32) {
+    %reduce_partial_idx_228 = arith.index_castui %reduce_lid_215 : i32 to index
+    %c37904_229 = arith.constant 37904 : index
+    %offset_partial_idx_230 = arith.addi %reduce_partial_idx_228, %c37904_229 : index
+    %reduce_partial_val_231 = pto.load %ws_cast_208[%offset_partial_idx_230] : !pto.ptr<f32, ub> -> f32
+    scf.yield %reduce_partial_val_231 : f32
+  } else {
+    %reduce_identity_232 = arith.constant 0.000000e+00 : f32
+    scf.yield %reduce_identity_232 : f32
+  }
+  %reduce_block_sum_233 = pto.redux_add %reduce_partial_input_227 : f32 -> f32
+  pto.syncthreads
+  %reduce_global_leader_234 = arith.cmpi eq, %tid_210, %c0_i32_217 : i32
+  scf.if %reduce_global_leader_234 {
+    %c37904_235 = arith.constant 37904 : index
+    %offset_c0_236 = arith.addi %c0_219, %c37904_235 : index
+    pto.store %reduce_block_sum_233, %ws_cast_208[%offset_c0_236] : !pto.ptr<f32, ub>, f32
+  }
+  pto.syncthreads
+  %c37904_237 = arith.constant 37904 : index
+  %offset_c0_final_238 = arith.addi %c0_219, %c37904_237 : index
+  %reduce_209 = pto.load %ws_cast_208[%offset_c0_final_238] : !pto.ptr<f32, ub> -> f32
+  pto.syncthreads
+  %c0_i32_239 = arith.constant 0 : i32
+  %cast_240 = arith.index_cast %c0_i32_239 : i32 to index
+  %cast_241 = arith.index_cast %cast_240 : index to i64
+  %gep_242 = "llvm.getelementptr"(%local_134, %cast_241) {elem_type = f32, rawConstantIndices = array<i32: -2147483648>} : (!llvm.ptr, i64) -> !llvm.ptr
+  "llvm.store"(%reduce_209, %gep_242) : (f32, !llvm.ptr) -> ()
+  %c0_i32_243 = arith.constant 0 : i32
+  %cast_244 = arith.index_cast %c0_i32_243 : i32 to index
+  %cast_245 = arith.index_cast %cast_244 : index to i64
+  %gep_246 = "llvm.getelementptr"(%local_134, %cast_245) {elem_type = f32, rawConstantIndices = array<i32: -2147483648>} : (!llvm.ptr, i64) -> !llvm.ptr
+  %load_247 = "llvm.load"(%gep_246) : (!llvm.ptr) -> f32
+  %fpconst_248 = arith.constant 5120.00000 : f32
+  %div_249 = arith.divf %load_247, %fpconst_248 : f32
+  %add_250 = arith.addf %div_249, %arg1 : f32
+  %sqrt_251 = "llvm.intr.sqrt"(%add_250) : (f32) -> f32
+  %one_252 = arith.constant 1.0 : f32
+  %rsqrt_253 = arith.divf %one_252, %sqrt_251 : f32
+  %c1_i32_254 = arith.constant 1 : i32
+  %band_255 = arith.andi %arg2, %c1_i32_254 : i32
+  %c8_i32_256 = arith.constant 8 : i32
+  %mul_257 = arith.muli %band_255, %c8_i32_256 : i32
+  %c21504_i32_258 = arith.constant 21504 : i32
+  %add_259 = arith.addi %mul_257, %c21504_i32_258 : i32
+  %cast_260 = arith.index_cast %add_259 : i32 to index
+  %ub_cast_261 = "pto.castptr"(%arg0) : (!pto.ptr<i8, ub>) -> !pto.ptr<f32, ub>
+  pto.store %rsqrt_253, %ub_cast_261[%cast_260] : !pto.ptr<f32, ub>, f32
+  %c0_i32_262 = arith.constant 0 : i32
+  %cast_263 = arith.index_cast %c0_i32_262 : i32 to index
+  %c16_i32_264 = arith.constant 16 : i32
+  %cast_265 = arith.index_cast %c16_i32_264 : i32 to index
+  %c1_266 = arith.constant 1 : index
+  %ub_267 = arith.addi %cast_263, %cast_265 : index
+  scf.for %i_268 = %cast_263 to %ub_267 step %c1_266 {
+    %cast_269 = arith.index_cast %i_268 : index to i32
+    %c10_i32_270 = arith.constant 10 : i32
+    %cmp_271 = arith.cmpi slt, %cast_269, %c10_i32_270 : i32
+    scf.if %cmp_271 {
+      %c2_i32_272 = arith.constant 2 : i32
+      %mul_273 = arith.muli %cast_269, %c2_i32_272 : i32
+      %cast_274 = arith.index_cast %mul_273 : i32 to index
+      %cast_275 = arith.index_cast %cast_274 : index to i64
+      %gep_276 = "llvm.getelementptr"(%local_132, %cast_275) {elem_type = f32, rawConstantIndices = array<i32: -2147483648>} : (!llvm.ptr, i64) -> !llvm.ptr
+      %load_277 = "llvm.load"(%gep_276) : (!llvm.ptr) -> vector<2xf32>
+      %undef_278 = llvm.mlir.undef : vector<2xf32>
+      %c0_i32_279 = arith.constant 0 : i32
+      %ins_280 = "llvm.insertelement"(%undef_278, %rsqrt_253, %c0_i32_279) : (vector<2xf32>, f32, i32) -> vector<2xf32>
+      %c1_i32_281 = arith.constant 1 : i32
+      %ins_282 = "llvm.insertelement"(%ins_280, %rsqrt_253, %c1_i32_281) : (vector<2xf32>, f32, i32) -> vector<2xf32>
+      %mul_283 = arith.mulf %load_277, %ins_282 : vector<2xf32>
+      %c512_i32_284 = arith.constant 512 : i32
+      %mul_285 = arith.muli %cast_269, %c512_i32_284 : i32
+      %c2_i32_286 = arith.constant 2 : i32
+      %mul_287 = arith.muli %tid_129, %c2_i32_286 : i32
+      %add_288 = arith.addi %mul_285, %mul_287 : i32
+      %cast_289 = arith.index_cast %add_288 : i32 to index
+      %pto_int_290 = "pto.castptr"(%arg0) : (!pto.ptr<i8, ub>) -> i64
+      %llvm_ub_ptr_291 = "llvm.inttoptr"(%pto_int_290) : (i64) -> !llvm.ptr<6>
+      %cast_292 = arith.index_cast %cast_289 : index to i64
+      %c4_i64_293 = arith.constant 4 : i64
+      %byte_off_294 = arith.muli %cast_292, %c4_i64_293 : i64
+      %gep_ub_ptr_295 = "llvm.getelementptr"(%llvm_ub_ptr_291, %byte_off_294) {elem_type = i8, rawConstantIndices = array<i32: -2147483648>} : (!llvm.ptr<6>, i64) -> !llvm.ptr<6>
+      %load_296 = "llvm.load"(%gep_ub_ptr_295) : (!llvm.ptr<6>) -> vector<2xf32>
+      %mul_297 = arith.mulf %mul_283, %load_296 : vector<2xf32>
+      %c1_i32_298 = arith.constant 1 : i32
+      %band_299 = arith.andi %arg2, %c1_i32_298 : i32
+      %c8192_i32_300 = arith.constant 8192 : i32
+      %mul_301 = arith.muli %band_299, %c8192_i32_300 : i32
+      %c512_i32_302 = arith.constant 512 : i32
+      %mul_303 = arith.muli %cast_269, %c512_i32_302 : i32
+      %add_304 = arith.addi %mul_301, %mul_303 : i32
+      %c2_i32_305 = arith.constant 2 : i32
+      %mul_306 = arith.muli %tid_129, %c2_i32_305 : i32
+      %add_307 = arith.addi %add_304, %mul_306 : i32
+      %c21520_i32_308 = arith.constant 21520 : i32
+      %add_309 = arith.addi %add_307, %c21520_i32_308 : i32
+      %cast_310 = arith.index_cast %add_309 : i32 to index
+      %pto_int_311 = "pto.castptr"(%arg0) : (!pto.ptr<i8, ub>) -> i64
+      %llvm_ub_ptr_312 = "llvm.inttoptr"(%pto_int_311) : (i64) -> !llvm.ptr<6>
+      %cast_313 = arith.index_cast %cast_310 : index to i64
+      %c4_i64_314 = arith.constant 4 : i64
+      %byte_off_315 = arith.muli %cast_313, %c4_i64_314 : i64
+      %gep_ub_ptr_316 = "llvm.getelementptr"(%llvm_ub_ptr_312, %byte_off_315) {elem_type = i8, rawConstantIndices = array<i32: -2147483648>} : (!llvm.ptr<6>, i64) -> !llvm.ptr<6>
+      "llvm.store"(%mul_297, %gep_ub_ptr_316) : (vector<2xf32>, !llvm.ptr<6>) -> ()
+    }
+  }
+  return
+}
+
+func.func @main_kernel_kernel(%arg0: !pto.ptr<f32, gm>, %arg1: !pto.ptr<f32, gm>, %arg2: !pto.ptr<f32, gm>, %arg3: !pto.ptr<f32, gm>, %arg4: f32) attributes {dyn_shared_memory_buf = 152640 : i64, pto.aicore} {
+  %c0_i64_0 = arith.constant 0 : i64
+  %ub_base_1 = pto.castptr %c0_i64_0 : i64 -> !pto.ptr<i8, ub>
+  %bx_2 = "pto.get_block_idx"() : () -> i64
+  %cast_3 = arith.trunci %bx_2 : i64 to i32
+  %c0_i32_4 = arith.constant 0 : i32
+  %cast_5 = arith.index_cast %c0_i32_4 : i32 to index
+  %c4_6 = arith.constant 4 : index
+  %byte_off_7 = arith.muli %cast_5, %c4_6 : index
+  %ub_elem_8 = "pto.addptr"(%ub_base_1, %byte_off_7) : (!pto.ptr<i8, ub>, index) -> !pto.ptr<i8, ub>
+  %ub_elem_cast_9 = "pto.castptr"(%ub_elem_8) : (!pto.ptr<i8, ub>) -> !pto.ptr<f32, ub>
+  %c0_i32_10 = arith.constant 0 : i32
+  %cast_11 = arith.index_cast %c0_i32_10 : i32 to index
+  %gm_off_12 = "pto.addptr"(%arg1, %cast_11) : (!pto.ptr<f32, gm>, index) -> !pto.ptr<f32, gm>
+  %c0_i64_13 = arith.constant 0 : i64
+  %c1_i32_14 = arith.constant 1 : i32
+  %cast_15 = arith.extui %c1_i32_14 : i32 to i64
+  %c20480_i32_16 = arith.constant 20480 : i32
+  %cast_17 = arith.extui %c20480_i32_16 : i32 to i64
+  %c20480_i32_18 = arith.constant 20480 : i32
+  %cast_19 = arith.extui %c20480_i32_18 : i32 to i64
+  %c20480_i32_20 = arith.constant 20480 : i32
+  %cast_21 = arith.extui %c20480_i32_20 : i32 to i64
+  pto.mte_gm_ub %gm_off_12, %ub_elem_cast_9, %c0_i64_13, %cast_17
+    nburst(%cast_15, %cast_19, %cast_21)
+    : !pto.ptr<f32, gm>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64
+  "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_MTE2>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID3>} : () -> ()
+  "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_MTE2>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID3>} : () -> ()
+  "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID0>} : () -> ()
+  "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID0>} : () -> ()
+  "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID1>} : () -> ()
+  "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID1>} : () -> ()
+  %c0_i32_22 = arith.constant 0 : i32
+  %cast_23 = arith.index_cast %c0_i32_22 : i32 to index
+  %c64_i32_24 = arith.constant 64 : i32
+  %cast_25 = arith.index_cast %c64_i32_24 : i32 to index
+  %c1_26 = arith.constant 1 : index
+  %ub_27 = arith.addi %cast_23, %cast_25 : index
+  scf.for %t_28 = %cast_23 to %ub_27 step %c1_26 {
+    %cast_29 = arith.index_cast %t_28 : index to i32
+    %c1_i32_30 = arith.constant 1 : i32
+    %band_31 = arith.andi %cast_29, %c1_i32_30 : i32
+    %c0_i32_32 = arith.constant 0 : i32
+    %is_event0_33 = arith.cmpi eq, %band_31, %c0_i32_32 : i32
+    scf.if %is_event0_33 {
+      "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID0>} : () -> ()
+    } else {
+      %c1_i32_34 = arith.constant 1 : i32
+      %is_event1_35 = arith.cmpi eq, %band_31, %c1_i32_34 : i32
+      scf.if %is_event1_35 {
+        "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID1>} : () -> ()
+      } else {
+        %c2_i32_36 = arith.constant 2 : i32
+        %is_event2_37 = arith.cmpi eq, %band_31, %c2_i32_36 : i32
+        scf.if %is_event2_37 {
+          "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID2>} : () -> ()
+        } else {
+          %c3_i32_38 = arith.constant 3 : i32
+          %is_event3_39 = arith.cmpi eq, %band_31, %c3_i32_38 : i32
+          scf.if %is_event3_39 {
+            "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID3>} : () -> ()
+          } else {
+            %c4_i32_40 = arith.constant 4 : i32
+            %is_event4_41 = arith.cmpi eq, %band_31, %c4_i32_40 : i32
+            scf.if %is_event4_41 {
+              "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID4>} : () -> ()
+            } else {
+              %c5_i32_42 = arith.constant 5 : i32
+              %is_event5_43 = arith.cmpi eq, %band_31, %c5_i32_42 : i32
+              scf.if %is_event5_43 {
+                "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID5>} : () -> ()
+              } else {
+                %c6_i32_44 = arith.constant 6 : i32
+                %is_event6_45 = arith.cmpi eq, %band_31, %c6_i32_44 : i32
+                scf.if %is_event6_45 {
+                  "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID6>} : () -> ()
+                } else {
+                  %c7_i32_46 = arith.constant 7 : i32
+                  %is_event7_47 = arith.cmpi eq, %band_31, %c7_i32_46 : i32
+                  scf.if %is_event7_47 {
+                    "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID7>} : () -> ()
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    %c1_i32_48 = arith.constant 1 : i32
+    %band_49 = arith.andi %cast_29, %c1_i32_48 : i32
+    %c8192_i32_50 = arith.constant 8192 : i32
+    %mul_51 = arith.muli %band_49, %c8192_i32_50 : i32
+    %c5120_i32_52 = arith.constant 5120 : i32
+    %add_53 = arith.addi %mul_51, %c5120_i32_52 : i32
+    %cast_54 = arith.index_cast %add_53 : i32 to index
+    %c4_55 = arith.constant 4 : index
+    %byte_off_56 = arith.muli %cast_54, %c4_55 : index
+    %ub_elem_57 = "pto.addptr"(%ub_base_1, %byte_off_56) : (!pto.ptr<i8, ub>, index) -> !pto.ptr<i8, ub>
+    %ub_elem_cast_58 = "pto.castptr"(%ub_elem_57) : (!pto.ptr<i8, ub>) -> !pto.ptr<f32, ub>
+    %c327680_i32_59 = arith.constant 327680 : i32
+    %mul_60 = arith.muli %cast_29, %c327680_i32_59 : i32
+    %c5120_i32_61 = arith.constant 5120 : i32
+    %mul_62 = arith.muli %cast_3, %c5120_i32_61 : i32
+    %add_63 = arith.addi %mul_60, %mul_62 : i32
+    %cast_64 = arith.index_cast %add_63 : i32 to index
+    %gm_off_65 = "pto.addptr"(%arg2, %cast_64) : (!pto.ptr<f32, gm>, index) -> !pto.ptr<f32, gm>
+    %c0_i64_66 = arith.constant 0 : i64
+    %c1_i32_67 = arith.constant 1 : i32
+    %cast_68 = arith.extui %c1_i32_67 : i32 to i64
+    %c20480_i32_69 = arith.constant 20480 : i32
+    %cast_70 = arith.extui %c20480_i32_69 : i32 to i64
+    %c20480_i32_71 = arith.constant 20480 : i32
+    %cast_72 = arith.extui %c20480_i32_71 : i32 to i64
+    %c20480_i32_73 = arith.constant 20480 : i32
+    %cast_74 = arith.extui %c20480_i32_73 : i32 to i64
+    pto.mte_gm_ub %gm_off_65, %ub_elem_cast_58, %c0_i64_66, %cast_70
+    nburst(%cast_68, %cast_72, %cast_74)
+    : !pto.ptr<f32, gm>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64
+    %c1_i32_75 = arith.constant 1 : i32
+    %band_76 = arith.andi %cast_29, %c1_i32_75 : i32
+    %c0_i32_77 = arith.constant 0 : i32
+    %is_event0_78 = arith.cmpi eq, %band_76, %c0_i32_77 : i32
+    scf.if %is_event0_78 {
+      "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_MTE2>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID0>} : () -> ()
+    } else {
+      %c1_i32_79 = arith.constant 1 : i32
+      %is_event1_80 = arith.cmpi eq, %band_76, %c1_i32_79 : i32
+      scf.if %is_event1_80 {
+        "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_MTE2>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID1>} : () -> ()
+      } else {
+        %c2_i32_81 = arith.constant 2 : i32
+        %is_event2_82 = arith.cmpi eq, %band_76, %c2_i32_81 : i32
+        scf.if %is_event2_82 {
+          "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_MTE2>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID2>} : () -> ()
+        } else {
+          %c3_i32_83 = arith.constant 3 : i32
+          %is_event3_84 = arith.cmpi eq, %band_76, %c3_i32_83 : i32
+          scf.if %is_event3_84 {
+            "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_MTE2>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID3>} : () -> ()
+          } else {
+            %c4_i32_85 = arith.constant 4 : i32
+            %is_event4_86 = arith.cmpi eq, %band_76, %c4_i32_85 : i32
+            scf.if %is_event4_86 {
+              "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_MTE2>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID4>} : () -> ()
+            } else {
+              %c5_i32_87 = arith.constant 5 : i32
+              %is_event5_88 = arith.cmpi eq, %band_76, %c5_i32_87 : i32
+              scf.if %is_event5_88 {
+                "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_MTE2>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID5>} : () -> ()
+              } else {
+                %c6_i32_89 = arith.constant 6 : i32
+                %is_event6_90 = arith.cmpi eq, %band_76, %c6_i32_89 : i32
+                scf.if %is_event6_90 {
+                  "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_MTE2>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID6>} : () -> ()
+                } else {
+                  %c7_i32_91 = arith.constant 7 : i32
+                  %is_event7_92 = arith.cmpi eq, %band_76, %c7_i32_91 : i32
+                  scf.if %is_event7_92 {
+                    "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_MTE2>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID7>} : () -> ()
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    %c1_i32_93 = arith.constant 1 : i32
+    %band_94 = arith.andi %cast_29, %c1_i32_93 : i32
+    %c0_i32_95 = arith.constant 0 : i32
+    %is_event0_96 = arith.cmpi eq, %band_94, %c0_i32_95 : i32
+    scf.if %is_event0_96 {
+      "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_MTE2>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID0>} : () -> ()
+    } else {
+      %c1_i32_97 = arith.constant 1 : i32
+      %is_event1_98 = arith.cmpi eq, %band_94, %c1_i32_97 : i32
+      scf.if %is_event1_98 {
+        "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_MTE2>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID1>} : () -> ()
+      } else {
+        %c2_i32_99 = arith.constant 2 : i32
+        %is_event2_100 = arith.cmpi eq, %band_94, %c2_i32_99 : i32
+        scf.if %is_event2_100 {
+          "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_MTE2>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID2>} : () -> ()
+        } else {
+          %c3_i32_101 = arith.constant 3 : i32
+          %is_event3_102 = arith.cmpi eq, %band_94, %c3_i32_101 : i32
+          scf.if %is_event3_102 {
+            "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_MTE2>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID3>} : () -> ()
+          } else {
+            %c4_i32_103 = arith.constant 4 : i32
+            %is_event4_104 = arith.cmpi eq, %band_94, %c4_i32_103 : i32
+            scf.if %is_event4_104 {
+              "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_MTE2>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID4>} : () -> ()
+            } else {
+              %c5_i32_105 = arith.constant 5 : i32
+              %is_event5_106 = arith.cmpi eq, %band_94, %c5_i32_105 : i32
+              scf.if %is_event5_106 {
+                "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_MTE2>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID5>} : () -> ()
+              } else {
+                %c6_i32_107 = arith.constant 6 : i32
+                %is_event6_108 = arith.cmpi eq, %band_94, %c6_i32_107 : i32
+                scf.if %is_event6_108 {
+                  "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_MTE2>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID6>} : () -> ()
+                } else {
+                  %c7_i32_109 = arith.constant 7 : i32
+                  %is_event7_110 = arith.cmpi eq, %band_94, %c7_i32_109 : i32
+                  scf.if %is_event7_110 {
+                    "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_MTE2>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID7>} : () -> ()
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    %c1_i32_111 = arith.constant 1 : i32
+    %band_112 = arith.andi %cast_29, %c1_i32_111 : i32
+    %c0_i32_113 = arith.constant 0 : i32
+    %is_event0_114 = arith.cmpi eq, %band_112, %c0_i32_113 : i32
+    scf.if %is_event0_114 {
+      "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID0>} : () -> ()
+    } else {
+      %c1_i32_115 = arith.constant 1 : i32
+      %is_event1_116 = arith.cmpi eq, %band_112, %c1_i32_115 : i32
+      scf.if %is_event1_116 {
+        "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID1>} : () -> ()
+      } else {
+        %c2_i32_117 = arith.constant 2 : i32
+        %is_event2_118 = arith.cmpi eq, %band_112, %c2_i32_117 : i32
+        scf.if %is_event2_118 {
+          "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID2>} : () -> ()
+        } else {
+          %c3_i32_119 = arith.constant 3 : i32
+          %is_event3_120 = arith.cmpi eq, %band_112, %c3_i32_119 : i32
+          scf.if %is_event3_120 {
+            "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID3>} : () -> ()
+          } else {
+            %c4_i32_121 = arith.constant 4 : i32
+            %is_event4_122 = arith.cmpi eq, %band_112, %c4_i32_121 : i32
+            scf.if %is_event4_122 {
+              "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID4>} : () -> ()
+            } else {
+              %c5_i32_123 = arith.constant 5 : i32
+              %is_event5_124 = arith.cmpi eq, %band_112, %c5_i32_123 : i32
+              scf.if %is_event5_124 {
+                "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID5>} : () -> ()
+              } else {
+                %c6_i32_125 = arith.constant 6 : i32
+                %is_event6_126 = arith.cmpi eq, %band_112, %c6_i32_125 : i32
+                scf.if %is_event6_126 {
+                  "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID6>} : () -> ()
+                } else {
+                  %c7_i32_127 = arith.constant 7 : i32
+                  %is_event7_128 = arith.cmpi eq, %band_112, %c7_i32_127 : i32
+                  scf.if %is_event7_128 {
+                    "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID7>} : () -> ()
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    %c256_i32_317 = arith.constant 256 : i32
+    %c1_i32_318 = arith.constant 1 : i32
+    %c1_i32_319 = arith.constant 1 : i32
+    pto.simt_launch @simt_vf_0<<<%c256_i32_317, %c1_i32_318, %c1_i32_319>>>(%ub_base_1, %arg4, %cast_29) : (!pto.ptr<i8, ub>, f32, i32) -> ()
+    %c1_i32_320 = arith.constant 1 : i32
+    %band_321 = arith.andi %cast_29, %c1_i32_320 : i32
+    %c0_i32_322 = arith.constant 0 : i32
+    %is_event0_323 = arith.cmpi eq, %band_321, %c0_i32_322 : i32
+    scf.if %is_event0_323 {
+      "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE3>, event_id = #pto.event<EVENT_ID0>} : () -> ()
+    } else {
+      %c1_i32_324 = arith.constant 1 : i32
+      %is_event1_325 = arith.cmpi eq, %band_321, %c1_i32_324 : i32
+      scf.if %is_event1_325 {
+        "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE3>, event_id = #pto.event<EVENT_ID1>} : () -> ()
+      } else {
+        %c2_i32_326 = arith.constant 2 : i32
+        %is_event2_327 = arith.cmpi eq, %band_321, %c2_i32_326 : i32
+        scf.if %is_event2_327 {
+          "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE3>, event_id = #pto.event<EVENT_ID2>} : () -> ()
+        } else {
+          %c3_i32_328 = arith.constant 3 : i32
+          %is_event3_329 = arith.cmpi eq, %band_321, %c3_i32_328 : i32
+          scf.if %is_event3_329 {
+            "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE3>, event_id = #pto.event<EVENT_ID3>} : () -> ()
+          } else {
+            %c4_i32_330 = arith.constant 4 : i32
+            %is_event4_331 = arith.cmpi eq, %band_321, %c4_i32_330 : i32
+            scf.if %is_event4_331 {
+              "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE3>, event_id = #pto.event<EVENT_ID4>} : () -> ()
+            } else {
+              %c5_i32_332 = arith.constant 5 : i32
+              %is_event5_333 = arith.cmpi eq, %band_321, %c5_i32_332 : i32
+              scf.if %is_event5_333 {
+                "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE3>, event_id = #pto.event<EVENT_ID5>} : () -> ()
+              } else {
+                %c6_i32_334 = arith.constant 6 : i32
+                %is_event6_335 = arith.cmpi eq, %band_321, %c6_i32_334 : i32
+                scf.if %is_event6_335 {
+                  "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE3>, event_id = #pto.event<EVENT_ID6>} : () -> ()
+                } else {
+                  %c7_i32_336 = arith.constant 7 : i32
+                  %is_event7_337 = arith.cmpi eq, %band_321, %c7_i32_336 : i32
+                  scf.if %is_event7_337 {
+                    "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE3>, event_id = #pto.event<EVENT_ID7>} : () -> ()
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    %c1_i32_338 = arith.constant 1 : i32
+    %band_339 = arith.andi %cast_29, %c1_i32_338 : i32
+    %c0_i32_340 = arith.constant 0 : i32
+    %is_event0_341 = arith.cmpi eq, %band_339, %c0_i32_340 : i32
+    scf.if %is_event0_341 {
+      "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID0>} : () -> ()
+    } else {
+      %c1_i32_342 = arith.constant 1 : i32
+      %is_event1_343 = arith.cmpi eq, %band_339, %c1_i32_342 : i32
+      scf.if %is_event1_343 {
+        "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID1>} : () -> ()
+      } else {
+        %c2_i32_344 = arith.constant 2 : i32
+        %is_event2_345 = arith.cmpi eq, %band_339, %c2_i32_344 : i32
+        scf.if %is_event2_345 {
+          "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID2>} : () -> ()
+        } else {
+          %c3_i32_346 = arith.constant 3 : i32
+          %is_event3_347 = arith.cmpi eq, %band_339, %c3_i32_346 : i32
+          scf.if %is_event3_347 {
+            "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID3>} : () -> ()
+          } else {
+            %c4_i32_348 = arith.constant 4 : i32
+            %is_event4_349 = arith.cmpi eq, %band_339, %c4_i32_348 : i32
+            scf.if %is_event4_349 {
+              "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID4>} : () -> ()
+            } else {
+              %c5_i32_350 = arith.constant 5 : i32
+              %is_event5_351 = arith.cmpi eq, %band_339, %c5_i32_350 : i32
+              scf.if %is_event5_351 {
+                "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID5>} : () -> ()
+              } else {
+                %c6_i32_352 = arith.constant 6 : i32
+                %is_event6_353 = arith.cmpi eq, %band_339, %c6_i32_352 : i32
+                scf.if %is_event6_353 {
+                  "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID6>} : () -> ()
+                } else {
+                  %c7_i32_354 = arith.constant 7 : i32
+                  %is_event7_355 = arith.cmpi eq, %band_339, %c7_i32_354 : i32
+                  scf.if %is_event7_355 {
+                    "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID7>} : () -> ()
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    %c1_i32_356 = arith.constant 1 : i32
+    %band_357 = arith.andi %cast_29, %c1_i32_356 : i32
+    %c0_i32_358 = arith.constant 0 : i32
+    %is_event0_359 = arith.cmpi eq, %band_357, %c0_i32_358 : i32
+    scf.if %is_event0_359 {
+      "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE3>, event_id = #pto.event<EVENT_ID0>} : () -> ()
+    } else {
+      %c1_i32_360 = arith.constant 1 : i32
+      %is_event1_361 = arith.cmpi eq, %band_357, %c1_i32_360 : i32
+      scf.if %is_event1_361 {
+        "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE3>, event_id = #pto.event<EVENT_ID1>} : () -> ()
+      } else {
+        %c2_i32_362 = arith.constant 2 : i32
+        %is_event2_363 = arith.cmpi eq, %band_357, %c2_i32_362 : i32
+        scf.if %is_event2_363 {
+          "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE3>, event_id = #pto.event<EVENT_ID2>} : () -> ()
+        } else {
+          %c3_i32_364 = arith.constant 3 : i32
+          %is_event3_365 = arith.cmpi eq, %band_357, %c3_i32_364 : i32
+          scf.if %is_event3_365 {
+            "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE3>, event_id = #pto.event<EVENT_ID3>} : () -> ()
+          } else {
+            %c4_i32_366 = arith.constant 4 : i32
+            %is_event4_367 = arith.cmpi eq, %band_357, %c4_i32_366 : i32
+            scf.if %is_event4_367 {
+              "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE3>, event_id = #pto.event<EVENT_ID4>} : () -> ()
+            } else {
+              %c5_i32_368 = arith.constant 5 : i32
+              %is_event5_369 = arith.cmpi eq, %band_357, %c5_i32_368 : i32
+              scf.if %is_event5_369 {
+                "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE3>, event_id = #pto.event<EVENT_ID5>} : () -> ()
+              } else {
+                %c6_i32_370 = arith.constant 6 : i32
+                %is_event6_371 = arith.cmpi eq, %band_357, %c6_i32_370 : i32
+                scf.if %is_event6_371 {
+                  "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE3>, event_id = #pto.event<EVENT_ID6>} : () -> ()
+                } else {
+                  %c7_i32_372 = arith.constant 7 : i32
+                  %is_event7_373 = arith.cmpi eq, %band_357, %c7_i32_372 : i32
+                  scf.if %is_event7_373 {
+                    "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE3>, event_id = #pto.event<EVENT_ID7>} : () -> ()
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    %c327680_i32_374 = arith.constant 327680 : i32
+    %mul_375 = arith.muli %cast_29, %c327680_i32_374 : i32
+    %c5120_i32_376 = arith.constant 5120 : i32
+    %mul_377 = arith.muli %cast_3, %c5120_i32_376 : i32
+    %add_378 = arith.addi %mul_375, %mul_377 : i32
+    %cast_379 = arith.index_cast %add_378 : i32 to index
+    %gm_off_380 = "pto.addptr"(%arg3, %cast_379) : (!pto.ptr<f32, gm>, index) -> !pto.ptr<f32, gm>
+    %c1_i32_381 = arith.constant 1 : i32
+    %band_382 = arith.andi %cast_29, %c1_i32_381 : i32
+    %c8192_i32_383 = arith.constant 8192 : i32
+    %mul_384 = arith.muli %band_382, %c8192_i32_383 : i32
+    %c21520_i32_385 = arith.constant 21520 : i32
+    %add_386 = arith.addi %mul_384, %c21520_i32_385 : i32
+    %cast_387 = arith.index_cast %add_386 : i32 to index
+    %c4_388 = arith.constant 4 : index
+    %byte_off_389 = arith.muli %cast_387, %c4_388 : index
+    %ub_elem_390 = "pto.addptr"(%ub_base_1, %byte_off_389) : (!pto.ptr<i8, ub>, index) -> !pto.ptr<i8, ub>
+    %ub_elem_cast_391 = "pto.castptr"(%ub_elem_390) : (!pto.ptr<i8, ub>) -> !pto.ptr<f32, ub>
+    %c1_i32_392 = arith.constant 1 : i32
+    %cast_393 = arith.extui %c1_i32_392 : i32 to i64
+    %c20480_i32_394 = arith.constant 20480 : i32
+    %cast_395 = arith.extui %c20480_i32_394 : i32 to i64
+    %c32_i64_396 = arith.constant 32 : i64
+    %c31_i64_397 = arith.constant 31 : i64
+    %len_plus_31_398 = arith.addi %cast_395, %c31_i64_397 : i64
+    %len_aligned_399 = arith.divui %len_plus_31_398, %c32_i64_396 : i64
+    %len_burst_400 = arith.muli %len_aligned_399, %c32_i64_396 : i64
+    %c20480_i32_401 = arith.constant 20480 : i32
+    %cast_402 = arith.extui %c20480_i32_401 : i32 to i64
+    %c20480_i32_403 = arith.constant 20480 : i32
+    %cast_404 = arith.extui %c20480_i32_403 : i32 to i64
+    %c32_i64_405 = arith.constant 32 : i64
+    %c31_i64_406 = arith.constant 31 : i64
+    %src_stride_plus_31_407 = arith.addi %cast_404, %c31_i64_406 : i64
+    %src_stride_aligned_408 = arith.divui %src_stride_plus_31_407, %c32_i64_405 : i64
+    %src_stride_409 = arith.muli %src_stride_aligned_408, %c32_i64_405 : i64
+    %dst_stride_plus_31_410 = arith.addi %cast_402, %c31_i64_406 : i64
+    %dst_stride_aligned_411 = arith.divui %dst_stride_plus_31_410, %c32_i64_405 : i64
+    %dst_stride_412 = arith.muli %dst_stride_aligned_411, %c32_i64_405 : i64
+    pto.mte_ub_gm %ub_elem_cast_391, %gm_off_380, %len_burst_400
+    nburst(%cast_393, %src_stride_409, %dst_stride_412)
+    : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64
+    %c64_i32_413 = arith.constant 64 : i32
+    %mul_414 = arith.muli %cast_29, %c64_i32_413 : i32
+    %add_415 = arith.addi %mul_414, %cast_3 : i32
+    %cast_416 = arith.index_cast %add_415 : i32 to index
+    %gm_off_417 = "pto.addptr"(%arg0, %cast_416) : (!pto.ptr<f32, gm>, index) -> !pto.ptr<f32, gm>
+    %c1_i32_418 = arith.constant 1 : i32
+    %band_419 = arith.andi %cast_29, %c1_i32_418 : i32
+    %c8_i32_420 = arith.constant 8 : i32
+    %mul_421 = arith.muli %band_419, %c8_i32_420 : i32
+    %c21504_i32_422 = arith.constant 21504 : i32
+    %add_423 = arith.addi %mul_421, %c21504_i32_422 : i32
+    %cast_424 = arith.index_cast %add_423 : i32 to index
+    %c4_425 = arith.constant 4 : index
+    %byte_off_426 = arith.muli %cast_424, %c4_425 : index
+    %ub_elem_427 = "pto.addptr"(%ub_base_1, %byte_off_426) : (!pto.ptr<i8, ub>, index) -> !pto.ptr<i8, ub>
+    %ub_elem_cast_428 = "pto.castptr"(%ub_elem_427) : (!pto.ptr<i8, ub>) -> !pto.ptr<f32, ub>
+    %c1_i32_429 = arith.constant 1 : i32
+    %cast_430 = arith.extui %c1_i32_429 : i32 to i64
+    %c4_i32_431 = arith.constant 4 : i32
+    %cast_432 = arith.extui %c4_i32_431 : i32 to i64
+    %c4_i32_433 = arith.constant 4 : i32
+    %cast_434 = arith.extui %c4_i32_433 : i32 to i64
+    %c4_i32_435 = arith.constant 4 : i32
+    %cast_436 = arith.extui %c4_i32_435 : i32 to i64
+    pto.mte_ub_gm %ub_elem_cast_428, %gm_off_417, %cast_432
+    nburst(%cast_430, %cast_436, %cast_434)
+    : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64
+    %c1_i32_437 = arith.constant 1 : i32
+    %band_438 = arith.andi %cast_29, %c1_i32_437 : i32
+    %c0_i32_439 = arith.constant 0 : i32
+    %is_event0_440 = arith.cmpi eq, %band_438, %c0_i32_439 : i32
+    scf.if %is_event0_440 {
+      "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID0>} : () -> ()
+    } else {
+      %c1_i32_441 = arith.constant 1 : i32
+      %is_event1_442 = arith.cmpi eq, %band_438, %c1_i32_441 : i32
+      scf.if %is_event1_442 {
+        "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID1>} : () -> ()
+      } else {
+        %c2_i32_443 = arith.constant 2 : i32
+        %is_event2_444 = arith.cmpi eq, %band_438, %c2_i32_443 : i32
+        scf.if %is_event2_444 {
+          "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID2>} : () -> ()
+        } else {
+          %c3_i32_445 = arith.constant 3 : i32
+          %is_event3_446 = arith.cmpi eq, %band_438, %c3_i32_445 : i32
+          scf.if %is_event3_446 {
+            "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID3>} : () -> ()
+          } else {
+            %c4_i32_447 = arith.constant 4 : i32
+            %is_event4_448 = arith.cmpi eq, %band_438, %c4_i32_447 : i32
+            scf.if %is_event4_448 {
+              "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID4>} : () -> ()
+            } else {
+              %c5_i32_449 = arith.constant 5 : i32
+              %is_event5_450 = arith.cmpi eq, %band_438, %c5_i32_449 : i32
+              scf.if %is_event5_450 {
+                "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID5>} : () -> ()
+              } else {
+                %c6_i32_451 = arith.constant 6 : i32
+                %is_event6_452 = arith.cmpi eq, %band_438, %c6_i32_451 : i32
+                scf.if %is_event6_452 {
+                  "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID6>} : () -> ()
+                } else {
+                  %c7_i32_453 = arith.constant 7 : i32
+                  %is_event7_454 = arith.cmpi eq, %band_438, %c7_i32_453 : i32
+                  scf.if %is_event7_454 {
+                    "pto.set_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID7>} : () -> ()
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID0>} : () -> ()
+  "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_MTE3>, dst_pipe = #pto.pipe<PIPE_V>, event_id = #pto.event<EVENT_ID1>} : () -> ()
+  "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID0>} : () -> ()
+  "pto.wait_flag"() {src_pipe = #pto.pipe<PIPE_V>, dst_pipe = #pto.pipe<PIPE_MTE2>, event_id = #pto.event<EVENT_ID1>} : () -> ()
+  return
+}
+}
