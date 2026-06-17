@@ -10,16 +10,37 @@
 
 import tilelang_dsl as pto
 
+_LOW_PRECISION_PAIRS = (
+    (pto.f8e4m3, pto.f8e4m3),
+    (pto.f8e4m3, pto.f8e5m2),
+    (pto.f8e5m2, pto.f8e4m3),
+    (pto.f8e5m2, pto.f8e5m2),
+    (pto.f4e1m2x2, pto.f4e1m2x2),
+    (pto.f4e1m2x2, pto.f4e2m1x2),
+    (pto.f4e2m1x2, pto.f4e1m2x2),
+    (pto.f4e2m1x2, pto.f4e2m1x2),
+)
+
+_TGEMV_MX_DTYPES = tuple(
+    (lhs_dtype, pto.f16, rhs_dtype, pto.f16, pto.f32)
+    for lhs_dtype, rhs_dtype in _LOW_PRECISION_PAIRS
+)
+
+_TGEMV_MX_ACC_DTYPES = tuple(
+    (pto.f32, lhs_dtype, pto.f16, rhs_dtype, pto.f16, pto.f32)
+    for lhs_dtype, rhs_dtype in _LOW_PRECISION_PAIRS
+)
+
+_TGEMV_MX_BIAS_DTYPES = tuple(
+    (lhs_dtype, pto.f16, rhs_dtype, pto.f16, pto.f32, pto.f32)
+    for lhs_dtype, rhs_dtype in _LOW_PRECISION_PAIRS
+)
+
 
 @pto.ckernel(
     target="a5",
     op="pto.tgemv.mx",
-    dtypes=[
-        (pto.ScalarType("f8E4M3FN"), pto.ScalarType("f8E4M3FN"), pto.f32),
-        (pto.ScalarType("f8E4M3FN"), pto.ScalarType("f8E5M2"), pto.f32),
-        (pto.ScalarType("f8E5M2"), pto.ScalarType("f8E4M3FN"), pto.f32),
-        (pto.ScalarType("f8E5M2"), pto.ScalarType("f8E5M2"), pto.f32),
-    ],
+    dtypes=_TGEMV_MX_DTYPES,
 )
 def template_tgemv_mx(
     lhs: pto.Tile,
@@ -30,19 +51,15 @@ def template_tgemv_mx(
 ):
     _, k = lhs.valid_shape
     _, n = rhs.valid_shape
-    pto.mad_mx(lhs.as_ptr(), rhs.as_ptr(), dst.as_ptr(), 1, n, k)
+    pto.mad_mx(
+        lhs.as_ptr(), rhs.as_ptr(), dst.as_ptr(), 1, n, k, sat="sat")
     return None
 
 
 @pto.ckernel(
     target="a5",
     op="pto.tgemv.mx.acc",
-    dtypes=[
-        (pto.ScalarType("f8E4M3FN"), pto.ScalarType("f8E4M3FN"), pto.f32),
-        (pto.ScalarType("f8E4M3FN"), pto.ScalarType("f8E5M2"), pto.f32),
-        (pto.ScalarType("f8E5M2"), pto.ScalarType("f8E4M3FN"), pto.f32),
-        (pto.ScalarType("f8E5M2"), pto.ScalarType("f8E5M2"), pto.f32),
-    ],
+    dtypes=_TGEMV_MX_ACC_DTYPES,
 )
 def template_tgemv_mx_acc(
     acc_in: pto.Tile,
@@ -54,19 +71,15 @@ def template_tgemv_mx_acc(
 ):
     _, k = lhs.valid_shape
     _, n = rhs.valid_shape
-    pto.mad_mx_acc(lhs.as_ptr(), rhs.as_ptr(), dst.as_ptr(), 1, n, k)
+    pto.mad_mx_acc(
+        lhs.as_ptr(), rhs.as_ptr(), dst.as_ptr(), 1, n, k, sat="nosat")
     return None
 
 
 @pto.ckernel(
     target="a5",
     op="pto.tgemv.mx.bias",
-    dtypes=[
-        (pto.ScalarType("f8E4M3FN"), pto.ScalarType("f8E4M3FN"), pto.f32, pto.f32),
-        (pto.ScalarType("f8E4M3FN"), pto.ScalarType("f8E5M2"), pto.f32, pto.f32),
-        (pto.ScalarType("f8E5M2"), pto.ScalarType("f8E4M3FN"), pto.f32, pto.f32),
-        (pto.ScalarType("f8E5M2"), pto.ScalarType("f8E5M2"), pto.f32, pto.f32),
-    ],
+    dtypes=_TGEMV_MX_BIAS_DTYPES,
 )
 def template_tgemv_mx_bias(
     lhs: pto.Tile,
@@ -78,5 +91,6 @@ def template_tgemv_mx_bias(
 ):
     _, k = lhs.valid_shape
     _, n = rhs.valid_shape
-    pto.mad_mx_bias(lhs.as_ptr(), rhs.as_ptr(), dst.as_ptr(), bias.as_ptr(), 1, n, k)
+    pto.mad_mx_bias(
+        lhs.as_ptr(), rhs.as_ptr(), dst.as_ptr(), bias.as_ptr(), 1, n, k, sat="sat")
     return None

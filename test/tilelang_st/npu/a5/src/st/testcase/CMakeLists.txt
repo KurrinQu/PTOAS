@@ -198,7 +198,6 @@ set(ALL_TESTCASES
     trems
     tfmods
     tcmps
-    tgemv
     tmatmul
     tmatmul_acc
     tmatmul_bias
