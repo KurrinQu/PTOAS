@@ -128,6 +128,10 @@ class _TileNamespace:
     colexpandmin = staticmethod(_ops.tcolexpandmin)
     colexpandexpdif = staticmethod(_ops.tcolexpandexpdif)
 
+    sort32 = staticmethod(_ops.tsort32)
+    mrgsort = staticmethod(_ops.tmrgsort)
+    gather = staticmethod(_ops.tgather)
+
     sel = staticmethod(_ops.tsel)
     sels = staticmethod(_ops.tsels)
     cvt = staticmethod(_ops.tcvt)

@@ -871,6 +871,16 @@ _MASK_PATTERN_TOKENS = {
     *(f"PAT_VL{count}" for count in range(1, 129)),
 }
 
+_TILE_MASK_PATTERN_TOKENS = {
+    "P0101",
+    "P1010",
+    "P0001",
+    "P0010",
+    "P0100",
+    "P1000",
+    "P1111",
+}
+
 _CMP_MODE_TOKENS = {"eq", "ne", "lt", "le", "gt", "ge"}
 _PREDICATE_PART_TOKENS = {"LOWER", "HIGHER"}
 _PREDICATE_LOAD_DIST_TOKENS = {"NORM", "US", "DS"}
@@ -892,6 +902,26 @@ def _normalize_mask_pattern(pattern):
             "PAT_H, PAT_Q, PAT_VL1..PAT_VL128, PAT_M3, PAT_M4"
         )
     return normalized
+
+
+def _normalize_tile_mask_pattern(pattern):
+    token = pattern
+    if not isinstance(token, str):
+        token = str(token)
+        if "." in token:
+            token = token.rsplit(".", 1)[-1]
+    token = token.strip().upper()
+    if token not in _TILE_MASK_PATTERN_TOKENS:
+        raise ValueError(
+            f"unsupported tile mask pattern {pattern!r}; expected one of "
+            "P0101, P1010, P0001, P0010, P0100, P1000, P1111"
+        )
+    return token
+
+
+def _tile_mask_pattern_attr(pattern):
+    token = _normalize_tile_mask_pattern(pattern)
+    return _pto.MaskPatternAttr.get(getattr(_pto.MaskPattern, token))
 
 
 def _normalize_cmp_mode(cmp_mode):
@@ -2861,6 +2891,68 @@ def _resolve_selection_tmp(dst, tmp, *, context: str):
     return alloc_tile(tile_type=unwrap_surface_value(dst).type)
 
 
+def tsort32(src, idx, dst, *, tmp=None):
+    """``pto.tsort32 ins(src, idx, tmp?) outs(dst)``."""
+    _pto.tsort32(
+        unwrap_surface_value(src),
+        unwrap_surface_value(idx),
+        unwrap_surface_value(dst),
+        tmp=None if tmp is None else unwrap_surface_value(tmp),
+    )
+
+
+def _unwrap_optional_integer(value):
+    if value is None:
+        return None
+    if isinstance(value, int):
+        value = const(value, dtype=IntegerType.get_signless(32))
+    return unwrap_surface_value(value)
+
+
+def tmrgsort(src, dst, block_len=None, *, tmp=None, excuted=None, exhausted=None):
+    """``pto.tmrgsort`` tile merge-sort wrapper.
+
+    Format 1 uses ``tmrgsort(src, dst, block_len)``.  Format 2 can pass
+    ``src`` and ``dst`` as sequences and provide ``tmp`` plus ``excuted``.
+    """
+    srcs = src if isinstance(src, (list, tuple)) else [src]
+    dsts = dst if isinstance(dst, (list, tuple)) else [dst]
+    _pto.tmrgsort(
+        [unwrap_surface_value(value) for value in srcs],
+        [unwrap_surface_value(value) for value in dsts],
+        block_len=_unwrap_optional_integer(block_len),
+        tmp=None if tmp is None else unwrap_surface_value(tmp),
+        excuted=None if excuted is None else unwrap_surface_value(excuted),
+        exhausted=exhausted,
+    )
+
+
+def tgather(
+    src,
+    dst,
+    *,
+    cdst=None,
+    indices=None,
+    tmp=None,
+    k_value=None,
+    mask_pattern=None,
+    cmp_mode=None,
+    offset=None,
+):
+    """``pto.tgather`` tile gather/select wrapper."""
+    _pto.tgather(
+        unwrap_surface_value(src),
+        unwrap_surface_value(dst),
+        cdst=None if cdst is None else unwrap_surface_value(cdst),
+        indices=None if indices is None else unwrap_surface_value(indices),
+        tmp=None if tmp is None else unwrap_surface_value(tmp),
+        k_value=None if k_value is None else unwrap_surface_value(k_value),
+        mask_pattern=None if mask_pattern is None else _tile_mask_pattern_attr(mask_pattern),
+        cmp_mode=None if cmp_mode is None else _normalize_cmp_mode(cmp_mode),
+        offset=offset,
+    )
+
+
 def tsel(mask, src0, src1, dst, *, tmp=None):
     """``pto.tsel ins(mask, src0, src1, tmp) outs(dst)`` with synthesized scratch when omitted."""
     resolved_tmp = tmp if tmp is not None else _resolve_selection_tmp(dst, tmp, context="tsel")
@@ -4579,6 +4671,7 @@ __all__ = [
     "texpands", "treshape", "trowexpand", "tcolexpand",
     "trowexpandadd", "trowexpandsub", "trowexpandmul", "trowexpanddiv", "trowexpandmax", "trowexpandmin", "trowexpandexpdif",
     "tcolexpandadd", "tcolexpandsub", "tcolexpandmul", "tcolexpanddiv", "tcolexpandmax", "tcolexpandmin", "tcolexpandexpdif",
+    "tsort32", "tmrgsort", "tgather",
     "tsel", "tsels", "tcvt",
     "tnot", "tand", "tands", "tor", "tors", "txor", "txors", "tshl", "tshls", "tshr", "tshrs",
     "tpartadd", "tpartmul", "tpartmax", "tpartmin",

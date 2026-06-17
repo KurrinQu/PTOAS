@@ -427,6 +427,46 @@ class VectorCubeSurfaceTest(unittest.TestCase):
                     getattr(pto.tile, name)(src, dst, tmp=tmp)
                 low_level_op.assert_called_once_with(src, tmp, dst)
 
+    def test_tile_sort_gather_wrappers_call_low_level_ops(self):
+        src = object()
+        idx = object()
+        dst = object()
+        tmp = object()
+        block_len = object()
+
+        with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops._pto, "tsort32") as tsort32_op:
+            pto.tile.sort32(src, idx, dst)
+        self.assertEqual(tsort32_op.call_args.args, (src, idx, dst))
+        self.assertEqual(tsort32_op.call_args.kwargs, {"tmp": None})
+
+        with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops._pto, "tsort32") as tsort32_op:
+            pto.tile.sort32(src, idx, dst, tmp=tmp)
+        self.assertEqual(tsort32_op.call_args.args, (src, idx, dst))
+        self.assertEqual(tsort32_op.call_args.kwargs, {"tmp": tmp})
+
+        with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops._pto, "tmrgsort") as tmrgsort_op:
+            pto.tile.mrgsort(src, dst, block_len)
+        self.assertEqual(tmrgsort_op.call_args.args, ([src], [dst]))
+        self.assertEqual(
+            tmrgsort_op.call_args.kwargs,
+            {"block_len": block_len, "tmp": None, "excuted": None, "exhausted": None},
+        )
+
+        parsed_pattern = object()
+        with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops, "_tile_mask_pattern_attr", return_value=parsed_pattern) as mask_attr, \
+             patch.object(_ops._pto, "tgather") as tgather_op:
+            pto.tile.gather(src, dst, mask_pattern="P0101")
+        mask_attr.assert_called_once_with("P0101")
+        self.assertEqual(tgather_op.call_args.args, (src, dst))
+        self.assertEqual(tgather_op.call_args.kwargs["mask_pattern"], parsed_pattern)
+
+        with self.assertRaisesRegex(ValueError, "unsupported tile mask pattern"):
+            pto.tile.gather(src, dst, mask_pattern="PAT_ALL")
+
     def test_tile_mov_accepts_acc_to_vec_mode(self):
         src = object()
         dst = object()

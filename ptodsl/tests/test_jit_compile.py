@@ -244,6 +244,21 @@ def dynamic_addr_tile_surface_probe(
 
 
 @pto.jit(target="a5")
+def tile_sort_gather_surface_probe():
+    src = pto.alloc_tile(shape=[1, 32], dtype=pto.f32)
+    idx = pto.alloc_tile(shape=[1, 32], dtype=pto.ui32)
+    sort = pto.alloc_tile(shape=[1, 64], dtype=pto.f32)
+    tmp = pto.alloc_tile(shape=[1, 64], dtype=pto.f32)
+    gather_scores = pto.alloc_tile(shape=[1, 32], dtype=pto.f32)
+    gather_indices = pto.alloc_tile(shape=[1, 32], dtype=pto.f32)
+
+    pto.tile.sort32(src, idx, sort)
+    pto.tile.mrgsort(sort, tmp, pto.const(64, dtype=pto.i32))
+    pto.tile.gather(tmp, gather_scores, mask_pattern="P0101")
+    pto.tgather(tmp, gather_indices, mask_pattern="P1010")
+
+
+@pto.jit(target="a5")
 def tile_surface_compute_probe():
     lhs = pto.alloc_tile(shape=[2, 16], dtype=pto.f32)
     rhs = pto.alloc_tile(shape=[2, 16], dtype=pto.f32)
@@ -2277,11 +2292,18 @@ def main() -> None:
 
     tile_surface_text = tile_surface_compute_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(tile_surface_text, "tile surface compute specialization")
+    tile_sort_gather_text = tile_sort_gather_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(tile_sort_gather_text, "tile sort/gather surface specialization")
     expect("pto.texpands" in tile_surface_text, "pto.tile.expands should lower to pto.texpands")
     expect("pto.treshape" in tile_surface_text, "pto.tile.reshape should lower to pto.treshape")
     expect("pto.tadd " in tile_surface_text, "pto.tile.add should lower to pto.tadd")
     expect("pto.tadds" in tile_surface_text, "pto.tile.adds should lower to pto.tadds")
     expect("pto.tcmps" in tile_surface_text, "pto.tile.cmps should lower to pto.tcmps")
+    expect("pto.tsort32" in tile_sort_gather_text, "pto.tile.sort32 should lower to pto.tsort32")
+    expect("pto.tmrgsort" in tile_sort_gather_text, "pto.tile.mrgsort should lower to pto.tmrgsort")
+    expect(tile_sort_gather_text.count("pto.tgather") == 2, "tile gather wrappers should lower to pto.tgather")
+    expect("#pto.mask_pattern<P0101>" in tile_sort_gather_text, "pto.tile.gather should preserve P0101")
+    expect("#pto.mask_pattern<P1010>" in tile_sort_gather_text, "pto.tgather should preserve P1010")
     expect(
         re.search(
             r"pto\.alloc_tile valid_row = %[a-zA-Z0-9_]+ valid_col = %[a-zA-Z0-9_]+ : !pto\.tile_buf<vec, 1x128xf32, valid=\?x\?>",
