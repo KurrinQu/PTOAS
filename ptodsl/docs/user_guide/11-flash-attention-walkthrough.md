@@ -595,7 +595,12 @@ This is a scalar element-wise blend over the tile domain:
 O_next[row, col] = alpha[row] * O_prev[row, col] + beta[row] * PV[row, col]
 ```
 
-The SIMT kernel walks the tile element by element with nested `pto.for_` loops. Each iteration loads two scalars (`o_prev` and `pv_val`), computes the weighted sum, and stores the result. The `alpha`/`beta` coefficients are per-row (loaded once per row), while the blend is per-element.
+The SIMT kernel walks the tile element by element with nested Python
+`for range(...)` loops. Under the default AST rewrite path these become
+device-side runtime loops. Each iteration loads two scalars (`o_prev` and
+`pv_val`), computes the weighted sum, and stores the result. The `alpha` /
+`beta` coefficients are per-row (loaded once per row), while the blend is
+per-element.
 
 **Why SIMT instead of SIMD?** The intent is to contrast with `online_softmax_rows`: softmax is dominated by row-wise vector reductions and exponentials — natural SIMD work. The final blend is a simple linear combination with per-row coefficients — expressing it as explicit scalar work-items makes the per-element access pattern explicit and leaves the compiler free to vectorize or fuse as it sees fit.
 

@@ -48,7 +48,9 @@ def mat_add(
 
 **Key points**:
 
-- Nested `pto.for_` loops produce a 2D block traversal. Both loops are recorded as device-side control flow — they adapt to the runtime shape `M`.
+- Nested Python `for range(...)` loops produce a 2D block traversal. Under the
+  default AST rewrite path they are recorded as device-side control flow, so
+  they adapt to the runtime shapes `M` and `N_`.
 - Tile shape `[BLOCK_M, BLOCK_N]` is 2D; all three tiles use the same shape so `tile.add` is elementwise.
 - `partition_view` takes 2D offsets and sizes.
 - `BLOCK_M` and `BLOCK_N` are `constexpr` — the compiler specializes the kernel per tile shape.

@@ -4,6 +4,10 @@ This chapter covers every operation that moves data between memory spaces in PTO
 
 ## 7.1 Tile-level movement: tile.load and tile.store
 
+Section 7.6 on pipe communication is an advanced topic. Most kernels can skip
+it on a first read and come back only when they need explicit cube/vector FIFO
+coordination.
+
 Tile ops move entire blocks between Global Memory and the Unified Buffer in a single call. They are the primary data movement interface inside `@pto.jit`.
 
 #### `pto.tile.load(partition: PartitionTensorView, tile: Tile) -> None`
