@@ -9226,8 +9226,12 @@ mlir::LogicalResult mlir::pto::TQuantMxOp::verify() {
     if (srcValid.size() != 2 || expValid.size() != 2 || maxValid.size() != 2 ||
         scalingValid.size() != 2)
       return emitOpError("expects rank-2 valid_shape for src/dst/exp/max/scaling");
-    if (failed(verifyTileBufSameValidShape(*this, srcTy, scalingTy, "src", "scaling")) ||
-        failed(verifyTileBufSameElemType(*this, srcTy, maxTy, "src", "max")))
+    // scaling is a per-group tile (like exp/max), NOT per-element: the ISA
+    // flattens it to 1D and writes one reciprocal scale per 32-element group.
+    // Only enforce element type match with src here; the element-count constraint
+    // is checked below alongside exp/max.
+    if (failed(verifyTileBufSameElemType(*this, srcTy, maxTy, "src", "max")) ||
+        failed(verifyTileBufSameElemType(*this, srcTy, scalingTy, "src", "scaling")))
       return failure();
 
     int64_t srcRows = srcValid[0];
@@ -9242,10 +9246,17 @@ mlir::LogicalResult mlir::pto::TQuantMxOp::verify() {
       int64_t maxElems = maxValid[0] == ShapedType::kDynamic || maxValid[1] == ShapedType::kDynamic
                              ? ShapedType::kDynamic
                              : maxValid[0] * maxValid[1];
+      int64_t scalingElems = scalingValid[0] == ShapedType::kDynamic ||
+                                     scalingValid[1] == ShapedType::kDynamic
+                                 ? ShapedType::kDynamic
+                                 : scalingValid[0] * scalingValid[1];
       if (expElems != ShapedType::kDynamic && expElems != groups)
         return emitOpError("expects exp valid element count to equal src valid elements / 32");
       if (maxElems != ShapedType::kDynamic && maxElems != groups)
         return emitOpError("expects max valid element count to equal src valid elements / 32");
+      if (scalingElems != ShapedType::kDynamic && scalingElems != groups)
+        return emitOpError(
+            "expects scaling valid element count to equal src valid elements / 32");
     }
     return success();
   };

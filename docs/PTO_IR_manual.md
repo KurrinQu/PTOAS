@@ -1308,6 +1308,7 @@ For each element (i, j):
   - `loc=mat -> loc=left/right` has additional target-specific fractal and dtype constraints.
   - `loc=acc -> loc=vec/mat` has additional target-specific fractal, dtype, and alignment constraints.
   - `loc=mat -> loc=scale` has additional target-specific fractal and dtype constraints.
+  - A5 accepts PTO low-precision element types (`f8E4M3*`, `f8E5M2*`, `!pto.hif8`, `!pto.f4E2M1x2`) for `src`/`dst` in supported location pairs.
 
 **Hardware Mapping:**
 
@@ -7266,7 +7267,7 @@ pto.tgather ins(%src, {maskPattern = #pto.mask_pattern<Pxxxx>} : !pto.tile_buf<.
   - `tmp` element type must match `indices`.
   - `indices` and `tmp` must have the same valid shape.
 - **Index gather: implementation checks (A5)**:
-  - `src` and `dst` element types must match and be one of `i8/i16/i32/f16/f32`.
+  - `src` and `dst` element types must match and be one of `i8/i16/i32/f16/f32`, or a target-supported fp8 type (`f8E4M3*`/`f8E5M2*`).
   - `indices` element type must be `i16` or `i32`.
   - PTO IR does not impose an extra tmp shape or valid-shape relation in the A5 index form.
 - **Compare gather: implementation checks (A2/A3)**:
@@ -7286,7 +7287,7 @@ pto.tgather ins(%src, {maskPattern = #pto.mask_pattern<Pxxxx>} : !pto.tile_buf<.
 - **Mask-pattern gather: implementation checks (A5)**:
   - Source element size must be `1`, `2`, or `4` bytes.
   - `src` and `dst` must both use `loc=vec` and `blayout=row_major`.
-  - `src`/`dst` element type must be `i8`, `i16`, `i32`, `f16`, `bf16`, `f32`, or fp8-like supported gather types.
+  - `src`/`dst` element type must be `i8`, `i16`, `i32`, `f16`, `bf16`, `f32`, `!pto.hif8`, or a target-supported fp8 type (`f8E4M3*`/`f8E5M2*`).
   - `src` and `dst` element sizes must match.
 
 **Hardware Mapping:**
@@ -7445,7 +7446,7 @@ elem mode:          dst[i, j] = mem[idx[i, j]]
 **Constraints & Verification:**
 
 - **Types (data and indices)**  
-  - `mem` and `dst` must have the **same element type**. Supported element types: `i8`/`i16`/`i32`/`f16`/`bf16`/`f32`. On **A5** targets, `float8_e4m3` / `float8_e5m2` family element types are also supported.
+  - `mem` and `dst` must have the **same element type**. Supported element types: `i8`/`i16`/`i32`/`f16`/`bf16`/`f32`. On **A5** targets, `float8_e4m3` / `float8_e5m2` family and `!pto.hif8` element types are also supported.
   - `idx` element type must be signless `i32`.
 
 - **Tile / memory roles**  
@@ -7561,7 +7562,7 @@ elem mode:          mem[idx[i, j]] = src[i, j]
 **Constraints & Verification:**
 
 - **Types (data and indices)**  
-  - `src` and `mem` must have the **same element type**. Supported element types: `i8`/`i16`/`i32`/`f16`/`bf16`/`f32`. On **A5** targets, `float8_e4m3` / `float8_e5m2` family element types are also supported.
+  - `src` and `mem` must have the **same element type**. Supported element types: `i8`/`i16`/`i32`/`f16`/`bf16`/`f32`. On **A5** targets, `float8_e4m3` / `float8_e5m2` family and `!pto.hif8` element types are also supported.
   - `idx` element type must be signless `i32`.
 
 - **Tile / memory roles**  
@@ -7726,7 +7727,7 @@ dst[i, j] = src[i + indexRow, j + indexCol]
     - `indexCol + dst.cols <= src.cols`
   - `dst` must use `loc=left` or `loc=right` with a target-supported fractal configuration.
 - **Implementation checks (A5)**
-  - `dst` element type must match `src` element type and must be one of the target-supported fp8/fp16/bf16/f32 families listed here.
+  - `dst` element type must match `src` element type and must be one of the target-supported low-precision/fp16/bf16/f32 families (`f8E4M3*`, `f8E5M2*`, `!pto.hif8`, `!pto.f4E2M1x2`, `f16`, `bf16`, `f32`, `i8`).
   - Source layout/fractal must satisfy the target-supported combinations for `left`/`right`/scaling destinations; in PTO IR terms this is expressed through the `blayout`/`slayout`/`fractal` tuple.
   - Destination supports `Mat -> Left/Right/Scale` and also supports `Vec -> Mat` for specific tile locations.
 
@@ -8407,7 +8408,7 @@ dst, exp, max, scaling = QuantizeMX(src; quant_type)
 
 - Supported only on A5 targets.
 - `src`, `dst`, `exp`, `max`, and `scaling` must all be vec ND tiles.
-- `scaling` must have the same element type and valid shape as `src`.
+- `scaling` is a per-group tile: it must have the same element type as `src`, and its valid element count must equal `src.valid elements / 32` when statically known (one reciprocal scale per 32-element MX group).
 - `max` must have the same element type as `src`.
 - `exp` must use `i8/ui8` element type.
 - `src.valid_shape[1]` must be a multiple of 32.
