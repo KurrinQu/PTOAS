@@ -500,11 +500,7 @@ static bool isEmitCGlobalTensorLikeType(Type ty) {
 }
 
 static bool isF8E8M0ElemType(Type elemTy) {
-  std::string buffer;
-  llvm::raw_string_ostream os(buffer);
-  os << elemTy;
-  os.flush();
-  return buffer == "!pto.f8E8M0";
+  return mlir::pto::isPTOF8E8M0Type(elemTy);
 }
 
 static std::string getEmitCScalarTypeToken(Type elemTy) {
@@ -715,7 +711,10 @@ getSpecialScaleGlobalTensorTypeSpec(Operation *anchor, MemRefType mrTy) {
       load.getDst(), mrTy.getShape(), mrTy.getElementType());
 }
 
-static const char *scalingRoleToken(pto::TileBufConfigAttr configAttr) {
+static const char *scalingRoleToken(Type elemTy,
+                                    pto::TileBufConfigAttr configAttr) {
+  if (!isF8E8M0ElemType(elemTy))
+    return "TileType::Scaling";
   pto::BLayout bl = getTileBufBLayoutValue(configAttr);
   pto::SLayout sl = getTileBufSLayoutValue(configAttr);
   if (bl == pto::BLayout::RowMajor && sl == pto::SLayout::RowMajor)
@@ -726,6 +725,7 @@ static const char *scalingRoleToken(pto::TileBufConfigAttr configAttr) {
 }
 
 static const char *tileRoleToken(Attribute memorySpace,
+                                 std::optional<Type> elemType = std::nullopt,
                                  std::optional<pto::TileBufConfigAttr> configAttr = std::nullopt) {
   if (auto asAttr = dyn_cast_or_null<pto::AddressSpaceAttr>(memorySpace)) {
     switch (asAttr.getAddressSpace()) {
@@ -742,8 +742,8 @@ static const char *tileRoleToken(Attribute memorySpace,
     case pto::AddressSpace::BIAS:
       return "TileType::Bias";
     case pto::AddressSpace::SCALING:
-      if (configAttr)
-        return scalingRoleToken(*configAttr);
+      if (elemType && configAttr)
+        return scalingRoleToken(*elemType, *configAttr);
       return "TileType::Scaling";
     case pto::AddressSpace::GM:
     case pto::AddressSpace::Zero:
@@ -830,7 +830,7 @@ static std::optional<std::string> getEmitCTileTypeString(pto::TileBufType type) 
     fractal = frAttr.getInt();
 
   return std::string("Tile<") +
-         tileRoleToken(type.getMemorySpace(), type.getConfigAttr()) + ", " +
+         tileRoleToken(type.getMemorySpace(), elemTy, type.getConfigAttr()) + ", " +
          getEmitCScalarTypeToken(elemTy) + ", " +
          std::to_string(render(rows, 0)) + ", " +
          std::to_string(render(cols, 1)) + ", " +
@@ -4493,7 +4493,7 @@ struct PointerCastConversion : public OpConversionPattern<pto::PointerCastOp> {
       case TileRole::Vec:   roleTok = "TileType::Vec"; break;
       case TileRole::Scaling:
         if (auto configOpt = op.getConfig())
-          roleTok = scalingRoleToken(*configOpt);
+          roleTok = scalingRoleToken(elemType, *configOpt);
         else
           roleTok = "TileType::Scaling";
         break;
@@ -11593,6 +11593,7 @@ struct PTOBindTileToEmitC : public OpConversionPattern<pto::BindTileOp> {
 
       const char *roleTok = "TileType::Vec";
       pto::AddressSpace resultAS = pto::AddressSpace::GM;
+      Type elemTy = resMrTy.getElementType();
       if (auto asAttr =
               dyn_cast_or_null<pto::AddressSpaceAttr>(resMrTy.getMemorySpace())) {
         resultAS = asAttr.getAddressSpace();
@@ -11616,7 +11617,7 @@ struct PTOBindTileToEmitC : public OpConversionPattern<pto::BindTileOp> {
           roleTok = "TileType::Bias";
           break;
         case pto::AddressSpace::SCALING:
-          roleTok = scalingRoleToken(configAttr);
+          roleTok = scalingRoleToken(elemTy, configAttr);
           break;
         case pto::AddressSpace::GM:
         case pto::AddressSpace::Zero:
@@ -11625,7 +11626,6 @@ struct PTOBindTileToEmitC : public OpConversionPattern<pto::BindTileOp> {
         }
       }
 
-      Type elemTy = resMrTy.getElementType();
       Type emitElemTy = getTypeConverter()->convertType(elemTy);
       if (!emitElemTy)
         return failure();
