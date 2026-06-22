@@ -87,37 +87,17 @@ add_dependencies(_pto PTOPythonGen)
 
 # ---- 3) Copy generated python + handwritten pto.py into build/python ----
 set(PTO_PY_SRC "${CMAKE_SOURCE_DIR}/python/pto/dialects/pto.py")
-set(PTO_PY_BUILD_DIR "${CMAKE_BINARY_DIR}/python/mlir/dialects")
-set(PTO_PY_BUILD "${PTO_PY_BUILD_DIR}/pto.py")
-set(PTO_OPS_PY_BUILD "${PTO_PY_BUILD_DIR}/_pto_ops_gen.py")
 
-add_custom_command(
-  OUTPUT
-    "${PTO_PY_BUILD}"
-    "${PTO_OPS_PY_BUILD}"
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${PTO_PY_BUILD_DIR}"
+add_custom_command(TARGET _pto POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/python/mlir/dialects"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           "${PTO_PY_SRC}"
-          "${PTO_PY_BUILD}"
+          "${CMAKE_BINARY_DIR}/python/mlir/dialects/pto.py"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           "${CMAKE_CURRENT_BINARY_DIR}/_pto_ops_gen.py"
-          "${PTO_OPS_PY_BUILD}"
-  DEPENDS
-    "${PTO_PY_SRC}"
-    "${CMAKE_CURRENT_BINARY_DIR}/_pto_ops_gen.py"
+          "${CMAKE_BINARY_DIR}/python/mlir/dialects/_pto_ops_gen.py"
   VERBATIM
 )
-
-add_custom_target(PTOStagePythonModules ALL
-  DEPENDS
-    "${PTO_PY_BUILD}"
-    "${PTO_OPS_PY_BUILD}"
-)
-add_dependencies(PTOStagePythonModules PTOPythonGen)
-add_dependencies(_pto PTOStagePythonModules)
-if(TARGET PTOPythonModules)
-  add_dependencies(PTOPythonModules PTOStagePythonModules)
-endif()
 
 install(FILES
   "${PTO_PY_SRC}"
