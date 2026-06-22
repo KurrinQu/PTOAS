@@ -129,6 +129,74 @@ discover_cann_host_link_dirs() {
   echo "${dirs}"
 }
 
+collect_cann_host_include_dirs_for_root() {
+  local root="$1"
+  local arch="$2"
+  local dirs="$3"
+  local dir=""
+  for dir in \
+    "${root}/include" \
+    "${root}/${arch}-linux/include" \
+    "${root}/runtime/include" \
+    "${root}/fwkacllib/include" \
+    "${root}/${arch}-linux/pkg_inc" \
+    "${root}/pkg_inc"; do
+    [[ -d "${dir}" ]] || continue
+    if [[ -e "${dir}/pto/npu/comm/async/sdma/sdma_workspace_manager.hpp" \
+       || -e "${dir}/ccelib/common/runtime.h" \
+       || -e "${dir}/runtime/rt.h" \
+       || -e "${dir}/acl/acl.h" ]]; then
+      dirs="$(append_unique_colon_item "${dirs}" "${dir}")"
+    fi
+  done
+  echo "${dirs}"
+}
+
+discover_cann_host_include_dirs() {
+  local arch="$1"
+  local dirs=""
+  local root=""
+  local current_base=""
+  local -a candidate_roots=()
+  shopt -s nullglob
+
+  if [[ -n "${ASCEND_HOME_PATH:-}" ]]; then
+    dirs="$(collect_cann_host_include_dirs_for_root "${ASCEND_HOME_PATH}" "${arch}" "${dirs}")"
+    current_base="$(basename "${ASCEND_HOME_PATH}")"
+  fi
+
+  for root in \
+    /usr/local/Ascend/cann \
+    /usr/local/Ascend/cann-* \
+    /usr/local/Ascend/ascend-toolkit/latest \
+    /home/*/cann*/cann-* \
+    /home/*/*/cann-* \
+    /home/*/Ascend/*/cann-*; do
+    [[ -d "${root}" ]] || continue
+    [[ -n "${current_base}" && "${root}" == "${ASCEND_HOME_PATH:-}" ]] && continue
+    if [[ -n "${current_base}" && "${root}" == *"/${current_base}" ]]; then
+      candidate_roots+=("${root}")
+    fi
+  done
+  for root in \
+    /usr/local/Ascend/cann \
+    /usr/local/Ascend/cann-* \
+    /usr/local/Ascend/ascend-toolkit/latest \
+    /home/*/cann*/cann-* \
+    /home/*/*/cann-* \
+    /home/*/Ascend/*/cann-*; do
+    [[ -d "${root}" ]] || continue
+    [[ "${root}" == "${ASCEND_HOME_PATH:-}" ]] && continue
+    candidate_roots+=("${root}")
+  done
+  shopt -u nullglob
+
+  for root in "${candidate_roots[@]}"; do
+    dirs="$(collect_cann_host_include_dirs_for_root "${root}" "${arch}" "${dirs}")"
+  done
+  echo "${dirs}"
+}
+
 cd "${ROOT_DIR}"
 python3 "${ROOT_DIR}/golden.py"
 
@@ -174,12 +242,20 @@ if [[ -n "${ASCEND_HOME_PATH:-}" ]]; then
   if [[ -z "${PTO_CANN_EXTRA_LINK_DIRS:-}" ]]; then
     PTO_CANN_EXTRA_LINK_DIRS="$(discover_cann_host_link_dirs "$(host_lib_arch)")"
   fi
+  if [[ -z "${PTO_CANN_EXTRA_INCLUDE_DIRS:-}" ]]; then
+    PTO_CANN_EXTRA_INCLUDE_DIRS="$(discover_cann_host_include_dirs "$(host_lib_arch)")"
+  fi
+  export LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64${LIBRARY_PATH:+:${LIBRARY_PATH}}"
+  export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
   if [[ -n "${PTO_CANN_EXTRA_LINK_DIRS:-}" ]]; then
     export PTO_CANN_EXTRA_LINK_DIRS
-    export LIBRARY_PATH="${PTO_CANN_EXTRA_LINK_DIRS}${LIBRARY_PATH:+:${LIBRARY_PATH}}"
-    export LD_LIBRARY_PATH="${PTO_CANN_EXTRA_LINK_DIRS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-  else
-    export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}"
+    export LIBRARY_PATH="${LIBRARY_PATH}:${PTO_CANN_EXTRA_LINK_DIRS}"
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${PTO_CANN_EXTRA_LINK_DIRS}"
+  fi
+  if [[ -n "${PTO_CANN_EXTRA_INCLUDE_DIRS:-}" ]]; then
+    export PTO_CANN_EXTRA_INCLUDE_DIRS
+    export CPATH="${PTO_CANN_EXTRA_INCLUDE_DIRS}${CPATH:+:${CPATH}}"
+    export CPLUS_INCLUDE_PATH="${PTO_CANN_EXTRA_INCLUDE_DIRS}${CPLUS_INCLUDE_PATH:+:${CPLUS_INCLUDE_PATH}}"
   fi
 fi
 
