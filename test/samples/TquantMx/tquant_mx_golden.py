@@ -38,6 +38,7 @@ M = 16
 K = 32
 GROUP_SIZE = 32
 EMAX = 8  # e4m3 max exponent
+GROUP_COUNT = (M * K) // GROUP_SIZE
 
 
 def fp32_to_fp8_element(data_abs_max, emax=EMAX):
@@ -95,6 +96,16 @@ def fp32_to_fp8e4m3fn_bytes(arr):
     return result.astype(np.uint8).view(np.int8)
 
 
+def pack_output_buffer(meta, name, values):
+    values = np.asarray(values, dtype=meta.np_types[name]).reshape(-1)
+    expected = meta.elem_counts[name]
+    if values.size > expected:
+        raise ValueError(f"{name}: expected at most {expected} elements, got {values.size}")
+    packed = np.zeros(expected, dtype=meta.np_types[name])
+    packed[: values.size] = values
+    return packed
+
+
 def main():
     meta = load_case_meta()
     generator = rng()
@@ -146,14 +157,21 @@ def main():
     dst_bytes = fp32_to_fp8e4m3fn_bytes(scaled)
     golden_outputs[dst_name] = dst_bytes.reshape(-1)
 
+    # The logical MX aux outputs have 16 groups, but the lowered A5 TSTORE path
+    # uses 1x32 Vec-backed buffers. Pad the physical golden buffers to the
+    # generated element counts while keeping only the first 16 elements semantic.
     # exp: ui8 [groups] = e8m0 per group.
-    golden_outputs[exp_name] = e8m0.reshape(-1)
+    golden_outputs[exp_name] = pack_output_buffer(meta, exp_name, e8m0.reshape(GROUP_COUNT))
 
     # max: f32 [groups] = per-group absmax.
-    golden_outputs[max_name] = group_max.reshape(-1).astype(np.float32)
+    golden_outputs[max_name] = pack_output_buffer(
+        meta, max_name, group_max.reshape(GROUP_COUNT).astype(np.float32)
+    )
 
     # scaling: f32 [groups] = per-group reciprocal scale.
-    golden_outputs[scaling_name] = scaling_per_group.reshape(-1)
+    golden_outputs[scaling_name] = pack_output_buffer(
+        meta, scaling_name, scaling_per_group.reshape(GROUP_COUNT)
+    )
 
     write_golden(meta, golden_outputs)
 
