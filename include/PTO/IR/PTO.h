@@ -208,9 +208,11 @@ inline StringRef getPTODSLLogicalNameOrSymbolName(func::FuncOp func) {
 /// both the EmitC naming (`pto.entry`) and VPTO naming (`pto.kernel`) as entry
 /// aliases; `hacc.entry` and `pto.aicore` are legacy aliases.
 bool hasExplicitPTOEntryAttr(func::FuncOp func);
+bool hasExplicitPTOEntryAttr(LLVM::LLVMFuncOp func);
 
 /// Return true if the function should be emitted as an AICORE entry.
 bool isPTOEntryFunction(func::FuncOp func);
+bool isPTOEntryFunction(LLVM::LLVMFuncOp func);
 
 /// Return true if the function should remain externally visible in backend
 /// artifacts. PTO entries are always treated as externally visible. Non-entry

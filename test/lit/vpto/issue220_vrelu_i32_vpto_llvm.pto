@@ -34,6 +34,6 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 }
 
 // CHECK-LABEL: define void @vrelu_signless_i32_store_mix_aiv
-// CHECK: call <64 x i32> @llvm.hivm.vrelu.v64s32.x
+// CHECK: call <64 x i32> @llvm.hivm.vrelu.x.v64i32
 // CHECK-LABEL: define void @vrelu_signed_i32_store_mix_aiv
-// CHECK: call <64 x i32> @llvm.hivm.vrelu.v64s32.x
+// CHECK: call <64 x i32> @llvm.hivm.vrelu.x.v64i32

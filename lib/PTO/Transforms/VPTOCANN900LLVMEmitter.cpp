@@ -10392,6 +10392,8 @@ static LogicalResult renameKernelFunctionsForKernelKind(ModuleOp module,
 
 struct LowerVPTOOpsPass final
     : public PassWrapper<LowerVPTOOpsPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LowerVPTOOpsPass)
+
   void runOnOperation() override {
     materializeVecScopeCarrierLoops(getOperation());
     if (failed(lowerVPTOOps(getOperation(), llvm::errs())))
@@ -10401,6 +10403,8 @@ struct LowerVPTOOpsPass final
 
 struct LowerVPTOTypesPass final
     : public PassWrapper<LowerVPTOTypesPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LowerVPTOTypesPass)
+
   void runOnOperation() override {
     if (failed(lowerVPTOTypes(getOperation(), llvm::errs())))
       signalPassFailure();
@@ -10410,6 +10414,9 @@ struct LowerVPTOTypesPass final
 struct NormalizeFuncSignaturesForLLVMLoweringPass final
     : public PassWrapper<NormalizeFuncSignaturesForLLVMLoweringPass,
                          OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(
+      NormalizeFuncSignaturesForLLVMLoweringPass)
+
   void runOnOperation() override {
     normalizeFuncSignaturesForOfficialLLVMLowering(getOperation());
   }
@@ -10417,6 +10424,8 @@ struct NormalizeFuncSignaturesForLLVMLoweringPass final
 
 struct PrepareVPTOLLVMLoweringPass final
     : public PassWrapper<PrepareVPTOLLVMLoweringPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PrepareVPTOLLVMLoweringPass)
+
   void runOnOperation() override {
     ModuleOp module = getOperation();
     pto::annotatePTOEntryFunctions(module);

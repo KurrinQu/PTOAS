@@ -550,10 +550,7 @@ void attachHIVMKernelAnnotations(llvm::Module &llvmModule,
 
   sourceModule.walk([&](LLVM::LLVMFuncOp funcOp) {
     StringRef symName = funcOp.getSymName();
-    if (funcOp->hasAttr(pto::kPTOEntryAttrName) ||
-        funcOp->hasAttr(pto::kLegacyHACCEntryAttrName) ||
-        funcOp->hasAttr(pto::kPTOKernelAttrName) ||
-        funcOp->hasAttr(pto::kLegacyPTOAICoreAttrName)) {
+    if (pto::isPTOEntryFunction(funcOp)) {
       ptoEntryFunctions.insert(symName);
     }
 

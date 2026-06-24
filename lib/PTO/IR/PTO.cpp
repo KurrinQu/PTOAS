@@ -2674,7 +2674,20 @@ bool mlir::pto::hasExplicitPTOEntryAttr(func::FuncOp func) {
                   func->hasAttrOfType<UnitAttr>(kLegacyPTOAICoreAttrName));
 }
 
+bool mlir::pto::hasExplicitPTOEntryAttr(LLVM::LLVMFuncOp func) {
+  return func && (func->hasAttrOfType<UnitAttr>(kPTOEntryAttrName) ||
+                  func->hasAttrOfType<UnitAttr>(kLegacyHACCEntryAttrName) ||
+                  func->hasAttrOfType<UnitAttr>(kPTOKernelAttrName) ||
+                  func->hasAttrOfType<UnitAttr>(kLegacyPTOAICoreAttrName));
+}
+
 bool mlir::pto::isPTOEntryFunction(func::FuncOp func) {
+  if (!func || func.isDeclaration())
+    return false;
+  return hasExplicitPTOEntryAttr(func);
+}
+
+bool mlir::pto::isPTOEntryFunction(LLVM::LLVMFuncOp func) {
   if (!func || func.isDeclaration())
     return false;
   return hasExplicitPTOEntryAttr(func);
