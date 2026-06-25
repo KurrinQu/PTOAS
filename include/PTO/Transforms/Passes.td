@@ -228,6 +228,16 @@ def FusionPlan : Pass<"pto-fusion-plan", "func::FuncOp"> {
   }];
   let constructor = "mlir::pto::createFusionPlanPass()";
   let dependentDialects = ["mlir::pto::PTODialect"];
+  let options = [
+    Option<"enableShapeInference", "enable-shape-inference",
+           "bool", /*default=*/"false",
+           "Enable shape inference (ShapeConstraintSolver) for tile fusion. "
+           "When disabled (default), fall back to static/direct-bound "
+           "iteration-domain inference.  Only FusionPlan consumes this option; "
+           "FusionRegionGen consumes only the shared pre-fusion dataflow graph "
+           "(cached by the analysis manager) and never consults iteration-domain "
+           "classes, so it does not need the option.">
+  ];
 }
 
 def OpScheduling : Pass<"pto-op-scheduling", "func::FuncOp"> {

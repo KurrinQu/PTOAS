@@ -428,6 +428,13 @@ static llvm::cl::opt<bool> enableOpFusion(
                    "last-use annotation; VPTO uses fusion-region lifecycle."),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> enableShapeInference(
+    "enable-shape-inference",
+    llvm::cl::desc("Enable shape inference (ShapeConstraintSolver) for A5 tile "
+                  "fusion. Off by default: falls back to static/direct-bound "
+                  "iteration-domain inference."),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<bool> disableInferLayout(
     "disable-infer-layout",
     llvm::cl::desc("Disable PTO layout inference pass (static-only)"),
@@ -1833,12 +1840,22 @@ int mlir::pto::compilePTOASModule(
 
   // Keep frontend fusion on tile-native PTO IR and annotate last_use directly
   // on scheduled block-local spans before the shared mainline lowers tiles.
+  // The shape-inference switch drives FusionPlan only: that is where the
+  // iteration-domain decisions (static vs ShapeConstraintSolver) are made.
+  // FusionRegionGen consumes only the shared pre-fusion dataflow graph (cached
+  // by the analysis manager and built once by FusionPlan) plus the resulting
+  // pto.fusion.group_id/order metadata; it never consults the domain classes,
+  // so it takes no option here.
+  pto::FusionPlanOptions fusionPlanOpts;
+  fusionPlanOpts.enableShapeInference = enableShapeInference;
   if (enableA5EmitCFusionPath) {
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createFusionPlanPass());
+    pm.addNestedPass<mlir::func::FuncOp>(
+        pto::createFusionPlanPass(fusionPlanOpts));
     pm.addNestedPass<mlir::func::FuncOp>(pto::createOpSchedulingPass());
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOMarkLastUsePass());
   } else if (enableA5VPTOFusionPath) {
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createFusionPlanPass());
+    pm.addNestedPass<mlir::func::FuncOp>(
+        pto::createFusionPlanPass(fusionPlanOpts));
     pm.addNestedPass<mlir::func::FuncOp>(pto::createOpSchedulingPass());
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOFusionRegionGenPass());
   }
