@@ -218,6 +218,8 @@ set(ALL_TESTCASES
     tmov2scale
     tmov2vec
     tmov_fp
+    tstore_acc2gm
+    tload_mat
 )
 
 if((TEST_CASE IN_LIST ALL_TESTCASES) OR (TEST_CASE STREQUAL "all"))
