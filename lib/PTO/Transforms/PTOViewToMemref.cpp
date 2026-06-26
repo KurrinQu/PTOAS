@@ -163,6 +163,11 @@ static mlir::pto::TileBufConfigAttr lookupConfig(Value v) {
 // Helper: Valid dims backtracking (v_row / v_col)
 // =============================================================================
 static void lookupValidDims(Value v, Value &vRow, Value &vCol) {
+  if (auto alloc = v.getDefiningOp<mlir::pto::AllocTileOp>()) {
+    vRow = alloc.getValidRow();
+    vCol = alloc.getValidCol();
+    return;
+  }
   if (auto bind = v.getDefiningOp<mlir::pto::BindTileOp>()) {
     vRow = bind.getValidRow();
     vCol = bind.getValidCol();
@@ -242,6 +247,58 @@ static Value resolveTileBufViewLikeSource(Value src) {
   }
 
   return Value();
+}
+
+static LogicalResult synthesizeMissingTQuantTmpOps(func::FuncOp func,
+                                                   MLIRContext *ctx) {
+  if (mlir::pto::getTargetArch(func.getOperation()) == mlir::pto::PTOArch::A5)
+    return success();
+
+  DefaultInlineVector<mlir::pto::TQuantOp> quantOps;
+  func.walk([&](mlir::pto::TQuantOp op) { quantOps.push_back(op); });
+
+  for (auto op : quantOps) {
+    if (op.getTmp())
+      continue;
+
+    auto srcTy = dyn_cast<mlir::pto::TileBufType>(op.getSrc().getType());
+    if (!srcTy)
+      continue;
+
+    if (srcTy.getRank() != static_cast<int64_t>(kTileRank2D)) {
+      op.emitError("expects rank-2 src tile to synthesize tquant tmp");
+      return failure();
+    }
+
+    IRRewriter rewriter(ctx);
+    rewriter.setInsertionPoint(op);
+    Location loc = op.getLoc();
+
+    SmallInlineVector<int64_t> shape(srcTy.getShape().begin(),
+                                     srcTy.getShape().end());
+    SmallInlineVector<int64_t> validShape(srcTy.getValidShape().begin(),
+                                          srcTy.getValidShape().end());
+    if (validShape.empty())
+      validShape.assign(shape.begin(), shape.end());
+
+    auto tmpTy = mlir::pto::TileBufType::get(
+        ctx, shape, srcTy.getElementType(), srcTy.getMemorySpace(), validShape,
+        mlir::pto::TileBufConfigAttr::getDefault(ctx));
+    Value validRow;
+    Value validCol;
+    lookupValidDims(op.getSrc(), validRow, validCol);
+    Value tmp = rewriter
+                    .create<mlir::pto::AllocTileOp>(loc, tmpTy, Value(),
+                                                    validRow, validCol)
+                    .getResult();
+
+    rewriter.create<mlir::pto::TQuantOp>(
+        loc, TypeRange{}, op.getSrc(), op.getFp(), op.getOffset(), tmp,
+        op.getDst(), op.getQuantTypeAttr());
+    rewriter.eraseOp(op);
+  }
+
+  return success();
 }
 
 // =============================================================================
@@ -1475,6 +1532,12 @@ struct PTOViewToMemrefPass
       // Stage 0: ensure inttoptr values remain scalar-load/store only.
       // ------------------------------------------------------------------
       if (failed(validateIntToPtrUses(func))) {
+        signalPassFailure();
+        return;
+      }
+
+      if (!func.isExternal() &&
+          failed(synthesizeMissingTQuantTmpOps(func, ctx))) {
         signalPassFailure();
         return;
       }
@@ -3449,6 +3512,7 @@ struct PTOViewToMemrefPass
         Value src = op.getSrc();
         Value fp = op.getFp();
         Value offset = op.getOffset();
+        Value tmp = op.getTmp();
         Value dst = op.getDst();
 
         auto srcTy = dyn_cast<MemRefType>(src.getType());
@@ -3464,6 +3528,21 @@ struct PTOViewToMemrefPass
           signalPassFailure();
           return;
         }
+        if (!tmp &&
+            mlir::pto::getTargetArch(op.getOperation()) !=
+                mlir::pto::PTOArch::A5) {
+          if (!srcTy.hasStaticShape()) {
+            op.emitError("cannot synthesize tquant tmp for dynamic memref src");
+            signalPassFailure();
+            return;
+          }
+          tmp = rewriter.create<memref::AllocOp>(op.getLoc(), srcTy).getResult();
+        }
+        if (tmp && !dyn_cast<MemRefType>(tmp.getType())) {
+          op.emitError("tmp is not memref yet");
+          signalPassFailure();
+          return;
+        }
 
         rewriter.replaceOpWithNewOp<pto::TQuantOp>(
             op,
@@ -3471,6 +3550,7 @@ struct PTOViewToMemrefPass
             src,
             fp,
             offset,
+            tmp,
             dst,
             op.getQuantTypeAttr());
       }

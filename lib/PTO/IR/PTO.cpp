@@ -9178,6 +9178,8 @@ mlir::LogicalResult mlir::pto::TQuantOp::verify() {
         failed(verifyTileBufCommon(*this, fpTy, "fp")) ||
         failed(verifyTileBufCommon(*this, dstTy, "dst")))
       return failure();
+    if (failed(verifyTileBufSameValidShape(*this, srcTy, dstTy, "src", "dst")))
+      return failure();
     // src must be f32 (ISA static_assert)
     if (!getElemTy(srcTy).isF32())
       return emitOpError() << "expects src to have element type f32";
@@ -9188,6 +9190,13 @@ mlir::LogicalResult mlir::pto::TQuantOp::verify() {
       if (!getElemTy(offsetTy).isF32())
         return emitOpError() << "expects offset to have element type f32";
     }
+    if (getTmp()) {
+      Type tmpTy = getTmp().getType();
+      if (failed(verifyTileBufCommon(*this, tmpTy, "tmp")))
+        return failure();
+      if (!getElemTy(tmpTy).isF32())
+        return emitOpError() << "expects tmp to have element type f32";
+    }
     return success();
   };
 
@@ -9195,9 +9204,49 @@ mlir::LogicalResult mlir::pto::TQuantOp::verify() {
     if (failed(verifyCommon()))
       return failure();
     Type srcTy = getSrc().getType();
+    Type fpTy = getFp().getType();
     Type dstTy = getDst().getType();
     if (!isRowMajorTileBuf(srcTy) || !isRowMajorTileBuf(dstTy))
       return emitOpError() << "expects A2/A3 src and dst to use row-major layout";
+    auto verifyA2A3Tmp = [&](Type tmpTy) -> LogicalResult {
+      if (failed(verifyTileBufSameElemType(*this, srcTy, tmpTy, "src", "tmp")))
+        return failure();
+      if (!isRowMajorTileBuf(tmpTy))
+        return emitOpError()
+               << "expects A2/A3 tmp to use row-major layout";
+      if (getShapeVec(srcTy) != getShapeVec(tmpTy))
+        return emitOpError()
+               << "expects A2/A3 tmp to have the same shape as src";
+      if (failed(verifyTileBufSameValidShape(*this, srcTy, tmpTy, "src",
+                                             "tmp")))
+        return failure();
+      return success();
+    };
+    if (getTmp() && failed(verifyA2A3Tmp(getTmp().getType())))
+      return failure();
+    auto verifyA2A3Param = [&](Type paramTy, StringRef paramName) -> LogicalResult {
+      if (isRowMajorTileBuf(paramTy))
+        return emitOpError() << "expects A2/A3 " << paramName
+                             << " to use non-row-major layout";
+      auto paramValid = getValidShapeVec(paramTy);
+      auto dstValid = getValidShapeVec(dstTy);
+      if (paramValid.size() != 2 || dstValid.size() != 2)
+        return emitOpError() << "expects A2/A3 " << paramName
+                             << " and dst to have rank-2 valid_shape";
+      if (paramValid[0] != ShapedType::kDynamic &&
+          dstValid[0] != ShapedType::kDynamic && paramValid[0] != dstValid[0])
+        return emitOpError() << "expects A2/A3 " << paramName
+                             << " valid_shape[0] to equal dst valid_shape[0]";
+      if (paramValid[1] != ShapedType::kDynamic && paramValid[1] != 1)
+        return emitOpError() << "expects A2/A3 " << paramName
+                             << " valid_shape[1] to be 1";
+      return success();
+    };
+    if (failed(verifyA2A3Param(fpTy, "fp")))
+      return failure();
+    if (getOffset() &&
+        failed(verifyA2A3Param(getOffset().getType(), "offset")))
+      return failure();
     return success();
   };
 
@@ -10252,6 +10301,102 @@ static void printTRowExpandBinaryLikeOp(OpAsmPrinter &p, Operation *op, Value sr
   }
   p << " outs(" << dst << " : " << dst.getType() << ")";
   p.printOptionalAttrDict(op->getAttrs(), /*elidedAttrs=*/{"operandSegmentSizes"});
+}
+
+// TQuantOp: ins(src, fp [, offset] : types...) outs(dst [, tmp] : types...)
+// offset is optional (INT8_ASYM only); tmp is optional and placed in the outs
+// group to keep the ins group unambiguous (a 3-operand ins is always
+// src,fp,offset, never src,fp,tmp).
+static ParseResult parseTQuantOp(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand src, fp, offset, dst, tmp;
+  Type srcTy, fpTy, offsetTy, dstTy, tmpTy;
+  bool hasOffset = false;
+  bool hasTmp = false;
+
+  if (parser.parseKeyword("ins") || parser.parseLParen() ||
+      parser.parseOperand(src) || parser.parseComma() || parser.parseOperand(fp))
+    return failure();
+  if (succeeded(parser.parseOptionalComma())) {
+    if (parser.parseOperand(offset))
+      return failure();
+    hasOffset = true;
+  }
+  if (parser.parseColon())
+    return failure();
+  if (parser.parseType(srcTy) || parser.parseComma() || parser.parseType(fpTy))
+    return failure();
+  if (hasOffset) {
+    if (parser.parseComma() || parser.parseType(offsetTy))
+      return failure();
+  }
+  if (parser.parseRParen())
+    return failure();
+  if (parser.parseKeyword("outs") || parser.parseLParen() ||
+      parser.parseOperand(dst))
+    return failure();
+  if (succeeded(parser.parseOptionalComma())) {
+    if (parser.parseOperand(tmp))
+      return failure();
+    hasTmp = true;
+  }
+  if (parser.parseColonType(dstTy))
+    return failure();
+  if (hasTmp) {
+    if (parser.parseComma() || parser.parseType(tmpTy))
+      return failure();
+  }
+  if (parser.parseRParen())
+    return failure();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+
+  if (parser.resolveOperand(src, srcTy, result.operands) ||
+      parser.resolveOperand(fp, fpTy, result.operands))
+    return failure();
+  if (hasOffset) {
+    if (parser.resolveOperand(offset, offsetTy, result.operands))
+      return failure();
+  }
+  if (hasTmp) {
+    if (parser.resolveOperand(tmp, tmpTy, result.operands))
+      return failure();
+  }
+  if (parser.resolveOperand(dst, dstTy, result.operands))
+    return failure();
+
+  // operand order: src, fp, offset?, tmp?, dst
+  result.addAttribute(
+      "operandSegmentSizes",
+      parser.getBuilder().getDenseI32ArrayAttr(
+          {1, 1, hasOffset ? 1 : 0, hasTmp ? 1 : 0, 1}));
+  return success();
+}
+
+static void printTQuantOp(OpAsmPrinter &p, Operation *op, Value src, Value fp,
+                          Value offset, Value tmp, Value dst) {
+  p << " ins(" << src << ", " << fp;
+  if (offset) {
+    p << ", " << offset << " : " << src.getType() << ", " << fp.getType()
+      << ", " << offset.getType() << ")";
+  } else {
+    p << " : " << src.getType() << ", " << fp.getType() << ")";
+  }
+  p << " outs(" << dst;
+  if (tmp) {
+    p << ", " << tmp << " : " << dst.getType() << ", " << tmp.getType() << ")";
+  } else {
+    p << " : " << dst.getType() << ")";
+  }
+  p.printOptionalAttrDict(op->getAttrs(), /*elidedAttrs=*/{"operandSegmentSizes"});
+}
+
+ParseResult mlir::pto::TQuantOp::parse(OpAsmParser &parser, OperationState &result) {
+  return parseTQuantOp(parser, result);
+}
+
+void mlir::pto::TQuantOp::print(OpAsmPrinter &p) {
+  printTQuantOp(p, getOperation(), getSrc(), getFp(), getOffset(), getTmp(),
+                getDst());
 }
 
 ParseResult mlir::pto::TRowExpandDivOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -12985,6 +13130,9 @@ void TQuantOp::getEffects(
   auto offsetRange = getOffsetMutable();
   if (!offsetRange.empty())
     PTO_ADD_READ(offsetRange[0]);
+  auto tmpRange = getTmpMutable();
+  if (!tmpRange.empty() && getTargetArch(getOperation()) != PTOArch::A5)
+    PTO_ADD_WRITE(tmpRange[0]);
   PTO_ADD_WRITE(getDstMutable());
 }
 

@@ -9609,8 +9609,6 @@ struct PTOQuantToEmitC : public OpConversionPattern<pto::TQuantOp> {
     Value fp  = peelUnrealized(adaptor.getFp());
 
     // Optional offset (INT8_ASYM only): pto::TQUANT expects TileDataPara*.
-    // Passing the tile value directly selects the tmp-aware overload and
-    // drops the actual offset argument.
     Value offsetPtr;
     if (op.getOffset()) {
       Value offset = peelUnrealized(adaptor.getOffset());
@@ -9623,7 +9621,15 @@ struct PTOQuantToEmitC : public OpConversionPattern<pto::TQuantOp> {
       }
     }
 
-    // TQUANT<QuantType, DstTile, SrcTile, FpTile>(dst, src, fp[, &offset])
+    // Optional tmp tile: when supplied it selects the tmp-aware 5-arg TQUANT
+    // overload (TQUANT<QuantType, Out, Src, Para>(dst, src, scale, tmp[,
+    // &offset])). Missing tmp operands are synthesized before memory planning
+    // so EmitC never hard-codes a backend scratch address.
+    Value tmp = op.getTmp() ? peelUnrealized(adaptor.getTmp()) : Value();
+
+    // TQUANT<QuantType, DstTile, SrcTile, ParaTile>(dst, src, fp[, tmp][, &offset])
+    // (TileDataTmp is deduced from the tmp argument; not passed as a template
+    // argument, matching the pto-isa A5 sample tquant_kernel.cpp.)
     std::string quantTypeStr =
         op.getQuantType() == pto::QuantType::INT8_SYM
             ? "pto::QuantType::INT8_SYM"
@@ -9644,6 +9650,8 @@ struct PTOQuantToEmitC : public OpConversionPattern<pto::TQuantOp> {
     }
 
     SmallVector<Value> operands{dst, src, fp};
+    if (tmp)
+      operands.push_back(tmp);
     if (offsetPtr)
       operands.push_back(offsetPtr);
 
