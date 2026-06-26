@@ -5,17 +5,17 @@
 当前 PTO 后端已经完成基础接入：
 - `target="pto"` 可以复用 Ascend lowering pipeline，并在最终 codegen 阶段选择 PTO PTODSL codegen。
 - 当前已经跑通基础 `example_simdvf_vecadd_lower_pto.py` 用例，后续目标是以 `examples/ascend` 中的 SIMD、SIMT、CUBE 三类 example 为验收入口，逐步完善 PTO 后端能力。
-- 其中 launch/runtime 相关能力不单列，主要随 SIMT / CUBE 例子打通一并补齐，例如 dynamic UB size 和 mixed kernel launch。
 
 | 方向 | 当前状态 | 后续建设目标 |
 |---|---|---|
 | PTODSL Codegen | 已支持基础 SimdVF vecadd lower | 逐步覆盖 SIMD intrinsic、SIMT fragment/reduce、CUBE GEMM intrinsic |
 | Example 覆盖 | 当前 1 个基础 PTO smoke 用例 | 按 SIMD -> SIMT -> CUBE -> MIX融合逐步扩展 |
-| 工程策略 | PTO 作为 Ascend codegen backend 接入 | 继续复用 Ascend lowering，仅在最终 codegen/runtime 处做 PTO 差异化扩展 |
 
 ## 工作计划
 
-| 工作方向 | 代表用例 | 当前基础 | 后续要补齐的能力 | 阶段验收 | 需要的人力投入 |
+计划完成时间：7.30
+
+| 工作方向 | 代表用例 | 当前基础 | 后续要补齐的能力 | 验收目标 | 需要的人力投入 |
 |---|---|---|---|---|---|
 | SIMD 基础与复杂控制流 | `example_simdvf_vecadd.py`、`example_simdvf_per_token_cast_to_fp8.py`、`example_simdvf_topk_gate.py`、`example_simdvf_scalar_topk.py`、`example_simdvf_scalar_topk_scalar_write.py`、`example_simdvf_vintlv.py` | 已支持 `example_simdvf_vecadd_lower_pto.py` 基础对接，包括 GM/UB copy、UB allocation、部分 SIMD intrinsic、基础 multibuffer/pipeline sync | 补齐其余 SIMD 指令的 PTODSL codegen；支持 mask、cast、比较表达式、`if/for`、标量变量、UB/GM 标量读写；扩展并验证复杂 multibuffer/pipeline sync 模式 | SIMD vecadd、cast、topk、vintlv 类 example 通过 | 1人月 |
 | SIMT / Fragment / Reduce / Math | `example_simtvf_vector_add.py`、`example_simtvf_vecadd.py`、`example_simtvf_vecadd_mutex.py`、`example_simtvf_ubuf_multi.py`、`example_simtvf_auto_sync.py`、`example_simtvf_per_token_cast_to_fp8.py`、`example_rmsnorm.py`、`example_buffer_version_annotation.py`、`example_int64_stride_vectorize_load.py`、`example_atomic_add.py` | 已复用 Ascend pipeline，但 PTO codegen 对 SIMT/fragment/reduce 未覆盖 | 支持 `T.SimtVF`、`T.Parallel`、thread id、fragment/local buffer、UB <-> fragment copy；支持 `reduce_sum/max/absmax`、`exp/sqrt/rsqrt/abs`、fp8/bf16/fp16/fp32 cast、SIMT 自动同步语义、atomic；补齐 SIMT launch 对 `dynamic UB size` 的传参与元信息 | SIMT vector add、ubuf multi、fp8 cast、rmsnorm、atomic 类 example 通过 | 2人月 |
@@ -36,4 +36,7 @@
 
 ## 其它
 
-730目标为SIMD对接，主要工作为通过VMI对接，这部分方案和计划尚未评估，需要对齐方案和计划。
+1. 7.15目标为SIMTVF合入，依赖DSL SIMT相关特性，存在一定风险。
+2. 7.30目标为SIMD对接，主要工作为通过VMI对接，这部分方案和计划尚未评估，需要对齐方案和计划。
+3. tile-kernel对pto后端相关需求尚未系统性梳理，问题触发，存在一定风险。
+4. PTO后端合入DS后，后续用户CANN包升级，需要PTOAS适配，存在版本升级适配的工作量，PTOAS和DSL的版本发布问题。
