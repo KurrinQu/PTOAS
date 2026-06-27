@@ -569,14 +569,13 @@ void attachHIVMKernelAnnotations(llvm::Module &llvmModule,
     simtConfigByName[symName] = {maxThreads, maxRegisters};
   });
 
-  auto callsSimtEntry = [&](llvm::Function &function) {
+  auto callsSimtEntry = [](llvm::Function &function) {
     for (llvm::BasicBlock &block : function) {
       for (llvm::Instruction &inst : block) {
         auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
         if (!call)
           continue;
-        auto *callee = call->getCalledFunction();
-        if (callee && simtConfigByName.contains(callee->getName()))
+        if (call->getCallingConv() == llvm::CallingConv::SimtEntry)
           return true;
       }
     }
