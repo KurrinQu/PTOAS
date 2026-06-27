@@ -1,0 +1,493 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+#include "PTO/IR/PTO.h"
+#include "PTO/Transforms/InsertSync/SyncMacroModel.h"
+#include "PTO/Transforms/MemoryConsistencyAttrs.h"
+#include "PTO/Transforms/Passes.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Pass/Pass.h"
+
+namespace mlir {
+namespace pto {
+#define GEN_PASS_DEF_PTOMEMORYCONSISTENCY
+#include "PTO/Transforms/Passes.h.inc"
+} // namespace pto
+} // namespace mlir
+
+using namespace mlir;
+using namespace mlir::pto;
+
+namespace {
+
+static bool isGmAddressSpace(pto::AddressSpace space) {
+  return space == pto::AddressSpace::GM || space == pto::AddressSpace::Zero;
+}
+
+struct TNotifyReleaseState {
+  bool drainMte2 = false;
+  bool drainMte3 = false;
+  bool cleanGmCache = false;
+  bool needsDsbDdr = false;
+
+  void merge(const TNotifyReleaseState &other) {
+    drainMte2 |= other.drainMte2;
+    drainMte3 |= other.drainMte3;
+    cleanGmCache |= other.cleanGmCache;
+    needsDsbDdr |= other.needsDsbDdr;
+  }
+
+  void clear() {
+    drainMte2 = false;
+    drainMte3 = false;
+    cleanGmCache = false;
+    needsDsbDdr = false;
+  }
+
+  void applyBarrier(pto::PIPE pipe) {
+    switch (pipe) {
+    case pto::PIPE::PIPE_MTE2:
+      drainMte2 = false;
+      break;
+    case pto::PIPE::PIPE_MTE3:
+      drainMte3 = false;
+      break;
+    case pto::PIPE::PIPE_ALL:
+      drainMte2 = false;
+      drainMte3 = false;
+      break;
+    default:
+      break;
+    }
+  }
+
+  void applyCmoClean(pto::AddressSpace space) {
+    if (isGmAddressSpace(space))
+      cleanGmCache = false;
+  }
+
+  void applyFenceRelease(pto::FenceScope scope) {
+    if (scope != pto::FenceScope::DDR)
+      return;
+    if (drainMte3 || cleanGmCache)
+      return;
+    needsDsbDdr = false;
+  }
+};
+
+struct SignalAcquireState {
+  bool pendingInvalidateGmCache = false;
+  bool dirtyGmCache = false;
+  bool cleanNeedsFence = false;
+
+  void merge(const SignalAcquireState &other) {
+    pendingInvalidateGmCache |= other.pendingInvalidateGmCache;
+    dirtyGmCache |= other.dirtyGmCache;
+    cleanNeedsFence |= other.cleanNeedsFence;
+  }
+
+  void consumeAcquire() {
+    pendingInvalidateGmCache = false;
+    dirtyGmCache = false;
+    cleanNeedsFence = false;
+  }
+
+  void applyCmoClean(pto::AddressSpace space) {
+    if (!isGmAddressSpace(space))
+      return;
+    if (dirtyGmCache)
+      cleanNeedsFence = true;
+    dirtyGmCache = false;
+  }
+
+  void applyFenceRelease(pto::FenceScope scope) {
+    if (scope == pto::FenceScope::DDR && !dirtyGmCache)
+      cleanNeedsFence = false;
+  }
+
+  void applyCmoInvalidate(pto::AddressSpace space) {
+    if (!isGmAddressSpace(space) || dirtyGmCache || cleanNeedsFence)
+      return;
+    pendingInvalidateGmCache = false;
+  }
+};
+
+static bool isGmScalarMemory(Type type) {
+  if (auto ptrTy = dyn_cast<pto::PtrType>(type)) {
+    pto::AddressSpace space = ptrTy.getMemorySpace().getAddressSpace();
+    return isGmAddressSpace(space);
+  }
+
+  if (auto memTy = dyn_cast<MemRefType>(type)) {
+    auto spaceAttr = dyn_cast_or_null<pto::AddressSpaceAttr>(memTy.getMemorySpace());
+    return !spaceAttr || isGmAddressSpace(spaceAttr.getAddressSpace());
+  }
+
+  return false;
+}
+
+static TNotifyReleaseState getReleaseStateForPipe(pto::PIPE pipe) {
+  TNotifyReleaseState state;
+  switch (pipe) {
+  case pto::PIPE::PIPE_MTE2:
+    state.drainMte2 = true;
+    break;
+  case pto::PIPE::PIPE_MTE3:
+    state.drainMte3 = true;
+    state.needsDsbDdr = true;
+    break;
+  case pto::PIPE::PIPE_ALL:
+    state.drainMte2 = true;
+    state.drainMte3 = true;
+    state.needsDsbDdr = true;
+    break;
+  default:
+    break;
+  }
+  return state;
+}
+
+static TNotifyReleaseState getReleaseStateForMacroModel(Operation *op) {
+  TNotifyReleaseState state;
+  auto model = getSyncMacroModel(op);
+  if (!model)
+    return state;
+
+  for (const SyncMacroPhase &phase : model->phases) {
+    // Macro MTE3 phases write GM payloads internally. A following TNotify must
+    // publish its signal only after those stores are drained and DDR-visible.
+    if (phase.pipe == PipelineType::PIPE_MTE3) {
+      state.drainMte3 = true;
+      state.needsDsbDdr = true;
+    }
+  }
+  return state;
+}
+
+static TNotifyReleaseState getDirectTNotifyReleaseState(Operation *op) {
+  if (isa<pto::BarrierOp, pto::CmoCleanOp, pto::CmoInvalidateOp,
+          pto::FenceReleaseOp, pto::FenceAcquireOp>(op))
+    return {};
+
+  if (auto store = dyn_cast<pto::StoreScalarOp>(op)) {
+    if (isGmScalarMemory(store.getPtr().getType())) {
+      TNotifyReleaseState state;
+      state.cleanGmCache = true;
+      state.needsDsbDdr = true;
+      return state;
+    }
+  }
+
+  TNotifyReleaseState macroState = getReleaseStateForMacroModel(op);
+  if (macroState.drainMte3 || macroState.cleanGmCache ||
+      macroState.needsDsbDdr)
+    return macroState;
+
+  if (auto pipeOp = dyn_cast<pto::OpPipeInterface>(op))
+    return getReleaseStateForPipe(pipeOp.getPipe());
+  return {};
+}
+
+static TNotifyReleaseState collectTNotifyReleaseState(Operation *op) {
+  TNotifyReleaseState state = getDirectTNotifyReleaseState(op);
+  for (Region &region : op->getRegions())
+    for (Block &block : region)
+      for (Operation &nested : block)
+        state.merge(collectTNotifyReleaseState(&nested));
+  return state;
+}
+
+static bool isLoopLikeOp(Operation *op) {
+  return isa<scf::ForOp, scf::WhileOp, scf::ParallelOp, scf::ForallOp>(op);
+}
+
+static void setTNotifyReleaseAttrs(pto::TNotifyOp op,
+                                   const TNotifyReleaseState &state) {
+  op->removeAttr(kTNotifyDrainMte2AttrName);
+  op->removeAttr(kTNotifyDrainMte3AttrName);
+  op->removeAttr(kTNotifyDsbDdrAttrName);
+  op->removeAttr(kTNotifyCleanGmCacheAttrName);
+  if (state.drainMte2)
+    op->setAttr(kTNotifyDrainMte2AttrName, UnitAttr::get(op.getContext()));
+  if (state.drainMte3)
+    op->setAttr(kTNotifyDrainMte3AttrName, UnitAttr::get(op.getContext()));
+}
+
+static void setTNotifyPipeDrainAttrs(pto::TNotifyOp op,
+                                     const TNotifyReleaseState &state) {
+  TNotifyReleaseState emitState;
+  emitState.drainMte2 = state.drainMte2;
+  setTNotifyReleaseAttrs(op, emitState);
+}
+
+static void diagnoseTNotifyRelease(pto::TNotifyOp op,
+                                   const TNotifyReleaseState &state,
+                                   bool &hasFailure) {
+  if (state.cleanGmCache) {
+    op.emitOpError()
+        << "requires explicit `pto.cmo.clean all #pto.address_space<gm>` "
+           "before publishing a signal after cacheable GM stores";
+    hasFailure = true;
+    return;
+  }
+  if (state.drainMte3) {
+    op.emitOpError()
+        << "requires an explicit `pto.barrier <PIPE_MTE3>` before "
+           "`pto.fence.release #pto.fence_scope<ddr>` when publishing a "
+           "signal after MTE3 GM writes";
+    hasFailure = true;
+    return;
+  }
+  if (state.needsDsbDdr) {
+    op.emitOpError()
+        << "requires explicit `pto.fence.release #pto.fence_scope<ddr>` "
+           "before publishing a signal after GM writes or cache clean";
+    hasFailure = true;
+  }
+}
+
+static void markNestedTNotifyWithState(Operation *op,
+                                       const TNotifyReleaseState &state,
+                                       bool &hasFailure) {
+  op->walk([&](pto::TNotifyOp notify) {
+    diagnoseTNotifyRelease(notify, state, hasFailure);
+    setTNotifyPipeDrainAttrs(notify, state);
+  });
+}
+
+static TNotifyReleaseState
+annotateTNotifyReleaseForBlock(Block &block,
+                               TNotifyReleaseState entryPendingState,
+                               TNotifyReleaseState loopCarriedState,
+                               bool &hasFailure) {
+  TNotifyReleaseState pendingState = entryPendingState;
+  for (Operation &op : block) {
+    if (auto notify = dyn_cast<pto::TNotifyOp>(op)) {
+      TNotifyReleaseState notifyState = pendingState;
+      notifyState.merge(loopCarriedState);
+      diagnoseTNotifyRelease(notify, notifyState, hasFailure);
+      setTNotifyPipeDrainAttrs(notify, notifyState);
+      pendingState.clear();
+    }
+
+    pendingState.merge(getDirectTNotifyReleaseState(&op));
+
+    TNotifyReleaseState regionEntryState = pendingState;
+    TNotifyReleaseState combinedRegionExitState;
+    for (Region &region : op.getRegions()) {
+      TNotifyReleaseState nestedLoopCarriedState = loopCarriedState;
+      if (isLoopLikeOp(&op))
+        nestedLoopCarriedState.merge(collectTNotifyReleaseState(&op));
+
+      if (region.hasOneBlock()) {
+        combinedRegionExitState.merge(annotateTNotifyReleaseForBlock(
+            region.front(), regionEntryState, nestedLoopCarriedState,
+            hasFailure));
+      } else {
+        TNotifyReleaseState regionState = collectTNotifyReleaseState(&op);
+        TNotifyReleaseState nestedNotifyState = regionEntryState;
+        nestedNotifyState.merge(nestedLoopCarriedState);
+        nestedNotifyState.merge(regionState);
+        markNestedTNotifyWithState(&op, nestedNotifyState, hasFailure);
+
+        TNotifyReleaseState regionExitState = regionEntryState;
+        regionExitState.merge(regionState);
+        combinedRegionExitState.merge(regionExitState);
+      }
+    }
+    pendingState.merge(combinedRegionExitState);
+
+    if (auto barrier = dyn_cast<pto::BarrierOp>(op))
+      pendingState.applyBarrier(barrier.getPipe().getPipe());
+    if (auto cmo = dyn_cast<pto::CmoCleanOp>(op))
+      pendingState.applyCmoClean(cmo.getSpace().getAddressSpace());
+    if (auto fence = dyn_cast<pto::FenceReleaseOp>(op))
+      pendingState.applyFenceRelease(fence.getScope().getScope());
+  }
+  return pendingState;
+}
+
+static bool annotateTNotifyRelease(ModuleOp module) {
+  bool hasFailure = false;
+  for (auto func : module.getOps<func::FuncOp>()) {
+    if (func.getBody().hasOneBlock()) {
+      (void)annotateTNotifyReleaseForBlock(func.getBody().front(),
+                                           TNotifyReleaseState{},
+                                           TNotifyReleaseState{},
+                                           hasFailure);
+      continue;
+    }
+
+    // Be conservative for pre-existing CFG: without a path-sensitive CFG data
+    // flow here, every TNotify may observe any release-relevant work in the
+    // function.
+    TNotifyReleaseState funcState =
+        collectTNotifyReleaseState(func.getOperation());
+    markNestedTNotifyWithState(func.getOperation(), funcState, hasFailure);
+  }
+  return hasFailure;
+}
+
+static void clearAcquireAttrs(pto::LoadScalarOp op) {
+  op->removeAttr(kAcquireCleanGmCacheAttrName);
+  op->removeAttr(kAcquireDsbDdrAttrName);
+  op->removeAttr(kAcquireInvalidateGmCacheAttrName);
+}
+
+static void diagnoseAcquireLoad(pto::LoadScalarOp op,
+                                const SignalAcquireState &state,
+                                bool &hasFailure) {
+  if (!state.pendingInvalidateGmCache ||
+      !isGmScalarMemory(op.getPtr().getType()))
+    return;
+  if (state.dirtyGmCache) {
+    op.emitOpError()
+        << "requires explicit `pto.cmo.clean all #pto.address_space<gm>`, "
+           "`pto.fence.release #pto.fence_scope<ddr>`, and "
+           "`pto.cmo.invalidate all #pto.address_space<gm>` before a "
+           "cacheable GM load after signal acquire when dirty GM cache may "
+           "exist";
+    hasFailure = true;
+    return;
+  }
+  if (state.cleanNeedsFence) {
+    op.emitOpError()
+        << "requires explicit `pto.fence.release #pto.fence_scope<ddr>` "
+           "after GM cache clean and before acquire invalidate";
+    hasFailure = true;
+    return;
+  }
+  op.emitOpError()
+      << "requires explicit `pto.cmo.invalidate all #pto.address_space<gm>` "
+         "before a cacheable GM load after `pto.comm.twait` or successful "
+         "`pto.comm.ttest`";
+  hasFailure = true;
+}
+
+static void consumeAcquireAfterDiagnostic(SignalAcquireState &state) {
+  if (state.pendingInvalidateGmCache)
+    state.consumeAcquire();
+}
+
+static SignalAcquireState collectSignalAcquireState(Operation *op) {
+  SignalAcquireState state;
+  if (isa<pto::TWaitOp, pto::TTestOp>(op))
+    state.pendingInvalidateGmCache = true;
+  if (auto store = dyn_cast<pto::StoreScalarOp>(op);
+      store && isGmScalarMemory(store.getPtr().getType()))
+    state.dirtyGmCache = true;
+  if (auto notify = dyn_cast<pto::TNotifyOp>(op);
+      notify && notify->hasAttr(kTNotifyCleanGmCacheAttrName))
+    state.dirtyGmCache = false;
+  if (auto cmo = dyn_cast<pto::CmoCleanOp>(op))
+    state.applyCmoClean(cmo.getSpace().getAddressSpace());
+  if (auto fence = dyn_cast<pto::FenceReleaseOp>(op))
+    state.applyFenceRelease(fence.getScope().getScope());
+  if (auto cmo = dyn_cast<pto::CmoInvalidateOp>(op))
+    state.applyCmoInvalidate(cmo.getSpace().getAddressSpace());
+
+  for (Region &region : op->getRegions())
+    for (Block &block : region)
+      for (Operation &nested : block)
+        state.merge(collectSignalAcquireState(&nested));
+  return state;
+}
+
+static void markNestedAcquireLoadsWithState(Operation *op,
+                                            SignalAcquireState state,
+                                            bool &hasFailure) {
+  op->walk([&](pto::LoadScalarOp load) {
+    clearAcquireAttrs(load);
+    diagnoseAcquireLoad(load, state, hasFailure);
+    consumeAcquireAfterDiagnostic(state);
+  });
+}
+
+static SignalAcquireState
+annotateSignalAcquireForBlock(Block &block, SignalAcquireState entryState,
+                              bool &hasFailure) {
+  SignalAcquireState state = entryState;
+  for (Operation &op : block) {
+    if (auto load = dyn_cast<pto::LoadScalarOp>(op)) {
+      clearAcquireAttrs(load);
+      diagnoseAcquireLoad(load, state, hasFailure);
+      consumeAcquireAfterDiagnostic(state);
+    }
+
+    if (auto store = dyn_cast<pto::StoreScalarOp>(op);
+        store && isGmScalarMemory(store.getPtr().getType()))
+      state.dirtyGmCache = true;
+
+    if (isa<pto::TWaitOp, pto::TTestOp>(op))
+      state.pendingInvalidateGmCache = true;
+
+    if (auto notify = dyn_cast<pto::TNotifyOp>(op);
+        notify && notify->hasAttr(kTNotifyCleanGmCacheAttrName))
+      state.dirtyGmCache = false;
+    if (auto cmo = dyn_cast<pto::CmoCleanOp>(op))
+      state.applyCmoClean(cmo.getSpace().getAddressSpace());
+    if (auto fence = dyn_cast<pto::FenceReleaseOp>(op))
+      state.applyFenceRelease(fence.getScope().getScope());
+    if (auto cmo = dyn_cast<pto::CmoInvalidateOp>(op))
+      state.applyCmoInvalidate(cmo.getSpace().getAddressSpace());
+
+    SignalAcquireState combinedRegionExitState;
+    for (Region &region : op.getRegions()) {
+      if (region.hasOneBlock()) {
+        combinedRegionExitState.merge(
+            annotateSignalAcquireForBlock(region.front(), state, hasFailure));
+      } else {
+        markNestedAcquireLoadsWithState(&op, state, hasFailure);
+        SignalAcquireState regionState = collectSignalAcquireState(&op);
+        SignalAcquireState regionExitState = state;
+        regionExitState.merge(regionState);
+        combinedRegionExitState.merge(regionExitState);
+      }
+    }
+
+    if (isLoopLikeOp(&op))
+      combinedRegionExitState.merge(state);
+    state.merge(combinedRegionExitState);
+  }
+  return state;
+}
+
+static bool annotateSignalAcquire(ModuleOp module) {
+  bool hasFailure = false;
+  for (auto func : module.getOps<func::FuncOp>()) {
+    if (func.getBody().hasOneBlock()) {
+      (void)annotateSignalAcquireForBlock(func.getBody().front(),
+                                          SignalAcquireState{}, hasFailure);
+      continue;
+    }
+
+    SignalAcquireState funcState =
+        collectSignalAcquireState(func.getOperation());
+    markNestedAcquireLoadsWithState(func.getOperation(), funcState, hasFailure);
+  }
+  return hasFailure;
+}
+
+struct PTOMemoryConsistencyPass
+    : public mlir::pto::impl::PTOMemoryConsistencyBase<
+          PTOMemoryConsistencyPass> {
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
+    bool releaseFailed = annotateTNotifyRelease(module);
+    bool acquireFailed = annotateSignalAcquire(module);
+    if (releaseFailed || acquireFailed)
+      signalPassFailure();
+  }
+};
+
+} // namespace
+
+std::unique_ptr<Pass> mlir::pto::createPTOMemoryConsistencyPass() {
+  return std::make_unique<PTOMemoryConsistencyPass>();
+}

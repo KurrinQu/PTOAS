@@ -18,6 +18,7 @@
 #include "PTO/IR/PTO.h"
 #include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/IR/PTOSyncUtils.h"
+#include "PTO/Transforms/MemoryConsistencyAttrs.h"
 #include "PTO/Transforms/Passes.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -152,15 +153,6 @@ static constexpr llvm::StringLiteral kForceDynamicValidShapeAttrName =
     "__pto.force_dynamic_valid_shape";
 static constexpr llvm::StringLiteral kGlobalTensorStridesAttrName =
     "__pto.globaltensor_strides";
-static constexpr llvm::StringLiteral kTNotifyDrainMte2AttrName =
-    "__pto.emitc.tnotify_drain_mte2";
-static constexpr llvm::StringLiteral kTNotifyDrainMte3AttrName =
-    "__pto.emitc.tnotify_drain_mte3";
-
-enum TNotifyMteDrainMask : unsigned {
-  kDrainMte2 = 1U << 0,
-  kDrainMte3 = 1U << 1,
-};
 static constexpr llvm::StringLiteral kLastUseAttrName = "pto.last_use";
 static constexpr llvm::StringLiteral kLastUseMarkerPrefix = "PTOAS__LAST_USE__";
 
@@ -303,104 +295,6 @@ static Value peelUnrealized(Value v) {
   if (auto castOp = v.getDefiningOp<UnrealizedConversionCastOp>())
     return castOp.getOperand(0);
   return v;
-}
-
-static unsigned getMteDrainMaskForPipe(pto::PIPE pipe) {
-  switch (pipe) {
-  case pto::PIPE::PIPE_MTE2:
-    return kDrainMte2;
-  case pto::PIPE::PIPE_MTE3:
-    return kDrainMte3;
-  case pto::PIPE::PIPE_ALL:
-    return kDrainMte2 | kDrainMte3;
-  default:
-    return 0;
-  }
-}
-
-static unsigned getDirectMteDrainMask(Operation *op) {
-  if (auto pipeOp = dyn_cast<pto::OpPipeInterface>(op))
-    return getMteDrainMaskForPipe(pipeOp.getPipe());
-  return 0;
-}
-
-static unsigned collectMteDrainMask(Operation *op) {
-  unsigned mask = getDirectMteDrainMask(op);
-  for (Region &region : op->getRegions())
-    for (Block &block : region)
-      for (Operation &nested : block)
-        mask |= collectMteDrainMask(&nested);
-  return mask;
-}
-
-static bool isLoopLikeOp(Operation *op) {
-  return isa<scf::ForOp, scf::WhileOp, scf::ParallelOp, scf::ForallOp>(op);
-}
-
-static void setTNotifyDrainAttrs(pto::TNotifyOp op, unsigned mask) {
-  op->removeAttr(kTNotifyDrainMte2AttrName);
-  op->removeAttr(kTNotifyDrainMte3AttrName);
-  if (mask & kDrainMte2)
-    op->setAttr(kTNotifyDrainMte2AttrName, UnitAttr::get(op.getContext()));
-  if (mask & kDrainMte3)
-    op->setAttr(kTNotifyDrainMte3AttrName, UnitAttr::get(op.getContext()));
-}
-
-static void markNestedTNotifyWithMask(Operation *op, unsigned mask) {
-  op->walk([&](pto::TNotifyOp notify) { setTNotifyDrainAttrs(notify, mask); });
-}
-
-static unsigned annotateTNotifyMteDrainForBlock(Block &block,
-                                                unsigned entryPendingMask,
-                                                unsigned loopCarriedMask) {
-  unsigned pendingMask = entryPendingMask;
-  for (Operation &op : block) {
-    if (auto notify = dyn_cast<pto::TNotifyOp>(op)) {
-      setTNotifyDrainAttrs(notify, pendingMask | loopCarriedMask);
-      pendingMask = 0;
-    }
-
-    pendingMask |= getDirectMteDrainMask(&op);
-
-    unsigned regionEntryMask = pendingMask;
-    unsigned combinedRegionExitMask = 0;
-    for (Region &region : op.getRegions()) {
-      unsigned nestedLoopCarriedMask = loopCarriedMask;
-      if (isLoopLikeOp(&op))
-        nestedLoopCarriedMask |= collectMteDrainMask(&op);
-
-      if (region.hasOneBlock()) {
-        combinedRegionExitMask |= annotateTNotifyMteDrainForBlock(
-            region.front(), regionEntryMask, nestedLoopCarriedMask);
-      } else {
-        unsigned regionMask = collectMteDrainMask(&op);
-        markNestedTNotifyWithMask(&op, regionEntryMask | nestedLoopCarriedMask |
-                                           regionMask);
-        combinedRegionExitMask |= regionEntryMask | regionMask;
-      }
-    }
-    pendingMask |= combinedRegionExitMask;
-
-    if (auto barrier = dyn_cast<pto::BarrierOp>(op))
-      pendingMask &= ~getMteDrainMaskForPipe(barrier.getPipe().getPipe());
-  }
-  return pendingMask;
-}
-
-static void annotateTNotifyMteDrain(ModuleOp module) {
-  for (auto func : module.getOps<func::FuncOp>()) {
-    if (func.getBody().hasOneBlock()) {
-      (void)annotateTNotifyMteDrainForBlock(func.getBody().front(),
-                                            /*entryPendingMask=*/0,
-                                            /*loopCarriedMask=*/0);
-      continue;
-    }
-
-    // Be conservative for pre-existing CFG: without a path-sensitive CFG data
-    // flow here, every TNotify may observe any MTE work in the function.
-    unsigned funcMask = collectMteDrainMask(func.getOperation());
-    markNestedTNotifyWithMask(func.getOperation(), funcMask);
-  }
 }
 
 static Value buildGlobalTensorFromMemref(ConversionPatternRewriter &rewriter,
@@ -5388,6 +5282,13 @@ static std::string getAutoSyncTailModeToken(Operation *op) {
 //===----------------------------------------------------------------------===//
 // pto.barrier lowering -> pipe_barrier(...)
 //===----------------------------------------------------------------------===//
+static void emitDsbDdr(ConversionPatternRewriter &rewriter, Location loc) {
+  auto *ctx = rewriter.getContext();
+  auto args = rewriter.getArrayAttr({emitc::OpaqueAttr::get(ctx, "DSB_DDR")});
+  rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "dsb", args,
+                                       ArrayAttr{}, ValueRange{});
+}
+
 struct PTOBarrierToEmitC : public OpConversionPattern<pto::BarrierOp> {
   using OpConversionPattern<pto::BarrierOp>::OpConversionPattern;
 
@@ -5425,6 +5326,22 @@ struct PTOBarrierToEmitC : public OpConversionPattern<pto::BarrierOp> {
         ValueRange{}        // operands
     );
 
+    return success();
+  }
+};
+
+template <typename FenceOp>
+struct PTOFenceToEmitC : public OpConversionPattern<FenceOp> {
+  using OpConversionPattern<FenceOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(FenceOp op, typename FenceOp::Adaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    (void)adaptor;
+    if (op.getScope().getScope() != pto::FenceScope::DDR)
+      return rewriter.notifyMatchFailure(op, "unsupported fence scope");
+
+    emitDsbDdr(rewriter, op.getLoc());
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -6585,6 +6502,62 @@ struct PTOTAssignToEmitC : public OpConversionPattern<pto::TAssignOp> {
 // pto.load_scalar / pto.store_scalar lowering -> ptr[offset]
 //===----------------------------------------------------------------------===//
 
+static void emitCleanGmCache(ConversionPatternRewriter &rewriter,
+                             Location loc) {
+  auto *ctx = rewriter.getContext();
+  auto args = rewriter.getArrayAttr({
+      emitc::OpaqueAttr::get(ctx, "(__gm__ void*)0"),
+      emitc::OpaqueAttr::get(ctx, "ENTIRE_DATA_CACHE"),
+      emitc::OpaqueAttr::get(ctx, "CACHELINE_OUT"),
+  });
+  rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "dcci", args,
+                                       ArrayAttr{}, ValueRange{});
+}
+
+static void emitInvalidateGmCache(ConversionPatternRewriter &rewriter,
+                                  Location loc) {
+  auto *ctx = rewriter.getContext();
+  auto args = rewriter.getArrayAttr({
+      emitc::OpaqueAttr::get(ctx, "(__gm__ void*)0"),
+      emitc::OpaqueAttr::get(ctx, "ENTIRE_DATA_CACHE"),
+  });
+  rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "dcci", args,
+                                       ArrayAttr{}, ValueRange{});
+}
+
+static bool isGmCmoSpace(pto::AddressSpace space) {
+  return space == pto::AddressSpace::GM || space == pto::AddressSpace::Zero;
+}
+
+struct PTOCmoCleanToEmitC : public OpConversionPattern<pto::CmoCleanOp> {
+  using OpConversionPattern<pto::CmoCleanOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::CmoCleanOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    (void)adaptor;
+    if (!isGmCmoSpace(op.getSpace().getAddressSpace()))
+      return rewriter.notifyMatchFailure(op, "unsupported CMO clean space");
+    emitCleanGmCache(rewriter, op.getLoc());
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct PTOCmoInvalidateToEmitC
+    : public OpConversionPattern<pto::CmoInvalidateOp> {
+  using OpConversionPattern<pto::CmoInvalidateOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::CmoInvalidateOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    (void)adaptor;
+    if (!isGmCmoSpace(op.getSpace().getAddressSpace()))
+      return rewriter.notifyMatchFailure(op, "unsupported CMO invalidate space");
+    emitInvalidateGmCache(rewriter, op.getLoc());
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 static Type getPointerLikeElementType(Type type) {
   if (auto ptrTy = dyn_cast<pto::PtrType>(type))
     return ptrTy.getElementType();
@@ -7083,28 +7056,20 @@ static void emitPipeBarrier(ConversionPatternRewriter &rewriter, Location loc,
                                        ArrayAttr{}, ValueRange{});
 }
 
-static void emitDsbDdr(ConversionPatternRewriter &rewriter, Location loc) {
-  auto *ctx = rewriter.getContext();
-  auto args = rewriter.getArrayAttr({emitc::OpaqueAttr::get(ctx, "DSB_DDR")});
-  rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "dsb", args,
-                                       ArrayAttr{}, ValueRange{});
-}
-
 // Issue #711: TNOTIFY writes its signal on the scalar pipe, and
 // TNOTIFY_IMPL's trailing pipe_barrier(PIPE_ALL) runs *after* that store.
-// If prior pto.tload / pto.tstore work is still in flight on an MTE pipe when
-// the signal lands, the receiver's matching TWAIT can return before the data
-// is visible. Emit only the MTE pipe drains that the pre-lowering analysis
-// proved may be needed before this TNotify. Issue #744: prior MTE3 stores also
-// need a DDR-domain release fence before publishing the notification signal.
-static void emitTNotifyMteDrain(ConversionPatternRewriter &rewriter,
-                                Location loc, unsigned mask) {
-  if (mask & kDrainMte2)
+// If prior MTE work is still in flight when the signal lands, the receiver's
+// matching TWAIT can return before the producer-side payload operation is
+// complete. MemoryConsistency now validates explicit CMO/fence operations for
+// DDR visibility; lowering only keeps the pipe-drain actions that the pass may
+// still annotate automatically.
+static void emitTNotifyReleaseActions(ConversionPatternRewriter &rewriter,
+                                      Location loc, bool drainMte2,
+                                      bool drainMte3) {
+  if (drainMte2)
     emitPipeBarrier(rewriter, loc, "PIPE_MTE2");
-  if (mask & kDrainMte3) {
+  if (drainMte3)
     emitPipeBarrier(rewriter, loc, "PIPE_MTE3");
-    emitDsbDdr(rewriter, loc);
-  }
 }
 
 static std::string waitCmpTok(pto::WaitCmp cmp) {
@@ -7361,14 +7326,11 @@ struct PTOSignalCommToEmitC : public OpConversionPattern<SignalOp> {
           rewriter, op.getLoc(), notifyTy, notifyOpTok(op.getNotifyOp()));
       SmallVector<Value> operands{*signalGT, peelUnrealized(adaptor.getValue()),
                                   notifyOp};
-      // See emitTNotifyMteDrain comment: drain in-flight MTE work before the
+      // See emitTNotifyReleaseActions comment: drain in-flight MTE work before the
       // scalar-pipe signal store so the notify/wait handshake is honored.
-      unsigned drainMask = 0;
-      if (op->hasAttr(kTNotifyDrainMte2AttrName))
-        drainMask |= kDrainMte2;
-      if (op->hasAttr(kTNotifyDrainMte3AttrName))
-        drainMask |= kDrainMte3;
-      emitTNotifyMteDrain(rewriter, op.getLoc(), drainMask);
+      bool drainMte2 = op->hasAttr(kTNotifyDrainMte2AttrName);
+      bool drainMte3 = op->hasAttr(kTNotifyDrainMte3AttrName);
+      emitTNotifyReleaseActions(rewriter, op.getLoc(), drainMte2, drainMte3);
       rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, callee,
                                            ArrayAttr{}, ArrayAttr{}, operands);
       rewriter.eraseOp(op);
@@ -13881,7 +13843,11 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
     PTOTGemvMXToTGEMV_MX,
     PTOTGemvMXAccToTGEMV_MX,
     PTOTGemvMXBiasToTGEMV_MX,
-    PTOBarrierToEmitC
+    PTOBarrierToEmitC,
+    PTOFenceToEmitC<pto::FenceReleaseOp>,
+    PTOFenceToEmitC<pto::FenceAcquireOp>,
+    PTOCmoCleanToEmitC,
+    PTOCmoInvalidateToEmitC
   >(typeConverter, ctx);
 
   patterns.add<CallToEmitC, ReturnToEmitC>(typeConverter, ctx);
@@ -14141,8 +14107,6 @@ static AICORE inline void ptoas_auto_sync_tail(
         return signalPassFailure();
       }
     }
-
-    annotateTNotifyMteDrain(mop);
 
     // 3. 配置转换目标
     ConversionTarget target(*ctx);

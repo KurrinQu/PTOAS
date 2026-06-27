@@ -2816,6 +2816,52 @@ def BarrierOp : PTO_Op<"barrier"> {
   let assemblyFormat = "$pipe attr-dict";
 }
 
+def CmoCleanOp : PTO_Op<"cmo.clean"> {
+  let summary = "Clean cache lines for a memory space";
+  let description = [{
+    Cache maintenance operation that writes dirty cache lines back to the
+    specified memory space. The first version supports whole-cache GM clean and
+    lowers to `dcci((__gm__ void*)0, ENTIRE_DATA_CACHE, CACHELINE_OUT)`.
+  }];
+
+  let arguments = (ins PTO_AddressSpaceAttr:$space);
+  let assemblyFormat = "`all` $space attr-dict";
+}
+
+def CmoInvalidateOp : PTO_Op<"cmo.invalidate"> {
+  let summary = "Invalidate cache lines for a memory space";
+  let description = [{
+    Cache maintenance operation that invalidates cache lines for the specified
+    memory space. The first version supports whole-cache GM invalidate and
+    lowers to `dcci((__gm__ void*)0, ENTIRE_DATA_CACHE)`.
+  }];
+
+  let arguments = (ins PTO_AddressSpaceAttr:$space);
+  let assemblyFormat = "`all` $space attr-dict";
+}
+
+def FenceReleaseOp : PTO_Op<"fence.release"> {
+  let summary = "Release memory fence";
+  let description = [{
+    Release fence for publishing payload writes before a following signal
+    operation. `scope = ddr` lowers to `dsb(DSB_DDR)`.
+  }];
+
+  let arguments = (ins PTO_FenceScopeAttr:$scope);
+  let assemblyFormat = "$scope attr-dict";
+}
+
+def FenceAcquireOp : PTO_Op<"fence.acquire"> {
+  let summary = "Acquire memory fence";
+  let description = [{
+    Acquire fence for ordering signal observation before following payload
+    reads. `scope = ddr` lowers to `dsb(DSB_DDR)`.
+  }];
+
+  let arguments = (ins PTO_FenceScopeAttr:$scope);
+  let assemblyFormat = "$scope attr-dict";
+}
+
 def TSyncOp : PTO_TOp<"tsync"> {
   let summary = "Direct TSYNC mapping (variadic operands).";
   let description = [{

@@ -302,6 +302,21 @@ def PTO_MemBarAttr : PTO_Attr<"MemBar", "membar"> {
   }];
 }
 
+def PTO_FENCE_SCOPE_DDR : I32EnumAttrCase<"DDR", 0, "ddr">;
+
+def PTO_FenceScopeEnum : PTO_I32Enum<
+  "FenceScope", "PTO memory fence scope", [
+    PTO_FENCE_SCOPE_DDR
+  ]>;
+
+def PTO_FenceScopeAttr : PTO_Attr<"FenceScope", "fence_scope"> {
+  let parameters = (ins EnumParameter<PTO_FenceScopeEnum>:$scope);
+  let assemblyFormat = "`<` params `>`";
+  let description = [{
+    Memory visibility scope for PTO fence operations.
+  }];
+}
+
 //===----------------------------------------------------------------------===//
 // Sync Op Type (High Level Abstraction)
 //===----------------------------------------------------------------------===//
