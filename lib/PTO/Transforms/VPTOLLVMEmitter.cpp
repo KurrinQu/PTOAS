@@ -10739,6 +10739,42 @@ getUniqueDeviceModuleByKernelKind(ModuleOp module, FunctionKernelKind kind,
   return matched;
 }
 
+static void mergeDeviceModulesByKernelKind(ModuleOp module) {
+  ModuleOp vectorModule;
+  ModuleOp cubeModule;
+  SmallVector<ModuleOp> modulesToErase;
+
+  for (ModuleOp child : module.getOps<ModuleOp>()) {
+    auto kernelKind = getKernelKind(child);
+    if (!kernelKind)
+      continue;
+
+    ModuleOp *target = nullptr;
+    if (*kernelKind == FunctionKernelKind::Vector)
+      target = &vectorModule;
+    else if (*kernelKind == FunctionKernelKind::Cube)
+      target = &cubeModule;
+    else
+      continue;
+
+    if (!*target) {
+      *target = child;
+      continue;
+    }
+
+    Block *srcBody = child.getBody();
+    Block *dstBody = (*target).getBody();
+    while (!srcBody->empty()) {
+      Operation &op = srcBody->front();
+      op.moveBefore(dstBody, dstBody->end());
+    }
+    modulesToErase.push_back(child);
+  }
+
+  for (ModuleOp child : modulesToErase)
+    child.erase();
+}
+
 static LogicalResult renameKernelFunctionsForKernelKind(ModuleOp module,
                                                         llvm::raw_ostream &diagOS) {
   auto kernelKind = getKernelKind(module);
@@ -10937,6 +10973,8 @@ static LogicalResult runPipeline(ModuleOp module, const std::string &march,
                                  EmitFn &&emit) {
   OwningOpRef<Operation *> clonedOp(module->clone());
   ModuleOp clonedModule = cast<ModuleOp>(*clonedOp);
+
+  mergeDeviceModulesByKernelKind(clonedModule);
 
   if (failed(validateVPTOAuthoringIR(clonedModule, &diagOS))) {
     diagOS << "VPTO LLVM emission failed: authoring-stage VPTO legality "

@@ -34,8 +34,8 @@ def resolve_ptoas_binary() -> Path:
             return candidate
 
     for start in [Path.cwd()] + list(Path.cwd().parents):
-        for pattern in [start / "install" / "bin" / "ptoas",
-                        start / "build" / "tools" / "ptoas" / "ptoas"]:
+        for pattern in [start / "build" / "tools" / "ptoas" / "ptoas",
+                        start / "install" / "bin" / "ptoas"]:
             if pattern.is_file():
                 return pattern
 

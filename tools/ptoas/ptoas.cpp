@@ -1819,6 +1819,37 @@ int mlir::pto::compilePTOASModule(
                                  context.getCANNVersionOrDefault());
   }
 
+  // When the module has nested child builtin.module ops (BACKEND_PARTITIONED
+  // or NESTED PTODSL layout), flatten them into the outer module so that
+  // FuncOp-level passes (InsertSync, InjectBarrierAllSync, etc.) can reach
+  // the functions.  addNestedPass<FuncOp> does not descend into child
+  // builtin.module ops.
+  {
+    SmallVector<ModuleOp> childModules;
+    for (ModuleOp child : module->getOps<ModuleOp>())
+      childModules.push_back(child);
+    for (ModuleOp child : childModules) {
+      // Copy child module attributes to outer (skip pto.backend which is
+      // already set on the outer module by the backend job).
+      for (NamedAttribute attr : child->getAttrs()) {
+        StringRef attrName = attr.getName().getValue();
+        if (attrName == "pto.backend" || attrName == "sym_name")
+          continue;
+        Operation *outerOp = module->getOperation();
+        if (!outerOp->hasAttr(attrName))
+          outerOp->setAttr(attr.getName(), attr.getValue());
+      }
+      // Move all ops from child into outer.
+      Block *childBody = child.getBody();
+      Block *outerBody = module->getBody();
+      while (!childBody->empty()) {
+        Operation &op = childBody->front();
+        op.moveBefore(outerBody, outerBody->end());
+      }
+      child.erase();
+    }
+  }
+
   // Main PassManager
   PassManager pm(module->getContext());
 
