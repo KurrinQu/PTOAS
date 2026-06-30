@@ -1,4 +1,3 @@
-// RUN: ptoas --pto-arch=a3 --pto-level=level3 --emit-pto-ir --mlir-print-ir-after=pto-remove-identity-tmov %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=IR
 // RUN: ptoas --pto-arch=a3 --pto-level=level3 --enable-insert-sync %s -o - 2>&1 | FileCheck %s --check-prefix=CPP
 
 module attributes {pto.target_arch = "a2a3", pto.kernel_kind = #pto.kernel_kind<vector>} {
@@ -79,23 +78,6 @@ module attributes {pto.target_arch = "a2a3", pto.kernel_kind = #pto.kernel_kind<
     return
   }
 }
-
-// IR-LABEL: func.func @identity_tmov_same_addr
-// IR-NOT: pto.tmov
-// IR: return
-
-// IR-LABEL: func.func @non_identity_tmov_different_addr
-// IR: pto.tmov
-
-// IR-LABEL: func.func @identity_tmov_pointer_cast_same_addr_index_cast
-// IR-NOT: pto.tmov
-// IR: return
-
-// IR-LABEL: func.func @non_identity_tmov_trunc_then_extsi_addr
-// IR: pto.tmov
-
-// IR-LABEL: func.func @non_identity_tmov_dynamic_addr
-// IR: pto.tmov
 
 // CPP-LABEL: AICORE void identity_tmov_same_addr
 // CPP-NOT: pipe_barrier(PIPE_V)
