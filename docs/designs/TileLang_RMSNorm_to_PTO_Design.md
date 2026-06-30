@@ -2,12 +2,14 @@
 
 ## 1. TileLang RMSNorm Kernel
 
-讨论 PTO 后端对接之前，先把作为输入的 kernel 摆出来。它的结构有几个要点：
+讨论 PTO 后端对接之前，先把作为输入的 TileLang RMSNorm kernel 摆出来。它的结构有几个要点：
 
-- 外层是 64 个 AICORE 上的 persistent kernel；
+- 外层 `T.Kernel(N_CORES)` 表示 64 个 AICORE block；
+- `T.Pipelined(n_tokens_per_core, num_stages=2)` 表示每个 core 处理 64 个 token，并启用 2-stage 软件流水；
+- 前端声明单维 `x_ub / y_ub / z_rstd_ub`，双缓冲 offset、MTE/V/MTE3 flag 同步由 Ascend lowering pipeline 生成；
 - 每个 token 的主体计算放进 `T.SimtVF(threads=threads)` 内，`x_frag` 是 SIMT workitem 的本地 fragment；
 - 跨 workitem 的规约由 `T.alloc_reducer + T.finalize_reducer` 完成；
-- `d=4096`、`threads=128` 下，每个 workitem 负责 32 个 f32 元素，即 8 个 float4。
+- `d=4096`、`threads=128` 下，每个 workitem 负责 32 个 f32 元素，Ascend 路径生成 16 组 `float2` 连续访存。
 
 完整代码：
 
@@ -34,38 +36,23 @@ def rms_norm_fwd(batch, d, dtype="float32"):
         with T.Kernel(N_CORES) as core_id:
             # Double-buffered shared buffers
             w_ub = T.alloc_shared((d,), dtype)
-            x_ub = T.alloc_shared((2, TILE), "float32")
-            y_ub = T.alloc_shared((2, TILE), "float32")
-            z_rstd_ub = T.alloc_shared((2, 8), "float32")
+            x_ub = T.alloc_shared((TILE), "float32")
+            y_ub = T.alloc_shared((TILE), "float32")
+            z_rstd_ub = T.alloc_shared((8), "float32")
 
             # Load weights once
             T.copy(W[:d], w_ub[:d])
-            T.ascend_set_flag("MTE2_V", 3)
-            T.ascend_wait_flag("MTE2_V", 3)
 
-            # Init double-buffer flags
-            T.ascend_set_flag("V_MTE2", 0)
-            T.ascend_set_flag("MTE3_V", 0)
-            T.ascend_set_flag("V_MTE2", 1)
-            T.ascend_set_flag("MTE3_V", 1)
-
-            for t in T.serial(n_tokens_per_core):
+            for t in T.Pipelined(n_tokens_per_core, num_stages=2):
                 base = (t * N_CORES + core_id) * d
-                eid = t % 2
 
-                # MTE2: load x[token] from GM to UB
-                T.ascend_wait_flag("V_MTE2", eid)
-                T.copy(X[base : base + d], x_ub[eid, :d])
-                T.ascend_set_flag("MTE2_V", eid)
+                T.copy(X[base : base + d], x_ub[:d])
 
-                # VEC: compute RMSNorm
-                T.ascend_wait_flag("MTE2_V", eid)
-                T.ascend_wait_flag("MTE3_V", eid)
                 with T.SimtVF(threads=threads):
                     # Fragment: vectorized float4 load from UB to registers
                     x_frag = T.alloc_fragment((TILE,), "float32")
                     for i in T.Parallel(TILE):
-                        x_frag[i] = x_ub[eid, i]
+                        x_frag[i] = x_ub[i]
 
                     # Reduce: sum(x^2) from registers (no UB load)
                     sum_sq = T.alloc_reducer((1,), "float32", op="sum", replication="all")
@@ -78,49 +65,187 @@ def rms_norm_fwd(batch, d, dtype="float32"):
                     # Compute rstd
                     var = sum_sq[0] / d + eps
                     rstd_val = T.rsqrt(var)
-                    z_rstd_ub[eid, 0] = rstd_val
+                    z_rstd_ub[0] = rstd_val
 
                     # Output: y = x * rstd * w (reuse x_frag, no x reload)
                     for i in T.Parallel(TILE):
                         if i < d:
-                            y_ub[eid, i] = x_frag[i] * rstd_val * w_ub[i]
-
-                T.ascend_set_flag("V_MTE3", eid)
-                T.ascend_set_flag("V_MTE2", eid)
+                            y_ub[i] = x_frag[i] * rstd_val * w_ub[i]
 
                 # MTE3: store y[token] and rstd from UB to GM
                 row_id = t * N_CORES + core_id
-                T.ascend_wait_flag("V_MTE3", eid)
-                T.copy(y_ub[eid, :d], Y[base : base + d])
-                T.copy(z_rstd_ub[eid, :1], RSTD[row_id : row_id + 1])
-                T.ascend_set_flag("MTE3_V", eid)
-
-            # Drain pipeline
-            T.ascend_wait_flag("MTE3_V", 0)
-            T.ascend_wait_flag("MTE3_V", 1)
-            T.ascend_wait_flag("V_MTE2", 0)
-            T.ascend_wait_flag("V_MTE2", 1)
+                T.copy(y_ub[:d], Y[base : base + d])
+                T.copy(z_rstd_ub[:1], RSTD[row_id : row_id + 1])
 
     return main
 ```
 
 ---
 
-## 2. 当前 codegen 链路：从 TIR 到 Ascend C
+## 2. codegen 链路：从 TIR 到 Ascend C
+
+Ascend 后端通过 `tilelang.backend.pass_pipeline` 注册 lowering pipeline。`tilelang/ascend/pipeline.py` 中的实现如下：
+
+```python
+from __future__ import annotations
+
+from tvm import IRModule, s_tir, tirx
+from tvm.target import Target
+from tvm.tirx import PrimFunc, SBlock
+from tvm.tirx.stmt_functor import post_order_visit
+
+import tilelang
+from tilelang.backend.pass_pipeline import PassPipeline, register_pipeline
+from tilelang.backend.pass_pipeline.pipeline_utils import (
+    LayoutVisual,
+    allow_autoschedule,
+    allow_global_thread_synchronization,
+    allow_vectorize,
+    should_disable_shared_memory_reuse,
+    should_enable_race_check,
+    should_force_let_inline,
+)
+
+from . import transform as ascend_transform
+
+
+def _has_vf_region(mod: IRModule, names: set[str] | None = None) -> bool:
+    names = names or {"SIMD_VF", "SIMT_VF"}
+    for _, func in mod.functions.items():
+        if not isinstance(func, PrimFunc):
+            continue
+        found = False
+
+        def _visit(node):
+            nonlocal found
+            if found:
+                return
+            if isinstance(node, SBlock) and node.name_hint in names:
+                found = True
+
+        post_order_visit(func.body, _visit)
+        if found:
+            return True
+    return False
+
+
+def AscendPassPipelineBody(mod: IRModule, target: Target) -> IRModule:
+    mod = tirx.transform.BindTarget(target)(mod)
+    # Materialize the target-neutral kernel-launch nest (thread_binding For
+    # loops emitted by T.Kernel) into thread_extent AttrStmts. Ascend's NPU
+    # launch is a 1-D blockIdx.x grid with no threadIdx, so SIMT-style
+    # materialization (lower_thread_binding=True) reproduces the previous
+    # LaunchThread(blockIdx.x) behavior.
+    mod = tilelang.transform.MaterializeKernelLaunch()(mod)
+    mod = ascend_transform.HoistSimdPairs()(mod)
+    pass_ctx = tilelang.transform.get_pass_context()
+
+    if should_force_let_inline(pass_ctx=pass_ctx):
+        mod = tilelang.transform.LetInline()(mod)
+    mod = tilelang.transform.AddWrapperForSingleBufStore()(mod)
+    mod = tilelang.transform.LegalizeNegativeIndex()(mod)
+    if should_enable_race_check(pass_ctx=pass_ctx):
+        mod = tilelang.transform.VerifyParallelLoop()(mod)
+    mod = tilelang.transform.InjectAssumes()(mod)
+    mod = tilelang.transform.Simplify()(mod)
+    tilelang.ascend.analysis.VFChecker()(mod)
+
+    mod = tilelang.transform.LayoutReducer()(mod)
+    mod = tilelang.transform.LayoutInference()(mod)
+    LayoutVisual(mod)
+
+    if allow_autoschedule(pass_ctx=pass_ctx):
+        mod = ascend_transform.AnnotateMultiBufferEligible()(mod)
+        mod = ascend_transform.IfConditionExtract()(mod)
+        mod = ascend_transform.AutoSchedule()(mod)
+        mod = ascend_transform.NormalizeMixedKernelSid()(mod)
+        mod = tilelang.transform.Simplify()(mod)
+
+    mod = ascend_transform.AscendSimdVFLowerParallel()(mod)
+    mod = tilelang.transform.LowerTileOp()(mod)
+
+    mod = tilelang.transform.DecoupleTypeCast()(mod)
+    mod = tilelang.transform.LegalizeVectorizedLoop()(mod)
+    mod = tilelang.transform.LegalizeSafeMemoryAccess()(mod)
+    mod = tilelang.transform.LowerAccessPtr()(mod)
+    mod = tilelang.transform.Simplify()(mod)
+    mod = tilelang.transform.HoistNonRestrictParams()(mod)
+
+    mod = tilelang.transform.PlanAndUpdateBufferAllocationLocation()(mod)
+    mod = tilelang.transform.HoistGlobalBufferAllocations()(mod)
+    mod = tilelang.transform.LowerOpaqueBlock()(mod)
+    mod = tilelang.transform.Simplify()(mod)
+    mod = tilelang.ascend.analysis.VFLocalVarChecker()(mod)
+    mod = tirx.transform.NarrowDataType(32)(mod)
+    mod = tilelang.transform.FlattenBuffer()(mod)
+    mod = tilelang.transform.ConfigIndexBitwidth()(mod)
+    mod = tirx.transform.Simplify()(mod)
+    mod = tilelang.transform.VectorizeLoop(enable_vectorize=allow_vectorize(pass_ctx=pass_ctx))(mod)
+    mod = tilelang.transform.StorageRewrite()(mod)
+
+    if not _has_vf_region(mod):
+        mod = tilelang.transform.LoopUnswitching()(mod)
+    mod = tilelang.transform.UnrollLoop()(mod)
+    mod = s_tir.transform.RenormalizeSplitPattern()(mod)
+    mod = tirx.transform.Simplify()(mod)
+    mod = tirx.transform.RemoveNoOp()(mod)
+    mod = s_tir.transform.HoistIfThenElse()(mod)
+
+    mod = tirx.transform.VerifyMemory()(mod)
+    mod = tirx.transform.AnnotateEntryFunc()(mod)
+    mod = s_tir.transform.InferFragment()(mod)
+    mod = tilelang.transform.LowerThreadAllreduce()(mod)
+
+    if allow_global_thread_synchronization(pass_ctx=pass_ctx):
+        mod = tilelang.transform.ThreadSync("global")(mod)
+    mod = tilelang.transform.AnnotateDeviceRegions()(mod)
+    mod = ascend_transform.MarkScalarDcacheBypass()(mod)
+    mod = tilelang.transform.SplitHostDevice()(mod)
+    mod = tilelang.transform.AnnotateReadOnlyParams()(mod)
+
+    disable_reuse = should_disable_shared_memory_reuse(pass_ctx=pass_ctx)
+    mod = ascend_transform.MergeUBAllocations(
+        enable_aggressive_merge=False,
+        align_bytes=32,
+        disable_reuse=disable_reuse,
+    )(mod)
+
+    mod = tilelang.transform.ThreadSync("shared")(mod)
+    mod = tilelang.transform.ThreadSync("shared.dyn")(mod)
+    mod = tilelang.transform.MergeIfStmt()(mod)
+    mod = tilelang.transform.MakePackedAPI()(mod)
+    mod = tilelang.transform.Simplify()(mod)
+    mod = tilelang.transform.LowerDeviceKernelLaunch()(mod)
+    return mod
+
+
+ascend_pipeline = PassPipeline("ascend", AscendPassPipelineBody)
+
+register_pipeline(ascend_pipeline)
+```
+
+对 RMSNorm 这个 kernel，关键 pass 的作用如下：
+
+- `MaterializeKernelLaunch` 把 `T.Kernel` 产生的 target-neutral launch loop 物化成 Ascend 的 `blockIdx.x` thread extent；
+- `AutoSchedule` 相关 pass 根据 `T.Pipelined(num_stages=2)` 生成双缓冲 offset 和 `V_MTE2 / MTE2_V / V_MTE3 / MTE3_V` 同步；
+- `AscendSimdVFLowerParallel` 把 `T.Parallel(TILE)` 降到 SIMT workitem 内的固定步长循环；
+- `LowerTileOp` 把 `T.copy` 继续 lower 成 Ascend copy intrinsic；
+- `MergeUBAllocations` 把多个 `shared.dyn` buffer 合成一个 `buf_dyn_shmem` backing store，并决定最终 offset；
+- `LowerThreadAllreduce` 之后，TIR 中仍保留 `tl::AscendAllReduce<...>::run` 外部调用，后续 Ascend C / Bisheng 路径负责模板实例化。
 
 ### 2.1 最终 device TIR
 
-经过 `LowerAndLegalize + OptimizeForTarget` 之后，得到下面这份 device TIR，后续 PTO 后端对接都基于它展开。
+以下代码来自 `batch=4096, d=4096` 的 Ascend lowering 结果，对应 `analysis_outputs/rmsnorm_d4096_tir_passes/062_tirx.Filter.py`。
 
 ```python
 # from tvm.script import ir as I
-# from tvm.script import tir as T
+# from tvm.script import tirx as T
 
 @I.ir_module
 class Module:
     @T.prim_func
     def main_kernel(RSTD: T.handle("float32", "global"), W: T.handle("float32", "global"), X: T.handle("float32", "global"), Y: T.handle("float32", "global"), eps: T.float32):
-        T.func_attr({"calling_conv": 2, "dyn_shared_memory_buf": 82496, "target": T.target({"keys": ["ascend", "cpu"], "kind": "c", "tag": ""}), "thread_extent": {"blockIdx.x": 64}, "tir.is_global_func": T.bool(True), "tir.kernel_launch_params": ["blockIdx.x", "threadIdx.x", "threadIdx.y", "threadIdx.z", "threadIdx.x", "threadIdx.y", "threadIdx.z", "tir.use_dyn_shared_memory"], "tir.noalias": True, "tl.non_restrict_params": [], "tl.readonly_param_indices": [1, 2]})
+        T.func_attr({"calling_conv": 2, "dyn_shared_memory_buf": 82496, "target": T.target({"keys": ["ascend"], "kind": "c", "tag": "", "target_device_type": 12}), "thread_extent": {"blockIdx.x": 64}, "tirx.is_global_func": T.bool(True), "tirx.kernel_launch_params": ["blockIdx.x", "threadIdx.x", "threadIdx.y", "threadIdx.z", "threadIdx.x", "threadIdx.y", "threadIdx.z", "tirx.use_dyn_shared_memory"], "tirx.noalias": True, "tl.non_restrict_params": [], "tl.readonly_param_indices": [1, 2]})
         buf_dyn_shmem = T.handle("uint8", "shared.dyn")
         w_ub = T.decl_buffer((4096,), data=buf_dyn_shmem, scope="shared.dyn")
         y_ub = T.decl_buffer((8192,), data=buf_dyn_shmem, scope="shared.dyn")
@@ -131,161 +256,142 @@ class Module:
         x_frag = T.handle("float32", "local")
         x_frag_1 = T.decl_buffer((32,), data=x_frag, scope="local")
         bx = T.launch_thread("blockIdx.x", 64)
-        buf_dyn_shmem = T.allocate([82496], "uint8", "shared.dyn")
+        buf_dyn_shmem_1 = T.alloc_buffer((82496,), "uint8", scope="shared.dyn")
         tx = T.launch_thread("threadIdx.x", 128)
         ty = T.launch_thread("threadIdx.y", 1)
         tz = T.launch_thread("threadIdx.z", 1)
-        T.ascend_copy_gm_to_ubuf(T.tvm_access_ptr(T.type_annotation("float32"), buf_dyn_shmem, 0, 4096, 2), T.tvm_access_ptr(T.type_annotation("float32"), W, 0, 4096, 1), 0, 1, 512, 0, 0)
-        T.ascend_set_flag("MTE2_V", 3)
-        T.ascend_wait_flag("MTE2_V", 3)
         T.ascend_set_flag("V_MTE2", 0)
-        T.ascend_set_flag("MTE3_V", 0)
         T.ascend_set_flag("V_MTE2", 1)
+        T.ascend_set_flag("MTE3_V", 0)
         T.ascend_set_flag("MTE3_V", 1)
+        T.ascend_copy_gm_to_ubuf(T.tvm_access_ptr(T.type_annotation("float32"), buf_dyn_shmem, 0, 4096, 2), T.tvm_access_ptr(T.type_annotation("float32"), W, 0, 4096, 1), 0, 1, 16384, 0, 0, 0, 0, 16384, 16384)
+        T.ascend_set_flag("MTE2_V", 2)
         for t in range(64):
             T.ascend_wait_flag("V_MTE2", t % 2)
-            T.ascend_copy_gm_to_ubuf(T.tvm_access_ptr(T.type_annotation("float32"), buf_dyn_shmem, t % 2 * 4096 + 4096, 4096, 2), T.tvm_access_ptr(T.type_annotation("float32"), X, t * 262144 + bx * 4096, 4096, 1), 0, 1, 512, 0, 0)
+            T.ascend_copy_gm_to_ubuf(T.tvm_access_ptr(T.type_annotation("float32"), buf_dyn_shmem, t % 2 * 4096 + 4224, 4096, 2), T.tvm_access_ptr(T.type_annotation("float32"), X, t * 262144 + bx * 4096, 4096, 1), 0, 1, 16384, 0, 0, 0, 0, 16384, 16384)
             T.ascend_set_flag("MTE2_V", t % 2)
-            T.ascend_wait_flag("MTE2_V", t % 2)
+            if t == 0:
+                T.ascend_wait_flag("MTE2_V", 2)
             T.ascend_wait_flag("MTE3_V", t % 2)
-            with T.block("SIMT_VF", no_realize=True):
+            T.ascend_wait_flag("MTE2_V", t % 2)
+            with T.sblock("SIMT_VF", no_realize=True):
                 T.reads()
                 T.writes()
                 x_frag_2 = T.Buffer((32,), data=x_frag, scope="local")
                 sum_sq_2 = T.Buffer((1,), data=sum_sq, scope="local")
-                T.block_attr({"layout_map": {x_frag_2: metadata["tl.Fragment"][0], sum_sq_2: metadata["tl.Fragment"][1]}})
+                T.sblock_attr({"layout_map": {x_frag_2: metadata["tl.Fragment"][0], sum_sq_2: metadata["tl.Fragment"][1]}, "tl.vf_source_index": T.int64(0)})
                 simtvf_tx = T.launch_thread("threadIdx.x", 128)
                 simtvf_ty = T.launch_thread("threadIdx.y", 1)
                 simtvf_tz = T.launch_thread("threadIdx.z", 1)
                 T.attr("simtvf", "tl.simtvf_scope", 1)
-                x_frag = T.allocate([32], "float32", "local")
-                sum_sq = T.allocate([1], "float32", "local")
-                x_frag_3 = T.Buffer((32,), data=x_frag, scope="local")
-                for i in T.unroll(8):
-                    x_ub_1 = T.Buffer((8192,), data=buf_dyn_shmem, scope="shared.dyn")
-                    x_frag_3[i * 4:i * 4 + 4] = x_ub_1[t % 2 * 4096 + i * 512 + simtvf_tx * 4 + 4096:t % 2 * 4096 + i * 512 + simtvf_tx * 4 + 4096 + 4]
-                sum_sq_3 = T.Buffer((1,), data=sum_sq, scope="local")
-                sum_sq_3[0] = T.float32(0.0)
+                x_frag_3 = T.alloc_buffer((32,), scope="local")
+                sum_sq_3 = T.alloc_buffer((1,), scope="local")
+                for i in T.unroll(16):
+                    x_frag_1[i * 2:i * 2 + 2] = x_ub[t % 2 * 4096 + i * 256 + simtvf_tx * 2 + 4224:t % 2 * 4096 + i * 256 + simtvf_tx * 2 + 4224 + 2]
+                sum_sq_1[0] = T.float32(0.0)
                 for i in T.unroll(32):
-                    sum_sq_3[0] = sum_sq_3[0] + x_frag_3[i] * x_frag_3[i]
-                sum_sq_3[0] = T.call_extern("float32", "tl::AscendAllReduce<tl::SumOp, 128, 1, 0>::run", sum_sq_3[0], T.tvm_access_ptr(T.type_annotation("float32"), buf_dyn_shmem, 20480, 128, 2))
-                var: T.float32 = sum_sq_3[0] / T.float32(4096.0) + eps
+                    sum_sq_1[0] = sum_sq_1[0] + x_frag_1[i] * x_frag_1[i]
+                sum_sq_1[0] = T.call_extern("float32", "tl::AscendAllReduce<tl::SumOp, 128, 1, 0>::run", sum_sq_1[0], T.tvm_access_ptr(T.type_annotation("float32"), buf_dyn_shmem, 4096, 128, 2))
+                var: T.float32 = sum_sq_1[0] / T.float32(4096.0) + eps
                 rstd_val: T.float32 = T.rsqrt(var)
-                z_rstd_ub_1 = T.Buffer((16,), data=buf_dyn_shmem, scope="shared.dyn")
-                z_rstd_ub_1[t % 2 * 8 + 20608] = rstd_val
-                for i in T.unroll(8):
-                    y_ub_1 = T.Buffer((8192,), data=buf_dyn_shmem, scope="shared.dyn")
-                    w_ub_1 = T.Buffer((4096,), data=buf_dyn_shmem, scope="shared.dyn")
-                    y_ub_1[t % 2 * 4096 + i * 512 + simtvf_tx * 4 + 12288:t % 2 * 4096 + i * 512 + simtvf_tx * 4 + 12288 + 4] = x_frag_3[i * 4:i * 4 + 4] * T.Broadcast(rstd_val, 4) * w_ub_1[i * 512 + simtvf_tx * 4:i * 512 + simtvf_tx * 4 + 4]
-            T.ascend_set_flag("V_MTE3", t % 2)
+                z_rstd_ub[t % 2 * 8 + 20608] = T.rsqrt(var)
+                for i in T.unroll(16):
+                    y_ub[t % 2 * 4096 + i * 256 + simtvf_tx * 2 + 12416:t % 2 * 4096 + i * 256 + simtvf_tx * 2 + 12416 + 2] = x_frag_1[i * 2:i * 2 + 2] * T.Broadcast(T.rsqrt(var), 2) * w_ub[i * 256 + simtvf_tx * 2:i * 256 + simtvf_tx * 2 + 2]
             T.ascend_set_flag("V_MTE2", t % 2)
+            T.ascend_set_flag("V_MTE3", t % 2)
             T.ascend_wait_flag("V_MTE3", t % 2)
-            T.ascend_copy_ubuf_to_gm(T.tvm_access_ptr(T.type_annotation("float32"), Y, t * 262144 + bx * 4096, 4096, 2), T.tvm_access_ptr(T.type_annotation("float32"), buf_dyn_shmem, t % 2 * 4096 + 12288, 4096, 1), 0, 1, 16384, 0, 16384, 16384)
-            T.ascend_copy_ubuf_to_gm(T.tvm_access_ptr(T.type_annotation("float32"), RSTD, t * 64 + bx, 1, 2), T.tvm_access_ptr(T.type_annotation("float32"), buf_dyn_shmem, t % 2 * 8 + 20608, 1, 1), 0, 1, 4, 0, 4, 4)
+            T.ascend_copy_ubuf_to_gm(T.tvm_access_ptr(T.type_annotation("float32"), RSTD, t * 64 + bx, 1, 2), T.tvm_access_ptr(T.type_annotation("float32"), buf_dyn_shmem, t % 2 * 8 + 20608, 1, 1), 0, 1, 4, 4, 4, 4)
+            T.ascend_copy_ubuf_to_gm(T.tvm_access_ptr(T.type_annotation("float32"), Y, t * 262144 + bx * 4096, 4096, 2), T.tvm_access_ptr(T.type_annotation("float32"), buf_dyn_shmem, t % 2 * 4096 + 12416, 4096, 1), 0, 1, 16384, 4, 16384, 16384)
             T.ascend_set_flag("MTE3_V", t % 2)
-        T.ascend_wait_flag("MTE3_V", 0)
-        T.ascend_wait_flag("MTE3_V", 1)
         T.ascend_wait_flag("V_MTE2", 0)
         T.ascend_wait_flag("V_MTE2", 1)
+        T.ascend_wait_flag("MTE3_V", 0)
+        T.ascend_wait_flag("MTE3_V", 1)
 
 # Metadata omitted. Use show_meta=True in script() method to show it.
 ```
 
-后续对接最关键的是其中两处结构。
+后续对接最关键的是三类结构：
 
-一处是访存循环：
+1. `T.Pipelined` 在 TIR 中展开为显式 double-buffer offset 和 flag 同步；
+2. SIMT body 中的连续访存是 `16 x float2`，TIR 表达为长度为 2 的切片 load/store；
+3. `T.finalize_reducer` 最终以 `tl::AscendAllReduce<tl::SumOp, 128, 1, 0>::run` 表达，scratch 指向 UB backing store 中的 `buf_dyn_shmem[4096]`。
 
-```python
-x_frag_3[i * 4:i * 4 + 4] = x_ub_1[... : ... + 4]
-```
+### 2.2 生成的 Ascend C 代码
 
-另一处是规约调用：
-
-```python
-sum_sq_3[0] = T.call_extern(
-    "float32",
-    "tl::AscendAllReduce<tl::SumOp, 128, 1, 0>::run",
-    sum_sq_3[0],
-    T.tvm_access_ptr(T.type_annotation("float32"), buf_dyn_shmem, 20480, 128, 2),
-)
-```
-
-### 2.2 当前生成的 Ascend C 代码
+`d=4096` 生成的 Ascend C 完整代码如下：
 
 ```cpp
-#include <limits>
+#include <tl_templates/ascend/common.h>
+#include <tl_templates/ascend/debug.h>
 __simt_vf__ __launch_bounds__(128) inline void simt_vf_0(__ubuf__ uint8_t* buf_dyn_shmem, int32_t t, float eps) {
-  int32_t simtvf_tx = threadIdx.x;
-  int32_t simtvf_ty = threadIdx.y;
-  int32_t simtvf_tz = threadIdx.z;
   float x_frag[32];
   float sum_sq[1];
   #pragma unroll
-  for (int32_t i = 0; i < 8; ++i) {
-    *(float4*)(x_frag + (i * 4)) = *(__ubuf__ float4*)(((__ubuf__ float*)buf_dyn_shmem) + (((((t & 1) * 4096) + (i * 512)) + (simtvf_tx * 4)) + 4096));
+  for (int32_t i = 0; i < 16; ++i) {
+    *(float2*)(x_frag + (i * 2)) = *(__ubuf__ float2*)(((__ubuf__ float*)buf_dyn_shmem) + (((((t & 1) * 4096) + (i * 256)) + (((int32_t)threadIdx.x) * 2)) + 4224));
   }
   sum_sq[0] = float(0x0p+0f/*0.000000e+00*/);
   #pragma unroll
   for (int32_t i_1 = 0; i_1 < 32; ++i_1) {
     sum_sq[0] = (sum_sq[0] + (x_frag[i_1] * x_frag[i_1]));
   }
-  sum_sq[0] = tl::AscendAllReduce<tl::SumOp, 128, 1, 0>::run(sum_sq[0], (&(((__ubuf__ float*)buf_dyn_shmem)[20480])));
+  sum_sq[0] = tl::AscendAllReduce<tl::SumOp, 128, 1, 0>::run(sum_sq[0], (&(((__ubuf__ float*)buf_dyn_shmem)[4096])));
   float var = ((sum_sq[0] / float(0x1p+12f/*4.096000e+03*/)) + eps);
-  float rstd_val = rsqrtf(var);
-  ((__ubuf__ float*)buf_dyn_shmem)[(((t & 1) * 8) + 20608)] = rstd_val;
+  float rstd_val = (float(0x1p+0f/*1.000000e+00*/) / sqrtf(var));
+  ((__ubuf__ float*)buf_dyn_shmem)[(((t & 1) * 8) + 20608)] = (float(0x1p+0f/*1.000000e+00*/) / sqrtf(var));
   #pragma unroll
-  for (int32_t i_2 = 0; i_2 < 8; ++i_2) {
-    *(__ubuf__ float4*)(((__ubuf__ float*)buf_dyn_shmem) + (((((t & 1) * 4096) + (i_2 * 512)) + (simtvf_tx * 4)) + 12288)) = ((*(float4*)(x_frag + (i_2 * 4)) * make_float4(rstd_val, rstd_val, rstd_val, rstd_val)) * *(__ubuf__ float4*)(((__ubuf__ float*)buf_dyn_shmem) + ((i_2 * 512) + (simtvf_tx * 4))));
+  for (int32_t i_2 = 0; i_2 < 16; ++i_2) {
+    *(__ubuf__ float2*)(((__ubuf__ float*)buf_dyn_shmem) + (((((t & 1) * 4096) + (i_2 * 256)) + (((int32_t)threadIdx.x) * 2)) + 12416)) = ((*(float2*)(x_frag + (i_2 * 2)) * make_float2((float(0x1p+0f/*1.000000e+00*/) / sqrtf(var)), (float(0x1p+0f/*1.000000e+00*/) / sqrtf(var)))) * *(__ubuf__ float2*)(((__ubuf__ float*)buf_dyn_shmem) + ((i_2 * 256) + (((int32_t)threadIdx.x) * 2))));
   }
 }
 
-extern "C"
 __global__ __vector__ void main_kernel(__gm__ float* RSTD, __gm__ float* W, __gm__ float* X, __gm__ float* Y, float eps) {
-  int32_t bx = blockIdx.x;
   __ubuf__ uint8_t *buf_dyn_shmem = (__ubuf__ uint8_t *)0;
   AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(0);
-  AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(0);
-  copy_gm_to_ubuf((__ubuf__ void*)((&(((__ubuf__ float*)buf_dyn_shmem)[0]))), (__gm__ void*)((&(W[0]))), 0, 1, 512, 0, 0);
-  AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(1);
-  AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(3);
-  AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(3);
-  AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(0);
-  AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(0);
   AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(1);
+  AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(0);
   AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(1);
-  AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(0);
-  AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(1);
-  AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(0);
-  AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(1);
-  AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(1);
+  copy_gm_to_ubuf_align_v2((__ubuf__ uint8_t*)((&(((__ubuf__ float*)buf_dyn_shmem)[0]))), (__gm__ uint8_t*)((&(W[0]))), 0, 1, 16384, 0, 0, 0, 0, 16384, 16384);
+  AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(2);
   for (int32_t t = 0; t < 64; ++t) {
     AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>((t & 1));
-    AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(0);
-    copy_gm_to_ubuf((__ubuf__ void*)((&(((__ubuf__ float*)buf_dyn_shmem)[(((t & 1) * 4096) + 4096)]))), (__gm__ void*)((&(X[((t * 262144) + (bx * 4096))]))), 0, 1, 512, 0, 0);
-    AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(0);
+    copy_gm_to_ubuf_align_v2((__ubuf__ uint8_t*)((&(((__ubuf__ float*)buf_dyn_shmem)[(((t & 1) * 4096) + 4224)]))), (__gm__ uint8_t*)((&(X[((t * 262144) + (((int32_t)blockIdx.x) * 4096))]))), 0, 1, 16384, 0, 0, 0, 0, 16384, 16384);
     AscendC::SetFlag<AscendC::HardEvent::MTE2_V>((t & 1));
-    AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>((t & 1));
+    if (t == 0) {
+      AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(2);
+    }
     AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>((t & 1));
+    AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>((t & 1));
+    asc_vf_call<simt_vf_0>(cce::dim3(128), buf_dyn_shmem, t, eps);
     AscendC::SetFlag<AscendC::HardEvent::V_MTE3>((t & 1));
     AscendC::SetFlag<AscendC::HardEvent::V_MTE2>((t & 1));
     AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>((t & 1));
+    copy_ubuf_to_gm_align_v2((__gm__ void*)((&(RSTD[((t * 64) + ((int32_t)blockIdx.x))]))), (__ubuf__ void*)((&(((__ubuf__ float*)buf_dyn_shmem)[(((t & 1) * 8) + 20608)]))), 0, 1, 4, 4, 4, 4);
+    copy_ubuf_to_gm_align_v2((__gm__ void*)((&(Y[((t * 262144) + (((int32_t)blockIdx.x) * 4096))]))), (__ubuf__ void*)((&(((__ubuf__ float*)buf_dyn_shmem)[(((t & 1) * 4096) + 12416)]))), 0, 1, 16384, 4, 16384, 16384);
     AscendC::SetFlag<AscendC::HardEvent::MTE3_V>((t & 1));
-    AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(0);
-    AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(0);
-    asc_vf_call<simt_vf_0>(cce::dim3(128), buf_dyn_shmem, t, eps);
-    AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
-    AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(0);
-    AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
-    bisheng::cce::copy_ubuf_to_gm_align_v2((__gm__ void*)((&(Y[((t * 262144) + (bx * 4096))]))), (__ubuf__ void*)((&(((__ubuf__ float*)buf_dyn_shmem)[(((t & 1) * 4096) + 12288)]))), 0, 1, 16384, 0, 16384, 16384);
-    bisheng::cce::copy_ubuf_to_gm_align_v2((__gm__ void*)((&(RSTD[((t * 64) + bx)]))), (__ubuf__ void*)((&(((__ubuf__ float*)buf_dyn_shmem)[(((t & 1) * 8) + 20608)]))), 0, 1, 4, 0, 4, 4);
-    AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(0);
   }
   AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(0);
+  AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(1);
   AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(0);
+  AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(1);
+}
+
+#ifdef __cplusplus
+extern "C"
+#endif
+void __tl_launch_main_kernel(void** void_args, uint32_t grid, uint32_t smem, void* stream) {
+  (void)grid; (void)smem;
+  main_kernel<<<64, 82496, stream>>>((*reinterpret_cast<__gm__ float**>(void_args[0])), (*reinterpret_cast<__gm__ float**>(void_args[1])), (*reinterpret_cast<__gm__ float**>(void_args[2])), (*reinterpret_cast<__gm__ float**>(void_args[3])), (*reinterpret_cast<float*>(void_args[4])));
 }
 ```
 
-这里有两处和后续讨论直接相关：第一个循环已经是 `float4` 粒度的向量访存；reduce 调用已经实例化为 `tl::AscendAllReduce<tl::SumOp, 128, 1, 0>::run(...)`。
+这里有几处和 PTO 后端直接相关：
+
+- SIMT helper 的 UB/local 连续访存是 `float2`，对应 LLVM IR 中的 `<2 x float>` load/store；
+- `x_frag[32]` 是 workitem-local scratch，reduce 逐元素消费；
+- `AscendAllReduce<SumOp, 128, 1, 0>` 的 scratch 地址来自最终 TIR 的调用参数；
+- 外层 MTE/flag 同步由 pipeline pass 生成，PTO 后端按最终 TIR lowering。
 
 ---
 
@@ -335,270 +441,205 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 | GM / UB 指针与地址计算 | `!pto.ptr<..., gm/ub>` + `pto.castptr` / `pto.addptr` | 显式 PTO pointer |
 | 标量 load/store | `pto.load` / `pto.store` | PTO micro instructions 标量访存 |
 | DMA / flag / wait / barrier | 现有 PTO op | 直接复用 PTO 现有基础设施 |
-| SIMT body 入口 | `pto.simt_launch` + `pto.simt_entry` | 使用当前 `feature-simt-ops` 的结构化入口 |
+| SIMT body 入口 | `pto.simt_launch` + `pto.simt_entry` | 使用结构化 SIMT 入口 |
 | workitem 同步 | `pto.syncthreads` | lowering 到 `llvm.hivm.sync.workitems` |
 
 ### 3.3 向量访存对接方案
 
-#### 3.3.1 Ascend 当前路径
+#### 3.3.1 Ascend 路径形态
 
-第一个循环目前长这样：
+`d=4096` 的 SIMT helper 中，第一个循环是 `16 x float2`：
 
 ```cpp
-for (int32_t i = 0; i < 8; ++i) {
-  *(float4*)(x_frag + (i * 4)) = *(__ubuf__ float4*)(((__ubuf__ float*)buf_dyn_shmem) + (((((t & 1) * 4096) + (i * 512)) + (simtvf_tx * 4)) + 4096));
+#pragma unroll
+for (int32_t i = 0; i < 16; ++i) {
+  *(float2*)(x_frag + (i * 2)) =
+      *(__ubuf__ float2*)(((__ubuf__ float*)buf_dyn_shmem) +
+      (((((t & 1) * 4096) + (i * 256)) + (((int32_t)threadIdx.x) * 2)) + 4224));
 }
 ```
 
-unroll 之后，LLVM IR 已经落到 `<4 x float>` load/store：
+输出循环同样是 `float2`：
 
-```llvm
-%4 = load <4 x float>, ptr addrspace(6) %add.ptr, align 16
-store <4 x float> %4, ptr %x_frag, align 16
-
-%5 = load <4 x float>, ptr addrspace(6) %add.ptr.1, align 16
-store <4 x float> %5, ptr %add.ptr9.1, align 16
-
-%6 = load <4 x float>, ptr addrspace(6) %add.ptr.2, align 16
-store <4 x float> %6, ptr %add.ptr9.2, align 16
+```cpp
+#pragma unroll
+for (int32_t i_2 = 0; i_2 < 16; ++i_2) {
+  *(__ubuf__ float2*)(((__ubuf__ float*)buf_dyn_shmem) +
+      (((((t & 1) * 4096) + (i_2 * 256)) + (((int32_t)threadIdx.x) * 2)) + 12416)) =
+      (*(float2*)(x_frag + (i_2 * 2)) * make_float2(rstd_val, rstd_val)) *
+      *(__ubuf__ float2*)(((__ubuf__ float*)buf_dyn_shmem) +
+      ((i_2 * 256) + (((int32_t)threadIdx.x) * 2)));
+}
 ```
 
-SROA 之后，第二个循环里的 `x_frag[i]` 被改写成对这些向量的 `extractelement`：
+对应到 TIR，是长度为 2 的连续切片：
 
-```llvm
-%4 = load <4 x float>, ptr addrspace(6) %add.ptr, align 16
-...
-%x_frag.sroa.0.0.vec.extract = extractelement <4 x float> %4, i32 0
-%12 = tail call float @llvm.fmuladd.f32(float %x_frag.sroa.0.0.vec.extract, float %x_frag.sroa.0.0.vec.extract, float 0.000000e+00)
-%x_frag.sroa.0.4.vec.extract = extractelement <4 x float> %4, i32 1
-...
+```python
+for i in T.unroll(16):
+    x_frag[i * 2:i * 2 + 2] = \
+        x_ub[(t & 1) * 4096 + i * 256 + simtvf_tx * 2 + 4224:
+             (t & 1) * 4096 + i * 256 + simtvf_tx * 2 + 4224 + 2]
+
+for i in T.unroll(16):
+    y_ub[(t & 1) * 4096 + i * 256 + simtvf_tx * 2 + 12416:
+         (t & 1) * 4096 + i * 256 + simtvf_tx * 2 + 12416 + 2] = \
+        x_frag[i * 2:i * 2 + 2] * T.Broadcast(rstd_val, 2) * \
+        w_ub[i * 256 + simtvf_tx * 2:i * 256 + simtvf_tx * 2 + 2]
 ```
 
-可见 Ascend 现有优化链需要的上游形态是：第一层保留 128-bit 向量访存，第二层允许按标量消费，剩下交给 SROA 和 LLVM 把本地数组拆成 `extractelement`。
+这一路需要保留两个信息：第一层连续访存有明确 bundle 信息，bundle 宽度是 2 个 f32；第二层 reduce 按标量逐元素消费 `x_frag[32]`。
 
 #### 3.3.2 对接做法
 
-第一个循环直接映射到 LLVM Dialect 的向量 load/store，`x_frag[32]` 保留为 lane-local 局部数组：
+PTO 后端按连续 lane bundle 进行 lowering，`d=4096` 对应 `vector<2xf32>`：
 
-- 第一层 `8 x float4` 访存在生成的 SIMT helper 里维持 `<4 x float>` 粒度；
-- `x_frag[32]` 作为 lane-local scratch；
-- 第二层标量累加照常消费 `x_frag[i]`；
-- 由 SROA 和后续 LLVM pass 把 `x_frag` 拆成 `extractelement`。
+- 识别 TIR 中连续 2-lane 的 `BufferLoad/BufferStore`，即 `Ramp(base, 1, 2)` 或等价 slice；
+- SIMT helper 内生成 LLVM Dialect 的 `vector<2xf32>` load/store，地址空间保持 UB / local 的区别；
+- `x_frag[32]` 作为 lane-local scratch 保留，后续标量循环继续按 `x_frag[i]` 消费；
+- 允许 LLVM SROA / mem2reg / vector scalarization 把 local scratch 进一步拆成 `extractelement` 或标量值；
+- 对 `d=5120 / d=7168` 这类 shape，SIMT body 中会保留尾部保护条件，向量 store lowering 需要保留这些条件控制流。
 
 helper 内 IR 形态大致如下：
 
 ```mlir
 %xfrag = llvm.alloca ... : !llvm.ptr
-%slot0 = llvm.getelementptr %xfrag[%c0] : (!llvm.ptr, i64) -> !llvm.ptr
-%v0 = llvm.load %src0 : !llvm.ptr<6> -> vector<4xf32>
-llvm.store %v0, %slot0 : !llvm.ptr
+%src = llvm.getelementptr %ub_base[%offset] : (!llvm.ptr<6>, i64) -> !llvm.ptr<6>
+%dst = llvm.getelementptr %xfrag[%local_offset] : (!llvm.ptr, i64) -> !llvm.ptr
+%v = llvm.load %src : !llvm.ptr<6> -> vector<2xf32>
+llvm.store %v, %dst : vector<2xf32>, !llvm.ptr
 ```
+
+这层可以实现成通用连续 lane bundle lowering：`vector<Nxf32>` 的 N 来自 TIR slice/ramp lanes。
 
 #### 3.3.3 小结
 
-向量访存这部分的结论：第一层 `8 x float4` 走 LLVM Dialect 的向量 load/store，`x_frag[32]` 作 lane-local scratch 由第二层标量消费，剩下交给 SROA / LLVM 拆开。
-
-如果以后要对接 PTODSL，可以考虑在 PTODSL 中用类似 Python slice 的语法描述 4-lane 连续访存，让局部临时与连续 4 元素窗口保持结构化切片关系，再在 PTODSL lowering 中翻成 LLVM Dialect 的向量 load/store。
+向量访存这部分的结论：PTO 后端需要稳定支持 `vector<2xf32>` 形态。`x_frag[32]` 仍作为 local scratch，由 reduce 和 pointwise 两段共同消费。连续访存的 bundle 宽度从 TIR lanes 推导，避免把实现绑定到某个固定 shape。
 
 ### 3.4 Reduce 对接方案
 
-#### 3.4.1 `tl::AscendAllReduce<tl::SumOp, 128, 1, 0>::run(...)` 的语义
+#### 3.4.1 `tl::AscendAllReduce<tl::SumOp, 128, 1, 0>::run(...)` 的调用形态
 
-TIR 中的 reduce 调用是：
+TIR 中的 reduce 调用是外部模板函数调用：
 
 ```python
-sum_sq_3[0] = T.call_extern(
+sum_sq[0] = T.call_extern(
     "float32",
     "tl::AscendAllReduce<tl::SumOp, 128, 1, 0>::run",
-    sum_sq_3[0],
-    T.tvm_access_ptr(T.type_annotation("float32"), buf_dyn_shmem, 20480, 128, 2),
+    sum_sq[0],
+    T.address_of(buf_dyn_shmem[4096]),
 )
 ```
 
-输入是每个 workitem 的局部标量 `x`，对 128 个 workitem 做一次 sum allreduce，所有参与的 workitem 都拿到同一个结果。四个模板参数依次是 `Reducer=tl::SumOp`、`threads=128`、`scale=1`、`thread_offset=0`。
-
-放在 RMSNorm 的语境里：每个 workitem 先算自己 32 个元素的 `sum(x^2)`，128 个 workitem 共同规约出整行总和，然后各自用这个总和算出同一个 `rstd`。
-
-#### 3.4.2 `AscendAllReduce` 现有实现
-
-`reduce.h` 中相关代码：
+生成的 Ascend C 代码保持同一个模板接口：
 
 ```cpp
-namespace tl {
+sum_sq[0] = tl::AscendAllReduce<tl::SumOp, 128, 1, 0>::run(
+    sum_sq[0], (&(((__ubuf__ float*)buf_dyn_shmem)[4096])));
+```
+
+`common.h` 通过 `#include "tl_templates/ascend/reduce.h"` 引入模板实现。接口定义在 `src/tl_templates/ascend/reduce.h`：
+
+```cpp
+template <class Reducer, int threads, int scale = 1, int thread_offset = 0>
+struct AscendAllReduce {
+  template <typename T>
+  static __simt_callee__ T run(T x, __ubuf__ T *red_buf = nullptr);
+};
+```
+
+四个模板参数的含义如下：
+
+- `Reducer`：规约算子，当前模板支持 `SumOp / MaxOp / MinOp`；
+- `threads`：参与 reduce 维度的线程位置数，等于 `extent * scale`；
+- `scale`：逻辑参与者在 `threadIdx.x` 空间中的步长；
+- `thread_offset`：block 内线程索引偏移，内部使用 `threadIdx.x - thread_offset` 得到局部线程号。
+
+RMSNorm 这里使用 `SumOp, 128, 1, 0`，表示对 128 个连续 SIMT workitem 做 sum allreduce。每个 workitem 先计算自己负责的 32 个元素的 `sum(x^2)`，128 个 workitem 共同规约得到整行平方和，然后各自用这个总和计算 `rstd`。
+
+#### 3.4.2 `reduce.h` 中的实现结构
+
+`reduce.h` 里先定义 reducer functor。`SumOp` 的实现是一个二元加法 functor：
+
+```cpp
 struct SumOp {
   template <typename T> __simt_callee__ T operator()(T x, T y) { return x + y; }
 };
-
-template <class Reducer> static __simt_callee__ float hw_reduce(float v) {
-  if constexpr (std::is_same_v<Reducer, SumOp>)
-    return asc_reduce_add(v);
-  else if constexpr (std::is_same_v<Reducer, MaxOp>)
-    return asc_reduce_max(v);
-  else
-    return asc_reduce_min(v);
-}
-
-template <class Reducer, int threads, int scale = 1, int thread_offset = 0>
-struct AscendAllReduce {
-  template <class, int, int, int> friend struct AscendAllReduce;
-
-  static_assert(threads >= 1);
-  static_assert(scale >= 1);
-  static_assert(threads % scale == 0);
-
-private:
-  static constexpr bool is_pow2(int n) { return n > 0 && (n & (n - 1)) == 0; }
-  static constexpr int extent = threads / scale;
-
-  template <int cur, int stop> static __simt_callee__ float butterfly(float x) {
-    if constexpr (cur <= stop) {
-      return x;
-    } else {
-      constexpr int offset = cur / 2;
-      Reducer op;
-      x = op(x, asc_shfl_xor(x, offset));
-      return butterfly<cur / 2, stop>(x);
-    }
-  }
-
-  static __simt_callee__ float warp_hw_reduce(float x) {
-    constexpr float id = reduce_identity<Reducer>();
-    constexpr int groups = 32 / threads;
-
-    if constexpr (groups == 1) {
-      return hw_reduce<Reducer>(x);
-    } else {
-      int tx = threadIdx.x - thread_offset;
-      int my_group = (tx & 31) / threads;
-      float result = x;
-#pragma unroll
-      for (int g = 0; g < groups; ++g) {
-        float v = hw_reduce<Reducer>((my_group == g) ? result : id);
-        if (my_group == g)
-          result = v;
-      }
-      return result;
-    }
-  }
-
-  static __simt_callee__ float warp_reduce(float x) {
-    if constexpr (extent <= 1) {
-      return x;
-    } else if constexpr (extent >= 16 && scale == 1) {
-      return warp_hw_reduce(x);
-    } else {
-      return butterfly<threads, scale>(x);
-    }
-  }
-
-  static __simt_callee__ float ub_reduce(float x, __ubuf__ float *red_buf) {
-    int tx = threadIdx.x - thread_offset;
-    int group = tx / threads;
-    int lane = tx % threads;
-    Reducer op;
-
-    red_buf[tx] = x;
-    asc_syncthreads();
-
-    float result = x;
-    if (lane % scale == 0) {
-      result = red_buf[group * threads + lane];
-      for (int i = scale; i < threads; i += scale) {
-        int idx = group * threads + (lane % scale) + i;
-        result = op(result, red_buf[idx]);
-      }
-    }
-    asc_syncthreads();
-
-    if (lane % scale == 0 && lane / scale == 0) {
-      red_buf[group * threads + (lane % scale)] = result;
-    }
-    asc_syncthreads();
-    result = red_buf[group * threads + (tx % scale)];
-    asc_syncthreads();
-    return result;
-  }
-
-  static __simt_callee__ float cross_warp_reduce(float x,
-                                                 __ubuf__ float *red_buf) {
-    constexpr int num_warps = threads / 32;
-    int tx = threadIdx.x - thread_offset;
-    int wid = tx >> 5, lid = tx & 31;
-
-    float warp_val =
-        AscendAllReduce<Reducer, 32, scale, thread_offset>::warp_reduce(x);
-
-    if (lid < scale)
-      red_buf[wid * scale + lid] = warp_val;
-    asc_syncthreads();
-
-    float result;
-    if constexpr (scale == 1) {
-      if (tx < 32) {
-        float v = (lid < num_warps) ? red_buf[lid] : reduce_identity<Reducer>();
-        result = hw_reduce<Reducer>(v);
-      }
-    } else if constexpr (scale * num_warps <= 32) {
-      if (tx < 32) {
-        constexpr int total = scale * num_warps;
-        float v = (lid < total) ? red_buf[lid] : reduce_identity<Reducer>();
-        result = AscendAllReduce<Reducer, total, scale, 0>::warp_reduce(v);
-      }
-    } else {
-      if (tx < 32) {
-        Reducer op;
-        result = reduce_identity<Reducer>();
-        int my_slot = lid % scale;
-        for (int w = 0; w < num_warps; ++w) {
-          int idx = w * scale + my_slot;
-          result = (lid < scale) ? op(result, red_buf[idx]) : result;
-        }
-      }
-    }
-    asc_syncthreads();
-
-    if (tx < scale)
-      red_buf[tx] = result;
-    asc_syncthreads();
-    result = red_buf[tx % scale];
-    asc_syncthreads();
-    return result;
-  }
-
-public:
-  static __simt_callee__ float run(float x, __ubuf__ float *red_buf = nullptr) {
-    if constexpr (threads <= scale) {
-      return x;
-    } else if constexpr (threads <= 32 && is_pow2(threads) && is_pow2(scale)) {
-      return warp_reduce(x);
-    } else if constexpr (threads <= 32) {
-      return ub_reduce(x, red_buf);
-    } else if constexpr (threads > 32 && is_pow2(threads) && scale <= 32 &&
-                         is_pow2(scale)) {
-      return cross_warp_reduce(x, red_buf);
-    } else {
-      return ub_reduce(x, red_buf);
-    }
-  }
-};
-} // namespace tl
 ```
 
-对当前的 `SumOp, 128, 1, 0` 实例，模板会选择 `cross_warp_reduce` 路径（threads=128>32，且 threads 和 scale 都是 2 的幂），执行步骤是：
+寄存器规约路径通过 `HwReduce<Reducer, T>` 特化连接到硬件 reduce intrinsic。`SumOp` 对 `float / int32_t / uint32_t` 都映射到 `asc_reduce_add`：
 
-1. 128 个 workitem 分成 4 个 32-lane 子块；
-2. 每个子块各做一次 `asc_reduce_add`；
-3. 4 个子块的 leader 把部分和写入 UB scratch；
-4. `asc_syncthreads()` 同步；
-5. 一个 32-lane 子块再把这 4 个部分和规约成最终结果；
-6. 全局 leader 写回 scratch[0]；
-7. 再来一次 `asc_syncthreads()`，把最终结果广播给全部 128 个 workitem。
+```cpp
+template <class Reducer, typename T, typename = void> struct HwReduce;
 
-#### 3.4.3 PTO codegen 做法
+template <> struct HwReduce<SumOp, float> {
+  static __simt_callee__ float call(float v) { return asc_reduce_add(v); }
+};
+template <> struct HwReduce<SumOp, int32_t> {
+  static __simt_callee__ int32_t call(int32_t v) { return asc_reduce_add(v); }
+};
+template <> struct HwReduce<SumOp, uint32_t> {
+  static __simt_callee__ uint32_t call(uint32_t v) { return asc_reduce_add(v); }
+};
+```
 
-做法是把"模板实例化"放到 codegen 阶段：根据 `AscendAllReduce` 的模板参数和数据类型，由 TileLang -> PTO lowering 直接生成特化好的 PTO IR helper。这样模板语义就停留在 TileLang 侧，PTO 后端拿到的是普通 PTO IR。
+butterfly 路径通过 `ShflXor<T>` 特化连接到 `asc_shfl_xor`。`float` 的实现如下，`int32_t / uint32_t / int64_t / uint64_t` 也有同形态特化：
 
-以当前实例（`Reducer=sum, dtype=f32, threads=128, scale=1, thread_offset=0`）为例，生成的 helper 大致是：
+```cpp
+template <typename T, typename = void> struct ShflXor;
+
+template <> struct ShflXor<float> {
+  static __simt_callee__ float call(float v, int o) {
+    return asc_shfl_xor(v, o);
+  }
+};
+```
+
+核心实现分成三类：
+
+1. `warp_reduce`：warp 内寄存器规约。优先使用 `HwReduce<Reducer,T>`；当硬件 reduce 不适合时，使用 `asc_shfl_xor` butterfly；
+2. `cross_warp_reduce`：`threads > 32` 时先做 warp 内规约，各 warp 把部分结果写入 UB，`asc_syncthreads()` 后由一个 warp 做第二级规约，再把结果写回 UB 并广播给所有线程；
+3. `ub_reduce`：通用 UB fallback。所有线程先把输入写入 `red_buf`，同步后按 `scale` 汇总，再同步广播。
+
+`run` 的 dispatch 逻辑如下：
+
+```cpp
+template <typename T>
+static __simt_callee__ T run(T x, __ubuf__ T *red_buf = nullptr) {
+  if constexpr (threads <= scale) {
+    return x;
+  } else if constexpr (threads <= 32 && is_pow2(threads) && is_pow2(scale)) {
+    return warp_or_ub(x, red_buf, 0);
+  } else if constexpr (threads <= 32) {
+    return ub_reduce(x, red_buf);
+  } else if constexpr (threads > 32 && is_pow2(threads) && scale <= 32 &&
+                       is_pow2(scale)) {
+    return cross_warp_or_ub(x, red_buf, 0);
+  } else {
+    return ub_reduce(x, red_buf);
+  }
+}
+```
+
+对 `SumOp, 128, 1, 0`：
+
+- `threads > 32`、`threads` 是 2 的幂、`scale=1` 是 2 的幂，进入 `cross_warp_or_ub`；
+- `float + SumOp` 有 `HwReduce<SumOp, float>` 特化，所以选择 `cross_warp_reduce`；
+- `cross_warp_reduce` 内部先调用 `AscendAllReduce<Reducer, 32, scale, thread_offset>::warp_reduce` 做每个 warp 的部分和；
+- `scale == 1` 时，第二级规约使用 `HwReduce<Reducer, U>::call(v)`，也就是 `asc_reduce_add`；
+- 期间通过 UB scratch 和多次 `asc_syncthreads()` 保证跨 warp 数据可见和结果广播。
+
+#### 3.4.3 PTO codegen 对接做法
+
+PTO 路径把 `AscendAllReduce` 的模板语义前移到 TileLang -> PTO lowering 阶段：识别 `tl::AscendAllReduce<Reducer, threads, scale, thread_offset>::run`，按实例生成 PTO IR helper，然后把原调用点改写为 `func.call`。
+
+PTO helper 的生成需要对齐 `reduce.h::run` 的分支语义：
+
+- `threads <= scale`：直接返回输入；
+- `threads <= 32` 且 `threads/scale` 适合寄存器规约：生成 warp 内 `pto.redux_*` 或 shuffle 规约；
+- `threads > 32` 且满足 `pow2(threads)`、`pow2(scale)`、`scale <= 32`：生成跨 warp 两级规约，包含 UB scratch 写入、`pto.syncthreads`、第二级规约、结果写回和广播读取；
+- 其它形态：生成 UB fallback，对应 `ub_reduce` 的三段同步语义。
+
+以 RMSNorm 的 `SumOp, 128, 1, 0` 为例，helper 可以按 `cross_warp_reduce` 路径生成：
 
 ```mlir
 func.func private @__tl_allreduce_sum_f32_t128_s1_o0(
@@ -617,82 +658,60 @@ func.func private @__tl_allreduce_sum_f32_t128_s1_o0(
   %c4 = arith.constant 4 : i32
   %c32 = arith.constant 32 : i32
 
-  %subgroup = arith.divui %laneid, %c32 : i32
-  %lane_in_group = arith.remui %laneid, %c32 : i32
+  %wid = arith.divui %laneid, %c32 : i32
+  %lid = arith.remui %laneid, %c32 : i32
 
-  // stage 1: 32-lane subgroup reduction
   %warp_sum = pto.redux_add %x : f32 -> f32
 
-  // subgroup leader writes partial sum
-  %is_leader = arith.cmpi eq, %lane_in_group, %c0 : i32
-  scf.if %is_leader {
-    %idx = arith.index_castui %subgroup : i32 to index
+  %is_warp_leader = arith.cmpi ult, %lid, %c1 : i32
+  scf.if %is_warp_leader {
+    %idx = arith.index_castui %wid : i32 to index
     pto.store %warp_sum, %scratch[%idx] : !pto.ptr<f32, ub>, f32
   }
 
   pto.syncthreads
 
-  // stage 2: subgroup 0 reduces 4 partial sums
-  %is_group0 = arith.cmpi eq, %subgroup, %c0 : i32
-  %need_load = arith.andi %is_group0, arith.cmpi ult, %lane_in_group, %c4 : i32
-  %v = scf.if %need_load -> f32 {
-    %idx = arith.index_castui %lane_in_group : i32 to index
-    %tmp = pto.load %scratch[%idx] : !pto.ptr<f32, ub> -> f32
-    scf.yield %tmp : f32
+  %in_first_warp = arith.cmpi ult, %laneid, %c32 : i32
+  %partial = scf.if %in_first_warp -> f32 {
+    %has_value = arith.cmpi ult, %lid, %c4 : i32
+    %v = scf.if %has_value -> f32 {
+      %idx = arith.index_castui %lid : i32 to index
+      %tmp = pto.load %scratch[%idx] : !pto.ptr<f32, ub> -> f32
+      scf.yield %tmp : f32
+    } else {
+      %zero = arith.constant 0.0 : f32
+      scf.yield %zero : f32
+    }
+    %sum = pto.redux_add %v : f32 -> f32
+    scf.yield %sum : f32
   } else {
     %zero = arith.constant 0.0 : f32
     scf.yield %zero : f32
   }
 
-  %total = scf.if %is_group0 -> f32 {
-    %r = pto.redux_add %v : f32 -> f32
-    scf.yield %r : f32
-  } else {
-    %undef = arith.constant 0.0 : f32
-    scf.yield %undef : f32
-  }
+  pto.syncthreads
 
-  %is_global_leader = arith.cmpi eq, %laneid, %c0 : i32
-  scf.if %is_global_leader {
-    %idx0 = arith.index_castui %c0 : i32 to index
-    pto.store %total, %scratch[%idx0] : !pto.ptr<f32, ub>, f32
+  %is_writer = arith.cmpi ult, %laneid, %c1 : i32
+  scf.if %is_writer {
+    pto.store %partial, %scratch[%c0] : !pto.ptr<f32, ub>, f32
   }
 
   pto.syncthreads
 
-  %idx0 = arith.index_castui %c0 : i32 to index
-  %result = pto.load %scratch[%idx0] : !pto.ptr<f32, ub> -> f32
+  %result = pto.load %scratch[%c0] : !pto.ptr<f32, ub> -> f32
   return %result : f32
 }
 ```
 
-原 TIR 的 reduce 调用：
-
-```python
-sum_sq_3[0] = T.call_extern(
-    "float32",
-    "tl::AscendAllReduce<tl::SumOp, 128, 1, 0>::run",
-    sum_sq_3[0],
-    T.tvm_access_ptr(T.type_annotation("float32"), buf_dyn_shmem, 20480, 128, 2),
-)
-```
-
-在 PTO lowering 中改写为对 helper 的调用：
-
-```mlir
-%scratch = ... : !pto.ptr<f32, ub>
-%sum = func.call @__tl_allreduce_sum_f32_t128_s1_o0(%partial, %scratch)
-  : (f32, !pto.ptr<f32, ub>) -> f32
-```
-
 要点：
 
-- helper 按实例自动生成，`<threads, scale, offset>` 的不同组合各自对应一份；
-- `threads/scale/thread_offset` 都是编译期常量，每个实例落到独立 helper；
-- PTO 后端看到的是普通 PTO IR；
-- helper 上的 attrs 只用于调试展示，后端不会再读 attrs 做二次特化。
+- helper 按 `<reducer, dtype, threads, scale, thread_offset>` 实例化，同一实例在 module 内只生成一次；
+- `threads / scale / thread_offset` 都是编译期常量，PTO 后端直接从调用名解析实例参数；
+- `SumOp / MaxOp / MinOp` 映射到对应的 `pto.redux_add / pto.redux_max / pto.redux_min` 或 UB fallback 标量组合；
+- scratch pointer 直接来自最终 TIR 的调用参数，不由 PTO 后端重新推导固定 offset；
+- `pto.syncthreads` 的插入点需要对齐 `reduce.h` 中 `asc_syncthreads()` 的可见性边界。
 
-后续如果接入 PTODSL，可以在 PTODSL 中把 Reduce 函数写好，然后在 codegen 阶段按 `AscendAllReduce` 的实例参数选择性 import 并调用。collective 语义就提前沉淀到 PTODSL，codegen 仍按实例选具体实现。
+后续如果接入 PTODSL，可以在 PTODSL 中沉淀同样的 allreduce helper，再由 codegen 按实例选择 import / call。PTO 后端最终仍只消费普通 PTO IR。
 
 ### 3.5 TIR -> PTO 映射表
 
@@ -703,10 +722,10 @@ sum_sq_3[0] = T.call_extern(
 | `simtvf_tx` / `threadIdx.x` | `pto.get_tid_x` | SIMT body 内获取 workitem 坐标 |
 | 标量常量、算术、比较 | `arith.*` | 基础标量 IR |
 | `for` / `if` | `scf.for` / `scf.if` | 基础结构化控制流 |
-| 第一个 `8 x float4` 访存循环 | LLVM Dialect 向量 load/store | 保留 128-bit bundle 信息 |
-| `x_frag[32]` | lane-local scratch，允许后续 SROA 消除 | 第一版对齐当前 Ascend 路径 |
+| 连续 `float2` 访存循环 | LLVM Dialect 向量 load/store | 保留连续 2-lane bundle 信息 |
+| `x_frag[32]` | lane-local scratch，允许后续 SROA 消除 | 对齐 Ascend 路径的 workitem-local fragment |
 | `tl::AscendAllReduce<...>::run` | 自动实例化的特化 PTO IR helper + `func.call` | helper 内部使用 `pto.redux_add + pto.syncthreads + pto.load/store` |
-| `rsqrt` | `sqrt + reciprocal/div` | 当前无需先扩展 PTO 标量 op 面 |
+| `rsqrt` | `sqrt + reciprocal/div` | 无需先扩展 PTO 标量 op 面 |
 | GM/UB 搬运与 flag | `pto.mte_*` / `pto.set_flag` / `pto.wait_flag` / `pto.barrier` | 外层 kernel 直接使用已有 PTO op |
 
 ---
@@ -724,12 +743,12 @@ sum_sq_3[0] = T.call_extern(
 - 两者之间的 `pto.simt_launch`；
 - 必要时补 `pto.simt_max_threads` 等 launch config。
 
-### 4.2 `float4` 向量访存 lowering
+### 4.2 连续向量访存 lowering
 
 需要做的事：
 
-1. 识别 `BufferLoad/BufferStore` 上 `Ramp(base, 1, 4)` 这种连续 4-lane 访存；
-2. 第一层 `8 x float4` 直接映射到 LLVM Dialect 向量 load/store；
+1. 识别 `BufferLoad/BufferStore` 上 `Ramp(base, 1, lanes)` 这种连续 lane bundle；
+2. `d=4096` 的 `float2` 访存映射到 LLVM Dialect `vector<2xf32>` load/store；
 3. 保住 `x_frag` 的 lane-local scratch 形态，第二层标量消费照常，让 SROA 拆成 `extractelement`；
 4. 保证这一路结果能继续走 SROA / LLVM 优化链。
 
@@ -763,15 +782,15 @@ helper body 的生成逻辑需要覆盖：
 测试分三层：
 
 1. **IR 级**：检查 `pto.simt_launch`、`pto.syncthreads`、自动生成的 `__tl_allreduce_*` helper，以及 helper 中的 `pto.redux_add`；
-2. **LLVM 级**：检查 `llvm.hivm.sync.workitems`、`<4 x float>` load/store，以及后续的 `extractelement`；
+2. **LLVM 级**：检查 `llvm.hivm.sync.workitems`、`<2 x float>` load/store，以及后续的 `extractelement`；
 3. **功能与性能级**：先以 RMSNorm 作为第一条 vertical slice，再扩展到其它 `SimtVF` kernel。
 
 ---
 
 ## 结论
 
-对当前 TileLang RMSNorm kernel 而言，对接 PTO 后端的要点是：以最终 device TIR 为输入；`SIMT_VF` 映射到 `pto.simt_launch + pto.simt_entry`；第一层 `float4` 访存保留为 MLIR/LLVM 128-bit 向量 load/store；`tl::AscendAllReduce<...>::run` 用自动实例化的特化 PTO IR helper 承接。
+对 TileLang RMSNorm kernel 而言，对接 PTO 后端的要点是：以最终 device TIR 为输入；`SIMT_VF` 映射到 `pto.simt_launch + pto.simt_entry`；连续 `float2` 访存保留为 MLIR/LLVM `vector<2xf32>` load/store；`tl::AscendAllReduce<...>::run` 用自动实例化的特化 PTO IR helper 承接。
 
 `feature-simt-ops` 上已经具备 `pto.syncthreads -> llvm.hivm.sync.workitems`，因此两级 allreduce 的 PTO IR 表达所需的关键同步原语已经齐了。
 
-整体方向是：TileLang 侧把高层语义展开清楚；PTO 后端只编译普通 PTO IR 加必要的 LLVM 向量访存；尽量复用 Ascend 路径已经验证过的 `<4 x float>` + SROA 优化链。
+整体方向是：TileLang 侧把高层语义展开清楚；PTO 后端编译普通 PTO IR 加必要的 LLVM 向量访存；向量 fragment 继续复用 Ascend 路径验证过的 `vector<2xf32>` + SROA 优化链。
