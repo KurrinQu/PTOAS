@@ -46,3 +46,8 @@ def simtvf_vector_copy(
 ):
     """Launch with 32 work-items (one warp)."""
     simtvf_vector_copy_kernel[32, 1, 1](src, dst, nelem)
+
+
+if __name__ == "__main__":
+    compiled = simtvf_vector_copy.compile()
+    print(compiled.mlir_text())

@@ -55,8 +55,8 @@ def int64_stride_vectorize_load_kernel(
     ``tid * (scalar_stride // 2)`` (stride scaled to vector units).
     """
     tid = pto.get_tid_x()
-    tid_i64 = scalar.convert(scalar.index_cast(tid), pto.i64)
-    # Scale stride from scalar units to vector units
+    # Cast tid (i32) to i64 for stride arithmetic, then to index for ldg/stg.
+    tid_i64 = scalar.index_cast(pto.i64, scalar.index_cast(tid))
     vec_stride = tid_i64 * (scalar_stride // _ELEMS_PER_VEC)
     idx = scalar.index_cast(vec_stride)  # i64 → index
 
@@ -74,3 +74,8 @@ def int64_stride_vectorize_load(
 ):
     """Launch with 32 work-items, each accessing at tid × (stride/2) vector offset."""
     int64_stride_vectorize_load_kernel[32, 1, 1](base, dst, scalar_stride, nelem)
+
+
+if __name__ == "__main__":
+    compiled = int64_stride_vectorize_load.compile()
+    print(compiled.mlir_text())

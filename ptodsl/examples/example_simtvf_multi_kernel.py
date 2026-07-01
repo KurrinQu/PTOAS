@@ -61,3 +61,8 @@ def simtvf_multi_kernel(
     # Kernel 2: consume buf, write to dst
     pto.pipe_barrier(pto.Pipe.ALL)
     simtvf_consumer_kernel[32, 1, 1](buf, dst, nelem)
+
+
+if __name__ == "__main__":
+    compiled = simtvf_multi_kernel.compile()
+    print(compiled.mlir_text())
