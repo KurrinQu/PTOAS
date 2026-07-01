@@ -154,9 +154,11 @@ def PTORemoveIdentityTMov : Pass<"pto-remove-identity-tmov", "func::FuncOp"> {
     are proven to refer to the same physical tile address/range. The proof is
     conservative: first check explicit address tokens (`tassign` /
     `pointer_cast`), then fall back to InsertSync's `BaseMemInfo` exact-range
-    analysis for statically addressable values. This pass runs before InsertSync
-    so deleting the identity TMOV also prevents synchronization from being
-    generated only for that no-op copy.
+    analysis for statically addressable values. Different-root same-address
+    copies are removed only when the TMOV destination/result is dead, so a live
+    copy cannot be the sole synchronization bridge between two InsertSync roots.
+    This pass runs before InsertSync so deleting the identity TMOV also prevents
+    synchronization from being generated only for that no-op copy.
   }];
   let constructor = "mlir::pto::createPTORemoveIdentityTMovPass()";
   let dependentDialects = [

@@ -2,11 +2,13 @@
 
 module attributes {pto.target_arch = "a2a3", pto.kernel_kind = #pto.kernel_kind<vector>} {
   func.func @identity_tmov_same_addr() {
-    %c0_i64 = arith.constant 0 : i64
+    %c0_src_i64 = arith.constant 0 : i64
+    %c0_dst_i32 = arith.constant 0 : i32
+    %c0_dst_i64 = arith.extsi %c0_dst_i32 : i32 to i64
     %one = arith.constant 1.000000e+00 : f32
-    %src = pto.alloc_tile addr = %c0_i64
+    %src = pto.alloc_tile addr = %c0_src_i64
       : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    %dst = pto.alloc_tile addr = %c0_i64
+    %dst = pto.alloc_tile addr = %c0_dst_i64
       : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
 
     pto.tadds ins(%src, %one
@@ -19,11 +21,13 @@ module attributes {pto.target_arch = "a2a3", pto.kernel_kind = #pto.kernel_kind<
   }
 
   func.func @live_dst_same_addr_keeps_tmov() {
-    %c0_i64 = arith.constant 0 : i64
+    %c0_src_i64 = arith.constant 0 : i64
+    %c0_dst_i32 = arith.constant 0 : i32
+    %c0_dst_i64 = arith.extsi %c0_dst_i32 : i32 to i64
     %one = arith.constant 1.000000e+00 : f32
-    %src = pto.alloc_tile addr = %c0_i64
+    %src = pto.alloc_tile addr = %c0_src_i64
       : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    %dst = pto.alloc_tile addr = %c0_i64
+    %dst = pto.alloc_tile addr = %c0_dst_i64
       : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
 
     pto.tadds ins(%src, %one
