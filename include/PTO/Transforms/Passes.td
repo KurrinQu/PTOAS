@@ -474,12 +474,13 @@ def PTOResolveReservedBuffers : Pass<"pto-resolve-reserved-buffers", "ModuleOp">
 }
 
 def ExpandTileOp : Pass<"pto-expand-tile-op", "ModuleOp"> {
-  let summary = "Expand tile ops into calls to TileLang DSL template functions";
+  let summary = "Expand tile ops into calls to TileLib template functions";
   let description = [{
     Expands tile-level operations (pto.tadd, pto.tsub, etc.) by invoking the
-    TileLang Python DSL to instantiate template libraries. The generated
-    template functions use tile_buf parameters and contain vector-level
-    implementations (pto.vecscope, pto.vlds, pto.vadd, pto.vsts, etc.).
+    selected Python TileLib backend to instantiate template libraries. The
+    generated template functions use tile_buf parameters and contain
+    vector-level implementations (pto.vecscope, pto.vlds, pto.vadd,
+    pto.vsts, etc.).
 
     Each tile op is replaced by a func.call to the generated template function,
     with tile_buf operands passed directly (no type bridging).
@@ -506,10 +507,19 @@ def ExpandTileOp : Pass<"pto-expand-tile-op", "ModuleOp"> {
            "PYTHONPATH for tilelang_dsl package (added to env)">,
     Option<"pythonExe", "python-exe", "std::string",
            /*default=*/"\"python3\"",
-           "Python executable for tilelang DSL invocation">,
+           "Python executable for TileLib invocation">,
     Option<"daemonSocketPath", "daemon-socket-path", "std::string",
            /*default=*/"\"\"",
-           "Path to Unix domain socket for daemon RPC (if empty, uses subprocess)">
+           "Path to Unix domain socket for daemon RPC">,
+    Option<"tileLibBackend", "tile-lib-backend", "std::string",
+           /*default=*/"\"tilelang\"",
+           "TileLib backend: tilelang or ptodsl">,
+    Option<"tileLibPkgPath", "tile-lib-pkg-path", "std::string",
+           /*default=*/"\"\"",
+           "PYTHONPATH root for the selected TileLib backend">,
+    Option<"daemonHelperModule", "daemon-helper-module", "std::string",
+           /*default=*/"\"tilelang_dsl.daemon_helper\"",
+           "Python module used for daemon helper RPC calls">
   ];
 }
 
