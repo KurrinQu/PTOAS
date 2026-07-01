@@ -29,12 +29,13 @@ This can be selected with  `--backend vpto --vpto-target a5`.
 
 ## Test matrix
 
-### Binary elementwise (tadd/tsub/tmul/tdiv)
+### Binary elementwise (tadd/tsub/tmul/tdiv/tmax/tmin/tand/tor)
 
 | Category | Ops | Dtypes | Shapes | Total |
 |----------|-----|--------|--------|-------|
-| f32 | add, sub, mul, div | float32 | 12 | 48 |
-| f16 | add, sub, mul, div | float16 | 6 | 24 |
+| f32 | add, sub, mul, div, max, min | float32 | 12 | 72 |
+| f16 | add, sub, mul, div, max, min | float16 | 6 | 36 |
+| i16 | bit_and, bit_or | int16 | 5 | 10 |
 
 ### Shape coverage (exercises lowering code paths)
 

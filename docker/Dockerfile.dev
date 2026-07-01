@@ -34,7 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # =========================================================================
 # 2. Python dependencies
 # =========================================================================
-RUN pip install --no-cache-dir 'pybind11<3' numpy pyyaml
+RUN pip install --no-cache-dir 'pybind11<3' numpy pyyaml pytest
 
 # =========================================================================
 # 3. Build LLVM/MLIR (vpto fork, feature-vpto branch)

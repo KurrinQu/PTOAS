@@ -61,6 +61,13 @@ def PTO_UBVaddOp : PTO_UBufBinaryOp<"ub.vadd">;
 def PTO_UBVsubOp : PTO_UBufBinaryOp<"ub.vsub">;
 def PTO_UBVmulOp : PTO_UBufBinaryOp<"ub.vmul">;
 def PTO_UBVdivOp : PTO_UBufBinaryOp<"ub.vdiv">;
+def PTO_UBVmaxOp : PTO_UBufBinaryOp<"ub.vmax">;
+def PTO_UBVminOp : PTO_UBufBinaryOp<"ub.vmin">;
+def PTO_UBVandOp : PTO_UBufBinaryOp<"ub.vand">;
+def PTO_UBVorOp  : PTO_UBufBinaryOp<"ub.vor">;
+def PTO_UBVxorOp : PTO_UBufBinaryOp<"ub.vxor">;
+def PTO_UBVshlOp : PTO_UBufBinaryOp<"ub.vshl">;
+def PTO_UBVshrOp : PTO_UBufBinaryOp<"ub.vshr">;
 
 def PTO_UBSetMaskOp : PTO_Op<"ub.set_mask", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>

@@ -4631,6 +4631,20 @@ public:
       calleeName = "llvm.hivm.VMUL." + elemFrag;
     else if constexpr (std::is_same_v<UBOp, pto::UBVdivOp>)
       calleeName = "llvm.hivm.VDIV." + elemFrag;
+    else if constexpr (std::is_same_v<UBOp, pto::UBVmaxOp>)
+      calleeName = "llvm.hivm.VMAX." + elemFrag;
+    else if constexpr (std::is_same_v<UBOp, pto::UBVminOp>)
+      calleeName = "llvm.hivm.VMIN." + elemFrag;
+    else if constexpr (std::is_same_v<UBOp, pto::UBVandOp>)
+      calleeName = "llvm.hivm.VAND." + elemFrag;
+    else if constexpr (std::is_same_v<UBOp, pto::UBVorOp>)
+      calleeName = "llvm.hivm.VOR." + elemFrag;
+    else if constexpr (std::is_same_v<UBOp, pto::UBVxorOp>)
+      calleeName = "llvm.hivm.VXOR." + elemFrag;
+    else if constexpr (std::is_same_v<UBOp, pto::UBVshlOp>)
+      calleeName = "llvm.hivm.VSHL." + elemFrag;
+    else if constexpr (std::is_same_v<UBOp, pto::UBVshrOp>)
+      calleeName = "llvm.hivm.VSHR." + elemFrag;
     else
       return rewriter.notifyMatchFailure(op, "unsupported ubuf binary op");
 
@@ -10361,6 +10375,20 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
         typeConverter, patterns.getContext(), state);
     patterns.add<LowerUBufBinaryOpPattern<pto::UBVdivOp>>(
         typeConverter, patterns.getContext(), state);
+    patterns.add<LowerUBufBinaryOpPattern<pto::UBVmaxOp>>(
+        typeConverter, patterns.getContext(), state);
+    patterns.add<LowerUBufBinaryOpPattern<pto::UBVminOp>>(
+        typeConverter, patterns.getContext(), state);
+    patterns.add<LowerUBufBinaryOpPattern<pto::UBVandOp>>(
+        typeConverter, patterns.getContext(), state);
+    patterns.add<LowerUBufBinaryOpPattern<pto::UBVorOp>>(
+        typeConverter, patterns.getContext(), state);
+    patterns.add<LowerUBufBinaryOpPattern<pto::UBVxorOp>>(
+        typeConverter, patterns.getContext(), state);
+    patterns.add<LowerUBufBinaryOpPattern<pto::UBVshlOp>>(
+        typeConverter, patterns.getContext(), state);
+    patterns.add<LowerUBufBinaryOpPattern<pto::UBVshrOp>>(
+        typeConverter, patterns.getContext(), state);
     patterns.add<LowerUBSetMaskOpPattern>(
         typeConverter, patterns.getContext(), state);
     patterns.add<LowerUBSetMaskCountOpPattern>(
@@ -10489,6 +10517,13 @@ static void configureVPTOOpLoweringTarget(ConversionTarget &target,
     target.addIllegalOp<pto::UBVsubOp>();
     target.addIllegalOp<pto::UBVmulOp>();
     target.addIllegalOp<pto::UBVdivOp>();
+    target.addIllegalOp<pto::UBVmaxOp>();
+    target.addIllegalOp<pto::UBVminOp>();
+    target.addIllegalOp<pto::UBVandOp>();
+    target.addIllegalOp<pto::UBVorOp>();
+    target.addIllegalOp<pto::UBVxorOp>();
+    target.addIllegalOp<pto::UBVshlOp>();
+    target.addIllegalOp<pto::UBVshrOp>();
     target.addIllegalOp<pto::UBSetMaskOp>();
     target.addIllegalOp<pto::UBSetMaskCountOp>();
     target.addIllegalOp<pto::UBSetMaskNormOp>();

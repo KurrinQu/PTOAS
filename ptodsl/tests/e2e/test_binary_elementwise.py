@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import pytest
 
-from .common import BINARY_OPS, make_binary_kernel, launch_and_check
+from .common import BINARY_OPS, INT_OPS, make_binary_kernel, launch_and_check, launch_and_check_int
 
 
 # ---------------------------------------------------------------------------
@@ -138,4 +138,45 @@ def test_binary_f16(case, torch, target_arch, backend):
         atol=1e-3,
     )
     print(f"  PASS {op_name} {dtype_str} {rows}x{cols} ({desc}) "
+          f"compile={compile_s:.3f}s launch={launch_s:.3f}s")
+
+
+# ---------------------------------------------------------------------------
+# i16 bitwise/shift tests
+# ---------------------------------------------------------------------------
+
+INT_SHAPES: list[tuple[int, int, str]] = [
+    (1, 64, "modeSmall 1x64"),
+    (4, 64, "modeSmall 4x64"),
+    (1, 128, "modeNorm1L 1x128"),
+    (16, 64, "modeNorm1L 16x64"),
+    (64, 64, "modeNorm1L 64x64"),
+]
+
+INT_PARAMS = [
+    pytest.param(
+        (op_name, ref_fn, rows, cols, desc),
+        id=f"{op_name}-int16-{rows}x{cols}-{desc.replace(' ', '-')}",
+    )
+    for op_name, (_, ref_fn) in INT_OPS.items()
+    for rows, cols, desc in INT_SHAPES
+]
+
+
+@pytest.mark.require_npu
+@pytest.mark.parametrize("case", INT_PARAMS)
+def test_binary_int16(case, torch, target_arch, backend):
+    op_name, ref_fn, rows, cols, desc = case
+
+    kernel = make_binary_kernel(
+        op_name, rows, cols, dtype_str="int16",
+        target=target_arch, backend=backend,
+    )
+    compile_s, launch_s = launch_and_check_int(
+        kernel_handle=kernel,
+        ref_fn=ref_fn,
+        shape=(rows, cols),
+        torch=torch,
+    )
+    print(f"  PASS {op_name} int16 {rows}x{cols} ({desc}) "
           f"compile={compile_s:.3f}s launch={launch_s:.3f}s")

@@ -24,6 +24,13 @@ BINARY_OPS = {
     "sub": (pto.tile.sub, lambda x, y: x - y),
     "mul": (pto.tile.mul, lambda x, y: x * y),
     "div": (pto.tile.div, lambda x, y: x / (y + 1e-8)),
+    "max": (pto.tile.max, lambda x, y: np.maximum(x, y)),
+    "min": (pto.tile.min, lambda x, y: np.minimum(x, y)),
+}
+
+INT_OPS = {
+    "bit_and": (pto.tile.bit_and, lambda x, y: x & y),
+    "bit_or":  (pto.tile.bit_or,  lambda x, y: x | y),
 }
 
 
@@ -33,6 +40,42 @@ def _npu_stream(torch):
 
 def _torch_dtype(torch, dtype_str: str):
     return getattr(torch, dtype_str)
+
+
+def make_input_int(shape, torch, seed=42):
+    """Return an NPU i16 tensor filled with small positive integers."""
+    rng = np.random.RandomState(seed)
+    x = rng.randint(0, 100, size=shape).astype(np.int16)
+    return torch.from_numpy(x).to(device="npu:0", dtype=torch.int16)
+
+
+def launch_and_check_int(
+    *,
+    kernel_handle,
+    ref_fn: Callable,
+    shape: tuple[int, int],
+    torch,
+    seed: int = 42,
+):
+    """Compile, launch, and numerical-check one i16 kernel specialization."""
+    x = make_input_int(shape, torch, seed=seed)
+    y = make_input_int(shape, torch, seed=seed + 1)
+    z = torch.empty(shape, dtype=torch.int16, device="npu:0")
+    ref = ref_fn(x.cpu().numpy(), y.cpu().numpy()).astype(np.int16)
+    stream = _npu_stream(torch)
+
+    t0 = time.perf_counter()
+    compiled = kernel_handle.compile()
+    compile_s = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    compiled[1, stream](x.data_ptr(), y.data_ptr(), z.data_ptr())
+    torch.npu.synchronize()
+    launch_s = time.perf_counter() - t0
+
+    actual = z.cpu().numpy()
+    np.testing.assert_array_equal(actual, ref)
+    return compile_s, launch_s
 
 
 def make_binary_kernel(
@@ -49,7 +92,7 @@ def make_binary_kernel(
     The generated kernel uses the same 5-D tile-buffer pattern as the
     ``tadd_launch_a3.py`` / ``bop_launch_a3.py`` examples.
     """
-    tile_op_fn = BINARY_OPS[op_name][0]
+    tile_op_fn = (BINARY_OPS.get(op_name) or INT_OPS.get(op_name))[0]
     pto_dtype = getattr(pto, dtype_str)
     fn_name = f"bin_{op_name}_{dtype_str}_{rows}x{cols}"
 

@@ -330,6 +330,146 @@ struct LowerPTOToUBufOpsPass
       }
     }
 
+    // ---- tmax → pto.ub.vmax ----
+    {
+      SmallVector<pto::TMaxOp> ops;
+      func.walk([&](pto::TMaxOp op) { ops.push_back(op); });
+      for (auto op : ops) {
+        if (!canLower(op, tileShapes))
+          continue;
+        auto info = extractTileShapeInfo(op, tileShapes);
+        if (!info)
+          continue;
+        auto [dstPtr, src0Ptr, src1Ptr, ptrType] = lowerBinaryOpCommon(
+            builder, ctx, op, op.getDst(), op.getSrc0(), op.getSrc1(), tileShapes);
+        if (!dstPtr)
+          continue;
+        dispatch<pto::UBVmaxOp>(op.getLoc(), builder, dstPtr, src0Ptr, src1Ptr,
+                                ptrType, *info);
+        op.erase();
+      }
+    }
+
+    // ---- tmin → pto.ub.vmin ----
+    {
+      SmallVector<pto::TMinOp> ops;
+      func.walk([&](pto::TMinOp op) { ops.push_back(op); });
+      for (auto op : ops) {
+        if (!canLower(op, tileShapes))
+          continue;
+        auto info = extractTileShapeInfo(op, tileShapes);
+        if (!info)
+          continue;
+        auto [dstPtr, src0Ptr, src1Ptr, ptrType] = lowerBinaryOpCommon(
+            builder, ctx, op, op.getDst(), op.getSrc0(), op.getSrc1(), tileShapes);
+        if (!dstPtr)
+          continue;
+        dispatch<pto::UBVminOp>(op.getLoc(), builder, dstPtr, src0Ptr, src1Ptr,
+                                ptrType, *info);
+        op.erase();
+      }
+    }
+
+    // ---- tand → pto.ub.vand ----
+    {
+      SmallVector<pto::TAndOp> ops;
+      func.walk([&](pto::TAndOp op) { ops.push_back(op); });
+      for (auto op : ops) {
+        if (!canLower(op, tileShapes))
+          continue;
+        auto info = extractTileShapeInfo(op, tileShapes);
+        if (!info)
+          continue;
+        auto [dstPtr, src0Ptr, src1Ptr, ptrType] = lowerBinaryOpCommon(
+            builder, ctx, op, op.getDst(), op.getSrc0(), op.getSrc1(), tileShapes);
+        if (!dstPtr)
+          continue;
+        dispatch<pto::UBVandOp>(op.getLoc(), builder, dstPtr, src0Ptr, src1Ptr,
+                                ptrType, *info);
+        op.erase();
+      }
+    }
+
+    // ---- tor → pto.ub.vor ----
+    {
+      SmallVector<pto::TOrOp> ops;
+      func.walk([&](pto::TOrOp op) { ops.push_back(op); });
+      for (auto op : ops) {
+        if (!canLower(op, tileShapes))
+          continue;
+        auto info = extractTileShapeInfo(op, tileShapes);
+        if (!info)
+          continue;
+        auto [dstPtr, src0Ptr, src1Ptr, ptrType] = lowerBinaryOpCommon(
+            builder, ctx, op, op.getDst(), op.getSrc0(), op.getSrc1(), tileShapes);
+        if (!dstPtr)
+          continue;
+        dispatch<pto::UBVorOp>(op.getLoc(), builder, dstPtr, src0Ptr, src1Ptr,
+                                ptrType, *info);
+        op.erase();
+      }
+    }
+
+    // ---- txor → pto.ub.vxor ----
+    {
+      SmallVector<pto::TXorOp> ops;
+      func.walk([&](pto::TXorOp op) { ops.push_back(op); });
+      for (auto op : ops) {
+        if (!canLower(op, tileShapes))
+          continue;
+        auto info = extractTileShapeInfo(op, tileShapes);
+        if (!info)
+          continue;
+        auto [dstPtr, src0Ptr, src1Ptr, ptrType] = lowerBinaryOpCommon(
+            builder, ctx, op, op.getDst(), op.getSrc0(), op.getSrc1(), tileShapes);
+        if (!dstPtr)
+          continue;
+        dispatch<pto::UBVxorOp>(op.getLoc(), builder, dstPtr, src0Ptr, src1Ptr,
+                                ptrType, *info);
+        op.erase();
+      }
+    }
+
+    // ---- tshl → pto.ub.vshl ----
+    {
+      SmallVector<pto::TShlOp> ops;
+      func.walk([&](pto::TShlOp op) { ops.push_back(op); });
+      for (auto op : ops) {
+        if (!canLower(op, tileShapes))
+          continue;
+        auto info = extractTileShapeInfo(op, tileShapes);
+        if (!info)
+          continue;
+        auto [dstPtr, src0Ptr, src1Ptr, ptrType] = lowerBinaryOpCommon(
+            builder, ctx, op, op.getDst(), op.getSrc0(), op.getSrc1(), tileShapes);
+        if (!dstPtr)
+          continue;
+        dispatch<pto::UBVshlOp>(op.getLoc(), builder, dstPtr, src0Ptr, src1Ptr,
+                                ptrType, *info);
+        op.erase();
+      }
+    }
+
+    // ---- tshr → pto.ub.vshr ----
+    {
+      SmallVector<pto::TShrOp> ops;
+      func.walk([&](pto::TShrOp op) { ops.push_back(op); });
+      for (auto op : ops) {
+        if (!canLower(op, tileShapes))
+          continue;
+        auto info = extractTileShapeInfo(op, tileShapes);
+        if (!info)
+          continue;
+        auto [dstPtr, src0Ptr, src1Ptr, ptrType] = lowerBinaryOpCommon(
+            builder, ctx, op, op.getDst(), op.getSrc0(), op.getSrc1(), tileShapes);
+        if (!dstPtr)
+          continue;
+        dispatch<pto::UBVshrOp>(op.getLoc(), builder, dstPtr, src0Ptr, src1Ptr,
+                                ptrType, *info);
+        op.erase();
+      }
+    }
+
     // ---- tload → mte_gm_ub ----
     SmallVector<pto::TLoadOp> tloadOps;
     func.walk([&](pto::TLoadOp op) { tloadOps.push_back(op); });
