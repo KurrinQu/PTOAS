@@ -231,6 +231,62 @@ static TNotifyReleaseState collectTNotifyReleaseState(Region &region) {
   return state;
 }
 
+static void applyFenceReleaseForSummary(pto::FenceReleaseOp fence,
+                                        TNotifyReleaseState &state) {
+  if (fence.getScope().getScope() != pto::FenceScope::DDR)
+    return;
+
+  // The real annotation pass inserts the pending GM-write pipe drain before a
+  // release fence.  Loop summaries must model that transfer without mutating IR,
+  // otherwise already-released loop-carried writes are reported again at the
+  // next iteration's TNotify.
+  state.drainMte3 = false;
+  state.drainFix = false;
+  state.applyFenceRelease(fence.getScope().getScope());
+}
+
+static TNotifyReleaseState getTNotifyReleaseExitStateForBlock(
+    Block &block, TNotifyReleaseState pendingState);
+
+static TNotifyReleaseState
+getTNotifyReleaseExitState(Operation *op,
+                           TNotifyReleaseState pendingState = {}) {
+  if (isa<pto::TNotifyOp>(op))
+    pendingState.clear();
+
+  pendingState.merge(getDirectTNotifyReleaseState(op));
+
+  TNotifyReleaseState regionEntryState = pendingState;
+  TNotifyReleaseState combinedRegionExitState;
+  for (Region &region : op->getRegions()) {
+    if (region.hasOneBlock()) {
+      combinedRegionExitState.merge(
+          getTNotifyReleaseExitStateForBlock(region.front(), regionEntryState));
+      continue;
+    }
+
+    TNotifyReleaseState regionExitState = regionEntryState;
+    regionExitState.merge(collectTNotifyReleaseState(region));
+    combinedRegionExitState.merge(regionExitState);
+  }
+  pendingState.merge(combinedRegionExitState);
+
+  if (auto barrier = dyn_cast<pto::BarrierOp>(op))
+    pendingState.applyBarrier(barrier.getPipe().getPipe());
+  if (auto cmo = dyn_cast<pto::CmoCleanOp>(op))
+    pendingState.applyCmoClean(cmo.getSpace().getAddressSpace());
+  if (auto fence = dyn_cast<pto::FenceReleaseOp>(op))
+    applyFenceReleaseForSummary(fence, pendingState);
+  return pendingState;
+}
+
+static TNotifyReleaseState getTNotifyReleaseExitStateForBlock(
+    Block &block, TNotifyReleaseState pendingState) {
+  for (Operation &op : block)
+    pendingState = getTNotifyReleaseExitState(&op, pendingState);
+  return pendingState;
+}
+
 static bool isLoopLikeOp(Operation *op) {
   return isa<scf::ForOp, scf::WhileOp, scf::ParallelOp, scf::ForallOp>(op);
 }
@@ -333,7 +389,7 @@ annotateTNotifyReleaseForBlock(Block &block,
     for (Region &region : op.getRegions()) {
       TNotifyReleaseState nestedLoopCarriedState = loopCarriedState;
       if (isLoopLikeOp(&op))
-        nestedLoopCarriedState.merge(collectTNotifyReleaseState(&op));
+        nestedLoopCarriedState.merge(getTNotifyReleaseExitState(&op));
 
       if (region.hasOneBlock()) {
         combinedRegionExitState.merge(annotateTNotifyReleaseForBlock(
