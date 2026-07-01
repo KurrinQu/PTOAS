@@ -7,7 +7,40 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 cmake_minimum_required(VERSION 3.20.0)
+
+# CANN/Ascend CMake packages used by downstream PTOAS builds may still use the
+# pre-CMake-3.30 FetchContent_Populate(<declared-name>) pattern. Keep that
+# compatibility path enabled so CMake 4.x developer warnings do not become
+# configure errors when users build with strict warning settings. The default
+# covers nested third-party directories that set their own cmake_minimum_required().
+if(POLICY CMP0169)
+  cmake_policy(SET CMP0169 OLD)
+  set(CMAKE_POLICY_DEFAULT_CMP0169 OLD)
+endif()
+
 project(ptoas VERSION 0.49)
+
+option(PTOAS_VALIDATE_CMAKE4_FETCHCONTENT_COMPAT
+       "Validate CMake 4 compatibility for legacy FetchContent users" OFF)
+if(PTOAS_VALIDATE_CMAKE4_FETCHCONTENT_COMPAT)
+  set(_ptoas_cmp0169_check_dir "${CMAKE_BINARY_DIR}/cmake-cmp0169-compat")
+  file(MAKE_DIRECTORY "${_ptoas_cmp0169_check_dir}/nested/cann-cmake")
+  file(WRITE "${_ptoas_cmp0169_check_dir}/nested/cann-cmake/CMakeLists.txt"
+       "cmake_minimum_required(VERSION 3.20)\n"
+       "project(ptoas_cmp0169_cann_cmake_fixture NONE)\n")
+  file(WRITE "${_ptoas_cmp0169_check_dir}/nested/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.20)
+project(ptoas_cmp0169_nested_fixture NONE)
+include(FetchContent)
+FetchContent_Declare(cann-cmake SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/cann-cmake")
+FetchContent_GetProperties(cann-cmake)
+if(NOT cann-cmake_POPULATED)
+  FetchContent_Populate(cann-cmake)
+endif()
+]=])
+  add_subdirectory("${_ptoas_cmp0169_check_dir}/nested"
+                   "${_ptoas_cmp0169_check_dir}/nested-build")
+endif()
 
 set(PTOAS_RELEASE_VERSION_OVERRIDE ""
     CACHE STRING "Override the version printed by ptoas --version")
