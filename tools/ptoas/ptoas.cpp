@@ -611,6 +611,7 @@ using FunctionArgHintMap =
     llvm::StringMap<llvm::SmallVector<std::string, 4>>;
 using FunctionBlockArgHintMap =
     llvm::StringMap<llvm::SmallVector<llvm::SmallVector<std::string, 4>, 4>>;
+using FunctionNameSet = std::set<std::string>;
 
 static bool isGeneratedValueName(llvm::StringRef name);
 static SmallVector<std::string, 4> getValueNameHints(Value value);
@@ -720,8 +721,27 @@ static std::string stripMlirLineComments(llvm::StringRef text) {
     llvm::StringRef line = split.first;
     llvm::StringRef rest = split.second;
     llvm::StringRef body = line;
-    if (size_t commentPos = line.find("//"); commentPos != llvm::StringRef::npos)
-      body = line.take_front(commentPos);
+    bool inString = false;
+    bool escaped = false;
+    for (size_t i = 0; i + 1 < line.size(); ++i) {
+      char c = line[i];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (c == '\\') {
+        escaped = true;
+        continue;
+      }
+      if (c == '"') {
+        inString = !inString;
+        continue;
+      }
+      if (!inString && c == '/' && line[i + 1] == '/') {
+        body = line.take_front(i);
+        break;
+      }
+    }
     stripped.append(body.begin(), body.end());
     if (!rest.empty())
       stripped.push_back('\n');
@@ -1141,6 +1161,13 @@ static FunctionBlockArgHintMap collectFunctionBlockArgNameHints(ModuleOp module)
       hintsByFunction[func.getSymNameAttr()] = std::move(blockHints);
   }
   return hintsByFunction;
+}
+
+static FunctionNameSet collectFunctionNames(ModuleOp module) {
+  FunctionNameSet functionNames;
+  for (func::FuncOp func : module.getOps<func::FuncOp>())
+    functionNames.insert(func.getSymName().str());
+  return functionNames;
 }
 
 static void applyFunctionBlockArgNameHintsToEmitC(
@@ -2089,8 +2116,53 @@ findNextHintedGeneratedNames(llvm::StringRef snippet) {
   return std::nullopt;
 }
 
+static std::optional<std::string>
+parseAnyDeclaredIdentifierName(llvm::StringRef line);
+
+static std::optional<std::string> parseTypeAliasName(llvm::StringRef line) {
+  llvm::StringRef trimmed = line.trim();
+  if (trimmed.starts_with("using namespace "))
+    return std::nullopt;
+  if (!trimmed.starts_with("using ") && !trimmed.starts_with("typedef "))
+    return std::nullopt;
+  return parseAnyDeclaredIdentifierName(trimmed);
+}
+
+static std::set<std::string>
+collectTypeAliasNamesInFunctionSegment(llvm::StringRef segment) {
+  std::set<std::string> typeAliasNames;
+  llvm::StringRef remaining = segment;
+  while (!remaining.empty()) {
+    auto split = remaining.split('\n');
+    llvm::StringRef line = split.first;
+    llvm::StringRef rest = split.second;
+    if (auto aliasName = parseTypeAliasName(line))
+      typeAliasNames.insert(*aliasName);
+    remaining = rest;
+  }
+  return typeAliasNames;
+}
+
+static size_t skipHorizontalWhitespaceForward(llvm::StringRef text, size_t pos) {
+  while (pos < text.size() &&
+         std::isspace(static_cast<unsigned char>(text[pos])))
+    ++pos;
+  return pos;
+}
+
+static bool isProtectedFunctionIdentifierToken(
+    llvm::StringRef cpp, size_t tokenEnd, llvm::StringRef token,
+    const FunctionNameSet &functionNames) {
+  if (functionNames.count(token.str()) == 0)
+    return false;
+  size_t nextPos = skipHorizontalWhitespaceForward(cpp, tokenEnd);
+  return nextPos < cpp.size() && cpp[nextPos] == '(';
+}
+
 static void rewriteIdentifiersWithMap(
-    std::string &cpp, const llvm::StringMap<std::string> &replacements) {
+    std::string &cpp, const llvm::StringMap<std::string> &replacements,
+    const FunctionNameSet &functionNames,
+    const std::set<std::string> &typeAliasNames) {
   if (replacements.empty())
     return;
   std::string rewritten;
@@ -2144,7 +2216,10 @@ static void rewriteIdentifiersWithMap(
           ++end;
         llvm::StringRef token(cpp.data() + i, end - i);
         auto it = replacements.find(token);
-        if (it != replacements.end())
+        if (it != replacements.end() &&
+            typeAliasNames.count(token.str()) == 0 &&
+            !isProtectedFunctionIdentifierToken(cpp, end, token,
+                                                functionNames))
           rewritten.append(it->second);
         else
           rewritten.append(token.begin(), token.end());
@@ -2450,6 +2525,12 @@ parseAnyDeclaredIdentifierName(llvm::StringRef line) {
   llvm::StringRef lhs = body;
   if (size_t eqPos = body.find('='); eqPos != llvm::StringRef::npos)
     lhs = body.take_front(eqPos).rtrim();
+  if (size_t lParenPos = lhs.rfind('('); lParenPos != llvm::StringRef::npos &&
+      lhs.ends_with(")")) {
+    llvm::StringRef maybeCtorTarget = lhs.take_front(lParenPos).rtrim();
+    if (!maybeCtorTarget.empty())
+      lhs = maybeCtorTarget;
+  }
   size_t lastWs = lhs.find_last_of(" \t");
   if (lastWs == llvm::StringRef::npos)
     return std::nullopt;
@@ -2604,12 +2685,15 @@ static void emitProvenanceComments(std::string &segment) {
 
 static void rewriteNameHintsInFunctionSegment(
     std::string &segment, llvm::ArrayRef<std::string> functionParamHints,
-    llvm::ArrayRef<llvm::SmallVector<std::string, 4>> blockArgHints) {
+    llvm::ArrayRef<llvm::SmallVector<std::string, 4>> blockArgHints,
+    const FunctionNameSet &functionNames) {
   llvm::StringMap<std::string> replacements;
   llvm::SmallVector<PendingIdentifierRename, 8> pendingRenames =
       collectPendingIdentifierRenames(segment, functionParamHints, blockArgHints);
   std::set<std::string> usedNames =
       collectDeclaredIdentifiersInFunctionSegment(segment);
+  std::set<std::string> typeAliasNames =
+      collectTypeAliasNamesInFunctionSegment(segment);
   for (const PendingIdentifierRename &rename : pendingRenames)
     usedNames.erase(rename.oldName);
 
@@ -2629,12 +2713,14 @@ static void rewriteNameHintsInFunctionSegment(
   // names and is unaffected by the vN->semantic rename below.
   emitProvenanceComments(segment);
   stripAllHintMarkers(segment);
-  rewriteIdentifiersWithMap(segment, replacements);
+  rewriteIdentifiersWithMap(segment, replacements, functionNames,
+                            typeAliasNames);
 }
 
 static void rewriteNameHintMarkers(std::string &cpp,
                                    const FunctionArgHintMap &functionArgHints,
-                                   const FunctionBlockArgHintMap &functionBlockArgHints) {
+                                   const FunctionBlockArgHintMap &functionBlockArgHints,
+                                   const FunctionNameSet &functionNames) {
   llvm::SmallVector<std::string, 0> lines;
   for (llvm::StringRef ref(cpp); !ref.empty();) {
     auto split = ref.split('\n');
@@ -2702,7 +2788,8 @@ static void rewriteNameHintMarkers(std::string &cpp,
         if (blockIt != functionBlockArgHints.end())
           blockHints = blockIt->second;
       }
-      rewriteNameHintsInFunctionSegment(segment, paramHints, blockHints);
+      rewriteNameHintsInFunctionSegment(segment, paramHints, blockHints,
+                                        functionNames);
       rewritten.append(segment);
 
       cursor = segmentEnd;
@@ -3092,9 +3179,11 @@ int mlir::pto::compilePTOASModule(
   // survive CSE and emitc.variable hoisting.
   FunctionArgHintMap functionArgHints;
   FunctionBlockArgHintMap functionBlockArgHints;
+  FunctionNameSet functionNames;
   if (module) {
     functionArgHints = collectFunctionArgNameHints(*module);
     functionBlockArgHints = collectFunctionBlockArgNameHints(*module);
+    functionNames = collectFunctionNames(*module);
   }
 
   if (effectiveBackend != PTOBackend::VPTO &&
@@ -3417,7 +3506,8 @@ int mlir::pto::compilePTOASModule(
   rewriteMalformedVerbatimSemicolons(cppOutput);
   rewriteScalarConstantDecls(cppOutput);
   rewriteHoistedGlobalTensorDecls(cppOutput);
-  rewriteNameHintMarkers(cppOutput, functionArgHints, functionBlockArgHints);
+  rewriteNameHintMarkers(cppOutput, functionArgHints, functionBlockArgHints,
+                         functionNames);
 
   result.kind = PTOASCompileResultKind::Text;
   result.textOutput = std::move(cppOutput);
