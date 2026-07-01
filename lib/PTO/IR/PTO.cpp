@@ -10,6 +10,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "PTO/IR/PTO.h"
+#include "PTO/IR/PTOMultiBuffer.h"
 #include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/IR/PTOSyncUtils.h"
 
@@ -2867,6 +2868,103 @@ LogicalResult AllocTileOp::verify() {
                          << (needVC ? "is required" : "must be absent")
                          << " because result type v_col is "
                          << (needVC ? "?" : std::to_string(vs[1]));
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// AllocMultiTileOp / MultiTileGetOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult AllocMultiTileOp::verify() {
+  auto mtbTy = getResult().getType();
+  if (!mtbTy)
+    return emitOpError("result must be `!pto.multi_tile_buf`");
+
+  TileBufType slotTy = mtbTy.getSlotType();
+  if (!slotTy)
+    return emitOpError("multi_tile_buf slot type must be non-null");
+
+  // Reuse the AllocTileOp valid_row/valid_col contract on the slot type.
+  Type elemTy = slotTy.getElementType();
+  if (isPTOLowPrecisionType(elemTy))
+    return emitOpError() << "slot dtype " << elemTy
+                         << " is not supported by pto.alloc_multi_tile yet";
+
+  if (failed(verifyTileBufLayoutConstraints(*this, slotTy, "slot")))
+    return failure();
+
+  // Multi-buffer slots are placed at product(shape) * element_size byte
+  // intervals -- both the --pto-level=level3 lowering (PTOViewToMemref) and
+  // PTOPlanMemory size them that way. `row_plus_one` compaction inflates the
+  // major stride by one element per row, so the slot's physical strided
+  // footprint exceeds product(shape) and adjacent slots would silently overlap
+  // (data corruption). Reject it until the slot stride is derived from the true
+  // strided footprint. Non-boxed compact/`normal` and boxed fractal slayouts
+  // pack densely (footprint == product(shape)), so they stay supported.
+  if (slotTy.getCompactModeI32() ==
+      static_cast<int32_t>(mlir::pto::CompactMode::RowPlusOne))
+    return emitOpError()
+           << "multi_tile_buf slot uses row_plus_one compaction, whose padded "
+              "storage footprint exceeds product(shape) and would overlap "
+              "adjacent multi-buffer slots; use a compact (non-row_plus_one) "
+              "slot layout or a single pto.alloc_tile";
+
+  bool hasVR = getValidRow() != nullptr;
+  bool hasVC = getValidCol() != nullptr;
+  auto vs = slotTy.getValidShape();
+  if (vs.size() != 2)
+    return emitOpError("slot tile_buf must have rank-2 validShape");
+
+  bool needVR = (vs[0] < 0);
+  bool needVC = (vs[1] < 0);
+  if (hasVR != needVR)
+    return emitOpError() << "valid_row operand "
+                         << (needVR ? "is required" : "must be absent")
+                         << " because slot v_row is "
+                         << (needVR ? "?" : std::to_string(vs[0]));
+  if (hasVC != needVC)
+    return emitOpError() << "valid_col operand "
+                         << (needVC ? "is required" : "must be absent")
+                         << " because slot v_col is "
+                         << (needVC ? "?" : std::to_string(vs[1]));
+
+  // Count bounds are also enforced by MultiTileBufType::verify, but repeat
+  // here so the error points at the alloc op the user wrote.
+  uint32_t count = mtbTy.getCount();
+  if (count < kPtoMultiBufferMinNum || count > kPtoMultiBufferMaxNum) {
+    return emitOpError() << "multi_tile_buf count must be in ["
+                         << kPtoMultiBufferMinNum << ", "
+                         << kPtoMultiBufferMaxNum << "] (got " << count << ")";
+  }
+
+  return success();
+}
+
+LogicalResult MultiTileGetOp::verify() {
+  auto srcTy = getSource().getType();
+  auto resultTy = getResult().getType();
+  if (!srcTy || !resultTy)
+    return emitOpError("source and result types must be non-null");
+
+  if (srcTy.getSlotType() != resultTy) {
+    return emitOpError()
+           << "result tile_buf must match the multi_tile_buf slot type: "
+           << "expected " << srcTy.getSlotType() << ", got " << resultTy;
+  }
+
+  // If slot is an `arith.constant`, check it is in range.
+  if (auto slotDef = getSlot().getDefiningOp<arith::ConstantOp>()) {
+    if (auto attr = llvm::dyn_cast<IntegerAttr>(slotDef.getValue())) {
+      int64_t slotVal = attr.getValue().getSExtValue();
+      int64_t count = static_cast<int64_t>(srcTy.getCount());
+      if (slotVal < 0 || slotVal >= count) {
+        return emitOpError()
+               << "constant slot " << slotVal
+               << " is out of range for multi_tile_buf count=" << count;
+      }
+    }
+  }
 
   return success();
 }

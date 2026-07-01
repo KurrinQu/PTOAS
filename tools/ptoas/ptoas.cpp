@@ -1980,10 +1980,22 @@ int mlir::pto::compilePTOASModule(
   }
 
   if (effectiveLevel == PTOBuildLevel::Level3) {
+    // In level3 the caller owns local memory and PTOPlanMemory is skipped, so
+    // every allocation must carry an explicit physical address. For
+    // multi-buffer, `addr` is the base of the contiguous N-slot region; the
+    // alloc lowering fans it out into the multi-address `pto.pointer_cast`
+    // PlanMemory would otherwise produce.
     bool missing = false;
     module->walk([&](pto::AllocTileOp op) {
       if (!op.getAddr()) {
         op.emitError("requires 'addr' operand when --pto-level=level3");
+        missing = true;
+      }
+    });
+    module->walk([&](pto::AllocMultiTileOp op) {
+      if (!op.getAddr()) {
+        op.emitError("pto.alloc_multi_tile requires a base 'addr' operand when "
+                     "--pto-level=level3");
         missing = true;
       }
     });
@@ -1995,6 +2007,13 @@ int mlir::pto::compilePTOASModule(
       if (op.getAddr()) {
         op.emitError(
             "unexpected 'addr' operand: only supported when --pto-level=level3");
+        hasAddr = true;
+      }
+    });
+    module->walk([&](pto::AllocMultiTileOp op) {
+      if (op.getAddr()) {
+        op.emitError("unexpected 'addr' operand on pto.alloc_multi_tile: only "
+                     "supported when --pto-level=level3");
         hasAddr = true;
       }
     });
@@ -2088,6 +2107,9 @@ int mlir::pto::compilePTOASModule(
 
   // Conditionally add one automatic synchronization mode. Barrier-all is a
   // conservative standalone pass; InsertSync and GraphSyncSolver are set/wait
+  // solvers. Sync runs BEFORE PTOResolveBufferSelect so it sees per-use
+  // `pto.slot_marker` ops and can keep multi-buffer slot identity (const slot
+  // K vs slot K' or dynamic slot) for the alias / event-id analysis.
   // solvers, while BufidSync is A5-only get_buf/rls_buf synchronization.
   pm.addNestedPass<mlir::func::FuncOp>(
       pto::createPTOVerifySubkernelPipeContractPass());
@@ -2107,6 +2129,11 @@ int mlir::pto::compilePTOASModule(
     pm.addNestedPass<mlir::func::FuncOp>(
         pto::createPTOGraphSyncSolverPass(graphSyncOpts));
   }
+
+  // Materialize per-slot single-address `pto.pointer_cast` (constant slot)
+  // or an `arith.select` chain (dynamic slot). The multi-address cast
+  // produced by PlanMemory survives as the alloc anchor.
+  pm.addPass(pto::createPTOResolveBufferSelectPass());
 
   if (emitMlirIR) {
     if (failed(pm.run(*module))) {
