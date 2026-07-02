@@ -931,6 +931,50 @@ static void splitDerivedSingleResultProvenanceLocs(Operation *root) {
     splitDerivedSingleResultProvenanceLocsInRegion(region);
 }
 
+static void narrowUnusedMultiResultProvenanceLocs(Operation *root) {
+  if (!root)
+    return;
+
+  root->walk([&](Operation *op) {
+    if (op->getNumResults() <= 1)
+      return;
+
+    SmallVector<std::string, 4> hints = getRawLocationProvenance(op->getLoc());
+    if (hints.size() != op->getNumResults())
+      return;
+
+    SmallVector<std::string, 4> liveHints;
+    liveHints.reserve(hints.size());
+    for (auto [index, result] : llvm::enumerate(op->getResults())) {
+      if (!result.use_empty())
+        liveHints.push_back(hints[index]);
+    }
+
+    if (liveHints.empty() || liveHints.size() == hints.size())
+      return;
+
+    op->setLoc(attachLocationNameHints(op->getLoc(), liveHints,
+                                       op->getContext()));
+  });
+}
+
+namespace {
+struct NarrowUnusedMultiResultProvenancePass
+    : public PassWrapper<NarrowUnusedMultiResultProvenancePass,
+                         OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(
+      NarrowUnusedMultiResultProvenancePass)
+
+  void runOnOperation() override {
+    narrowUnusedMultiResultProvenanceLocs(getOperation());
+  }
+};
+} // namespace
+
+static std::unique_ptr<Pass> createNarrowUnusedMultiResultProvenancePass() {
+  return std::make_unique<NarrowUnusedMultiResultProvenancePass>();
+}
+
 static void collectNonEntryBlocksInSourceOrder(
     Operation *op, SmallVectorImpl<Block *> &blocks) {
   for (Region &region : op->getRegions()) {
@@ -2832,6 +2876,8 @@ int mlir::pto::compilePTOASModule(
   // or an `arith.select` chain (dynamic slot). The multi-address cast
   // produced by PlanMemory survives as the alloc anchor.
   pm.addPass(pto::createPTOResolveBufferSelectPass());
+  if (effectiveBackend == PTOBackend::EmitC)
+    pm.addPass(createNarrowUnusedMultiResultProvenancePass());
 
   if (emitMlirIR) {
     if (failed(pm.run(*module))) {
@@ -2853,6 +2899,8 @@ int mlir::pto::compilePTOASModule(
   // materialized tile-native handles, so helper arguments are restored to the
   // tile_buf ABI before qk.as_ptr()-style bridges are cloned into callers.
   pm.addPass(pto::createPTOInlineBackendHelpersPass());
+  if (effectiveBackend == PTOBackend::EmitC)
+    pm.addPass(createNarrowUnusedMultiResultProvenancePass());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
   if (failed(applyConfiguredPassManagerCLOptions(pm, "main PTOAS pipeline")))
@@ -2887,6 +2935,7 @@ int mlir::pto::compilePTOASModule(
   if (failed(emitSharedPreBackendSeamIR(*module, ptoSeamIRFile)))
     return 1;
 
+  narrowUnusedMultiResultProvenanceLocs(module.get());
   splitDerivedSingleResultProvenanceLocs(module.get());
 
   PassManager emitcPM(module->getContext());

@@ -27,8 +27,26 @@ module {
     %r = arith.addi %a, %b : i32
     return %r : i32
   }
+
+  func.func @partial_multi_result_hint_alignment(%pred: i1, %lhs: i32, %rhs: i32) -> i32 {
+    %pair:2 = scf.if %pred -> (i32, i32) {
+      scf.yield %lhs, %rhs : i32, i32
+    } else {
+      scf.yield %rhs, %lhs : i32, i32
+    }
+    %mix = arith.addi %pair#1, %pair#1 : i32
+    return %mix : i32
+  }
 }
 
+// CHECK-LABEL: AICORE int32_t partial_multi_result_hint_alignment(
+// CHECK-NOT: PTOAS_NAME_HINTS
+// CHECK-NOT: PTOAS_PROVENANCE
+// CHECK-NOT: // pto: %pair#0
+// CHECK: // pto: %pair#1
+// CHECK-NEXT: int32_t [[PARTIAL:v[0-9]+]] = v1 ? v3 : v2;
+// CHECK: // pto: %mix
+// CHECK-NEXT: return (int32_t) ((uint32_t) [[PARTIAL]] + (uint32_t) [[PARTIAL]]);
 // CHECK-LABEL: AICORE int32_t multi_result_hint_alignment(
 // CHECK-NOT: PTOAS_NAME_HINTS
 // CHECK-NOT: PTOAS_PROVENANCE
