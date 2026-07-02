@@ -1134,34 +1134,77 @@ static std::string buildHintMarker(llvm::StringRef prefix,
   return marker;
 }
 
+static SmallVector<std::string, 8>
+collectExpressionProvenance(emitc::ExpressionOp expr) {
+  SmallVector<std::string, 8> provenance;
+  auto appendUnique = [&](llvm::ArrayRef<std::string> names) {
+    for (const std::string &name : names) {
+      if (name.empty())
+        continue;
+      if (std::find(provenance.begin(), provenance.end(), name) !=
+          provenance.end())
+        continue;
+      provenance.push_back(name);
+    }
+  };
+
+  expr.walk<WalkOrder::PreOrder>([&](Operation *nested) {
+    if (nested == expr.getOperation())
+      return WalkResult::advance();
+    if (nested->getNumResults() == 0 || isa<emitc::VerbatimOp>(nested))
+      return WalkResult::advance();
+    appendUnique(getRawResultProvenance(nested));
+    return WalkResult::advance();
+  });
+  appendUnique(getRawResultProvenance(expr.getOperation()));
+  return provenance;
+}
+
 static void annotateEmitCProvenanceHints(ModuleOp module) {
-  llvm::SmallVector<Operation *, 32> opsToAnnotate;
+  struct ProvenanceMarker {
+    Operation *op = nullptr;
+    SmallVector<std::string, 8> names;
+  };
+
+  llvm::SmallVector<ProvenanceMarker, 32> opsToAnnotate;
   module.walk<WalkOrder::PreOrder>([&](Operation *op) {
     if (op->getNumResults() == 0 || isa<emitc::VerbatimOp>(op))
       return WalkResult::advance();
+
+    if (auto expr = dyn_cast<emitc::ExpressionOp>(op)) {
+      SmallVector<std::string, 8> provenance = collectExpressionProvenance(expr);
+      if (provenance.empty())
+        return WalkResult::skip();
+      opsToAnnotate.push_back(
+          ProvenanceMarker{op, SmallVector<std::string, 8>(provenance)});
+      return WalkResult::skip();
+    }
+
     if (op->getParentOfType<emitc::ExpressionOp>())
       return WalkResult::advance();
     // Only carry raw provenance into the C++ post-pass. Semantic renaming is
     // intentionally deferred until naming can happen inside the emitter's own
     // symbol table instead of via post-hoc C++ text rewriting.
-    if (getRawResultProvenance(op).empty())
+    SmallVector<std::string, 4> provenance = getRawResultProvenance(op);
+    if (provenance.empty())
       return WalkResult::advance();
-    opsToAnnotate.push_back(op);
+    opsToAnnotate.push_back(ProvenanceMarker{
+        op, SmallVector<std::string, 8>(provenance.begin(), provenance.end())});
     return WalkResult::advance();
   });
 
   OpBuilder builder(module.getContext());
-  for (Operation *op : opsToAnnotate) {
+  for (const ProvenanceMarker &marker : opsToAnnotate) {
     // Emit a provenance marker carrying the raw input SSA name. This is
     // consumed by the C++ post-processor to emit `// pto: %N` comments so a
     // reader can map a generated variable back to its .pto source (issue #337
     // point 1: locatability without strict number alignment).
-    SmallVector<std::string, 4> provenance = getRawResultProvenance(op);
-    if (!provenance.empty()) {
-      builder.setInsertionPoint(op);
+    if (!marker.names.empty()) {
+      builder.setInsertionPoint(marker.op);
       builder.create<emitc::VerbatimOp>(
-          op->getLoc(),
-          builder.getStringAttr(buildHintMarker("PTOAS_PROVENANCE", provenance)));
+          marker.op->getLoc(),
+          builder.getStringAttr(
+              buildHintMarker("PTOAS_PROVENANCE", marker.names)));
     }
   }
 }

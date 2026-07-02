@@ -56,5 +56,4 @@ module {
 // CHECK-NEXT: int32_t [[PAIR0:v[0-9]+]] = v1 ? v2 : v3;
 // CHECK: // pto: %pair#1
 // CHECK-NEXT: int32_t [[PAIR1:v[0-9]+]] = v1 ? v3 : v2;
-// CHECK: // pto: %ret
-// CHECK-NEXT: return (int32_t) ((uint32_t) add_helper([[PAIR0]], [[PAIR0]]) + (uint32_t) add_helper([[PAIR1]], [[PAIR1]]));
+// CHECK: return (int32_t) ((uint32_t) add_helper([[PAIR0]], [[PAIR0]]) + (uint32_t) add_helper([[PAIR1]], [[PAIR1]]));
