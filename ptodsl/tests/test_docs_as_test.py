@@ -69,6 +69,7 @@ class DocTestDirective:
     symbol: Optional[str] = None
     compile_kwargs: Optional[dict[str, object]] = None
     fixture: Optional[str] = None
+    files: Optional[dict[str, str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -257,11 +258,25 @@ def parse_test_directive(block: MarkdownCodeBlock) -> DocTestDirective:
     symbol = payload.get("symbol")
     compile_kwargs = payload.get("compile")
     fixture = payload.get("fixture")
+    files = payload.get("files")
 
     expect(
         isinstance(mode, str) and mode,
         f"{block_label(block)}: ptodsl-doc-test metadata must define a non-empty string 'mode'",
     )
+    if files is not None:
+        expect(
+            isinstance(files, dict) and all(isinstance(path, str) and isinstance(text, str) for path, text in files.items()),
+            f"{block_label(block, symbol if isinstance(symbol, str) and symbol else None)}: "
+            "ptodsl-doc-test metadata 'files' must be an object mapping relative file paths to text",
+        )
+        for path in files:
+            file_path = Path(path)
+            expect(
+                not file_path.is_absolute() and ".." not in file_path.parts,
+                f"{block_label(block, symbol if isinstance(symbol, str) and symbol else None)}: "
+                f"ptodsl-doc-test metadata file path must be relative and stay inside the snippet directory: {path!r}",
+            )
     if mode in ("compile", "compile_fragment"):
         expect(
             isinstance(symbol, str) and symbol,
@@ -282,8 +297,9 @@ def parse_test_directive(block: MarkdownCodeBlock) -> DocTestDirective:
                 symbol=symbol,
                 compile_kwargs=compile_kwargs,
                 fixture=fixture,
+                files=files,
             )
-        return DocTestDirective(mode=mode, symbol=symbol, compile_kwargs=compile_kwargs)
+        return DocTestDirective(mode=mode, symbol=symbol, compile_kwargs=compile_kwargs, files=files)
 
     if mode == "launch_fragment":
         expect(
@@ -300,7 +316,7 @@ def parse_test_directive(block: MarkdownCodeBlock) -> DocTestDirective:
             f"{block_label(block, symbol if isinstance(symbol, str) and symbol else None)}: "
             "ptodsl-doc-test launch_fragment does not accept a 'compile' object; the snippet owns its compile/launch flow",
         )
-        return DocTestDirective(mode=mode, symbol=symbol, fixture=fixture)
+        return DocTestDirective(mode=mode, symbol=symbol, fixture=fixture, files=files)
 
     expect(
         False,
@@ -310,23 +326,46 @@ def parse_test_directive(block: MarkdownCodeBlock) -> DocTestDirective:
     return DocTestDirective(mode=mode)
 
 
+def _write_directive_files(snippet_dir: Path, files: dict[str, str] | None) -> None:
+    if not files:
+        return
+    for relative_path, text in files.items():
+        output_path = snippet_dir / relative_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(text, encoding="utf-8")
+
+
+@contextmanager
+def directive_execution_dir(directive: DocTestDirective):
+    if not directive.files:
+        yield None
+        return
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        snippet_dir = Path(temp_dir)
+        _write_directive_files(snippet_dir, directive.files)
+        yield snippet_dir
+
+
 def execute_source(
     source: str,
     block: MarkdownCodeBlock,
     symbol: Optional[str] = None,
     *,
     extra_namespace: Optional[dict[str, object]] = None,
+    source_dir: Path | None = None,
 ) -> dict[str, object]:
+    source_file = block.path if source_dir is None else source_dir / "case.py"
     namespace: dict[str, object] = {
         "__builtins__": __builtins__,
         "__name__": "__ptodsl_doc_snippet__",
-        "__file__": str(block.path),
+        "__file__": str(source_file),
         "pto": pto,
         "scalar": scalar,
     }
     if extra_namespace is not None:
         namespace.update(extra_namespace)
-    filename = f"{block.path}::codeblock:{block.start_line}"
+    filename = f"{source_file}::codeblock:{block.start_line}"
     source_lines = source.splitlines(keepends=True)
     linecache.cache[filename] = (len(source), None, source_lines, filename)
     try:
@@ -409,8 +448,9 @@ def verify_compiled_target(
 
 def run_compile_block(block: MarkdownCodeBlock, ptoas_bin: Path) -> None:
     directive = parse_test_directive(block)
-    namespace = execute_source(block.text, block, directive.symbol)
-    verify_compiled_target(block, directive, namespace, ptoas_bin, frontend_verify=False)
+    with directive_execution_dir(directive) as source_dir:
+        namespace = execute_source(block.text, block, directive.symbol, source_dir=source_dir)
+        verify_compiled_target(block, directive, namespace, ptoas_bin, frontend_verify=False)
 
 
 def run_compile_fragment_block(block: MarkdownCodeBlock, ptoas_bin: Path) -> None:
@@ -429,8 +469,9 @@ def run_compile_fragment_block(block: MarkdownCodeBlock, ptoas_bin: Path) -> Non
         raise AssertionError(
             f"{block_label(block, directive.symbol)}: fragment fixture {directive.fixture!r} is invalid: {exc}"
         ) from exc
-    namespace = execute_source(rendered_source, block, directive.symbol)
-    verify_compiled_target(block, directive, namespace, ptoas_bin, frontend_verify=False)
+    with directive_execution_dir(directive) as source_dir:
+        namespace = execute_source(rendered_source, block, directive.symbol, source_dir=source_dir)
+        verify_compiled_target(block, directive, namespace, ptoas_bin, frontend_verify=False)
 
 
 def run_launch_fragment_block(block: MarkdownCodeBlock, ptoas_bin: Path) -> None:
@@ -450,13 +491,15 @@ def run_launch_fragment_block(block: MarkdownCodeBlock, ptoas_bin: Path) -> None
             f"{block_label(block, directive.symbol)}: fragment fixture {directive.fixture!r} is invalid: {exc}"
         ) from exc
 
-    with capture_launch_records() as launch_records:
-        execute_source(
-            rendered_source,
-            block,
-            directive.symbol,
-            extra_namespace={"PTODSL_DOC_LAUNCH_RECORDS": launch_records},
-        )
+    with directive_execution_dir(directive) as source_dir:
+        with capture_launch_records() as launch_records:
+            execute_source(
+                rendered_source,
+                block,
+                directive.symbol,
+                extra_namespace={"PTODSL_DOC_LAUNCH_RECORDS": launch_records},
+                source_dir=source_dir,
+            )
 
     expect(
         bool(launch_records),

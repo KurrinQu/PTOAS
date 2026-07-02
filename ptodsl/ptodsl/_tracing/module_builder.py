@@ -38,6 +38,7 @@ class KernelModuleSpec:
     module_style: ModuleStyle = ModuleStyle.NESTED
     source_file: str | None = None
     source_line: int | None = None
+    jit_source: str | None = None
 
 
 def _build_flat_aicore_module(spec: KernelModuleSpec, arg_types):

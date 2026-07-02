@@ -12,6 +12,7 @@ import os
 import re
 import sys
 from tempfile import TemporaryDirectory
+from importlib.util import module_from_spec, spec_from_file_location
 from typing import Optional
 from unittest import mock
 
@@ -3118,6 +3119,187 @@ def main() -> None:
         pointer_block64.specialization_key.constexpr_signature == (("BLOCK", 64),),
         "pointer-first specialization key should change only with constexpr bindings",
     )
+    source_native_build_compiled = None
+    source_explicit_native_build_compiled = None
+    source_no_insert_sync_native_build_compiled = None
+    with TemporaryDirectory() as tmpdir:
+        source_path = Path(tmpdir) / "source_kernel.pto"
+        source_text_v1 = (
+            "module {\n"
+            "  func.func @selected_source_entry(%arg0: !pto.ptr<f32, gm>, %arg1: i32) {\n"
+            "    return\n"
+            "  }\n"
+            "  func.func @other_source_entry(%arg0: !pto.ptr<f32, gm>) {\n"
+            "    return\n"
+            "  }\n"
+            "}\n"
+        )
+        source_text_v2 = (
+            "module {\n"
+            "  func.func @selected_source_entry(%arg0: !pto.ptr<f32, gm>, %arg1: i32) {\n"
+            "    %c0 = arith.constant 0 : i32\n"
+            "    return\n"
+            "  }\n"
+            "  func.func @other_source_entry(%arg0: !pto.ptr<f32, gm>) {\n"
+            "    return\n"
+            "  }\n"
+            "}\n"
+        )
+        source_path.write_text(source_text_v1, encoding="utf-8")
+
+        @pto.jit(name="selected_source_entry", target="a5", source=str(source_path))
+        def source_backed_probe(ptr: pto.ptr(pto.f32, "gm"), rows: pto.i32):
+            raise RuntimeError("source-backed JIT should not trace the Python body")
+
+        source_compiled_v1 = source_backed_probe.compile()
+        source_compiled_v1_again = source_backed_probe.compile()
+        expect(source_compiled_v1 is source_compiled_v1_again, "unchanged source-backed JIT should hit specialization cache")
+        expect(
+            source_compiled_v1.mlir_text() == source_text_v1,
+            "source-backed JIT mlir_text() should preserve the authored source text",
+        )
+        expect(
+            source_compiled_v1.ir_function_name == "selected_source_entry",
+            "source-backed JIT should use name= for entry selection and launch wrapper naming",
+        )
+        expect(
+            source_compiled_v1.build_metadata()["source_path"] == str(source_path.resolve()),
+            "source-backed JIT metadata should expose the resolved source path",
+        )
+
+        source_path.write_text(source_text_v2, encoding="utf-8")
+        source_compiled_v2 = source_backed_probe.compile()
+        expect(
+            source_compiled_v2 is not source_compiled_v1,
+            "editing the source file should materialize a new specialization",
+        )
+        expect(
+            source_compiled_v2.specialization_key != source_compiled_v1.specialization_key,
+            "source-backed specialization key should include source content",
+        )
+        expect(
+            source_compiled_v2.mlir_text() == source_text_v2,
+            "source-backed JIT should reload changed source text",
+        )
+        source_auto_path = Path(tmpdir) / "source_auto.pto"
+        source_auto_text = (
+            "module {\n"
+            "  func.func @source_auto_native(%arg0: !pto.ptr<f32, gm>) {\n"
+            "    return\n"
+            "  }\n"
+            "}\n"
+        )
+        source_auto_path.write_text(source_auto_text, encoding="utf-8")
+
+        @pto.jit(name="source_auto_native", target="a5", backend="vpto", source=str(source_auto_path))
+        def source_auto_native(ptr: pto.ptr(pto.f32, "gm")):
+            raise RuntimeError("source-backed JIT should not trace the Python body")
+
+        source_native_build_compiled = source_auto_native.compile()
+
+        source_explicit_path = Path(tmpdir) / "source_explicit.pto"
+        source_explicit_text = (
+            "module {\n"
+            "  func.func @source_explicit_native(%arg0: !pto.ptr<f32, gm>) {\n"
+            "    return\n"
+            "  }\n"
+            "}\n"
+        )
+        source_explicit_path.write_text(source_explicit_text, encoding="utf-8")
+
+        @pto.jit(
+            name="source_explicit_native",
+            target="a5",
+            backend="vpto",
+            mode="explicit",
+            source=str(source_explicit_path),
+        )
+        def source_explicit_native(ptr: pto.ptr(pto.f32, "gm")):
+            raise RuntimeError("source-backed JIT should not trace the Python body")
+
+        source_explicit_native_build_compiled = source_explicit_native.compile()
+
+        source_no_insert_sync_path = Path(tmpdir) / "source_no_insert_sync.pto"
+        source_no_insert_sync_text = (
+            "module {\n"
+            "  func.func @source_no_insert_sync_native(%arg0: !pto.ptr<f32, gm>) {\n"
+            "    return\n"
+            "  }\n"
+            "}\n"
+        )
+        source_no_insert_sync_path.write_text(source_no_insert_sync_text, encoding="utf-8")
+
+        @pto.jit(
+            name="source_no_insert_sync_native",
+            target="a5",
+            backend="vpto",
+            insert_sync=False,
+            source=str(source_no_insert_sync_path),
+        )
+        def source_no_insert_sync_native(ptr: pto.ptr(pto.f32, "gm")):
+            raise RuntimeError("source-backed JIT should not trace the Python body")
+
+        source_no_insert_sync_native_build_compiled = source_no_insert_sync_native.compile()
+
+        relative_case_dir = Path(tmpdir) / "relative_case"
+        relative_case_dir.mkdir()
+        relative_source_path = relative_case_dir / "relative_kernel.pto"
+        relative_source_text = (
+            "module {\n"
+            "  func.func @relative_source_entry(%arg0: !pto.ptr<f32, gm>) {\n"
+            "    return\n"
+            "  }\n"
+            "}\n"
+        )
+        relative_source_path.write_text(relative_source_text, encoding="utf-8")
+        relative_module_path = relative_case_dir / "relative_case.py"
+        relative_module_path.write_text(
+            "from ptodsl import pto\n"
+            "@pto.jit(name='relative_source_entry', target='a5', source='relative_kernel.pto')\n"
+            "def relative_kernel(ptr: pto.ptr(pto.f32, 'gm')):\n"
+            "    raise RuntimeError('source-backed JIT should not trace the Python body')\n",
+            encoding="utf-8",
+        )
+        spec = spec_from_file_location("ptodsl_relative_source_case", relative_module_path)
+        expect(spec is not None and spec.loader is not None, "relative source test module should be importable")
+        relative_module = module_from_spec(spec)
+        spec.loader.exec_module(relative_module)
+        relative_compiled = relative_module.relative_kernel.compile()
+        expect(
+            relative_compiled.mlir_text() == relative_source_text,
+            "relative source paths should resolve against the declaring Python file",
+        )
+        expect(
+            relative_compiled.build_metadata()["source_path"] == str(relative_source_path.resolve()),
+            "relative source-backed metadata should expose the resolved source path",
+        )
+
+        inline_source_text = (
+            "module {\n"
+            "  func.func @inline_source_entry(%arg0: !pto.ptr<f32, gm>, %arg1: i32) {\n"
+            "    return\n"
+            "  }\n"
+            "}\n"
+        )
+
+        @pto.jit(name="inline_source_entry", target="a5", source=inline_source_text)
+        def inline_source_backed_probe(ptr: pto.ptr(pto.f32, "gm"), rows: pto.i32):
+            raise RuntimeError("source-backed JIT should not trace the Python body")
+
+        inline_compiled = inline_source_backed_probe.compile()
+        expect(
+            inline_compiled.mlir_text() == inline_source_text,
+            "inline source-backed JIT mlir_text() should preserve the authored source text",
+        )
+        inline_metadata = inline_compiled.build_metadata()
+        expect(
+            inline_metadata["source_kind"] == "inline",
+            "inline source-backed JIT metadata should mark the source kind as inline",
+        )
+        expect(
+            "source_path" not in inline_metadata,
+            "inline source-backed JIT metadata should not synthesize a filesystem path",
+        )
     pointer_artifacts_default = artifact_paths(
         pointer_default._py_name,
         pointer_default.ir_function_name,
@@ -3482,6 +3664,9 @@ def main() -> None:
         ("pure-container", host_vec_copy.compile()),
         ("same-backend-multi-child-container", kernel_module_compiled),
         ("mixed-backend-container", emitc_entry_calls_vpto_kernel_module_probe.compile()),
+        ("source-auto", source_native_build_compiled),
+        ("source-explicit", source_explicit_native_build_compiled),
+        ("source-no-insert-sync", source_no_insert_sync_native_build_compiled),
     )
     native_build_observations = []
 
@@ -3499,13 +3684,15 @@ def main() -> None:
                 manifest_path=cache_dir / "manifest.json",
             )
 
-        def fake_run_ptoas(mlir_path, kernel_object, *, target_arch, insert_sync=None):
+        def fake_run_ptoas(mlir_path, kernel_object, *, target_arch, insert_sync=None, backend=None, pto_level=None):
             native_build_observations.append(
                 {
                     "mlir_path": mlir_path,
                     "kernel_object": kernel_object,
                     "target_arch": target_arch,
                     "insert_sync": insert_sync,
+                    "backend": backend,
+                    "pto_level": pto_level,
                     "mlir_text": mlir_path.read_text(encoding="utf-8"),
                 }
             )
@@ -3562,14 +3749,25 @@ def main() -> None:
             observation["insert_sync"] == expected_insert_sync,
             f"{label} native build should forward the effective insert_sync policy to ptoas",
         )
+        expected_backend = compiled._module_spec.backend if compiled._module_spec.jit_source is not None else None
+        expected_pto_level = "level3" if compiled._module_spec.jit_source is not None and compiled._module_spec.mode == "explicit" else None
+        expect(
+            observation["backend"] == expected_backend,
+            f"{label} native build should only forward ptoas backend overrides for source-backed kernels",
+        )
+        expect(
+            observation["pto_level"] == expected_pto_level,
+            f"{label} native build should only map explicit mode to ptoas level3 for source-backed kernels",
+        )
         expect(
             observation["mlir_text"] == compiled.mlir_text(),
             f"{label} native build should hand the backend-partitioned container MLIR to ptoas unchanged",
         )
-        expect(
-            observation["mlir_text"].count("module") >= 2,
-            f"{label} native build should route the unified outer+child container through ptoas",
-        )
+        if compiled._module_spec.jit_source is None:
+            expect(
+                observation["mlir_text"].count("module") >= 2,
+                f"{label} native build should route the unified outer+child container through ptoas",
+            )
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         mlir_path = tmpdir_path / "kernel.mlir"
@@ -3625,6 +3823,32 @@ def main() -> None:
         expect(
             "--enable-insert-sync" in ptoas_cmds[0],
             "native build should pass --enable-insert-sync when the compiled module explicitly requests it",
+        )
+        ptoas_cmds.clear()
+        with mock.patch.object(native_build_runtime, "resolve_ptoas_binary", return_value=Path("/tmp/fake-ptoas")), mock.patch.object(
+            native_build_runtime, "_run", side_effect=fake_run_ptoas_cmd
+        ):
+            native_build_runtime._run_ptoas(
+                mlir_path,
+                kernel_object,
+                target_arch="a5",
+                backend="vpto",
+                pto_level="level3",
+                insert_sync=True,
+            )
+        expect(len(ptoas_cmds) == 1, "native build should issue exactly one ptoas command with source-backed overrides")
+        source_ptoas_cmd = ptoas_cmds[0]
+        expect(
+            "--pto-backend=vpto" in source_ptoas_cmd,
+            "source-backed native build should pass the decorator backend to ptoas",
+        )
+        expect(
+            "--pto-level=level3" in source_ptoas_cmd,
+            "source-backed explicit mode should pass --pto-level=level3 to ptoas",
+        )
+        expect(
+            "--enable-insert-sync" in source_ptoas_cmd,
+            "source-backed native build should still pass explicit/effective insert-sync to ptoas",
         )
     expect("valid=?" not in default_text, "default alloc_tile() should keep full static valid-shape when valid_shape= is omitted")
     auto_mode_violation = expect_raises(
@@ -5005,6 +5229,9 @@ def main() -> None:
     launch_handle = block64[1, None]
     expect(callable(launch_handle), "compiled[grid, stream] should return a launch callable")
     expect(hasattr(launch_handle, "__call__"), "launch handle should support __call__")
+    source_launch_handle = source_native_build_compiled[1, None]
+    expect(callable(source_launch_handle), "source-backed compiled[grid, stream] should return a launch callable")
+    expect(hasattr(source_launch_handle, "__call__"), "source-backed launch handle should support __call__")
 
     print("ptodsl_jit_compile: PASS")
     os._exit(0)

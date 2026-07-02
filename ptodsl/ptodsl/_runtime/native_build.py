@@ -45,12 +45,18 @@ def _run_ptoas(
     *,
     target_arch: str,
     insert_sync: bool | None = None,
+    backend: str | None = None,
+    pto_level: str | None = None,
 ) -> None:
     ptoas = resolve_ptoas_binary()
     cmd = [
         str(ptoas),
         f"--pto-arch={target_arch}",
     ]
+    if backend is not None:
+        cmd.append(f"--pto-backend={backend}")
+    if pto_level is not None:
+        cmd.append(f"--pto-level={pto_level}")
     if insert_sync is True:
         cmd.append("--enable-insert-sync")
     cmd.extend([
@@ -68,6 +74,15 @@ def _effective_insert_sync(*, mode: str, insert_sync: bool | None) -> bool:
     if insert_sync is not None:
         return insert_sync
     return mode != "explicit"
+
+
+def _source_ptoas_overrides(module_spec) -> dict:
+    if getattr(module_spec, "jit_source", None) is None:
+        return {}
+    overrides = {"backend": module_spec.backend}
+    if module_spec.mode == "explicit":
+        overrides["pto_level"] = "level3"
+    return overrides
 
 
 def _host_compile_flags() -> list[str]:
@@ -199,6 +214,7 @@ def build_native_library(
             mode=module_spec.mode,
             insert_sync=module_spec.insert_sync,
         ),
+        **_source_ptoas_overrides(module_spec),
     )
 
     launch_object = artifacts.cache_dir / "launch.o"
