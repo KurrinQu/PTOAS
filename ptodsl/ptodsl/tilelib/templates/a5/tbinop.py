@@ -12,7 +12,7 @@ templates provide the vector instruction (``pto.vadd``, ``pto.vmul``, ...), whil
 module owns the variant dispatch and traversal skeletons.
 """
 
-import ptodsl.tilelib as pto
+from ptodsl import pto
 
 VFIMPL_1D_NO_POST_UPDATE = "1d_no_post_update"
 VFIMPL_2D_NO_POST_UPDATE = "2d_no_post_update"
@@ -49,9 +49,9 @@ def BinaryInstr(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, op, version):
 
 def TBinOps_1D_NoPostUpdate(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, op):
     """Emit a basic single-row no-post-update binary op."""
-    dtype = dst.element_type
+    dtype = dst.dtype
     _, valid_cols = dst.valid_shape
-    lanes = pto.get_lanes(dtype)
+    lanes = pto.elements_per_vreg(dtype)
 
     col_loop = pto.for_(0, valid_cols, step=lanes).carry(remained=valid_cols)
     with col_loop:
@@ -66,9 +66,9 @@ def TBinOps_1D_NoPostUpdate(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, op):
 
 def TBinOps_1D_PostUpdate(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, op):
     """Emit a contiguous post-update binary op."""
-    dtype = dst.element_type
+    dtype = dst.dtype
     valid_rows, valid_cols = dst.valid_shape
-    lanes = pto.get_lanes(dtype)
+    lanes = pto.elements_per_vreg(dtype)
     valid_elems = valid_rows * valid_cols
 
     src0_ptr = src0.as_ptr()
@@ -103,9 +103,9 @@ def TBinOps_1D_PostUpdate(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, op):
 
 def TBinOps_2D_NoPostUpdate(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, op):
     """Emit the generic row/column no-post-update binary op."""
-    dtype = dst.element_type
+    dtype = dst.dtype
     valid_rows, valid_cols = dst.valid_shape
-    lanes = pto.get_lanes(dtype)
+    lanes = pto.elements_per_vreg(dtype)
 
     with pto.for_(0, valid_rows, step=1) as row:
         col_loop = pto.for_(0, valid_cols, step=lanes).carry(remained=valid_cols)
@@ -121,12 +121,12 @@ def TBinOps_2D_NoPostUpdate(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, op):
 
 def TBinOps_2D_PostUpdate(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, op):
     """Emit a row-wise post-update binary op."""
-    dtype = dst.element_type
+    dtype = dst.dtype
     valid_rows, valid_cols = dst.valid_shape
-    lanes = pto.get_lanes(dtype)
+    lanes = pto.elements_per_vreg(dtype)
     full_cols = (valid_cols // lanes) * lanes
     tail_count = valid_cols % lanes
-    full_mask = pto.make_mask(dtype, "PAT_ALL")
+    full_mask = pto.make_mask(dtype, pto.MaskPattern.ALL)
     dst_row_stride = dst.shape[1]
     src0_row_stride = src0.shape[1]
     src1_row_stride = src1.shape[1]

@@ -5,23 +5,20 @@
 # THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
-"""PTODSL TileLib template for pto.tcolmax."""
+"""PTODSL TileLib template for pto.tshr."""
 
 from ptodsl import pto
 
-from ._reductions import register_column_reduction
+from ._elementwise import register_binary
 
 
-template_tcolmax = register_column_reduction(
-    op="pto.tcolmax",
-    name="template_tcolmax",
-    vector_op=pto.vmax,
+template_tshr = register_binary(
+    op="pto.tshr",
+    name="template_tshr",
+    vector_op=pto.vshr,
     dtypes=[
-        ("i8", "i8"),
-        ("i16", "i16"),
-        ("i32", "i32"),
-        ("f16", "f16"),
-        ("bf16", "bf16"),
-        ("f32", "f32"),
+        ("i8", "i8", "i8"),
+        ("i16", "i16", "i16"),
+        ("i32", "i32", "i32"),
     ],
 )

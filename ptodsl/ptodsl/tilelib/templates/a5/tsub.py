@@ -7,10 +7,11 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 """PTODSL TileLib template for pto.tsub (ported from lib/TileOps/tsub_template.py)."""
 
-import ptodsl.tilelib as pto
+from ptodsl import pto
+import ptodsl.tilelib as tilelib
 
 
-@pto.tile_template(
+@tilelib.tile_template(
     op="pto.tsub",
     target="a5",
     name="template_tsub",
@@ -23,12 +24,13 @@ import ptodsl.tilelib as pto
     is_post_update=False,
 )
 def template_tsub(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
-    dtype = dst.element_type
+    dtype = dst.dtype
     valid_rows, valid_cols = dst.valid_shape
+    lanes = pto.elements_per_vreg(dtype)
 
     for row in range(0, valid_rows, 1):
         remained = valid_cols
-        for col in range(0, valid_cols, pto.get_lanes(dtype)):
+        for col in range(0, valid_cols, lanes):
             mask, remained = pto.make_mask(dtype, remained)
             lhs = pto.vlds(src0[row, col:])
             rhs = pto.vlds(src1[row, col:])

@@ -1,0 +1,114 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+"""Shared PTODSL implementations for straightforward A5 elementwise TileOps."""
+
+from ptodsl import pto
+import ptodsl.tilelib as tilelib
+
+
+def _common_constraints(*operand_names):
+    return [
+        tilelib.check_memory_space("ub"),
+        tilelib.check_layout("row_major"),
+        tilelib.check_s_layout("none_box"),
+        tilelib.require_same_valid_shape(*operand_names),
+    ]
+
+
+def register_unary(*, op, name, vector_op, dtypes):
+    """Register a unary tile traversal using a public PTODSL vector operation."""
+
+    @tilelib.tile_template(
+        op=op,
+        target="a5",
+        name=name,
+        dtypes=dtypes,
+        constraints=_common_constraints("src", "dst"),
+        id=0,
+        loop_depth=2,
+        is_post_update=False,
+        tags=("elementwise", "unary"),
+    )
+    def template(src: pto.Tile, dst: pto.Tile):
+        dtype = dst.dtype
+        valid_rows, valid_cols = dst.valid_shape
+        lanes = pto.elements_per_vreg(dtype)
+
+        for row in range(0, valid_rows, 1):
+            remained = valid_cols
+            for col in range(0, valid_cols, lanes):
+                mask, remained = pto.make_mask(dtype, remained)
+                value = pto.vlds(src[row, col:])
+                result = vector_op(value, mask)
+                pto.vsts(result, dst[row, col:], mask)
+
+    return template
+
+
+def register_binary(*, op, name, vector_op, dtypes, has_tmp=False):
+    """Register a binary tile traversal, retaining an optional TileOp tmp operand."""
+
+    if has_tmp:
+
+        @tilelib.tile_template(
+            op=op,
+            target="a5",
+            name=name,
+            dtypes=dtypes,
+            constraints=_common_constraints("src0", "src1", "tmp", "dst"),
+            id=0,
+            loop_depth=2,
+            is_post_update=False,
+            tags=("elementwise", "binary"),
+        )
+        def template(src0: pto.Tile, src1: pto.Tile, tmp: pto.Tile, dst: pto.Tile):
+            _ = tmp
+            dtype = dst.dtype
+            valid_rows, valid_cols = dst.valid_shape
+            lanes = pto.elements_per_vreg(dtype)
+
+            for row in range(0, valid_rows, 1):
+                remained = valid_cols
+                for col in range(0, valid_cols, lanes):
+                    mask, remained = pto.make_mask(dtype, remained)
+                    lhs = pto.vlds(src0[row, col:])
+                    rhs = pto.vlds(src1[row, col:])
+                    result = vector_op(lhs, rhs, mask)
+                    pto.vsts(result, dst[row, col:], mask)
+
+        return template
+
+    @tilelib.tile_template(
+        op=op,
+        target="a5",
+        name=name,
+        dtypes=dtypes,
+        constraints=_common_constraints("src0", "src1", "dst"),
+        id=0,
+        loop_depth=2,
+        is_post_update=False,
+        tags=("elementwise", "binary"),
+    )
+    def template(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
+        dtype = dst.dtype
+        valid_rows, valid_cols = dst.valid_shape
+        lanes = pto.elements_per_vreg(dtype)
+
+        for row in range(0, valid_rows, 1):
+            remained = valid_cols
+            for col in range(0, valid_cols, lanes):
+                mask, remained = pto.make_mask(dtype, remained)
+                lhs = pto.vlds(src0[row, col:])
+                rhs = pto.vlds(src1[row, col:])
+                result = vector_op(lhs, rhs, mask)
+                pto.vsts(result, dst[row, col:], mask)
+
+    return template
+
+
+__all__ = ["register_binary", "register_unary"]

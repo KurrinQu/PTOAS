@@ -12,13 +12,27 @@ from importlib import import_module
 
 
 _TEMPLATE_MODULES = {
+    ("a5", "pto.tabs"): ".a5.tabs",
     ("a5", "pto.tadd"): ".a5.tadd",
+    ("a5", "pto.tand"): ".a5.tand",
     ("a5", "pto.tcolmax"): ".a5.tcolmax",
+    ("a5", "pto.tcolexpand"): ".a5.tcolexpand",
+    ("a5", "pto.tcolmin"): ".a5.tcolmin",
+    ("a5", "pto.tcolprod"): ".a5.tcolprod",
+    ("a5", "pto.tcolsum"): ".a5.tcolsum",
     ("a5", "pto.tdiv"): ".a5.tdiv",
     ("a5", "pto.tmax"): ".a5.tmax",
     ("a5", "pto.tmin"): ".a5.tmin",
     ("a5", "pto.tmul"): ".a5.tmul",
+    ("a5", "pto.tneg"): ".a5.tneg",
+    ("a5", "pto.tnot"): ".a5.tnot",
+    ("a5", "pto.tor"): ".a5.tor",
+    ("a5", "pto.trelu"): ".a5.trelu",
+    ("a5", "pto.trowexpand"): ".a5.trowexpand",
+    ("a5", "pto.tshl"): ".a5.tshl",
+    ("a5", "pto.tshr"): ".a5.tshr",
     ("a5", "pto.tsub"): ".a5.tsub",
+    ("a5", "pto.txor"): ".a5.txor",
 }
 
 

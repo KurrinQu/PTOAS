@@ -7,7 +7,8 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 """PTODSL TileLib templates for pto.tadd."""
 
-import ptodsl.tilelib as pto
+from ptodsl import pto
+import ptodsl.tilelib as tilelib
 
 from . import tbinop
 
@@ -22,16 +23,16 @@ def TAdd(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, version):
     tbinop.BinaryInstr(dst, src0, src1, AddOp, version)
 
 
-@pto.tile_template(
+@tilelib.tile_template(
     op="pto.tadd",
     target="a5",
     name="template_tadd_2d_no_post_update",
     id=0,
     constraints=[
-        pto.check_type(("f32", "f32", "f32")),
-        pto.check_memory_space("ub"),
-        pto.check_layout("row_major"),
-        pto.require_contiguous(False),
+        tilelib.check_type(("f32", "f32", "f32")),
+        tilelib.check_memory_space("ub"),
+        tilelib.check_layout("row_major"),
+        tilelib.require_contiguous(False),
     ],
     priority=0,
     loop_depth=2,
@@ -43,16 +44,16 @@ def template_tadd_2d_no_post_update(src0: pto.Tile, src1: pto.Tile, dst: pto.Til
     TAdd(dst, src0, src1, tbinop.VFIMPL_2D_NO_POST_UPDATE)
 
 
-@pto.tile_template(
+@tilelib.tile_template(
     op="pto.tadd",
     target="a5",
     name="template_tadd_1d_no_post_update",
     id=1,
     constraints=[
-        pto.check_type(("f32", "f32", "f32")),
-        pto.check_memory_space("ub"),
-        pto.check_layout("row_major"),
-        pto.require_contiguous(True),
+        tilelib.check_type(("f32", "f32", "f32")),
+        tilelib.check_memory_space("ub"),
+        tilelib.check_layout("row_major"),
+        tilelib.require_contiguous(True),
     ],
     priority=0,
     loop_depth=1,
@@ -64,16 +65,16 @@ def template_tadd_1d_no_post_update(src0: pto.Tile, src1: pto.Tile, dst: pto.Til
     TAdd(dst, src0, src1, tbinop.VFIMPL_1D_NO_POST_UPDATE)
 
 
-@pto.tile_template(
+@tilelib.tile_template(
     op="pto.tadd",
     target="a5",
     name="template_tadd_2d_post_update",
     id=2,
     constraints=[
-        pto.check_type(("f32", "f32", "f32")),
-        pto.check_memory_space("ub"),
-        pto.check_layout("row_major"),
-        pto.require_contiguous(False),
+        tilelib.check_type(("f32", "f32", "f32")),
+        tilelib.check_memory_space("ub"),
+        tilelib.check_layout("row_major"),
+        tilelib.require_contiguous(False),
     ],
     priority=0,
     loop_depth=2,
@@ -85,16 +86,16 @@ def template_tadd_2d_post_update(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
     TAdd(dst, src0, src1, tbinop.VFIMPL_2D_POST_UPDATE)
 
 
-@pto.tile_template(
+@tilelib.tile_template(
     op="pto.tadd",
     target="a5",
     name="template_tadd_1d_post_update",
     id=3,
     constraints=[
-        pto.check_type(("f32", "f32", "f32")),
-        pto.check_memory_space("ub"),
-        pto.check_layout("row_major"),
-        pto.require_contiguous(True),
+        tilelib.check_type(("f32", "f32", "f32")),
+        tilelib.check_memory_space("ub"),
+        tilelib.check_layout("row_major"),
+        tilelib.require_contiguous(True),
     ],
     priority=0,
     loop_depth=1,

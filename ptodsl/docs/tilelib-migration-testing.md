@@ -23,7 +23,7 @@ changes.
 | Milestone | Test | Purpose |
 |---|---|---|
 | Legacy baseline | `expand_tile_op_tilelang_tsub.pto` | Confirms the default TileLang backend still works |
-| PTODSL TileLib package | `test_tilelib_constraints.py`, `test_tilelib_elementwise.py`, `test_tilelib_render.py`, `test_tilelib_select.py` | Covers legality constraints, template registration and selection, and rendering |
+| PTODSL TileLib package | `test_tilelib_catalog.py`, `test_tilelib_constraints.py`, `test_tilelib_elementwise.py`, `test_tilelib_render.py`, `test_tilelib_select.py` | Covers the ported template catalog, legality constraints, template registration and selection, and rendering |
 | PTODSL daemon | `test_tilelib_daemon.py` | Covers the Unix-socket protocol, metadata, rendering, candidate IDs, and caching |
 | PTOAS daemon selection | `expand_tile_op_ptodsl_tsub.pto` | Confirms `--tile-lib-backend=ptodsl` starts and uses the PTODSL daemon |
 | Separate metadata/render passes | `expand_tile_op_ptodsl_tadd.pto` | Confirms `InsertTemplateAttributes` records compact metadata before `ExpandTileOp` renders |
@@ -41,6 +41,7 @@ Run the layers individually:
 
 ```bash
 python3 ptodsl/tests/test_tilelib_constraints.py
+python3 ptodsl/tests/test_tilelib_catalog.py
 python3 ptodsl/tests/test_tilelib_elementwise.py
 python3 ptodsl/tests/test_tilelib_render.py
 python3 ptodsl/tests/test_tilelib_select.py

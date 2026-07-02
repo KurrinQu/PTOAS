@@ -39,6 +39,10 @@ class TileLibConstraintTest(unittest.TestCase):
         with self.assertRaises(NoMatchingTemplate):
             select("pto.tcolmax", "a5", _specs(dst_blayout="col_major"))
 
+    def test_rejected_when_not_none_box(self):
+        with self.assertRaises(NoMatchingTemplate):
+            select("pto.tcolmax", "a5", _specs(dst_slayout="row_major"))
+
     def test_legal_colmax_renders_structured_mlir(self):
         chosen = select("pto.tcolmax", "a5", _specs())
         mlir = chosen.specialize(**_specs()).mlir_text()

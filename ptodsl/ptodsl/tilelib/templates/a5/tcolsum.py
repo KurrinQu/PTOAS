@@ -5,17 +5,17 @@
 # THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
-"""PTODSL TileLib template for pto.tcolmax."""
+"""PTODSL TileLib template for the basic pto.tcolsum form."""
 
 from ptodsl import pto
 
 from ._reductions import register_column_reduction
 
 
-template_tcolmax = register_column_reduction(
-    op="pto.tcolmax",
-    name="template_tcolmax",
-    vector_op=pto.vmax,
+template_tcolsum = register_column_reduction(
+    op="pto.tcolsum",
+    name="template_tcolsum",
+    vector_op=pto.vadd,
     dtypes=[
         ("i8", "i8"),
         ("i16", "i16"),

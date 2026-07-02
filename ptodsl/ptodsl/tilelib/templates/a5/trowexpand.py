@@ -5,31 +5,45 @@
 # THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
-"""PTODSL TileLib template for pto.tdiv — default precision only.
-
-Ported from lib/TileOps/tdiv_template.py, but only the default-precision branch (plain
-pto.vdiv). The high-precision (IEEE-754) path is deferred: it needs a `get_op_attr`
-bridge to read the `precisionType` context attr the daemon already receives, plus the
-div_hp algorithm — tracked as a follow-up.
-"""
+"""PTODSL TileLib template for pto.trowexpand."""
 
 from ptodsl import pto
 import ptodsl.tilelib as tilelib
 
 
+def _valid_row_expand(src_valid_shape=(), dst_valid_shape=(), **_):
+    return (
+        len(src_valid_shape) == 2
+        and len(dst_valid_shape) == 2
+        and src_valid_shape[0] == dst_valid_shape[0]
+        and src_valid_shape[1] >= 1
+    )
+
+
 @tilelib.tile_template(
-    op="pto.tdiv",
+    op="pto.trowexpand",
     target="a5",
-    name="template_tdiv",
-    dtypes=[("f32", "f32", "f32")],
-    layouts=["row_major"],
-    memory_spaces=["ub"],
-    priority=0,
+    name="template_trowexpand",
+    dtypes=[
+        ("i8", "i8"),
+        ("i16", "i16"),
+        ("i32", "i32"),
+        ("f16", "f16"),
+        ("bf16", "bf16"),
+        ("f32", "f32"),
+    ],
+    constraints=[
+        tilelib.check_memory_space("ub"),
+        tilelib.check_layout("row_major"),
+        tilelib.check_s_layout("none_box"),
+        _valid_row_expand,
+    ],
     id=0,
     loop_depth=2,
     is_post_update=False,
+    tags=("broadcast", "row"),
 )
-def template_tdiv(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
+def template_trowexpand(src: pto.Tile, dst: pto.Tile):
     dtype = dst.dtype
     valid_rows, valid_cols = dst.valid_shape
     lanes = pto.elements_per_vreg(dtype)
@@ -38,7 +52,6 @@ def template_tdiv(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
         remained = valid_cols
         for col in range(0, valid_cols, lanes):
             mask, remained = pto.make_mask(dtype, remained)
-            lhs = pto.vlds(src0[row, col:])
-            rhs = pto.vlds(src1[row, col:])
-            divided = pto.vdiv(lhs, rhs, mask)
-            pto.vsts(divided, dst[row, col:], mask)
+            value = pto.vlds(src[row, :])
+            broadcast = pto.vdup(value, mask)
+            pto.vsts(broadcast, dst[row, col:], mask)
