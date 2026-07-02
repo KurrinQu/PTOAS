@@ -7,7 +7,8 @@
 
 // Multi-result textual SSA names use the `%name:N =` MLIR syntax. The textual
 // hint parser must still consume that op so later op-result hints do not shift
-// onto the wrong operations.
+// onto the wrong operations, and the lowered EmitC temporaries must preserve
+// per-result provenance instead of collapsing every comment onto `%name#0`.
 
 module {
   func.func @multi_result_hint_alignment(%pred: i1, %lhs: i32, %rhs: i32) -> i32 {
@@ -16,29 +17,14 @@ module {
     } else {
       scf.yield %rhs, %lhs : i32, i32
     }
-    %sum = func.call @add_helper(%pair#0, %pair#1) : (i32, i32) -> i32
-    cf.cond_br %pred, ^bb1, ^bb2
-
-  ^bb1:
-    %scaled = func.call @mul_helper(%sum, %pair#0) : (i32, i32) -> i32
-    cf.br ^bb3(%scaled : i32)
-
-  ^bb2:
-    %scaled_else = func.call @mul_helper(%sum, %pair#0) : (i32, i32) -> i32
-    cf.br ^bb3(%scaled_else : i32)
-
-  ^bb3(%merged: i32):
-    %ret = arith.addi %merged, %sum : i32
+    %sum0 = func.call @add_helper(%pair#0, %pair#0) : (i32, i32) -> i32
+    %sum1 = func.call @add_helper(%pair#1, %pair#1) : (i32, i32) -> i32
+    %ret = arith.addi %sum0, %sum1 : i32
     return %ret : i32
   }
 
   func.func private @add_helper(%a: i32, %b: i32) -> i32 {
     %r = arith.addi %a, %b : i32
-    return %r : i32
-  }
-
-  func.func private @mul_helper(%a: i32, %b: i32) -> i32 {
-    %r = arith.muli %a, %b : i32
     return %r : i32
   }
 }
@@ -47,8 +33,8 @@ module {
 // CHECK-NOT: PTOAS_NAME_HINTS
 // CHECK-NOT: PTOAS_PROVENANCE
 // CHECK: // pto: %pair#0
-// CHECK-NEXT: int32_t [[PAIR:v[0-9]+]] = v1 ? v2 : v3;
-// CHECK: // pto: %sum
-// CHECK-NEXT: int32_t [[SUM:v[0-9]+]] = add_helper([[PAIR]], v1 ? v3 : v2);
+// CHECK-NEXT: int32_t [[PAIR0:v[0-9]+]] = v1 ? v2 : v3;
+// CHECK: // pto: %pair#1
+// CHECK-NEXT: int32_t [[PAIR1:v[0-9]+]] = v1 ? v3 : v2;
 // CHECK: // pto: %ret
-// CHECK-NEXT: return (int32_t) ((uint32_t) mul_helper([[SUM]], [[PAIR]]) + (uint32_t) [[SUM]]);
+// CHECK-NEXT: return (int32_t) ((uint32_t) add_helper([[PAIR0]], [[PAIR0]]) + (uint32_t) add_helper([[PAIR1]], [[PAIR1]]));

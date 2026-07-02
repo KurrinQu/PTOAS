@@ -815,6 +815,25 @@ static SmallVector<std::string, 4> getRawResultProvenance(Operation *op) {
   return hints;
 }
 
+static SmallVector<std::string, 4> getRawLocationProvenance(Location loc) {
+  SmallVector<std::string, 4> hints;
+  appendRawLocationProvenance(loc, hints);
+  hints.erase(std::remove_if(hints.begin(), hints.end(),
+                             [](const std::string &hint) {
+                               return hint.empty();
+                             }),
+              hints.end());
+  return hints;
+}
+
+static Location getIndexedRawProvenanceLoc(Location fallbackLoc, unsigned index) {
+  SmallVector<std::string, 4> hints = getRawLocationProvenance(fallbackLoc);
+  if (index >= hints.size())
+    return fallbackLoc;
+  return NameLoc::get(StringAttr::get(fallbackLoc.getContext(), hints[index]),
+                      fallbackLoc);
+}
+
 static Location attachLocationNameHints(Location baseLoc,
                                         llvm::ArrayRef<std::string> hints,
                                         MLIRContext *context) {
@@ -853,6 +872,61 @@ static void applyOperationResultNameHints(Operation *op,
     return;
 
   op->setLoc(attachLocationNameHints(op->getLoc(), limitedHints, op->getContext()));
+}
+
+static void splitDerivedSingleResultProvenanceLocsInRegion(Region &region);
+
+static void splitDerivedSingleResultProvenanceLocsInBlock(Block &block) {
+  SmallVector<Operation *, 16> ops;
+  ops.reserve(block.getOperations().size());
+  for (Operation &op : block)
+    ops.push_back(&op);
+
+  for (size_t i = 0; i < ops.size();) {
+    Operation *op = ops[i];
+    if (op->getNumResults() != 1) {
+      ++i;
+      continue;
+    }
+
+    SmallVector<std::string, 4> hints = getRawLocationProvenance(op->getLoc());
+    if (hints.size() <= 1) {
+      ++i;
+      continue;
+    }
+
+    size_t runEnd = i + 1;
+    while (runEnd < ops.size() && ops[runEnd]->getNumResults() == 1 &&
+           ops[runEnd]->getLoc() == op->getLoc()) {
+      ++runEnd;
+    }
+
+    size_t runSize = runEnd - i;
+    if (runSize == hints.size()) {
+      Location sharedLoc = op->getLoc();
+      for (size_t j = 0; j < runSize; ++j)
+        ops[i + j]->setLoc(getIndexedRawProvenanceLoc(sharedLoc, j));
+    }
+
+    i = runEnd;
+  }
+
+  for (Operation &op : block) {
+    for (Region &region : op.getRegions())
+      splitDerivedSingleResultProvenanceLocsInRegion(region);
+  }
+}
+
+static void splitDerivedSingleResultProvenanceLocsInRegion(Region &region) {
+  for (Block &block : region)
+    splitDerivedSingleResultProvenanceLocsInBlock(block);
+}
+
+static void splitDerivedSingleResultProvenanceLocs(Operation *root) {
+  if (!root)
+    return;
+  for (Region &region : root->getRegions())
+    splitDerivedSingleResultProvenanceLocsInRegion(region);
 }
 
 static void collectNonEntryBlocksInSourceOrder(
@@ -2811,6 +2885,8 @@ int mlir::pto::compilePTOASModule(
   if (failed(emitSharedPreBackendSeamIR(*module, ptoSeamIRFile)))
     return 1;
 
+  splitDerivedSingleResultProvenanceLocs(module.get());
+
   PassManager emitcPM(module->getContext());
   emitcPM.enableVerifier();
   if (arch == "a3") {
@@ -2830,6 +2906,7 @@ int mlir::pto::compilePTOASModule(
   }
 
   applyFunctionBlockArgNameHintsToEmitC(*module, functionBlockArgHints);
+  splitDerivedSingleResultProvenanceLocs(module.get());
   dropEmptyEmitCExpressions(module.get());
   materializeControlFlowOperands(module.get());
   normalizeEmitCIntegerAttrsForCppEmission(module.get());
