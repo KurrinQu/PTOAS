@@ -75,7 +75,7 @@ module {
 
 // EMITC: AICORE void const_preload_dyn_loop_select
 // EMITC: for (
-// EMITC: Tile<TileType::Vec{{.*}}> [[TILE:[_A-Za-z][_A-Za-z0-9]*]];{{.*}}// pto: %slot
+// EMITC: Tile<TileType::Vec{{.*}}> [[TILE:[_A-Za-z][_A-Za-z0-9]*]];
 // EMITC: uint64_t [[ADDR:[_A-Za-z][_A-Za-z0-9]*]] = (uint64_t)
 // EMITC-NEXT: TASSIGN([[TILE]], [[ADDR]]);
 // EMITC: TLOAD([[TILE]],

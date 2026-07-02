@@ -9,8 +9,8 @@
 // RUN: ptoas %s 2>&1 | FileCheck %s
 
 // Stack-local 1D array: declare, set by dynamic index, get by another dynamic
-// index, set the read-back. Expected: lowers to `int32_t a[16];` plus
-// `a[i] = v;` / `a[i] = a[j];` in the emitted C++.
+// index, set the read-back. Expected: the get is snapshotted before the later
+// set reuses the value.
 
 module {
   func.func @local_array_1d(%i : index, %j : index, %v : i32) {

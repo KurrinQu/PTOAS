@@ -1552,14 +1552,21 @@ static void materializeControlFlowOperands(Operation *rootOp) {
       if (!initAttr)
         continue;
 
-      Location valueLoc = value.getLoc();
-
-      Value tmp =
-          builder.create<emitc::VariableOp>(valueLoc, value.getType(),
-                                            initAttr)
-              .getResult();
-      builder.create<emitc::AssignOp>(valueLoc, tmp, value);
-      operand.set(tmp);
+      Value tmp = builder
+                      .create<emitc::VariableOp>(
+                          op->getLoc(), getEmitCVariableStorageType(value.getType()),
+                          initAttr)
+                      .getResult();
+      builder.create<emitc::AssignOp>(op->getLoc(), tmp, value);
+      if (auto lvalueTy = dyn_cast<emitc::LValueType>(tmp.getType())) {
+        Value loaded = builder
+                           .create<emitc::LoadOp>(op->getLoc(),
+                                                  lvalueTy.getValueType(), tmp)
+                           .getResult();
+        operand.set(loaded);
+      } else {
+        operand.set(tmp);
+      }
     }
   }
 }
@@ -3492,15 +3499,30 @@ int mlir::pto::compilePTOASModule(
                                  context.getCANNVersionOrDefault());
   }
 
-  if (arch == "a3") {
-    pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));
-  } else {
-    pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A5));
-  }
-  pm.addPass(emitc::createFormExpressionsPass());
-  pm.addPass(mlir::createCSEPass());
-
   if (failed(pm.run(*module))) {
+    llvm::errs() << "Error: Pass execution failed.\n";
+    return 1;
+  }
+
+  if (ptoPrintSeamIR)
+    printSharedPreBackendSeamIR(*module);
+  if (failed(emitSharedPreBackendSeamIR(*module, ptoSeamIRFile)))
+    return 1;
+
+  PassManager emitcPM(module->getContext());
+  emitcPM.enableVerifier();
+  if (arch == "a3") {
+    emitcPM.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));
+  } else {
+    emitcPM.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A5));
+  }
+  emitcPM.addPass(emitc::createFormExpressionsPass());
+  emitcPM.addPass(mlir::createCSEPass());
+  if (failed(applyConfiguredPassManagerCLOptions(
+          emitcPM, "EmitC backend pipeline")))
+    return 1;
+
+  if (failed(emitcPM.run(*module))) {
     llvm::errs() << "Error: Pass execution failed.\n";
     return 1;
   }
@@ -3508,6 +3530,7 @@ int mlir::pto::compilePTOASModule(
   applyFunctionBlockArgNameHintsToEmitC(*module, functionBlockArgHints);
   dropEmptyEmitCExpressions(module.get());
   materializeControlFlowOperands(module.get());
+  normalizeEmitCIntegerAttrsForCppEmission(module.get());
   if (failed(reorderEmitCFunctions(module.get()))) {
     llvm::errs() << "Error: Failed to order emitted functions for C++ emission.\n";
     return 1;
