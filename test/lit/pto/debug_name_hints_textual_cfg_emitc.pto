@@ -28,4 +28,5 @@ module {
 // CHECK-LABEL: AICORE int32_t textual_name_hints_cfg_helper(
 // CHECK: // pto: %then_value
 // CHECK: // pto: %else_value
+// CHECK-NOT: // pto: %merged_value
 // CHECK: // pto: %0

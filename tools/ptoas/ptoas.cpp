@@ -946,46 +946,25 @@ static void applyFunctionBlockArgNameHintsToEmitC(
 
     SmallVector<Block *, 8> nonEntryBlocks;
     collectNonEntryBlocksInSourceOrder(func.getOperation(), nonEntryBlocks);
-    for (size_t blockIndex = 0,
-                e = std::min(nonEntryBlocks.size(), it->second.size());
-         blockIndex < e; ++blockIndex) {
-      Block *block = nonEntryBlocks[blockIndex];
-      auto argHints = it->second[blockIndex];
-      for (auto [argIndex, arg] : llvm::enumerate(block->getArguments())) {
-        if (argIndex < argHints.size())
-          applyValueNameHints(arg, llvm::ArrayRef<std::string>{argHints[argIndex]});
+    if (nonEntryBlocks.size() != it->second.size())
+      continue;
+
+    bool shapeMatches = true;
+    for (auto [blockIndex, block] : llvm::enumerate(nonEntryBlocks)) {
+      if (block->getNumArguments() != it->second[blockIndex].size()) {
+        shapeMatches = false;
+        break;
       }
     }
+    if (!shapeMatches)
+      continue;
+
+    for (auto [blockIndex, block] : llvm::enumerate(nonEntryBlocks)) {
+      const auto &argHints = it->second[blockIndex];
+      for (auto [argIndex, arg] : llvm::enumerate(block->getArguments()))
+        applyValueNameHints(arg, llvm::ArrayRef<std::string>{argHints[argIndex]});
+    }
   }
-}
-
-[[maybe_unused]] static SmallVector<std::string, 4>
-getResultNameHints(Operation *op) {
-  SmallVector<std::string, 4> hints;
-  if (!op || op->getNumResults() == 0)
-    return hints;
-
-  appendLocationNameHints(op->getLoc(), hints);
-  if (hints.empty())
-    return hints;
-
-  hints.erase(std::remove_if(hints.begin(), hints.end(),
-                             [](const std::string &name) {
-                               return name.empty();
-                             }),
-              hints.end());
-  if (hints.empty())
-    return hints;
-
-  if (op->getNumResults() == 1) {
-    if (hints.size() > 1)
-      hints.resize(1);
-    return hints;
-  }
-
-  if (hints.size() > op->getNumResults())
-    hints.resize(op->getNumResults());
-  return hints;
 }
 
 static SmallVector<std::string, 4> getValueNameHints(Value value) {
@@ -2026,78 +2005,6 @@ parseNameHintMarker(llvm::StringRef markerBody) {
   if (hints.empty())
     return std::nullopt;
   return hints;
-}
-
-[[maybe_unused]] static std::optional<llvm::SmallVector<std::string, 4>>
-findNextHintedGeneratedParams(llvm::StringRef snippet) {
-  size_t lParenPos = snippet.find('(');
-  if (lParenPos == llvm::StringRef::npos)
-    return std::nullopt;
-
-  int parenDepth = 0;
-  size_t rParenPos = llvm::StringRef::npos;
-  for (size_t i = lParenPos; i < snippet.size(); ++i) {
-    char c = snippet[i];
-    if (c == '(') {
-      ++parenDepth;
-    } else if (c == ')') {
-      --parenDepth;
-      if (parenDepth == 0) {
-        rParenPos = i;
-        break;
-      }
-    }
-  }
-  if (rParenPos == llvm::StringRef::npos)
-    return std::nullopt;
-
-  llvm::StringRef params = snippet.slice(lParenPos + 1, rParenPos);
-  llvm::SmallVector<std::string, 4> names;
-  size_t partBegin = 0;
-  int angleDepth = 0;
-  int bracketDepth = 0;
-  parenDepth = 0;
-  for (size_t i = 0; i <= params.size(); ++i) {
-    char c = i < params.size() ? params[i] : ',';
-    if (c == '<') {
-      ++angleDepth;
-    } else if (c == '>' && angleDepth > 0) {
-      --angleDepth;
-    } else if (c == '[') {
-      ++bracketDepth;
-    } else if (c == ']' && bracketDepth > 0) {
-      --bracketDepth;
-    } else if (c == '(') {
-      ++parenDepth;
-    } else if (c == ')' && parenDepth > 0) {
-      --parenDepth;
-    }
-
-    bool atSeparator =
-        (i == params.size()) ||
-        (c == ',' && angleDepth == 0 && bracketDepth == 0 && parenDepth == 0);
-    if (!atSeparator)
-      continue;
-
-    llvm::StringRef param = params.slice(partBegin, i).trim();
-    partBegin = i + 1;
-    if (param.empty())
-      continue;
-
-    size_t end = param.size();
-    while (end > 0 && std::isspace(static_cast<unsigned char>(param[end - 1])))
-      --end;
-    size_t begin = end;
-    while (begin > 0 && isCppIdentifierChar(param[begin - 1]))
-      --begin;
-    llvm::StringRef token = param.slice(begin, end);
-    if (isGeneratedValueName(token))
-      names.push_back(token.str());
-  }
-
-  if (names.empty())
-    return std::nullopt;
-  return names;
 }
 
 static void stripHintMarkersWithPrefix(std::string &cpp,
