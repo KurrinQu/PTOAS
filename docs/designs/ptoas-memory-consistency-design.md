@@ -57,14 +57,23 @@ pto.cmo.cacheinvalid %partition_view
 
 `dcci` 是 cache maintenance 指令，不是 pipe drain，也不是 GM visibility fence。
 
-当前 CCE `dcci` 有两个常用参数维度：
+公开 AscendC 手册说明的 cache maintenance 接口是
+`DataCacheCleanAndInvalid<T, CacheLine, DcciDst>(...)`。其中：
 
-- 第二个参数表示处理粒度，常见值是 `cache_line_t::SINGLE_CACHE_LINE` 或
-  `cache_line_t::ENTIRE_DATA_CACHE`。旧写法中的 `SINGLE_CACHE_LINE` 和
-  `ENTIRE_DATA_CACHE` 是同一组枚举值的未限定名称。
-- 第三个参数表示处理目标，常见值是 `dcci_dst_t::CACHELINE_ALL`、
-  `dcci_dst_t::CACHELINE_OUT` 或 `dcci_dst_t::CACHELINE_ATOMIC`。旧写法中的
-  `CACHELINE_OUT` 是这组枚举值的未限定名称。
+- `CacheLine::SINGLE_CACHE_LINE` 表示只处理传入地址所在 cache line。
+- `CacheLine::ENTIRE_DATA_CACHE` 表示处理整个 Data Cache。
+- `DcciDst::CACHELINE_OUT` 表示保证 Data Cache 与 Global Memory 的一致性。
+
+PTOAS EmitC 目前没有通过 AscendC tensor API 生成 `DataCacheCleanAndInvalid`，而是直接
+生成 CCE 低层 builtin `dcci(...)`。CANN 随包的 CCE builtin header 中对应的低层枚举是
+`cache_line_t` 和 `dcci_dst_t`，因此当前生成代码使用：
+
+- `cache_line_t::ENTIRE_DATA_CACHE` 表达 whole-cache 粒度。
+- `dcci_dst_t::CACHELINE_OUT` 表达 OUT 目标。
+
+也就是说，`DcciDst::CACHELINE_OUT` 是公开 AscendC API 层的手册名称，
+`dcci_dst_t::CACHELINE_OUT` 是 PTOAS 当前直接调用 CCE builtin 时使用的低层实现名称，
+不是对外暴露的 PTO IR 契约。
 
 当前 public IR `pto.cmo.cacheinvalid all #pto.address_space<gm>` 使用 two-argument
 whole-cache invalidate 形式：
