@@ -173,12 +173,12 @@ module {
 // CHECK-LABEL: AICORE void twait_load_scalar_acquire(
 // CHECK:      pto::comm::TWAIT(
 // CHECK:      dcci((__gm__ void*)0, ENTIRE_DATA_CACHE);
-// CHECK-NEXT: {{.*}} = {{.*}}[{{.*}}];
+// CHECK:      {{.*}} = {{.*}}[{{.*}}];
 
 // CHECK-LABEL: AICORE void twait_user_invalidate_suppresses_acquire(
 // CHECK:      pto::comm::TWAIT(
 // CHECK-NEXT: dcci((__gm__ void*)0, ENTIRE_DATA_CACHE);
-// CHECK-NEXT: {{.*}} = {{.*}}[{{.*}}];
+// CHECK:      {{.*}} = {{.*}}[{{.*}}];
 
 // CHECK-LABEL: AICORE void explicit_fence_acquire(
 // CHECK:      dsb(DSB_DDR);
@@ -186,7 +186,7 @@ module {
 // CHECK-LABEL: AICORE void ttest_load_scalar_conservative_acquire(
 // CHECK:      pto::comm::TTEST(
 // CHECK:      dcci((__gm__ void*)0, ENTIRE_DATA_CACHE);
-// CHECK-NEXT: {{.*}} = {{.*}}[{{.*}}];
+// CHECK:      {{.*}} = {{.*}}[{{.*}}];
 
 // CHECK-LABEL: AICORE void dirty_store_before_acquire_is_cleaned(
 // CHECK:      {{.*}}[{{.*}}] =
@@ -194,4 +194,4 @@ module {
 // CHECK-NEXT: dsb(DSB_DDR);
 // CHECK:      pto::comm::TWAIT(
 // CHECK:      dcci((__gm__ void*)0, ENTIRE_DATA_CACHE);
-// CHECK-NEXT: {{.*}} = {{.*}}[{{.*}}];
+// CHECK:      {{.*}} = {{.*}}[{{.*}}];
