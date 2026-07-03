@@ -39,6 +39,8 @@ from ._surface_types import (   # noqa: F401
     BarrierType,
     Pipe,
     MemorySpace,
+    BLayout,
+    SLayout,
     MaskPattern,
     CmpMode,
     PredicatePart,
@@ -77,6 +79,7 @@ from ._tile_namespace import tile  # noqa: F401
 # ── Operations ────────────────────────────────────────────────────────────────
 from ._ops import (             # noqa: F401
     const,
+    get_op_attr,
     castptr, addptr,
     vlds, vldas, vldus, vldsx2, vsts, vstsx2,
     init_align,
@@ -100,6 +103,9 @@ from ._ops import (             # noqa: F401
     vcmax, vcadd, vcmin, vdup, vexpdif,
     vexp, vln, vsqrt, vabs, vneg, vrec, vrsqrt, vrelu, vnot,
     vcgmax, vcgadd, vcgmin, vcpadd,
+    vtrc, vprelu, vintlv, vdintlv, vselr,
+    vci, vaddc, vaddcs, vmull, vbitsort, vmrgsort4,
+    copy_ubuf_to_ubuf, load_scalar, store_scalar,
     vadds, vsubs, vmuls, vmaxs, vmins, vlrelu,
     vaxpy, vaddrelu, vsubrelu,
     vsel,
@@ -167,6 +173,7 @@ i64 = int64
 mask_b8 = mask_type("b8")
 mask_b16 = mask_type("b16")
 mask_b32 = mask_type("b32")
+PAT = MaskPattern
 
 
 def __getattr__(name):

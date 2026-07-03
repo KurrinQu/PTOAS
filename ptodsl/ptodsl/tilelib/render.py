@@ -33,7 +33,7 @@ def select_and_specialize(op: str, target: str, tile_specs: dict,
                           candidate_id: str | None = None):
     # Registry selection lazily imports only the module for this (target, op).
     descriptor = _registry.select(op, target, tile_specs, context_attrs, candidate_id)
-    return descriptor.specialize(**tile_specs)
+    return descriptor.specialize(context_attrs=context_attrs or {}, **tile_specs)
 
 
 def render_best(op: str, target: str, tile_specs: dict,
@@ -46,6 +46,7 @@ def render_best(op: str, target: str, tile_specs: dict,
 
 _DTYPES = {
     "f32", "f16", "bf16",
+    "f8e4m3", "f8e5m2", "hif8", "f4e1m2x2", "f4e2m1x2",
     "i64", "i32", "i16", "i8",
     "si64", "si32", "si16", "si8",
     "ui64", "ui32", "ui16", "ui8",

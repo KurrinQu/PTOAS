@@ -1,0 +1,71 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+"""Shared PTODSL implementations for row arg-reductions."""
+
+from ptodsl import pto
+import ptodsl.tilelib as tilelib
+
+from ._common import NUMERIC_DTYPES, element_store_dist
+
+
+def _single_output_col(dst_valid_shape=(), **_):
+    return len(dst_valid_shape) == 2 and dst_valid_shape[1] == 1
+
+
+def register_row_arg(*, op, name, reduce_op, cmp_mode):
+    @tilelib.tile_template(
+        op=op,
+        target="a5",
+        name=name,
+        dtypes=[(dtype, dtype, "i32") for dtype in NUMERIC_DTYPES],
+        constraints=[
+            tilelib.check_memory_space("ub"),
+            tilelib.check_layout("row_major"),
+            tilelib.check_s_layout("none_box"),
+            _single_output_col,
+        ],
+        id=0,
+        loop_depth=2,
+        is_post_update=False,
+        tags=("reduction", "row", "arg"),
+    )
+    def template(src: pto.Tile, tmp: pto.Tile, dst: pto.Tile):
+        _ = tmp
+        src_dtype = src.dtype
+        idx_dtype = dst.dtype
+        valid_rows, valid_cols = src.valid_shape
+        lanes = pto.elements_per_vreg(src_dtype)
+        src_one_mask, _ = pto.make_mask(src_dtype, 1)
+        idx_one_mask, _ = pto.make_mask(idx_dtype, 1)
+
+        for row in range(0, valid_rows, 1):
+            first_mask, remained = pto.make_mask(src_dtype, valid_cols)
+            first = pto.vlds(src[row, 0:])
+            first_reduced = reduce_op(first, first_mask)
+            zero_src = pto.vmuls(first_reduced, 0, src_one_mask)
+            val_acc, idx_acc_src = pto.vdintlv(first_reduced, zero_src)
+            idx_acc = pto.vbitcast(idx_acc_src, idx_dtype)
+
+            for col in range(lanes, valid_cols, lanes):
+                mask, remained = pto.make_mask(src_dtype, remained)
+                value = pto.vlds(src[row, col:])
+                reduced = reduce_op(value, mask)
+                val, idx_src = pto.vdintlv(reduced, zero_src)
+                idx = pto.vbitcast(idx_src, idx_dtype)
+                idx = pto.vadds(idx, col, idx_one_mask)
+                cmp = pto.vcmp(val_acc, val, src_one_mask, cmp_mode)
+                cmp_idx = pto.pbitcast(cmp, pto.mask_b32)
+                val_acc = pto.vsel(val, val_acc, cmp)
+                idx_acc = pto.vsel(idx, idx_acc, cmp_idx)
+
+            pto.vsts(idx_acc, dst[row, 0:], idx_one_mask, dist=element_store_dist(idx_dtype))
+
+    return template
+
+
+__all__ = ["register_row_arg"]

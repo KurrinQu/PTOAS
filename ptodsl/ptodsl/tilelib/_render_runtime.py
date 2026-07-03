@@ -24,6 +24,7 @@ engine.
 from __future__ import annotations
 
 import inspect
+from dataclasses import dataclass
 
 from .metadata import ScalarSpec, TileSpec, scalar_descriptor
 from .._ast_rewrite import rewrite_jit_function
@@ -40,6 +41,12 @@ from mlir.ir import Attribute, InsertionPoint, Location, Module, StringAttr, Uni
 
 
 # ── tile handle handed to the template body ────────────────────────────────────────
+
+@dataclass(frozen=True)
+class _TemplateTileConfig:
+    b_layout: str
+    s_layout: str
+
 
 class _TemplateTile(TileValue):
     """Engine ``TileValue`` with the template-author alias ``element_type`` and forced
@@ -64,22 +71,31 @@ class _TemplateTile(TileValue):
         # Force the dynamic valid-shape ops to match the tilelang render.
         self.static_valid_shape = None
         self._valid_shape._cache.clear()
+        self._template_config = _TemplateTileConfig(
+            b_layout=spec.b_layout,
+            s_layout=spec.s_layout,
+        )
+        self.pad_value = getattr(spec, "pad_value", "Null")
 
     @property
     def element_type(self):
         return self.dtype
 
+    @property
+    def config(self):
+        return self._template_config
+
 
 # ── tracing runtime ────────────────────────────────────────────────────────────────
 
 class _TemplateTrace(TracingRuntime):
-    def __init__(self, descriptor, tile_specs: dict):
+    def __init__(self, descriptor, tile_specs: dict, context_attrs: dict | None = None):
         super().__init__(
             KernelModuleSpec(
                 function_name=descriptor.name,
                 target_arch=descriptor.target,
                 kernel_kind="vector",
-                mode="auto",
+                mode="explicit",
                 module_style=ModuleStyle.NESTED,
                 source_file=inspect.getsourcefile(descriptor.py_fn) or inspect.getfile(descriptor.py_fn),
                 source_line=getattr(descriptor.py_fn.__code__, "co_firstlineno", None),
@@ -87,6 +103,7 @@ class _TemplateTrace(TracingRuntime):
         )
         self.descriptor = descriptor
         self.operand_specs = tile_specs
+        self.context_attrs = dict(context_attrs or {})
         self._ordered_specs: list = []
         self._signature_parameters = tuple(inspect.signature(descriptor.py_fn).parameters.items())
 

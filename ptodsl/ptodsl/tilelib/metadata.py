@@ -17,8 +17,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .._types import (
+    f4e1m2x2 as _f4e1m2x2,
+    f4e2m1x2 as _f4e2m1x2,
+    f8e4m3 as _f8e4m3,
+    f8e5m2 as _f8e5m2,
     float16 as _float16,
     float32 as _float32,
+    hif8 as _hif8,
     int8 as _int8,
     int16 as _int16,
     int32 as _int32,
@@ -63,6 +68,11 @@ ui32 = ScalarType("ui32")
 ui16 = ScalarType("ui16")
 ui8 = ScalarType("ui8")
 ui64 = ScalarType("ui64")
+f8e4m3 = ScalarType("f8e4m3")
+f8e5m2 = ScalarType("f8e5m2")
+hif8 = ScalarType("hif8")
+f4e1m2x2 = ScalarType("f4e1m2x2")
+f4e2m1x2 = ScalarType("f4e2m1x2")
 
 
 def scalar_descriptor(dtype: ScalarType):
@@ -83,6 +93,11 @@ def scalar_descriptor(dtype: ScalarType):
         "ui16": _ui16,
         "ui32": _ui32,
         "ui64": _ui64,
+        "f8e4m3": _f8e4m3,
+        "f8e5m2": _f8e5m2,
+        "hif8": _hif8,
+        "f4e1m2x2": _f4e1m2x2,
+        "f4e2m1x2": _f4e2m1x2,
     }
     descriptor = descriptors.get(dtype.name)
     if descriptor is None:
@@ -94,9 +109,8 @@ def scalar_descriptor(dtype: ScalarType):
 class TileSpec:
     """Concrete specialization of one tile operand.
 
-    ``valid_shape``/``b_layout``/``s_layout`` are carried for constraint evaluation
-    (selection). Rendering currently always emits row-major/none-box tile_buf types; a
-    non-row-major operand is rejected by the relevant template's constraints before render.
+    ``valid_shape``/``b_layout``/``s_layout``/``memory_space`` are carried for both
+    constraint evaluation (selection) and the rendered entry ``tile_buf`` type.
     """
 
     shape: tuple
@@ -105,14 +119,13 @@ class TileSpec:
     valid_shape: tuple | None = None
     b_layout: str = "row_major"
     s_layout: str = "none_box"
+    pad_value: str = "Null"
 
     def __post_init__(self):
         if len(self.shape) != 2:
             raise ValueError("TileSpec currently only supports rank-2 tile shapes")
         if any(not isinstance(dim, int) or dim <= 0 for dim in self.shape):
             raise ValueError("TileSpec.shape must contain positive integers")
-        if self.memory_space != "ub":
-            raise ValueError("TileSpec currently only supports ub tiles")
 
     def mlir_type(self):
         rows, cols = self.shape
@@ -120,12 +133,34 @@ class TileSpec:
             [rows, cols],
             scalar_descriptor(self.dtype),
             [rows, cols],
-            blayout="RowMajor",
+            blayout=_layout_token(self.b_layout),
             address_space=self.memory_space,
-            slayout="NoneBox",
+            slayout=_layout_token(self.s_layout),
             fractal_size=512,
-            pad="Null",
+            pad=_pad_token(self.pad_value),
         )
+
+
+def _layout_token(value: str) -> str:
+    aliases = {
+        "row_major": "RowMajor",
+        "col_major": "ColMajor",
+        "none_box": "NoneBox",
+        "RowMajor": "RowMajor",
+        "ColMajor": "ColMajor",
+        "NoneBox": "NoneBox",
+    }
+    return aliases.get(str(value), str(value))
+
+
+def _pad_token(value: str) -> str:
+    aliases = {
+        "null": "Null",
+        "Null": "Null",
+        "zero": "Zero",
+        "Zero": "Zero",
+    }
+    return aliases.get(str(value), str(value))
 
 
 @dataclass(frozen=True)
@@ -206,4 +241,9 @@ __all__ = [
     "ui16",
     "ui8",
     "ui64",
+    "f8e4m3",
+    "f8e5m2",
+    "hif8",
+    "f4e1m2x2",
+    "f4e2m1x2",
 ]

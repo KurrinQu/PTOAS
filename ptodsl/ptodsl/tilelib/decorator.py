@@ -38,20 +38,23 @@ class TileTemplate:
     def op(self) -> str:
         return self.metadata.op
 
-    def specialize(self, **tile_specs) -> "SpecializedTileTemplate":
-        return SpecializedTileTemplate(self, tile_specs)
+    def specialize(self, context_attrs=None, **tile_specs) -> "SpecializedTileTemplate":
+        return SpecializedTileTemplate(self, tile_specs, context_attrs=context_attrs)
 
 
 class SpecializedTileTemplate(ModuleArtifact):
     """A ``TileTemplate`` bound to concrete ``TileSpec``s; ``.mlir_text()`` renders it."""
 
-    def __init__(self, descriptor: TileTemplate, tile_specs: dict):
+    def __init__(self, descriptor: TileTemplate, tile_specs: dict, context_attrs=None):
         super().__init__(
             descriptor.name,
-            module_factory=lambda: _TemplateTrace(descriptor, tile_specs).build_module(),
+            module_factory=lambda: _TemplateTrace(
+                descriptor, tile_specs, context_attrs=context_attrs
+            ).build_module(),
         )
         self.descriptor = descriptor
         self.tile_specs = tile_specs
+        self.context_attrs = dict(context_attrs or {})
 
 
 def tile_template(*, op, target="a5", name=None, dtypes=(), layouts=(),
