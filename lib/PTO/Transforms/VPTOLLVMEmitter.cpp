@@ -507,6 +507,43 @@ getLowpPayloadABI(Type elementType, MLIRContext *context) {
   return LowpPayloadABI{IntegerType::get(context, 8), "u8"};
 }
 
+static std::string getDirectLowpVLogicElementFragment(Type type) {
+  if (pto::isPTOFloat8E4M3LikeType(type))
+    return "fp8e4m3";
+  if (pto::isPTOFloat8E5M2LikeType(type))
+    return "fp8e5m2";
+  return {};
+}
+
+static FailureOr<StringRef>
+buildDirectLowpVLogicCallee(MLIRContext *context, Type vectorType,
+                            StringRef stem, StringRef mode) {
+  Type elementType = getElementTypeFromVectorLike(vectorType);
+  auto lanes = getElementCountFromVectorLike(vectorType);
+  std::string elem = getDirectLowpVLogicElementFragment(elementType);
+  if (elem.empty() || !lanes)
+    return failure();
+  return StringAttr::get(context, "llvm.hivm." + stem.str() + "." +
+                                      mode.str() + ".v" +
+                                      std::to_string(*lanes) + elem)
+      .getValue();
+}
+
+static FailureOr<StringRef>
+buildLowpPayloadVLogicCallee(MLIRContext *context, Type vectorType,
+                             StringRef stem, StringRef mode) {
+  Type elementType = getElementTypeFromVectorLike(vectorType);
+  auto lanes = getElementCountFromVectorLike(vectorType);
+  std::optional<LowpPayloadABI> abi = getLowpPayloadABI(elementType, context);
+  if (!abi || !lanes)
+    return failure();
+  return StringAttr::get(context, "llvm.hivm." + stem.str() + ".v" +
+                                      std::to_string(*lanes) +
+                                      abi->intrinsicElementFragment.str() +
+                                      "." + mode.str())
+      .getValue();
+}
+
 static Type getLowpPayloadCarrierType(Type vectorLikeType,
                                       MLIRContext *context) {
   Type elementType = getElementTypeFromVectorLike(vectorLikeType);
@@ -4264,11 +4301,6 @@ public:
   matchAndRewrite(BinaryOp op, typename BinaryOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     StringRef stem = getBinaryMaskedStem<BinaryOp>();
-    FailureOr<StringRef> calleeName =
-        buildLaneTypedCallee(op.getContext(), op.getResult().getType(), stem, ".x");
-    if (failed(calleeName))
-      return rewriter.notifyMatchFailure(op, "unsupported binary VPTO signature");
-
     Type resultType =
         this->getTypeConverter()->convertType(op.getResult().getType());
     if (!resultType)
@@ -4286,12 +4318,47 @@ public:
           op, "unexpected converted binary VPTO operand types");
     }
 
+    Type callResultType = resultType;
+    Value callLhs = lhs;
+    Value callRhs = rhs;
+    FailureOr<StringRef> calleeName =
+        buildLaneTypedCallee(op.getContext(), op.getResult().getType(), stem, ".x");
+
+    if constexpr (std::is_same_v<BinaryOp, pto::VandOp> ||
+                  std::is_same_v<BinaryOp, pto::VorOp> ||
+                  std::is_same_v<BinaryOp, pto::VxorOp>) {
+      Type elementType = getElementTypeFromVectorLike(op.getResult().getType());
+      if (elementType && pto::isPTOLowPrecisionType(elementType)) {
+        calleeName = buildDirectLowpVLogicCallee(
+            op.getContext(), op.getResult().getType(), stem, "x");
+        if (failed(calleeName)) {
+          Type carrierType = getLowpPayloadCarrierType(
+              op.getResult().getType(), rewriter.getContext());
+          if (!carrierType)
+            return rewriter.notifyMatchFailure(
+                op, "unsupported low-precision binary payload ABI");
+          callResultType = carrierType;
+          callLhs = castToPayloadABI(op.getLoc(), lhs,
+                                     op.getResult().getType(), rewriter);
+          callRhs = castToPayloadABI(op.getLoc(), rhs,
+                                     op.getResult().getType(), rewriter);
+          calleeName = buildLowpPayloadVLogicCallee(
+              op.getContext(), op.getResult().getType(), stem, "x");
+        }
+      }
+    }
+    if (failed(calleeName))
+      return rewriter.notifyMatchFailure(op, "unsupported binary VPTO signature");
+
     auto call = rewriter.create<func::CallOp>(op.getLoc(), *calleeName,
-                                              TypeRange{resultType},
-                                              ValueRange{lhs, rhs, mask});
+                                              TypeRange{callResultType},
+                                              ValueRange{callLhs, callRhs, mask});
     state.plannedDecls.push_back(
         PlannedDecl{calleeName->str(), call.getCalleeType()});
-    rewriter.replaceOp(op, call.getResults());
+    Value result = castFromPayloadABI(op.getLoc(), call.getResult(0),
+                                      op.getResult().getType(), resultType,
+                                      rewriter);
+    rewriter.replaceOp(op, result);
     return success();
   }
 
