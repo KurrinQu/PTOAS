@@ -256,6 +256,24 @@ def _install_default_precision_type_compat():
 
 _install_default_precision_type_compat()
 
+
+def _install_enum_attr_builders():
+    def address_space_attr_builder(value, context=None):
+        return AddressSpaceAttr.get(value, context)
+
+    def fence_scope_attr_builder(value, context=None):
+        return FenceScopeAttr.get(value, context)
+
+    _ods_ir.AttrBuilder.insert(
+        "PTO_AddressSpaceAttr", address_space_attr_builder, replace=True
+    )
+    _ods_ir.AttrBuilder.insert(
+        "PTO_FenceScopeAttr", fence_scope_attr_builder, replace=True
+    )
+
+
+_install_enum_attr_builders()
+
 __all__ = [
     # Dialect utilities
     "register_dialect",
