@@ -274,10 +274,76 @@ pto.cmo.invalidate all #pto.address_space<gm>
 clean 和 release fence 用来处理本地 dirty cache。invalidate 用来处理 signal 后读取对端
 payload 时可能遇到的 stale cache。
 
-## 7. PyPTO 生成建议
+## 7. PyPTO 对接说明
 
-PyPTO 需要在 payload publish 和 signal acquire 边界显式生成 CMO 和 fence。PTOAS
-只负责把这些语义边界 lower 到目标 backend，并在 release fence 前补齐本地 pipe drain。
+PyPTO 对接时需要区分两个层次：
+
+- PyPTO 负责表达语义：哪里发布 payload，哪里观察 signal 后消费 payload，哪里需要 GM
+  cache clean 或 invalidate。
+- PTOAS 负责实现语义：校验这些边界是否完整，把语义 IR lower 到目标 backend，并在
+  release fence 前自动补齐本地 pipe drain。
+
+也就是说，PyPTO 不应该直接生成底层 `pipe_barrier`、`dsb` 或 `dcci`。这些是 backend
+action，不是 PyPTO 和 PTOAS 之间的稳定接口。PyPTO 应该生成 PTOAS 提供的显式内存一致性
+IR。
+
+### 7.1 为什么 PyPTO 需要生成这些 IR
+
+通信程序通常有两个对象：
+
+- payload：真正要被对端或后续代码读取的 GM 数据。
+- signal：告诉对端 payload 已经准备好的同步标记。
+
+例如 producer 先写 `payload_gm`，再执行 `TNotify`；consumer 通过 `TWait` 或 `TTest`
+看到 signal ready 后，再读取 `payload_gm`。这里有一个关键点：signal ready 不自动等价于
+payload 已经对 consumer 可见。原因是 signal 和 payload 可能走不同硬件路径，普通
+pipe 同步只能描述本地 pipe 执行顺序，不能完整表达 GM 可见性和 cache maintenance。
+
+因此 PyPTO 需要在 payload publish 和 signal acquire 边界显式生成 CMO 和 fence。PTOAS
+会检查这些 IR 是否满足内存一致性要求。
+
+### 7.2 PTOAS 提供给 PyPTO 的语义 IR
+
+`pto.fence.release #pto.fence_scope<ddr>` 表示 release 侧 DDR visibility fence。它用于
+发布 signal 前，要求前序 payload GM write 已经进入 DDR visibility domain。
+
+Python binding 写法：
+
+```python
+pto.FenceReleaseOp(pto.FenceScope.DDR)
+```
+
+`pto.fence.acquire #pto.fence_scope<ddr>` 表示 acquire 侧 DDR visibility fence。它用于
+观察 signal 后，建立后续 payload 读取的 acquire 边界。
+
+Python binding 写法：
+
+```python
+pto.FenceAcquireOp(pto.FenceScope.DDR)
+```
+
+`pto.cmo.clean all #pto.address_space<gm>` 表示清理 GM 相关 dirty cache line。它用于
+cacheable GM store 后发布 signal 的场景，使 release fence 能等待并约束 clean 结果可见。
+
+Python binding 写法：
+
+```python
+pto.CmoCleanOp(pto.AddressSpace.GM)
+```
+
+`pto.cmo.invalidate all #pto.address_space<gm>` 表示失效 GM 相关 stale cache line。它用于
+观察 signal 后读取 cacheable GM payload 的场景，避免本地 cache 中的旧值被读取。
+
+Python binding 写法：
+
+```python
+pto.CmoInvalidateOp(pto.AddressSpace.GM)
+```
+
+这些 Python API 支持直接传 enum，不需要 PyPTO 显式传 MLIR `ctx`。binding 会把 enum
+自动构造成对应的 PTO attr。
+
+### 7.3 生成规则
 
 PyPTO 不需要手动生成 `pto.barrier #pto.pipe<PIPE_MTE3>` 或
 `pto.barrier #pto.pipe<PIPE_FIX>`。这是低层 pipe drain 细节，由 PTOAS 根据 release fence
@@ -300,7 +366,7 @@ PyPTO 生成规则可以按下面的表实现：
 inline，或者把 payload、CMO、fence 和 signal 保持在同一个 caller 中。否则 pass 会报错，
 避免 caller 侧 `TNotify` 或 `TWait` 看不到 callee 内部的 memory-consistency 状态。
 
-### 7.1 TPUT 发布 signal
+### 7.4 TPUT 发布 signal
 
 ```mlir
 pto.comm.tput ...
@@ -308,7 +374,15 @@ pto.fence.release #pto.fence_scope<ddr>
 pto.comm.tnotify ...
 ```
 
-### 7.2 TStore 发布 signal
+对应 PyPTO 写法：
+
+```python
+pto.TPutOp(...)
+pto.FenceReleaseOp(pto.FenceScope.DDR)
+pto.TNotifyOp(...)
+```
+
+### 7.5 TStore 发布 signal
 
 ```mlir
 pto.tstore ...
@@ -316,7 +390,15 @@ pto.fence.release #pto.fence_scope<ddr>
 pto.comm.tnotify ...
 ```
 
-### 7.3 Scalar store 发布 signal
+对应 PyPTO 写法：
+
+```python
+pto.TStoreOp(...)
+pto.FenceReleaseOp(pto.FenceScope.DDR)
+pto.TNotifyOp(...)
+```
+
+### 7.6 Scalar store 发布 signal
 
 ```mlir
 pto.store_scalar ...
@@ -325,7 +407,16 @@ pto.fence.release #pto.fence_scope<ddr>
 pto.comm.tnotify ...
 ```
 
-### 7.4 TWait 后读取 scalar payload
+对应 PyPTO 写法：
+
+```python
+pto.StoreScalarOp(...)
+pto.CmoCleanOp(pto.AddressSpace.GM)
+pto.FenceReleaseOp(pto.FenceScope.DDR)
+pto.TNotifyOp(...)
+```
+
+### 7.7 TWait 后读取 scalar payload
 
 ```mlir
 pto.comm.twait ...
@@ -333,7 +424,15 @@ pto.cmo.invalidate all #pto.address_space<gm>
 %value = pto.load_scalar ...
 ```
 
-### 7.5 TTest polling 后读取 scalar payload
+对应 PyPTO 写法：
+
+```python
+pto.TWaitOp(...)
+pto.CmoInvalidateOp(pto.AddressSpace.GM)
+pto.LoadScalarOp(...)
+```
+
+### 7.8 TTest polling 后读取 scalar payload
 
 ```mlir
 %ready = pto.comm.ttest ...
@@ -341,6 +440,15 @@ scf.if %ready {
   pto.cmo.invalidate all #pto.address_space<gm>
   %value = pto.load_scalar ...
 }
+```
+
+对应 PyPTO 写法：
+
+```python
+ready = pto.TTestOp(...)
+with scf.IfOp(ready.result):
+    pto.CmoInvalidateOp(pto.AddressSpace.GM)
+    pto.LoadScalarOp(...)
 ```
 
 如果 PyPTO 使用 `pto.ldg` 或 `pto.stg` 并显式选择 uncache 路径，可以避免部分
