@@ -28,7 +28,27 @@ from .constraints import (
     require_same_valid_shape,
 )
 from .decorator import SpecializedTileTemplate, TileTemplate, tile_template
-from .metadata import ScalarType, TemplateMetadata, TileSpec, bf16, f16, f32, i8, i16, i32
+from .metadata import (
+    ScalarSpec,
+    ScalarType,
+    TemplateMetadata,
+    TileSpec,
+    bf16,
+    f16,
+    f32,
+    i8,
+    i16,
+    i32,
+    i64,
+    si8,
+    si16,
+    si32,
+    si64,
+    ui8,
+    ui16,
+    ui32,
+    ui64,
+)
 from .registry import (
     AmbiguousTemplate,
     NoMatchingTemplate,
@@ -45,6 +65,7 @@ __all__ = [
     "tile_template",
     # specs / metadata
     "TileSpec",
+    "ScalarSpec",
     "ScalarType",
     "TemplateMetadata",
     "BLayout",
@@ -61,6 +82,15 @@ __all__ = [
     "i32",
     "i16",
     "i8",
+    "i64",
+    "si32",
+    "si16",
+    "si8",
+    "si64",
+    "ui32",
+    "ui16",
+    "ui8",
+    "ui64",
     # descriptors
     "TileTemplate",
     "SpecializedTileTemplate",

@@ -28,8 +28,8 @@ def TAdd(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, version):
     target="a5",
     name="template_tadd_2d_no_post_update",
     id=0,
+    dtypes=[("f32", "f32", "f32")],
     constraints=[
-        tilelib.check_type(("f32", "f32", "f32")),
         tilelib.check_memory_space("ub"),
         tilelib.check_layout("row_major"),
         tilelib.require_contiguous(False),
@@ -49,8 +49,8 @@ def template_tadd_2d_no_post_update(src0: pto.Tile, src1: pto.Tile, dst: pto.Til
     target="a5",
     name="template_tadd_1d_no_post_update",
     id=1,
+    dtypes=[("f32", "f32", "f32")],
     constraints=[
-        tilelib.check_type(("f32", "f32", "f32")),
         tilelib.check_memory_space("ub"),
         tilelib.check_layout("row_major"),
         tilelib.require_contiguous(True),
@@ -70,8 +70,8 @@ def template_tadd_1d_no_post_update(src0: pto.Tile, src1: pto.Tile, dst: pto.Til
     target="a5",
     name="template_tadd_2d_post_update",
     id=2,
+    dtypes=[("f32", "f32", "f32")],
     constraints=[
-        tilelib.check_type(("f32", "f32", "f32")),
         tilelib.check_memory_space("ub"),
         tilelib.check_layout("row_major"),
         tilelib.require_contiguous(False),
@@ -91,8 +91,8 @@ def template_tadd_2d_post_update(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
     target="a5",
     name="template_tadd_1d_post_update",
     id=3,
+    dtypes=[("f32", "f32", "f32")],
     constraints=[
-        tilelib.check_type(("f32", "f32", "f32")),
         tilelib.check_memory_space("ub"),
         tilelib.check_layout("row_major"),
         tilelib.require_contiguous(True),

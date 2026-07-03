@@ -111,4 +111,104 @@ def register_binary(*, op, name, vector_op, dtypes, has_tmp=False):
     return template
 
 
-__all__ = ["register_binary", "register_unary"]
+def register_scalar_binary(*, op, name, vector_op, dtypes, broadcast_scalar=False,
+                           has_tmp=False):
+    """Register a tile/scalar traversal using either a vector-scalar or broadcast op."""
+
+    constraints = _common_constraints("src", "dst")
+    if has_tmp:
+        constraints = _common_constraints("src", "tmp", "dst")
+
+        @tilelib.tile_template(
+            op=op,
+            target="a5",
+            name=name,
+            dtypes=dtypes,
+            constraints=constraints,
+            id=0,
+            loop_depth=2,
+            is_post_update=False,
+            tags=("elementwise", "scalar"),
+        )
+        def template(src: pto.Tile, scalar, tmp: pto.Tile, dst: pto.Tile):
+            _ = tmp
+            _emit_scalar_binary_body(src, scalar, dst, vector_op, broadcast_scalar)
+
+        return template
+
+    @tilelib.tile_template(
+        op=op,
+        target="a5",
+        name=name,
+        dtypes=dtypes,
+        constraints=constraints,
+        id=0,
+        loop_depth=2,
+        is_post_update=False,
+        tags=("elementwise", "scalar"),
+    )
+    def template(src: pto.Tile, scalar, dst: pto.Tile):
+        _emit_scalar_binary_body(src, scalar, dst, vector_op, broadcast_scalar)
+
+    return template
+
+
+def register_scalar_fill(*, op, name, dtypes):
+    """Register a scalar-to-tile fill traversal."""
+
+    @tilelib.tile_template(
+        op=op,
+        target="a5",
+        name=name,
+        dtypes=dtypes,
+        constraints=[
+            tilelib.check_memory_space("ub"),
+            tilelib.check_layout("row_major"),
+            tilelib.check_s_layout("none_box"),
+        ],
+        id=0,
+        loop_depth=2,
+        is_post_update=False,
+        tags=("elementwise", "scalar", "fill"),
+    )
+    def template(scalar, dst: pto.Tile):
+        dtype = dst.dtype
+        valid_rows, valid_cols = dst.valid_shape
+        lanes = pto.elements_per_vreg(dtype)
+
+        for row in range(0, valid_rows, 1):
+            remained = valid_cols
+            for col in range(0, valid_cols, lanes):
+                mask, remained = pto.make_mask(dtype, remained)
+                value = pto.vdup(scalar, mask)
+                pto.vsts(value, dst[row, col:], mask)
+
+    return template
+
+
+def _emit_scalar_binary_body(src, scalar, dst, vector_op, broadcast_scalar):
+    dtype = dst.dtype
+    valid_rows, valid_cols = dst.valid_shape
+    lanes = pto.elements_per_vreg(dtype)
+
+    with pto.for_(0, valid_rows, step=1) as row:
+        col_loop = pto.for_(0, valid_cols, step=lanes).carry(remained=valid_cols)
+        with col_loop:
+            col = col_loop.iv
+            mask, remained = pto.make_mask(dtype, col_loop.remained)
+            value = pto.vlds(src[row, col:])
+            if broadcast_scalar:
+                scalar_value = pto.vbr(scalar)
+                result = vector_op(value, scalar_value, mask)
+            else:
+                result = vector_op(value, scalar, mask)
+            pto.vsts(result, dst[row, col:], mask)
+            col_loop.update(remained=remained)
+
+
+__all__ = [
+    "register_binary",
+    "register_scalar_binary",
+    "register_scalar_fill",
+    "register_unary",
+]

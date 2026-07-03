@@ -96,7 +96,7 @@ from ._ops import (             # noqa: F401
     vbitcast,
     vbr,
     vadd, vsub, vmul, vdiv, vmax, vmin,
-    vand, vor, vxor, vshl, vshr,
+    vand, vor, vxor, vshl, vshr, vshls, vshrs,
     vcmax, vcadd, vcmin, vdup, vexpdif,
     vexp, vln, vsqrt, vabs, vneg, vrec, vrsqrt, vrelu, vnot,
     vcgmax, vcgadd, vcgmin, vcpadd,

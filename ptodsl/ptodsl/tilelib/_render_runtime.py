@@ -25,14 +25,15 @@ from __future__ import annotations
 
 import inspect
 
-from .metadata import TileSpec, scalar_descriptor
+from .metadata import ScalarSpec, TileSpec, scalar_descriptor
 from .._ast_rewrite import rewrite_jit_function
 from .._bootstrap import make_context
 from .._surface_types import Tile
 from .._surface_values import TileValue
 from .._tracing import KernelModuleSpec, ModuleStyle, TracingRuntime
 from .._tracing.active import activate_runtime, activate_session
-from .._types import _resolve
+from .._surface_values import wrap_surface_value
+from .._types import _DType, _resolve
 
 from mlir.dialects import func
 from mlir.ir import Attribute, InsertionPoint, Location, Module, StringAttr, UnitAttr
@@ -85,7 +86,7 @@ class _TemplateTrace(TracingRuntime):
             )
         )
         self.descriptor = descriptor
-        self.tile_specs = tile_specs
+        self.operand_specs = tile_specs
         self._ordered_specs: list = []
         self._signature_parameters = tuple(inspect.signature(descriptor.py_fn).parameters.items())
 
@@ -93,22 +94,40 @@ class _TemplateTrace(TracingRuntime):
         arg_types = []
         ordered = []
         for param_name, param in self._signature_parameters:
-            if not _is_tile_annotation(param.annotation):
-                raise TypeError(
-                    f"tile-template parameters must be annotated Tile; {param_name!r} is {param.annotation!r}"
-                )
-            spec = self.tile_specs.get(param_name)
+            spec = self.operand_specs.get(param_name)
             if spec is None:
-                raise ValueError(f"missing TileSpec for parameter {param_name!r}")
+                raise ValueError(f"missing operand spec for parameter {param_name!r}")
+            if isinstance(spec, TileSpec):
+                if not _is_tile_annotation(param.annotation):
+                    raise TypeError(
+                        f"tile-template tile parameter {param_name!r} must be annotated Tile; "
+                        f"got {param.annotation!r}"
+                    )
+                arg_types.append(spec.mlir_type())
+            elif isinstance(spec, ScalarSpec):
+                if _is_tile_annotation(param.annotation):
+                    raise TypeError(
+                        f"tile-template scalar parameter {param_name!r} cannot be annotated Tile"
+                    )
+                arg_types.append(_scalar_argument_type(param.annotation, spec))
+            else:
+                raise TypeError(
+                    f"unsupported operand spec for parameter {param_name!r}: {type(spec).__name__}"
+                )
             ordered.append((param_name, spec))
-            arg_types.append(spec.mlir_type())
         self._ordered_specs = ordered
         return arg_types
 
     def bind_entry_arguments(self, entry_arguments):
-        return tuple(
-            _TemplateTile(arg, spec) for arg, (_, spec) in zip(entry_arguments, self._ordered_specs)
-        )
+        bound = []
+        for arg, (_, spec) in zip(entry_arguments, self._ordered_specs):
+            if isinstance(spec, TileSpec):
+                bound.append(_TemplateTile(arg, spec))
+            elif isinstance(spec, ScalarSpec):
+                bound.append(wrap_surface_value(arg))
+            else:
+                raise TypeError(f"unsupported operand spec {type(spec).__name__}")
+        return tuple(bound)
 
     def trace_entry(self, *args):
         # Apply the engine's AST control-flow rewrite so the template body can use plain
@@ -152,6 +171,12 @@ def _is_tile_annotation(annotation) -> bool:
     if isinstance(annotation, str):
         return annotation == "Tile" or annotation.endswith(".Tile")
     return getattr(annotation, "__name__", None) == "Tile"
+
+
+def _scalar_argument_type(annotation, spec: ScalarSpec):
+    if isinstance(annotation, _DType):
+        return _resolve(annotation)
+    return spec.mlir_type()
 
 
 __all__ = ["_TemplateTrace", "_TemplateTile"]

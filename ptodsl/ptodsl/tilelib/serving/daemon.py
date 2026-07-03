@@ -27,7 +27,7 @@ import threading
 
 from .. import constraints as _constraints
 from .. import registry as _registry
-from ..metadata import ScalarType, TileSpec
+from ..metadata import ScalarSpec, ScalarType, TileSpec
 from ..templates import load_template
 from .wire import recv_message, send_message
 
@@ -50,15 +50,27 @@ def _build_tile_specs(descriptor, operand_specs: list) -> dict:
             f"operands, got {len(operand_specs)}"
         )
 
-    tile_specs = {}
+    specs = {}
     for index, (name, spec) in enumerate(zip(descriptor.param_names, operand_specs)):
         if not isinstance(spec, dict):
             raise TypeError(f"operand_specs[{index}] must be an object")
 
         kind = spec.get("kind")
+        if kind == "scalar":
+            try:
+                specs[name] = ScalarSpec(
+                    dtype=ScalarType(spec["dtype"]),
+                    value=spec.get("value"),
+                )
+            except KeyError as exc:
+                raise ValueError(
+                    f"scalar operand {index} ({name!r}) is missing {exc.args[0]!r}"
+                ) from exc
+            continue
+
         if kind != "tile":
             raise NotImplementedError(
-                "PTODSL TileLib daemon currently supports only tile operands; "
+                "PTODSL TileLib daemon currently supports tile and scalar operands; "
                 f"operand {index} ({name!r}) has kind {kind!r}"
             )
 
@@ -75,7 +87,7 @@ def _build_tile_specs(descriptor, operand_specs: list) -> dict:
             ) from exc
 
         valid_shape = spec.get("valid_shape")
-        tile_specs[name] = TileSpec(
+        specs[name] = TileSpec(
             shape=shape,
             dtype=dtype,
             memory_space=spec.get("memory_space", "ub"),
@@ -83,7 +95,7 @@ def _build_tile_specs(descriptor, operand_specs: list) -> dict:
             b_layout=config.get("b_layout", "row_major"),
             s_layout=config.get("s_layout", "none_box"),
         )
-    return tile_specs
+    return specs
 
 
 def _constraint_name(predicate) -> str:
@@ -184,8 +196,6 @@ def render_request(
 
 class TileLibDaemonServer(socketserver.UnixStreamServer):
     """Sequential Unix-socket RPC server with an in-memory render cache."""
-
-    allow_reuse_address = True
 
     def __init__(self, socket_path: str, max_entries: int = 1000):
         if max_entries <= 0:

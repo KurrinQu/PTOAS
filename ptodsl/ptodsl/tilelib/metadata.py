@@ -14,7 +14,7 @@ template is legal for a concrete TileOp (op/target/dtypes/layouts/memory_spaces)
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .._types import (
     float16 as _float16,
@@ -23,7 +23,16 @@ from .._types import (
     int16 as _int16,
     int32 as _int32,
     int64 as _int64,
+    si8 as _si8,
+    si16 as _si16,
+    si32 as _si32,
+    si64 as _si64,
     tile_buf_type as _tile_buf_type,
+    ui8 as _ui8,
+    ui16 as _ui16,
+    ui32 as _ui32,
+    ui64 as _ui64,
+    _resolve,
 )
 
 from mlir.ir import Type
@@ -45,6 +54,15 @@ bf16 = ScalarType("bf16")
 i32 = ScalarType("i32")
 i16 = ScalarType("i16")
 i8 = ScalarType("i8")
+i64 = ScalarType("i64")
+si32 = ScalarType("si32")
+si16 = ScalarType("si16")
+si8 = ScalarType("si8")
+si64 = ScalarType("si64")
+ui32 = ScalarType("ui32")
+ui16 = ScalarType("ui16")
+ui8 = ScalarType("ui8")
+ui64 = ScalarType("ui64")
 
 
 def scalar_descriptor(dtype: ScalarType):
@@ -57,6 +75,14 @@ def scalar_descriptor(dtype: ScalarType):
         "i16": _int16,
         "i32": _int32,
         "i64": _int64,
+        "si8": _si8,
+        "si16": _si16,
+        "si32": _si32,
+        "si64": _si64,
+        "ui8": _ui8,
+        "ui16": _ui16,
+        "ui32": _ui32,
+        "ui64": _ui64,
     }
     descriptor = descriptors.get(dtype.name)
     if descriptor is None:
@@ -103,6 +129,17 @@ class TileSpec:
 
 
 @dataclass(frozen=True)
+class ScalarSpec:
+    """Concrete specialization of one scalar TileOp operand."""
+
+    dtype: ScalarType
+    value: object | None = None
+
+    def mlir_type(self):
+        return _resolve(scalar_descriptor(self.dtype))
+
+
+@dataclass(frozen=True)
 class TemplateMetadata:
     """Hard constraints + selection hints for one registered template version."""
 
@@ -111,6 +148,8 @@ class TemplateMetadata:
     name: str
     # Hard constraints
     dtypes: tuple = ()          # tuple of per-operand dtype-name tuples, e.g. (("f32","f32","f32"),)
+    # Empty means unrestricted. One value applies to every operand; otherwise
+    # provide one value per template parameter.
     layouts: tuple = ()
     memory_spaces: tuple = ()
     # Hard constraints (legality predicates: callables matched by param name — see constraints.py)
@@ -149,6 +188,7 @@ class TemplateMetadata:
 __all__ = [
     "ScalarType",
     "TileSpec",
+    "ScalarSpec",
     "TemplateMetadata",
     "scalar_descriptor",
     "f32",
@@ -157,4 +197,13 @@ __all__ = [
     "i32",
     "i16",
     "i8",
+    "i64",
+    "si32",
+    "si16",
+    "si8",
+    "si64",
+    "ui32",
+    "ui16",
+    "ui8",
+    "ui64",
 ]

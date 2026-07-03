@@ -24,7 +24,7 @@ changes.
 |---|---|---|
 | Legacy baseline | `expand_tile_op_tilelang_tsub.pto` | Confirms the default TileLang backend still works |
 | PTODSL TileLib package | `test_tilelib_catalog.py`, `test_tilelib_constraints.py`, `test_tilelib_elementwise.py`, `test_tilelib_render.py`, `test_tilelib_select.py` | Covers the ported template catalog, legality constraints, template registration and selection, and rendering |
-| PTODSL daemon | `test_tilelib_daemon.py` | Covers the Unix-socket protocol, metadata, rendering, candidate IDs, and caching |
+| PTODSL daemon | `test_tilelib_daemon.py` | Covers the Unix-socket protocol, scalar/tile operand specs, metadata, rendering, candidate IDs, and caching |
 | PTOAS daemon selection | `expand_tile_op_ptodsl_tsub.pto` | Confirms `--tile-lib-backend=ptodsl` starts and uses the PTODSL daemon |
 | Separate metadata/render passes | `expand_tile_op_ptodsl_tadd.pto` | Confirms `InsertTemplateAttributes` records compact metadata before `ExpandTileOp` renders |
 | Multi-candidate fallback | `expand_tile_op_ptodsl_tadd.pto` | Confirms `ExpandTileOp` renders candidate index zero when several candidates remain |
@@ -49,6 +49,10 @@ python3 ptodsl/tests/test_tilelib_daemon.py
 ```
 
 Each command prints `OK` when successful.
+
+The current PTODSL TileLib catalog intentionally covers only ops registered in
+`ptodsl.tilelib.templates`. The table-driven catalog test is the scalable place
+to add one representative render case per newly ported TileOp.
 
 ## PTOAS integration tests
 

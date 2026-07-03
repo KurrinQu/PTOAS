@@ -12,7 +12,7 @@ priority) but is engine-agnostic: it returns the chosen ``TileTemplate`` descrip
 the caller renders via ptodsl's engine. Selection order:
 
     1. filter by op + target (hard)
-    2. filter by dtype-signature (hard)
+    2. delegate all candidate legality to constraints.py
     3. no legal candidate  -> error
     4. one legal candidate -> choose it
     5. several             -> highest priority wins; remaining ties -> error
@@ -55,22 +55,31 @@ class TileTemplateRegistry:
         if not candidates:
             raise NoMatchingTemplate(f"no template registered for op={op!r} target={target!r}")
 
-        legal = [d for d in candidates if _dtype_signature_matches(d, tile_specs)]
-        if not legal:
-            sig = _dtype_signature(candidates[0], tile_specs)
-            raise NoMatchingTemplate(
-                f"no template for op={op!r} target={target!r} matches dtype signature {sig}"
+        evaluated = [
+            (
+                descriptor,
+                _constraints.evaluate_candidate(
+                    descriptor,
+                    tile_specs,
+                    target,
+                    op,
+                    context_attrs,
+                ),
             )
-
-        # Hard legality constraints (e.g. layout / valid-shape rules).
-        context = _constraints.build_context(tile_specs, target, op)
-        if context_attrs:
-            context.update(context_attrs)
-        legal = [d for d in legal if _constraints.passes(d.metadata.constraints, context)]
+            for descriptor in candidates
+        ]
+        legal = [
+            descriptor
+            for descriptor, result in evaluated
+            if result.legal
+        ]
         if not legal:
+            reasons = "; ".join(
+                f"{descriptor.name}: {result.reason}"
+                for descriptor, result in evaluated
+            )
             raise NoMatchingTemplate(
-                f"no template for op={op!r} target={target!r} satisfies its constraints "
-                f"(layout/valid-shape) for the given operands"
+                f"no legal template for op={op!r} target={target!r}; {reasons}"
             )
 
         legal.sort(key=lambda d: d.metadata.priority, reverse=True)
@@ -100,22 +109,6 @@ class TileTemplateRegistry:
                 f"multiple templates tie at priority {top_priority} for op={op!r} target={target!r}: {names}"
             )
         return legal[0]
-
-
-def _dtype_signature(descriptor, tile_specs: dict) -> tuple:
-    """Per-operand dtype-name tuple in the template's parameter order."""
-    return tuple(tile_specs[name].dtype.name for name in descriptor.param_names)
-
-
-def _dtype_signature_matches(descriptor, tile_specs: dict) -> bool:
-    # Empty dtypes metadata == "accepts any dtype signature".
-    if not descriptor.metadata.dtypes:
-        return True
-    try:
-        sig = _dtype_signature(descriptor, tile_specs)
-    except KeyError:
-        return False
-    return sig in descriptor.metadata.dtypes
 
 
 # Process-wide default registry (the decorator registers into this one).

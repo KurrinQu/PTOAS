@@ -5,14 +5,17 @@
 # THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
-"""Constraint predicates + evaluation for TileLib version selection.
+"""Central candidate-legality evaluation for TileLib version selection.
 
-A template may declare ``constraints=[predicate, ...]`` (legality rules, e.g. "row-major
-layout and a 1-row output"). During selection we build a per-operand context and call each
-predicate by **name-matching its parameters** against that context — the same introspection
-convention as tilelang-dsl's `_evaluate_constraints`, so predicates port verbatim. The
-predicate receives keys like ``src_shape`` / ``dst_valid_shape`` / ``src_config`` and returns
-a truthy value when legal.
+Hard metadata (dtype signatures, layouts, and memory spaces) and custom
+``constraints=[predicate, ...]`` are evaluated here. The registry only
+discovers candidates, delegates legality to this module, and ranks the legal
+results.
+
+Custom predicates are called by **name-matching their parameters** against the
+per-operand context — the same introspection convention as tilelang-dsl's
+``_evaluate_constraints``. A predicate receives keys like ``src_shape`` /
+``dst_valid_shape`` / ``src_config`` and returns a truthy value when legal.
 
 ``BLayout`` / ``SLayout`` mirror tilelang's enums so a copied predicate's
 ``cfg.b_layout != pto.BLayout.ROW_MAJOR`` comparison works unchanged (str enums compare equal
@@ -38,6 +41,14 @@ class SLayout(str, Enum):
 
 
 @dataclass(frozen=True)
+class CandidateLegality:
+    """Result of evaluating one candidate against concrete operands."""
+
+    legal: bool
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
 class _ConfigView:
     """The ``{name}_config`` object a constraint sees (``.b_layout`` / ``.s_layout`` strings,
     which compare equal to the BLayout/SLayout str-enums)."""
@@ -50,6 +61,7 @@ def build_context(tile_specs: dict, target: str, op: str) -> dict:
     """Build the flat name-keyed context predicates are matched against."""
     context: dict = {"target": target, "op": op}
     operand_dtypes = []
+    operand_kinds = []
     operand_memory_spaces = []
     operand_rows = []
     operand_cols = []
@@ -58,20 +70,30 @@ def build_context(tile_specs: dict, target: str, op: str) -> dict:
     operand_b_layouts = []
     operand_s_layouts = []
     for name, spec in tile_specs.items():
+        dtype = spec.dtype.name
+        operand_dtypes.append(dtype)
+        context[f"{name}_dtype"] = dtype
+
+        if not hasattr(spec, "shape"):
+            operand_kinds.append("scalar")
+            context[f"{name}_kind"] = "scalar"
+            if hasattr(spec, "value"):
+                context[f"{name}_value"] = spec.value
+            continue
+
+        operand_kinds.append("tile")
         shape = tuple(spec.shape)
         valid = tuple(spec.valid_shape) if getattr(spec, "valid_shape", None) else shape
-        dtype = spec.dtype.name
         memory_space = getattr(spec, "memory_space", "ub")
         b_layout = getattr(spec, "b_layout", "row_major")
         s_layout = getattr(spec, "s_layout", "none_box")
-        operand_dtypes.append(dtype)
         operand_memory_spaces.append(memory_space)
         operand_sizes.append(_shape_size(shape))
         operand_b_layouts.append(b_layout)
         operand_s_layouts.append(s_layout)
+        context[f"{name}_kind"] = "tile"
         context[f"{name}_shape"] = shape
         context[f"{name}_valid_shape"] = valid
-        context[f"{name}_dtype"] = dtype
         context[f"{name}_memory_space"] = memory_space
         context[f"{name}_config"] = _ConfigView(
             b_layout=b_layout,
@@ -84,6 +106,7 @@ def build_context(tile_specs: dict, target: str, op: str) -> dict:
             operand_cols.append(shape[1])
             operand_valid_cols.append(valid[1])
     context["operand_dtypes"] = tuple(operand_dtypes)
+    context["operand_kinds"] = tuple(operand_kinds)
     context["operand_memory_spaces"] = tuple(operand_memory_spaces)
     context["operand_rows"] = tuple(operand_rows)
     context["operand_cols"] = tuple(operand_cols)
@@ -99,6 +122,86 @@ def _shape_size(shape):
     for dim in shape:
         size *= dim
     return size
+
+
+def evaluate_candidate(
+    descriptor,
+    tile_specs: dict,
+    target: str,
+    op: str,
+    context_attrs: dict | None = None,
+) -> CandidateLegality:
+    """Evaluate every hard legality rule for one template descriptor."""
+    if descriptor.target != target or descriptor.op != op:
+        return CandidateLegality(
+            False,
+            f"candidate targets op={descriptor.op!r} target={descriptor.target!r}",
+        )
+
+    missing = [name for name in descriptor.param_names if name not in tile_specs]
+    if missing:
+        return CandidateLegality(
+            False,
+            f"missing operand specifications for {', '.join(missing)}",
+        )
+
+    ordered_specs = {
+        name: tile_specs[name]
+        for name in descriptor.param_names
+    }
+    context = build_context(ordered_specs, target, op)
+
+    metadata = descriptor.metadata
+    dtype_signature = context["operand_dtypes"]
+    if metadata.dtypes and dtype_signature not in metadata.dtypes:
+        return CandidateLegality(
+            False,
+            f"dtype signature {dtype_signature} is not supported",
+        )
+
+    if not _metadata_values_match(
+        metadata.layouts,
+        context["operand_b_layouts"],
+    ):
+        return CandidateLegality(
+            False,
+            f"block layouts {context['operand_b_layouts']} do not match "
+            f"{metadata.layouts}",
+        )
+
+    if not _metadata_values_match(
+        metadata.memory_spaces,
+        context["operand_memory_spaces"],
+    ):
+        return CandidateLegality(
+            False,
+            f"memory spaces {context['operand_memory_spaces']} do not match "
+            f"{metadata.memory_spaces}",
+        )
+
+    if context_attrs:
+        for name, value in context_attrs.items():
+            context.setdefault(name, value)
+
+    if not passes(metadata.constraints, context):
+        return CandidateLegality(False, "custom constraints are not satisfied")
+
+    return CandidateLegality(True)
+
+
+def _metadata_values_match(expected, actual) -> bool:
+    """Match one metadata value for all operands, or one value per operand."""
+    expected = tuple(_enum_value(value) for value in expected)
+    actual = tuple(_enum_value(value) for value in actual)
+    if not expected:
+        return True
+    if len(expected) == 1:
+        return all(value == expected[0] for value in actual)
+    return len(expected) == len(actual) and expected == actual
+
+
+def _enum_value(value):
+    return getattr(value, "value", value)
 
 
 def check_type(expected):
@@ -186,12 +289,14 @@ def passes(predicates, context: dict) -> bool:
 
 __all__ = [
     "BLayout",
+    "CandidateLegality",
     "SLayout",
     "build_context",
     "check_layout",
     "check_memory_space",
     "check_s_layout",
     "check_type",
+    "evaluate_candidate",
     "passes",
     "require_contiguous",
     "require_same_valid_shape",

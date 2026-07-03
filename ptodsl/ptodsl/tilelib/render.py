@@ -15,6 +15,9 @@ CLI (standalone, parallels lib/TileOps/render_template_mlir.py):
     python3 -m ptodsl.tilelib.render --op pto.tadd --target a5 \\
         --tile dst=8x64@ub:f32 --tile src0=8x64@ub:f32 --tile src1=8x64@ub:f32 \\
         -o /tmp/ptodsl_tadd_tilelib.mlir
+
+    python3 -m ptodsl.tilelib.render --op pto.tadds --target a5 \\
+        --tile src=8x64@ub:f32 --scalar scalar:f32:1 --tile dst=8x64@ub:f32
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from __future__ import annotations
 import argparse
 
 from . import registry as _registry
-from .metadata import ScalarType, TileSpec
+from .metadata import ScalarSpec, ScalarType, TileSpec
 
 
 def select_and_specialize(op: str, target: str, tile_specs: dict,
@@ -41,7 +44,12 @@ def render_best(op: str, target: str, tile_specs: dict,
 
 # ── CLI ─────────────────────────────────────────────────────────────────────────────
 
-_DTYPES = {"f32", "f16", "bf16", "i32", "i16", "i8"}
+_DTYPES = {
+    "f32", "f16", "bf16",
+    "i64", "i32", "i16", "i8",
+    "si64", "si32", "si16", "si8",
+    "ui64", "ui32", "ui16", "ui8",
+}
 
 
 def _parse_tile_arg(spec: str):
@@ -59,16 +67,30 @@ def _parse_tile_arg(spec: str):
     return name, TileSpec(shape=dims, dtype=ScalarType(dtype), memory_space=mem)
 
 
+def _parse_scalar_arg(spec: str):
+    """Parse ``name:dtype[:value]`` like ``scalar:f32:1``."""
+    parts = spec.split(":")
+    if len(parts) not in {2, 3} or not parts[0]:
+        raise argparse.ArgumentTypeError(f"invalid --scalar {spec!r}; expected name:dtype[:value]")
+    name, dtype = parts[0], parts[1]
+    if dtype not in _DTYPES:
+        raise argparse.ArgumentTypeError(f"unsupported dtype {dtype!r} in --scalar {spec!r}")
+    value = parts[2] if len(parts) == 3 else None
+    return name, ScalarSpec(dtype=ScalarType(dtype), value=value)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="ptodsl.tilelib.render")
     parser.add_argument("--op", required=True)
     parser.add_argument("--target", default="a5")
     parser.add_argument("--tile", action="append", default=[], help="name=RxC@mem:dtype")
+    parser.add_argument("--scalar", action="append", default=[], help="name:dtype[:value]")
     parser.add_argument("-o", "--output", default=None)
     args = parser.parse_args(argv)
 
-    tile_specs = dict(_parse_tile_arg(t) for t in args.tile)
-    text = render_best(args.op, args.target, tile_specs)
+    operand_specs = dict(_parse_tile_arg(t) for t in args.tile)
+    operand_specs.update(_parse_scalar_arg(s) for s in args.scalar)
+    text = render_best(args.op, args.target, operand_specs)
 
     if args.output:
         with open(args.output, "w", encoding="utf-8") as handle:

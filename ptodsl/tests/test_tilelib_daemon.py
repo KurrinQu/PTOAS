@@ -193,14 +193,23 @@ class TileLibDaemonTest(unittest.TestCase):
 
         self.assertFalse(os.path.lexists(broken_link))
 
-    def test_non_tile_operand_is_rejected_explicitly(self):
-        operands = list(TADD_OPERANDS)
-        operands[0] = {"kind": "scalar", "dtype": "f32", "value": 1.0}
+    def test_scalar_operand_template_instantiates(self):
+        operands = [
+            _tile_spec(),
+            {"kind": "scalar", "dtype": "f32", "value": 1.0},
+            _tile_spec(),
+        ]
 
-        with self.assertRaisesRegex(
-            DaemonError,
-            "currently supports only tile operands",
-        ):
+        mlir = self.client.instantiate("a5", "pto.tadds", operands)
+
+        self.assertIn("func.func @template_tadds", mlir)
+        self.assertIn("pto.vadds", mlir)
+
+    def test_unsupported_operand_kind_is_rejected_explicitly(self):
+        operands = list(TADD_OPERANDS)
+        operands[0] = {"kind": "vector", "dtype": "f32", "shape": [64]}
+
+        with self.assertRaisesRegex(DaemonError, "supports tile and scalar operands"):
             self.client.instantiate(
                 "a5",
                 "pto.tadd",

@@ -63,6 +63,7 @@ from ._types import (
     _materialize_integer_literal,
     _normalize_address_space,
     _resolve,
+    _strip_integer_signedness,
     mask_type,
     part_tensor_view_type,
     part_tensor_view_type_from_dims,
@@ -1744,6 +1745,32 @@ def vshl(lhs, rhs, mask):
 def vshr(lhs, rhs, mask):
     """``pto.vshr`` – element-wise shift right."""
     return _emit_binary_vec_op(_pto.VshrOp, lhs, rhs, mask)
+
+
+def vshls(inp, scalar, mask):
+    """``pto.vshls`` – vector shift-left by scalar under mask."""
+    _reject_low_precision_vreg_operands(inp, context="pto.vshls(...)")
+    return wrap_surface_value(
+        _pto.VshlsOp(
+            unwrap_surface_value(inp).type,
+            unwrap_surface_value(inp),
+            _coerce_i16(scalar, context="vshls"),
+            unwrap_surface_value(mask),
+        ).result
+    )
+
+
+def vshrs(inp, scalar, mask):
+    """``pto.vshrs`` – vector shift-right by scalar under mask."""
+    _reject_low_precision_vreg_operands(inp, context="pto.vshrs(...)")
+    return wrap_surface_value(
+        _pto.VshrsOp(
+            unwrap_surface_value(inp).type,
+            unwrap_surface_value(inp),
+            _coerce_i16(scalar, context="vshrs"),
+            unwrap_surface_value(mask),
+        ).result
+    )
 
 
 def vcmax(v, mask):

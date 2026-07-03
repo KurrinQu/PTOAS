@@ -1,0 +1,44 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+"""PTODSL TileLib template for pto.tlrelu."""
+
+from ptodsl import pto
+import ptodsl.tilelib as tilelib
+
+
+@tilelib.tile_template(
+    op="pto.tlrelu",
+    target="a5",
+    name="template_tlrelu",
+    dtypes=[
+        ("f16", "f16", "f16"),
+        ("f32", "f32", "f32"),
+    ],
+    constraints=[
+        tilelib.check_memory_space("ub"),
+        tilelib.check_layout("row_major"),
+        tilelib.check_s_layout("none_box"),
+        tilelib.require_same_valid_shape("src", "dst"),
+    ],
+    id=0,
+    loop_depth=2,
+    is_post_update=False,
+    tags=("elementwise", "scalar"),
+)
+def template_tlrelu(src: pto.Tile, slope, dst: pto.Tile):
+    dtype = dst.dtype
+    valid_rows, valid_cols = dst.valid_shape
+    lanes = pto.elements_per_vreg(dtype)
+
+    for row in range(0, valid_rows, 1):
+        remained = valid_cols
+        for col in range(0, valid_cols, lanes):
+            mask, remained = pto.make_mask(dtype, remained)
+            value = pto.vlds(src[row, col:])
+            result = pto.vlrelu(value, slope, mask)
+            pto.vsts(result, dst[row, col:], mask)

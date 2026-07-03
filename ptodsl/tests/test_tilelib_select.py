@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 from ptodsl.tilelib import (
     AmbiguousTemplate,
+    ScalarSpec,
     ScalarType,
     TemplateMetadata,
     TileSpec,
@@ -33,7 +34,56 @@ def _f32_single_row_specs():
     return {"src0": spec, "src1": spec, "dst": spec}
 
 
+def _plain_specs(*, dtype="f32", memory_space="ub", b_layout="row_major"):
+    spec = SimpleNamespace(
+        shape=(8, 64),
+        valid_shape=(8, 64),
+        dtype=ScalarType(dtype),
+        memory_space=memory_space,
+        b_layout=b_layout,
+        s_layout="none_box",
+    )
+    return {"src0": spec, "src1": spec, "dst": spec}
+
+
 class TileLibSelectTest(unittest.TestCase):
+    def test_hard_metadata_legality_is_centralized(self):
+        registry = TileTemplateRegistry()
+        registry.register(SimpleNamespace(
+            op="pto.test_metadata",
+            target="a5",
+            name="metadata_candidate",
+            param_names=("src0", "src1", "dst"),
+            metadata=TemplateMetadata.build(
+                op="pto.test_metadata",
+                target="a5",
+                name="metadata_candidate",
+                dtypes=(("f32", "f32", "f32"),),
+                layouts=("row_major",),
+                memory_spaces=("ub",),
+            ),
+        ))
+
+        legal = registry.legal_candidates(
+            "pto.test_metadata",
+            "a5",
+            _plain_specs(),
+        )
+        self.assertEqual([candidate.name for candidate in legal], ["metadata_candidate"])
+
+        for specs in (
+            _plain_specs(dtype="i8"),
+            _plain_specs(memory_space="gm"),
+            _plain_specs(b_layout="col_major"),
+        ):
+            with self.subTest(specs=specs):
+                with self.assertRaises(NoMatchingTemplate):
+                    registry.legal_candidates(
+                        "pto.test_metadata",
+                        "a5",
+                        specs,
+                    )
+
     def test_context_attributes_are_available_to_constraints(self):
         registry = TileTemplateRegistry()
         registry.register(SimpleNamespace(
@@ -65,17 +115,60 @@ class TileLibSelectTest(unittest.TestCase):
                 context_attrs={"mode": "disabled"},
             )
 
+    def test_scalar_operand_dtypes_participate_in_legality(self):
+        registry = TileTemplateRegistry()
+        registry.register(SimpleNamespace(
+            op="pto.test_scalar",
+            target="a5",
+            name="scalar_candidate",
+            param_names=("src", "scalar", "dst"),
+            metadata=TemplateMetadata.build(
+                op="pto.test_scalar",
+                target="a5",
+                name="scalar_candidate",
+                dtypes=(("f32", "f32", "f32"),),
+                layouts=("row_major",),
+                memory_spaces=("ub",),
+            ),
+        ))
+        tile = TileSpec(shape=(8, 64), dtype=ScalarType("f32"))
+
+        legal = registry.legal_candidates(
+            "pto.test_scalar",
+            "a5",
+            {
+                "src": tile,
+                "scalar": ScalarSpec(dtype=ScalarType("f32"), value=1.0),
+                "dst": tile,
+            },
+        )
+        self.assertEqual([candidate.name for candidate in legal], ["scalar_candidate"])
+
+        with self.assertRaises(NoMatchingTemplate):
+            registry.legal_candidates(
+                "pto.test_scalar",
+                "a5",
+                {
+                    "src": tile,
+                    "scalar": ScalarSpec(dtype=ScalarType("i32"), value=1),
+                    "dst": tile,
+                },
+            )
+
     def test_four_tadd_versions_registered(self):
-        names = {
-            candidate.name
-            for candidate in legal_candidates("pto.tadd", "a5", _f32_specs())
-        }
+        candidates = legal_candidates("pto.tadd", "a5", _f32_specs())
+        names = {candidate.name for candidate in candidates}
         self.assertEqual({
             "template_tadd_2d_no_post_update",
             "template_tadd_1d_no_post_update",
             "template_tadd_2d_post_update",
             "template_tadd_1d_post_update",
         }, names)
+        for candidate in candidates:
+            self.assertEqual(
+                candidate.metadata.dtypes,
+                (("f32", "f32", "f32"),),
+            )
 
     def test_plain_tadd_select_is_ambiguous(self):
         with self.assertRaises(AmbiguousTemplate):
