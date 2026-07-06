@@ -4153,11 +4153,13 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::TPartAddOp>(
+        auto attrs = op->getAttrs();
+        auto newOp = rewriter.replaceOpWithNewOp<pto::TPartAddOp>(
             op,
             src0,
             src1,
             dst);
+        newOp->setAttrs(attrs);
       }
 
       DefaultInlineVector<mlir::pto::TPartMulOp> partmulops;
@@ -4180,11 +4182,13 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::TPartMulOp>(
+        auto attrs = op->getAttrs();
+        auto newOp = rewriter.replaceOpWithNewOp<pto::TPartMulOp>(
             op,
             src0,
             src1,
             dst);
+        newOp->setAttrs(attrs);
       }
 
       DefaultInlineVector<mlir::pto::MGatherOp> mgatherops;

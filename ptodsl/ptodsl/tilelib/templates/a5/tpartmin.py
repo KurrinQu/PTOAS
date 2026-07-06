@@ -9,11 +9,12 @@
 
 from ptodsl import pto
 
-from ._part import register_part_binary
+from ._part import pad_max, register_part_extreme
 
 
-template_tpartmin = register_part_binary(
+template_tpartmin = register_part_extreme(
     op="pto.tpartmin",
     name="template_tpartmin",
     vector_op=pto.vmin,
+    pad_value=pad_max,
 )
