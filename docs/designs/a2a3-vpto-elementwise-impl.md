@@ -38,7 +38,7 @@
 | PTO Op | Decomposition | Intrinsic(s) | dtypes | Status |
 |---|---|---|---|---|
 | `tneg` | `dst = src * (-1)` | `VMULS` | f32, f16 | Done |
-| `trecip` | blocked | no native `VRECIP`; needs verified UB duplicate/fill of constant-one tile plus `VDIV`, or a scalar-over-tile divide intrinsic | f32, f16 | Blocked |
+| `trecip` | `dst = 1; dst = dst / src` | `MOVEV` + `VDIV` | f32, f16 | Done |
 
 ### Scalar-Tile Binary Ops
 
@@ -81,7 +81,7 @@
 63:56  repeat
 ```
 
-### Scalar-Tile Config (VADDS/VMULS/VMAXS/VMINS/VSHL/VSHR)
+### Scalar-Tile Config (VADDS/VMULS/VMAXS/VMINS/VSHL/VSHR/MOVEV)
 
 Same as unary config layout (repeat at `[63:56]`).
 
@@ -173,11 +173,11 @@ See `docs/designs/a2a3-allocator.md` for details.
 
 ## Test Counts
 
-- **56 UB lit tests** (tile-to-UB IR checks + UB-to-LLVM checks + round-trip + planned-address)
+- **58 UB lit tests** (tile-to-UB IR checks + UB-to-LLVM checks + round-trip + planned-address)
 - **192 binary e2e** (f32/f16/i16 binary + bitwise + shift across dispatch-shape matrix, including `taddrelu`)
-- **60 unary e2e** (abs/relu/neg/exp/sqrt/rsqrt across 5 shapes × 2 dtypes)
+- **70 unary e2e** (abs/relu/neg/exp/sqrt/rsqrt/recip across 5 shapes × 2 dtypes)
 - **120 scalar binary e2e** (adds/muls/maxs/mins across 5 shapes × 3 scalars × 2 dtypes)
-- **Total confirmed elementwise hardware e2e tests: 372**
+- **Total confirmed elementwise hardware e2e tests: 382**
 
 The PTODSL hardware e2e suite runs the A3 target by default. A2 and A3 share
 the VPTO lowering pipeline, so this validates the A2/A3 lowering path unless

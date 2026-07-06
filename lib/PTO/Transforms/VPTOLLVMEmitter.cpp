@@ -4821,7 +4821,7 @@ public:
       return rewriter.notifyMatchFailure(
           op, "unsupported element type for ubuf scalar mul op");
 
-    // All four scalar-tile ops keep signed intrinsic names (s16/s32).
+    // Scalar-tile ops keep signed intrinsic names (s16/s32).
     std::string calleeName;
     if constexpr (std::is_same_v<ScalarOp, pto::UBVmulSOp>)
       calleeName = "llvm.hivm.VMULS." + elemFrag;
@@ -4898,6 +4898,72 @@ public:
                                     ValueRange{dst, src, scalarI64, config});
       state.plannedDecls.push_back(PlannedDecl{calleeName, funcType});
     }
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
+class LowerUBufVdupPattern final : public OpConversionPattern<pto::UBVdupOp> {
+public:
+  explicit LowerUBufVdupPattern(TypeConverter &typeConverter,
+                                MLIRContext *context, LoweringState &state)
+      : OpConversionPattern<pto::UBVdupOp>(typeConverter, context), state(state) {}
+
+  LogicalResult
+  matchAndRewrite(pto::UBVdupOp op, pto::UBVdupOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto ptrType = mlir::cast<pto::PtrType>(op.getDst().getType());
+    Type elemType = ptrType.getElementType();
+    std::string suffix;
+    if (elemType.isF32() || elemType.isInteger(32))
+      suffix = "u32";
+    else if (elemType.isF16() || elemType.isInteger(16))
+      suffix = "u16";
+    else
+      return rewriter.notifyMatchFailure(op, "unsupported element type for ubuf vdup");
+
+    Value dst = adaptor.getDst();
+    if (!dst || !isa<LLVM::LLVMPointerType>(dst.getType()))
+      return rewriter.notifyMatchFailure(op, "unexpected converted ubuf vdup dst type");
+
+    Location loc = op.getLoc();
+    auto i64Ty = rewriter.getI64Type();
+    auto getI64 = [&](Value v) -> Value { return castIntegerLikeTo(op, v, i64Ty); };
+    auto maskByte = [&](Value v) -> Value {
+      return rewriter.create<arith::AndIOp>(
+          loc, v, rewriter.create<arith::ConstantOp>(
+                     loc, rewriter.getI64IntegerAttr(0xff)));
+    };
+    auto shl = [&](Value v, uint64_t amount) -> Value {
+      return rewriter.create<arith::ShLIOp>(
+          loc, v, rewriter.create<arith::ConstantOp>(
+                       loc, rewriter.getI64IntegerAttr(amount)));
+    };
+
+    Value config = rewriter.create<arith::ConstantOp>(
+        loc, rewriter.getI64IntegerAttr(0));
+    config = rewriter.create<arith::OrIOp>(
+        loc, config, shl(maskByte(getI64(adaptor.getRepeat())), 56));
+    config = rewriter.create<arith::OrIOp>(
+        loc, config, maskByte(getI64(adaptor.getDstBlockStride())));
+    config = rewriter.create<arith::OrIOp>(
+        loc, config, shl(maskByte(getI64(adaptor.getSrcBlockStride())), 16));
+    config = rewriter.create<arith::OrIOp>(
+        loc, config, shl(maskByte(getI64(adaptor.getDstRepeatStride())), 32));
+    config = rewriter.create<arith::OrIOp>(
+        loc, config, shl(maskByte(getI64(adaptor.getSrcRepeatStride())), 40));
+
+    Value scalar = getI64(adaptor.getScalar());
+    std::string calleeName = "llvm.hivm.MOVEV." + suffix;
+    auto funcType = rewriter.getFunctionType(
+        TypeRange{dst.getType(), i64Ty, i64Ty}, TypeRange{});
+    rewriter.create<func::CallOp>(loc, calleeName, TypeRange{},
+                                  ValueRange{dst, scalar, config});
+    state.plannedDecls.push_back(PlannedDecl{calleeName, funcType});
 
     rewriter.eraseOp(op);
     return success();
@@ -10700,6 +10766,8 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
         typeConverter, patterns.getContext(), state);
     patterns.add<LowerUBufScalarBinaryPattern<pto::UBVminSOp>>(
         typeConverter, patterns.getContext(), state);
+    patterns.add<LowerUBufVdupPattern>(
+        typeConverter, patterns.getContext(), state);
     patterns.add<LowerUBSetMaskOpPattern>(
         typeConverter, patterns.getContext(), state);
     patterns.add<LowerUBSetMaskCountOpPattern>(
@@ -10845,6 +10913,7 @@ static void configureVPTOOpLoweringTarget(ConversionTarget &target,
     target.addIllegalOp<pto::UBVaddSOp>();
     target.addIllegalOp<pto::UBVmaxSOp>();
     target.addIllegalOp<pto::UBVminSOp>();
+    target.addIllegalOp<pto::UBVdupOp>();
     target.addIllegalOp<pto::UBSetMaskOp>();
     target.addIllegalOp<pto::UBSetMaskCountOp>();
     target.addIllegalOp<pto::UBSetMaskNormOp>();

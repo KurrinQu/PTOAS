@@ -555,6 +555,32 @@ struct LowerPTOToUBufOpsPass
       }
     }
 
+    // ---- trecip → vector_dup(dst, 1) + vdiv(dst, dst, src) ----
+    {
+      SmallVector<pto::TRecipOp> ops;
+      func.walk([&](pto::TRecipOp op) { ops.push_back(op); });
+      for (auto op : ops) {
+        auto info = extractTileShapeInfoFromValue(op.getDst(), tileShapes);
+        if (!info)
+          continue;
+        auto [dstPtr, srcPtr, ptrType] =
+            lowerShiftOpCommon(builder, ctx, op, op.getDst(), op.getSrc(),
+                               tileShapes);
+        if (!dstPtr)
+          continue;
+        Type elemTy = ptrType.getElementType();
+        Value oneScalar = builder.create<arith::ConstantOp>(
+            op.getLoc(), builder.getFloatAttr(elemTy, 1.0));
+        Value one = convertScalarToI64(builder, op.getLoc(), oneScalar);
+        dispatchDup(op.getLoc(), builder, dstPtr, one, ptrType, *info);
+        builder.create<pto::BarrierOp>(op.getLoc(),
+                                       pto::PipeAttr::get(ctx, pto::PIPE::PIPE_V));
+        dispatch<pto::UBVdivOp>(op.getLoc(), builder, dstPtr, dstPtr, srcPtr,
+                                ptrType, *info);
+        op.erase();
+      }
+    }
+
     // ---- texp → pto.ub.vexp ----
     {
       SmallVector<pto::TExpOp> ops;
@@ -976,6 +1002,52 @@ private:
     b.create<pto::UBSetMaskCountOp>(loc);
     b.create<pto::UBSetMaskOp>(loc, i64c(totalV, loc, b), i64c0(loc, b));
     emit(dst, src);
+    b.create<pto::UBSetMaskNormOp>(loc);
+    fullMask(loc, b);
+  }
+
+  void dispatchDup(Location loc, OpBuilder &b, Value dst, Value scalar,
+                   pto::PtrType ptrTy, const TileShapeInfo &info) {
+    auto emit = [&](Value rd) {
+      Value scalarI64 = scalar;
+      if (scalarI64.getType() != b.getI64Type())
+        scalarI64 = b.create<arith::ExtSIOp>(loc, b.getI64Type(), scalar);
+      b.create<pto::UBVdupOp>(loc, rd, scalarI64,
+                              i64c1(loc, b), i64c1(loc, b), i64c1(loc, b),
+                              i64c8(loc, b), i64c0(loc, b));
+    };
+
+    int64_t epr = info.elementsPerRepeat;
+    int64_t totalV = info.vRows * info.vCols;
+    int64_t headRepeats = totalV / epr;
+    int64_t tailElements = totalV % epr;
+
+    if (headRepeats > 1 || tailElements > 0) {
+      auto forOp = b.create<scf::ForOp>(loc, idxc0(loc, b),
+                                        idxc(headRepeats, loc, b), idxc1(loc, b));
+      b.setInsertionPointToStart(forOp.getBody());
+      Value iv = forOp.getInductionVar();
+      Value off = b.create<arith::MulIOp>(loc, iv, idxc(epr, loc, b)).getResult();
+      Value rd = addPtr(loc, b, dst, ptrTy, off);
+      b.create<pto::UBSetMaskCountOp>(loc);
+      b.create<pto::UBSetMaskOp>(loc, i64c(epr, loc, b), i64c0(loc, b));
+      emit(rd);
+      b.create<pto::UBSetMaskNormOp>(loc);
+      b.setInsertionPointAfter(forOp);
+      if (tailElements > 0) {
+        Value offT = idxc(headRepeats * epr, loc, b);
+        Value td = addPtr(loc, b, dst, ptrTy, offT);
+        b.create<pto::UBSetMaskCountOp>(loc);
+        b.create<pto::UBSetMaskOp>(loc, i64c(tailElements, loc, b), i64c0(loc, b));
+        emit(td);
+        b.create<pto::UBSetMaskNormOp>(loc);
+      }
+      return;
+    }
+
+    b.create<pto::UBSetMaskCountOp>(loc);
+    b.create<pto::UBSetMaskOp>(loc, i64c(totalV, loc, b), i64c0(loc, b));
+    emit(dst);
     b.create<pto::UBSetMaskNormOp>(loc);
     fullMask(loc, b);
   }

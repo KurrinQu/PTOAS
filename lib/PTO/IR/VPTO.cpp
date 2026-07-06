@@ -8115,6 +8115,20 @@ PTO_DEFINE_UB_UNARY_VERITY_AND_EFFECTS(UBVaddSOp)
 PTO_DEFINE_UB_UNARY_VERITY_AND_EFFECTS(UBVmaxSOp)
 PTO_DEFINE_UB_UNARY_VERITY_AND_EFFECTS(UBVminSOp)
 
+void UBVdupOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Write::get(), &getDstMutable());
+}
+
+LogicalResult UBVdupOp::verify() {
+  if (!isBufferLike(getDst().getType()))
+    return emitOpError("requires pointer-like dst operand");
+  if (classifyMemoryRole(getDst().getType()) != MemoryRole::UB)
+    return emitOpError("requires UB-backed dst operand");
+  return success();
+}
+
 //===----------------------------------------------------------------------===//
 // UBVshlOp
 //===----------------------------------------------------------------------===//

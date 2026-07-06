@@ -162,6 +162,35 @@ def PTO_UBVaddSOp : PTO_UBufShiftOp<"ub.vadds">;
 def PTO_UBVmaxSOp : PTO_UBufShiftOp<"ub.vmaxs">;
 def PTO_UBVminSOp : PTO_UBufShiftOp<"ub.vmins">;
 
+def PTO_UBVdupOp : PTO_Op<"ub.vdup", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Raw ubuf scalar duplicate mapping to llvm.hivm.MOVEV.*";
+
+  let arguments = (ins
+    PTO_BufferType:$dst,
+    I64:$scalar,
+    I64:$repeat,
+    I64:$dstBlockStride,
+    I64:$srcBlockStride,
+    I64:$dstRepeatStride,
+    I64:$srcRepeatStride
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $dst `,` $scalar `,`
+    $repeat `,` $dstBlockStride `,` $srcBlockStride `,`
+    $dstRepeatStride `,` $srcRepeatStride
+    attr-dict `:` type($dst) `,` type($scalar) `,`
+    type($repeat) `,` type($dstBlockStride) `,` type($srcBlockStride) `,`
+    type($dstRepeatStride) `,` type($srcRepeatStride)
+  }];
+}
+
 def PTO_UBSetMaskOp : PTO_Op<"ub.set_mask", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {

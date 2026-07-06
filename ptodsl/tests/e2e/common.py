@@ -47,9 +47,10 @@ UNARY_OPS = {
     "exp":  (pto.tile.exp,  lambda x: np.exp(x)),
     "sqrt": (pto.tile.sqrt, lambda x: np.sqrt(np.abs(x))),
     "rsqrt":(pto.tile.rsqrt,lambda x: 1.0 / np.sqrt(np.abs(x))),
+    "recip":(pto.tile.recip,lambda x: 1.0 / x),
 }
 
-POSITIVE_INPUT_OPS = {"sqrt", "rsqrt"}
+POSITIVE_INPUT_OPS = {"sqrt", "rsqrt", "recip"}
 
 SCALAR_OPS = {
     "adds": (pto.tile.adds, lambda x, s: x + s),
