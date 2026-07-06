@@ -433,9 +433,10 @@ static llvm::cl::opt<llvm::cl::boolOrDefault> enableOpFusion(
 static llvm::cl::opt<bool> enableShapeInference(
     "enable-shape-inference",
     llvm::cl::desc("Enable shape inference (ShapeConstraintSolver) for A5 tile "
-                  "fusion. Off by default: falls back to static/direct-bound "
-                  "iteration-domain inference."),
-    llvm::cl::init(false));
+                  "fusion. On by default: uses the ShapeConstraintSolver for "
+                  "iteration-domain inference; pass --enable-shape-inference=false "
+                  "to fall back to static/direct-bound inference."),
+    llvm::cl::init(true));
 
 static llvm::cl::opt<bool> disableInferLayout(
     "disable-infer-layout",
@@ -1902,12 +1903,10 @@ int mlir::pto::compilePTOASModule(
   }
 
   const bool requestedEnableOpFusion = enableOpFusion == llvm::cl::BOU_TRUE;
-  const bool explicitDisableOpFusion = enableOpFusion == llvm::cl::BOU_FALSE;
   const bool defaultEnableOpFusion =
       enableOpFusion == llvm::cl::BOU_UNSET && arch == "a5";
   const bool opFusionEnabled =
-      (requestedEnableOpFusion || defaultEnableOpFusion) &&
-      !explicitDisableOpFusion;
+      (requestedEnableOpFusion || defaultEnableOpFusion);
 
   if (requestedEnableOpFusion && arch != "a5") {
     llvm::errs() << "Error: --enable-op-fusion=true requires --pto-arch=a5.\n";

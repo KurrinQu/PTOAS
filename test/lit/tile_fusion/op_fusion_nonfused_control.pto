@@ -12,8 +12,8 @@
 // - A3 with --enable-op-fusion=true is rejected
 // - level1 with --enable-op-fusion=true warns and stays unfused
 //
-// RUN: ptoas --pto-arch=a5 --pto-level=level2 --emit-pto-ir %s -o - | FileCheck %s --check-prefix=DEFAULTA5
-// RUN: ptoas --pto-arch=a5 --pto-level=level2 --enable-op-fusion=false --emit-pto-ir %s -o - | FileCheck %s --check-prefix=NOFUSE
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level2 --emit-pto-ir %s -o - | FileCheck %s --check-prefix=DEFAULTA5
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level2 --enable-op-fusion=false --emit-pto-ir %s -o - | FileCheck %s --check-prefix=NOFUSE
 // RUN: not ptoas --pto-arch=a3 --enable-op-fusion=true --emit-pto-ir %s -o - 2>&1 | FileCheck %s --check-prefix=A3
 // RUN: ptoas --pto-arch=a5 --pto-level=level1 --enable-op-fusion=true --emit-pto-ir %s -o - 2>&1 | FileCheck %s --check-prefix=LEVEL1
 
