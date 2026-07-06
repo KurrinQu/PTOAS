@@ -305,6 +305,12 @@ static bool isBackendPartitionedContainer(ModuleOp module) {
                       [](Operation &op) { return isa<ModuleOp>(op); });
 }
 
+static bool isUserVisibleIROutputRequested() {
+  return mlir::pto::emitMlirIR || mlir::pto::emitVPTO ||
+         mlir::pto::emitVPTOLLVMDialect || mlir::pto::ptoPrintSeamIR ||
+         !mlir::pto::ptoSeamIRFile.empty();
+}
+
 static SmallVector<StringRef> collectImportedPeerNames(ModuleOp module) {
   SmallVector<StringRef> names;
   module.walk([&](pto::ImportReservedBufferOp importOp) {
@@ -962,12 +968,35 @@ LogicalResult EmitCBackendJob::run(PTOASContext &context) {
 }
 
 LogicalResult VPTOBackendJob::run(PTOASContext &context) {
+  OwningOpRef<ModuleOp> singleChildJobModule;
+  OwningOpRef<ModuleOp> *compileUnit = &module;
   ModuleOp op = module.get();
   op->setAttr("pto.backend", StringAttr::get(op.getContext(), "vpto"));
 
+  SmallVector<ModuleOp, 4> children(op.getOps<ModuleOp>());
+  // PTODSL emits a backend-partitioned outer container even when there is only
+  // one child module.  For object compilation, the actual VPTO compile unit is
+  // the normalized child job module with outer attributes/imports folded in.
+  // Keep user-visible IR output modes on the original container so dump flags
+  // still reflect the input module structure the user asked to inspect.
+  if (!isUserVisibleIROutputRequested() && children.size() == 1 &&
+      isBackendPartitionedContainer(op) &&
+      children.front()->hasAttr(mlir::pto::FunctionKernelKindAttr::name)) {
+    FailureOr<OwningOpRef<ModuleOp>> jobModuleOr =
+        buildBackendChildCompileUnit(op, children.front());
+    if (failed(jobModuleOr))
+      return failure();
+    singleChildJobModule = std::move(*jobModuleOr);
+    singleChildJobModule.get()->setAttr(
+        "pto.backend",
+        StringAttr::get(singleChildJobModule.get()->getContext(), "vpto"));
+    compileUnit = &singleChildJobModule;
+    op = singleChildJobModule.get();
+  }
+
   bool emitHostStub = hasPTOEntry(op);
   if (mlir::pto::compilePTOASModule(
-          module, context, mlir::pto::PTOBackend::VPTO, result,
+          *compileUnit, context, mlir::pto::PTOBackend::VPTO, result,
           emitHostStub) != 0)
     return failure();
   if (result.kind == mlir::pto::PTOASCompileResultKind::Text)
@@ -1061,10 +1090,7 @@ static LogicalResult resolveSingleBackend(
   }
 
   SmallVector<ModuleOp, 4> children(module.getOps<ModuleOp>());
-  bool debugIROutputRequested =
-      mlir::pto::emitMlirIR || mlir::pto::emitVPTO || mlir::pto::ptoPrintSeamIR ||
-      !mlir::pto::ptoSeamIRFile.empty();
-  if (!debugIROutputRequested && children.size() > 1) {
+  if (!isUserVisibleIROutputRequested() && children.size() > 1) {
     if (!isBackendPartitionedContainer(module)) {
       llvm::errs() << "Error: mixed pto.backend fatobj mode expects either a "
                       "single module or an outer module containing only child "

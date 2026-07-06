@@ -79,7 +79,7 @@ static bool shouldFoldAddrFamily(FoldIntrinsicMode mode) {
   return mode == FoldIntrinsicMode::All || mode == FoldIntrinsicMode::AddrOnly;
 }
 
-static void eraseDeadAllocTileOps(func::FuncOp func) {
+static bool eraseDeadAllocTileOps(func::FuncOp func) {
   SmallVector<pto::AllocTileOp> deadAllocs;
   func.walk([&](pto::AllocTileOp alloc) {
     if (alloc.getResult().use_empty())
@@ -88,6 +88,65 @@ static void eraseDeadAllocTileOps(func::FuncOp func) {
 
   for (pto::AllocTileOp alloc : llvm::reverse(deadAllocs))
     alloc.erase();
+  return !deadAllocs.empty();
+}
+
+static bool isPTOViewBridgeType(Type type) {
+  return isa<pto::PartitionTensorViewType, pto::TensorViewType,
+             pto::TileBufType>(type);
+}
+
+static bool eraseDeadViewBridgeCasts(func::FuncOp func) {
+  SmallVector<UnrealizedConversionCastOp, 8> deadCasts;
+  func.walk([&](UnrealizedConversionCastOp castOp) {
+    if (!castOp.use_empty() || castOp.getNumOperands() != 1 ||
+        castOp.getNumResults() != 1)
+      return;
+
+    Type srcTy = castOp.getOperand(0).getType();
+    Type dstTy = castOp.getResult(0).getType();
+    if ((isa<MemRefType>(srcTy) && isPTOViewBridgeType(dstTy)) ||
+        (isPTOViewBridgeType(srcTy) && isa<MemRefType>(dstTy)))
+      deadCasts.push_back(castOp);
+  });
+
+  for (auto castOp : llvm::reverse(deadCasts))
+    castOp.erase();
+  return !deadCasts.empty();
+}
+
+static bool eraseDeadMemrefViewOps(func::FuncOp func) {
+  SmallVector<Operation *, 8> deadMemrefOps;
+  func.walk([&](Operation *op) {
+    if ((isa<memref::SubViewOp>(op) ||
+         isa<memref::ReinterpretCastOp>(op)) &&
+        op->use_empty())
+      deadMemrefOps.push_back(op);
+  });
+
+  for (Operation *op : llvm::reverse(deadMemrefOps))
+    op->erase();
+  return !deadMemrefOps.empty();
+}
+
+static bool eraseDeadTensorViewOps(func::FuncOp func) {
+  SmallVector<Operation *, 8> deadViewOps;
+  func.walk([&](Operation *op) {
+    if ((isa<pto::PartitionViewOp>(op) ||
+         isa<pto::MakeTensorViewOp>(op)) &&
+        op->use_empty())
+      deadViewOps.push_back(op);
+  });
+
+  for (Operation *op : llvm::reverse(deadViewOps))
+    op->erase();
+  return !deadViewOps.empty();
+}
+
+static void eraseDeadViewChains(func::FuncOp func) {
+  while (eraseDeadViewBridgeCasts(func) || eraseDeadMemrefViewOps(func) ||
+         eraseDeadTensorViewOps(func) || eraseDeadAllocTileOps(func)) {
+  }
 }
 
 struct TileHandleInfo {
@@ -728,34 +787,6 @@ struct FoldTileBufIntrinsicsPass
       }
     }
 
-    // Clean up dead unrealized_conversion_cast ops that bridged
-    // memref -> partition_tensor_view / tile_buf and are now unused
-    // after folding.
-    SmallVector<UnrealizedConversionCastOp, 8> deadCasts;
-    func.walk([&](UnrealizedConversionCastOp castOp) {
-      if (castOp.use_empty() && castOp.getNumOperands() == 1 &&
-          isa<MemRefType>(castOp.getOperand(0).getType()) &&
-          isa<pto::PartitionTensorViewType, pto::TileBufType>(
-              castOp.getResult(0).getType()))
-        deadCasts.push_back(castOp);
-    });
-    for (auto castOp : llvm::reverse(deadCasts))
-      castOp.erase();
-
-    while (true) {
-      SmallVector<Operation *, 8> deadMemrefOps;
-      func.walk([&](Operation *op) {
-        if ((isa<memref::SubViewOp>(op) ||
-             isa<memref::ReinterpretCastOp>(op)) &&
-            op->use_empty())
-          deadMemrefOps.push_back(op);
-      });
-      if (deadMemrefOps.empty())
-        break;
-      for (auto *op : llvm::reverse(deadMemrefOps))
-        op->erase();
-    }
-
     // Erase pto.set_validshape ops. Every valid-shape reader
     // (get_validshape / tile_valid_{rows,cols} / tile_buf_addr) has been
     // folded above, so the runtime metadata writes have no remaining
@@ -788,7 +819,7 @@ struct FoldTileBufIntrinsicsPass
       }
     }
 
-    eraseDeadAllocTileOps(func);
+    eraseDeadViewChains(func);
   }
 };
 
