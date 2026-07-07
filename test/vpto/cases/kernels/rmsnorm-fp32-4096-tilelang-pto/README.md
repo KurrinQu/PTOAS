@@ -67,14 +67,54 @@ Example:
 RUN_ITERS=100 SKIP_VALIDATION=1 ./build.sh run
 ```
 
+## msprof Baseline
+
+The following baseline was collected on 2026-07-07 with CANN
+`/home/qukelin/tools/CANN_9.1/cann-9.1.T530` and device `0`.
+
+This is a standalone binary continuous-run profile. It does not use the
+TileLang `do_bench(..., backend="msprof")` cache-flush measurement mode.
+
+Command:
+
+```bash
+cd /home/qukelin/projects/PTOAS/test/vpto/cases/kernels/rmsnorm-fp32-4096-tilelang-pto
+
+WARMUP_ITERS=10 RUN_ITERS=100 SKIP_VALIDATION=1 msprof \
+  --output=/tmp/rmsnorm_tilelang_pto_msprof_20260707_192437 \
+  --task-time=on \
+  --ai-core=on \
+  --aic-metrics=PipeUtilization \
+  ./build/rmsnorm_pto_main ./build/lib_kernel.so
+```
+
+`op_summary` captured 110 `main_kernel` launches. The first 10 launches are
+warmup; the table below reports the last 100 launches.
+
+| Metric | Mean | Median | Min | Max |
+| --- | ---: | ---: | ---: | ---: |
+| Task Duration | 83.108 us | 83.082 us | 82.173 us | 84.355 us |
+| AIV time | 82.837 us | 82.815 us | 81.940 us | 84.080 us |
+| AIV Vec time | 77.301 us | 77.279 us | 76.784 us | 78.120 us |
+| AIV Scalar time | 2.633 us | 2.631 us | 2.596 us | 2.695 us |
+| AIV MTE2 time | 38.584 us | 38.578 us | 37.247 us | 39.778 us |
+| AIV MTE3 time | 33.353 us | 33.201 us | 30.808 us | 36.381 us |
+
+Average utilization ratios:
+
+| Metric | Mean |
+| --- | ---: |
+| AIV Vec ratio | 93.3% |
+| AIV Scalar ratio | 3.2% |
+| AIV MTE2 ratio | 46.6% |
+| AIV MTE3 ratio | 40.3% |
+
 ## Manual IR Experiment Flow
 
 1. Edit `kernel.pto`. For SIMT fragment persistent/register-residency
    experiments, use `pto.keep` / `pto.resume` to preserve and restore
-   per-workitem scalar values across adjacent SIMT entry calls.
-
-   Reference:
-   `/home/qukelin/projects/PTOAS/docs/isa/micro-isa/17-simt.md`
+   per-workitem scalar values across adjacent SIMT entry calls. See
+   `/home/qukelin/projects/PTOAS/docs/isa/micro-isa/17-simt.md`.
 
    Basic syntax:
 
