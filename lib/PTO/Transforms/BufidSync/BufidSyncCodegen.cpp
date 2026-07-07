@@ -87,11 +87,9 @@ LogicalResult BufidSyncCodegen::run() {
       }
 
       rewriter.setInsertionPoint(op);
-      Attribute opTypeAttr = getOpTypeAttr(rewriter, *syncOpType);
-      rewriter.create<pto::GetBufOp>(
-          op->getLoc(), Attribute(opTypeAttr),
-          rewriter.getI32IntegerAttr(static_cast<int32_t>(physicalId)),
-          rewriter.getI32IntegerAttr(0), Value());
+      auto opTypeAttr = getOpTypeAttr(rewriter, *syncOpType);
+      rewriter.create<pto::GetBufOp>(op->getLoc(), opTypeAttr,
+                                     static_cast<uint32_t>(physicalId), 0);
     }
 
     for (auto &syncAfter : pipeAfter) {
@@ -109,10 +107,8 @@ LogicalResult BufidSyncCodegen::run() {
         rewriter.setInsertionPointAfter(op);
       }
       Attribute opTypeAttr = getOpTypeAttr(rewriter, *syncOpType);
-      rewriter.create<pto::RlsBufOp>(
-          op->getLoc(), Attribute(opTypeAttr),
-          rewriter.getI32IntegerAttr(static_cast<int32_t>(physicalId)),
-          rewriter.getI32IntegerAttr(0), Value());
+      rewriter.create<pto::RlsBufOp>(op->getLoc(), opTypeAttr,
+                                     static_cast<uint32_t>(physicalId), 0);
     }
 
     return WalkResult::advance();

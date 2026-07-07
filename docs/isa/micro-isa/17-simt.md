@@ -1001,35 +1001,10 @@ Example combining barrier and syncthreads:
   // Safe to load MTE result from UB
 ```
 
-### Buffer-ID Synchronization (`pto.get_buf` / `pto.rls_buf`)
-
-- **syntax:**
-  - Static: `pto.get_buf "TLOAD", 3, 0`
-  - Dynamic: `pto.get_buf [TLOAD, %buf_id, 0]` or `pto.get_buf "TLOAD", %buf_id, 0`
-- **semantics:** Acquires (`get_buf`) or releases (`rls_buf`) a buffer-ID token
-  for the given operation type. Operations mapped to the same pipe and guarded by
-  the same buffer-id execute in program order relative to other mapped pipes using
-  the same buffer-id. This enables double-buffering and multi-buffering patterns.
-- **inputs:**
-  - `op_type`: a pipe-like attribute (`PIPE_*`, `sync_op_type`, or `pipe_event_type`)
-  - `buf_id`: either a **static** integer attribute (range `[0, 31]`) or a
-    **dynamic** SSA value of `index` type (e.g., `iter & 1` for ping-pong)
-  - `mode`: optional mode attribute (default `0`)
-- **constraints and limitations:** Exactly one of static `buf_id` attribute or
-  dynamic `buf_id` operand must be provided. The BufidSync auto-insertion pass
-  uses the static form. Dynamic `buf_id` enables SIMT patterns such as staged
-  double-buffering with `(iter & 1)`.
-
-Example (dynamic double-buffering):
-
-```mlir
-  %c1 = arith.constant 1 : index
-  %buf_id = arith.andi %iter, %c1 : index
-  pto.get_buf "TLOAD", %buf_id, 0
-  // ... tload to ubuf slot %buf_id ...
-  pto.rls_buf "TLOAD", %buf_id, 0
-  pto.syncthreads
-```
+> **Note:** For buffer-based synchronization (`get_buf`/`rls_buf` and their dynamic
+> variants `get_buf_dyn`/`rls_buf_dyn`), see [1. Pipeline Synchronization](01-pipeline-sync.md).
+> The dynamic variants are particularly useful for SIMT double-buffering patterns
+> (e.g. `iter & 1` for ping-pong).
 
 ### `pto.threadfence` / `pto.threadfence_block`
 

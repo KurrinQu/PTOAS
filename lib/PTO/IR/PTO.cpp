@@ -8149,7 +8149,7 @@ LogicalResult CmoCacheInvalidOp::verify() {
 
 // ---- GetBufOp / RlsBufOp ----
 static LogicalResult verifyBufSyncOp(Operation *op, Attribute opTypeAttr,
-                                     IntegerAttr bufIdAttr, Value bufIdDyn,
+                                     IntegerAttr bufIdAttr,
                                      IntegerAttr modeAttr) {
   if (!opTypeAttr)
     return op->emitOpError("expects 'op_type' attribute");
@@ -8170,18 +8170,11 @@ static LogicalResult verifyBufSyncOp(Operation *op, Attribute opTypeAttr,
   if (!isConcreteSyncPipe(pipe))
     return op->emitOpError("expects 'op_type' to map to a concrete pipe, not PIPE_ALL/PIPE_UNASSIGNED");
 
-  bool hasStatic = (bufIdAttr != nullptr);
-  bool hasDynamic = static_cast<bool>(bufIdDyn);
-  if (hasStatic == hasDynamic)
-    return op->emitOpError()
-           << "expects exactly one buf-id form: static attribute or dynamic "
-              "index operand";
-
-  if (hasStatic) {
-    int64_t bufId = bufIdAttr.getInt();
-    if (bufId < 0 || bufId > 31)
-      return op->emitOpError("expects 'buf_id' in range [0, 31]");
-  }
+  if (!bufIdAttr)
+    return op->emitOpError("expects 'buf_id' attribute");
+  int64_t bufId = bufIdAttr.getInt();
+  if (bufId < 0 || bufId > 31)
+    return op->emitOpError("expects 'buf_id' in range [0, 31]");
 
   if (modeAttr) {
     int64_t mode = modeAttr.getInt();
@@ -8194,12 +8187,56 @@ static LogicalResult verifyBufSyncOp(Operation *op, Attribute opTypeAttr,
 
 LogicalResult GetBufOp::verify() {
   return verifyBufSyncOp(getOperation(), getOpTypeAttr(), getBufIdAttr(),
-                         getBufIdDyn(), getModeAttr());
+                         getModeAttr());
 }
 
 LogicalResult RlsBufOp::verify() {
   return verifyBufSyncOp(getOperation(), getOpTypeAttr(), getBufIdAttr(),
-                         getBufIdDyn(), getModeAttr());
+                         getModeAttr());
+}
+
+// ---- GetBufDynOp / RlsBufDynOp ----
+static LogicalResult verifyBufDynSyncOp(Operation *op, Attribute opTypeAttr,
+                                        Value bufId, IntegerAttr modeAttr) {
+  if (!opTypeAttr)
+    return op->emitOpError("expects 'op_type' attribute");
+
+  pto::PIPE pipe = pto::PIPE::PIPE_UNASSIGNED;
+  if (auto pipeAttr = dyn_cast<PipeAttr>(opTypeAttr)) {
+    pipe = pipeAttr.getPipe();
+  } else {
+    auto opTypeOr = parseSyncOpTypeLikeAttr(opTypeAttr);
+    if (failed(opTypeOr)) {
+      auto diag = op->emitOpError(
+          "expects 'op_type' to be pipe_event_type/sync_op_type/pipe, got ");
+      diag << opTypeAttr;
+      return failure();
+    }
+    pipe = mapSyncOpTypeToPipe(*opTypeOr);
+  }
+  if (!isConcreteSyncPipe(pipe))
+    return op->emitOpError("expects 'op_type' to map to a concrete pipe, not PIPE_ALL/PIPE_UNASSIGNED");
+
+  if (!bufId)
+    return op->emitOpError("expects 'buf_id' operand");
+
+  if (modeAttr) {
+    int64_t mode = modeAttr.getInt();
+    if (mode < 0)
+      return op->emitOpError("expects 'mode' to be non-negative");
+  }
+
+  return success();
+}
+
+LogicalResult GetBufDynOp::verify() {
+  return verifyBufDynSyncOp(getOperation(), getOpTypeAttr(), getBufId(),
+                            getModeAttr());
+}
+
+LogicalResult RlsBufDynOp::verify() {
+  return verifyBufDynSyncOp(getOperation(), getOpTypeAttr(), getBufId(),
+                            getModeAttr());
 }
 
 static ParseResult parseLegacyOrAttrMemBar(OpAsmParser &parser,
@@ -8474,6 +8511,7 @@ void MemBarOp::print(OpAsmPrinter &p) {
 
 static ParseResult parseBufSyncOp(OpAsmParser &parser, OperationState &result) {
   Attribute opTypeAttr;
+  IntegerAttr bufIdAttr;
   IntegerAttr modeAttr;
 
   auto loc = parser.getCurrentLocation();
@@ -8486,25 +8524,102 @@ static ParseResult parseBufSyncOp(OpAsmParser &parser, OperationState &result) {
     else
       return parser.emitError(loc) << "invalid get_buf/rls_buf token: " << token;
 
+    if (parser.parseComma() || parseI32LiteralAttr(parser, bufIdAttr))
+      return failure();
+    if (succeeded(parser.parseOptionalComma())) {
+      if (parseI32LiteralAttr(parser, modeAttr))
+        return failure();
+    } else {
+      modeAttr = IntegerAttr::get(IntegerType::get(parser.getContext(), 32), 0);
+    }
+  } else if (succeeded(parser.parseOptionalLSquare())) {
+    if (parser.parseAttribute(opTypeAttr) || parser.parseComma() ||
+        parseI32LiteralAttr(parser, bufIdAttr))
+      return failure();
+    if (succeeded(parser.parseOptionalComma())) {
+      if (parseI32LiteralAttr(parser, modeAttr))
+        return failure();
+    } else {
+      modeAttr = IntegerAttr::get(IntegerType::get(parser.getContext(), 32), 0);
+    }
+    if (parser.parseRSquare())
+      return failure();
+  } else {
+    return parser.emitError(loc, "expected string pipe/op_type or '['");
+  }
+
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+  result.addAttribute("op_type", opTypeAttr);
+  result.addAttribute("buf_id", bufIdAttr);
+  result.addAttribute("mode", modeAttr);
+  return success();
+}
+
+static void printBufSyncOp(OpAsmPrinter &p, Attribute opTypeAttr,
+                           IntegerAttr bufIdAttr, IntegerAttr modeAttr,
+                           ArrayRef<NamedAttribute> attrs) {
+  if (auto pipeAttr = dyn_cast<PipeAttr>(opTypeAttr)) {
+    p << " \"" << stringifyPIPE(pipeAttr.getPipe()) << "\", "
+      << bufIdAttr.getInt() << ", " << modeAttr.getInt();
+  } else if (auto pipeEventType = dyn_cast<PipeEventTypeAttr>(opTypeAttr)) {
+    p << "[" << opTypeAttr << ", " << bufIdAttr.getInt() << ", "
+      << modeAttr.getInt() << "]";
+  } else if (auto syncOpType = dyn_cast<SyncOpTypeAttr>(opTypeAttr)) {
+    p << "[" << opTypeAttr << ", " << bufIdAttr.getInt() << ", "
+      << modeAttr.getInt() << "]";
+  } else {
+    p << "[" << opTypeAttr << ", " << bufIdAttr.getInt() << ", "
+      << modeAttr.getInt() << "]";
+  }
+  p.printOptionalAttrDict(attrs, {"op_type", "buf_id", "mode"});
+}
+
+ParseResult GetBufOp::parse(OpAsmParser &parser, OperationState &result) {
+  return parseBufSyncOp(parser, result);
+}
+
+void GetBufOp::print(OpAsmPrinter &p) {
+  printBufSyncOp(p, getOpTypeAttr(), getBufIdAttr(), getModeAttr(),
+                 (*this)->getAttrs());
+}
+
+ParseResult RlsBufOp::parse(OpAsmParser &parser, OperationState &result) {
+  return parseBufSyncOp(parser, result);
+}
+
+void RlsBufOp::print(OpAsmPrinter &p) {
+  printBufSyncOp(p, getOpTypeAttr(), getBufIdAttr(), getModeAttr(),
+                 (*this)->getAttrs());
+}
+
+// ---- GetBufDynOp / RlsBufDynOp parse/print ----
+static ParseResult parseBufDynSyncOp(OpAsmParser &parser,
+                                     OperationState &result) {
+  Attribute opTypeAttr;
+  IntegerAttr modeAttr;
+
+  auto loc = parser.getCurrentLocation();
+  std::string token;
+  if (succeeded(parser.parseOptionalString(&token))) {
+    if (auto pipe = symbolizePIPE(token))
+      opTypeAttr = PipeAttr::get(parser.getContext(), *pipe);
+    else if (auto opType = symbolizeSyncOpType(token))
+      opTypeAttr = PipeEventTypeAttr::get(parser.getContext(), *opType);
+    else
+      return parser.emitError(loc)
+             << "invalid get_buf_dyn/rls_buf_dyn token: " << token;
+
     if (parser.parseComma())
       return failure();
 
     OpAsmParser::UnresolvedOperand bufOperand;
-    OptionalParseResult parseBufOperand =
-        parser.parseOptionalOperand(bufOperand);
-    if (parseBufOperand.has_value()) {
-      if (failed(*parseBufOperand))
-        return failure();
-      if (parser.resolveOperand(bufOperand,
-                                parser.getBuilder().getIndexType(),
-                                result.operands))
-        return failure();
-    } else {
-      IntegerAttr bufIdAttr;
-      if (parseI32LiteralAttr(parser, bufIdAttr))
-        return failure();
-      result.addAttribute("buf_id", bufIdAttr);
-    }
+    if (parser.parseOperand(bufOperand))
+      return failure();
+    if (parser.resolveOperand(bufOperand,
+                              parser.getBuilder().getIndexType(),
+                              result.operands))
+      return failure();
 
     if (succeeded(parser.parseOptionalComma())) {
       if (parseI32LiteralAttr(parser, modeAttr))
@@ -8517,21 +8632,12 @@ static ParseResult parseBufSyncOp(OpAsmParser &parser, OperationState &result) {
       return failure();
 
     OpAsmParser::UnresolvedOperand bufOperand;
-    OptionalParseResult parseBufOperand =
-        parser.parseOptionalOperand(bufOperand);
-    if (parseBufOperand.has_value()) {
-      if (failed(*parseBufOperand))
-        return failure();
-      if (parser.resolveOperand(bufOperand,
-                                parser.getBuilder().getIndexType(),
-                                result.operands))
-        return failure();
-    } else {
-      IntegerAttr bufIdAttr;
-      if (parseI32LiteralAttr(parser, bufIdAttr))
-        return failure();
-      result.addAttribute("buf_id", bufIdAttr);
-    }
+    if (parser.parseOperand(bufOperand))
+      return failure();
+    if (parser.resolveOperand(bufOperand,
+                              parser.getBuilder().getIndexType(),
+                              result.operands))
+      return failure();
 
     if (succeeded(parser.parseOptionalComma())) {
       if (parseI32LiteralAttr(parser, modeAttr))
@@ -8552,58 +8658,35 @@ static ParseResult parseBufSyncOp(OpAsmParser &parser, OperationState &result) {
   return success();
 }
 
-static void printBufSyncOp(OpAsmPrinter &p, Attribute opTypeAttr,
-                           IntegerAttr bufIdAttr, Value bufIdDyn,
-                           IntegerAttr modeAttr,
-                           ArrayRef<NamedAttribute> attrs) {
+static void printBufDynSyncOp(OpAsmPrinter &p, Attribute opTypeAttr,
+                              Value bufId, IntegerAttr modeAttr,
+                              ArrayRef<NamedAttribute> attrs) {
   if (auto pipeAttr = dyn_cast<PipeAttr>(opTypeAttr)) {
-    p << " \"" << stringifyPIPE(pipeAttr.getPipe()) << "\", ";
-    if (bufIdAttr)
-      p << bufIdAttr.getInt();
-    else
-      p << bufIdDyn;
-    p << ", " << modeAttr.getInt();
-  } else if (auto pipeEventType = dyn_cast<PipeEventTypeAttr>(opTypeAttr)) {
-    p << "[" << opTypeAttr << ", ";
-    if (bufIdAttr)
-      p << bufIdAttr.getInt();
-    else
-      p << bufIdDyn;
-    p << ", " << modeAttr.getInt() << "]";
-  } else if (auto syncOpType = dyn_cast<SyncOpTypeAttr>(opTypeAttr)) {
-    p << "[" << opTypeAttr << ", ";
-    if (bufIdAttr)
-      p << bufIdAttr.getInt();
-    else
-      p << bufIdDyn;
-    p << ", " << modeAttr.getInt() << "]";
+    p << " \"" << stringifyPIPE(pipeAttr.getPipe()) << "\", " << bufId << ", "
+      << modeAttr.getInt();
   } else {
-    p << "[" << opTypeAttr << ", ";
-    if (bufIdAttr)
-      p << bufIdAttr.getInt();
-    else
-      p << bufIdDyn;
-    p << ", " << modeAttr.getInt() << "]";
+    p << "[" << opTypeAttr << ", " << bufId << ", " << modeAttr.getInt()
+      << "]";
   }
-  p.printOptionalAttrDict(attrs, {"op_type", "buf_id", "mode"});
+  p.printOptionalAttrDict(attrs, {"op_type", "mode"});
 }
 
-ParseResult GetBufOp::parse(OpAsmParser &parser, OperationState &result) {
-  return parseBufSyncOp(parser, result);
+ParseResult GetBufDynOp::parse(OpAsmParser &parser, OperationState &result) {
+  return parseBufDynSyncOp(parser, result);
 }
 
-void GetBufOp::print(OpAsmPrinter &p) {
-  printBufSyncOp(p, getOpTypeAttr(), getBufIdAttr(), getBufIdDyn(),
-                 getModeAttr(), (*this)->getAttrs());
+void GetBufDynOp::print(OpAsmPrinter &p) {
+  printBufDynSyncOp(p, getOpTypeAttr(), getBufId(), getModeAttr(),
+                    (*this)->getAttrs());
 }
 
-ParseResult RlsBufOp::parse(OpAsmParser &parser, OperationState &result) {
-  return parseBufSyncOp(parser, result);
+ParseResult RlsBufDynOp::parse(OpAsmParser &parser, OperationState &result) {
+  return parseBufDynSyncOp(parser, result);
 }
 
-void RlsBufOp::print(OpAsmPrinter &p) {
-  printBufSyncOp(p, getOpTypeAttr(), getBufIdAttr(), getBufIdDyn(),
-                 getModeAttr(), (*this)->getAttrs());
+void RlsBufDynOp::print(OpAsmPrinter &p) {
+  printBufDynSyncOp(p, getOpTypeAttr(), getBufId(), getModeAttr(),
+                    (*this)->getAttrs());
 }
 // ---- TOp ----
 LogicalResult TGemvBiasOp::verify() {

@@ -6,7 +6,7 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// Test dynamic buf_id operand for pto.get_buf / pto.rls_buf in a SIMT kernel.
+// Test dynamic buf_id operand for pto.get_buf_dyn / pto.rls_buf_dyn in a SIMT kernel.
 // The buf_id is computed from an scf.for loop induction variable (iter & 1),
 // producing a non-constant SSA value that exercises the GET.BUF.mode (register)
 // lowering path. This avoids the bisheng bug triggered by hivm intrinsic results
@@ -24,10 +24,10 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     // The loop induction variable is a standard SSA value, not a hivm intrinsic.
     scf.for %iter = %c0 to %c2 step %c1 {
       %buf_id = arith.andi %iter, %c1 : index
-      pto.get_buf "PIPE_V", %buf_id, 0
+      pto.get_buf_dyn "PIPE_V", %buf_id, 0
       pto.simt_launch @simt_bufid_dynamic_core_body<<<%dim_x, %dim_y, %dim_z>>>(%arg0) : (!pto.ptr<i32, gm>) -> ()
       pto.barrier #pto.pipe<PIPE_ALL>
-      pto.rls_buf "PIPE_V", %buf_id, 0
+      pto.rls_buf_dyn "PIPE_V", %buf_id, 0
     }
     return
   }

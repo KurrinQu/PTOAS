@@ -4108,6 +4108,13 @@ StringRef buildSyncCallee<pto::RlsBufOp>(MLIRContext *context) {
   return StringAttr::get(context, "llvm.hivm.RLS.BUFI.mode").getValue();
 }
 
+static StringRef buildBufDynSyncCallee(MLIRContext *context, bool isGetBuf) {
+  return StringAttr::get(context,
+                         isGetBuf ? "llvm.hivm.GET.BUF.mode"
+                                  : "llvm.hivm.RLS.BUF.mode")
+      .getValue();
+}
+
 template <typename QueryOp>
 static StringRef buildRuntimeQueryCallee(MLIRContext *context);
 
@@ -8825,28 +8832,71 @@ public:
     if (!pipeImm)
       return rewriter.notifyMatchFailure(op, "unsupported buffer sync pipe");
 
-    StringRef calleeName;
+    StringRef calleeName = buildSyncCallee<BufSyncOp>(op.getContext());
     Value pipeValue = getI64Constant(rewriter, op.getLoc(), *pipeImm);
-    Value bufIdValue;
-    if (IntegerAttr bufIdAttr = op.getBufIdAttr()) {
-      bufIdValue = getI64Constant(rewriter, op.getLoc(), bufIdAttr.getInt());
-      calleeName = buildSyncCallee<BufSyncOp>(op.getContext());
+    Value bufIdValue =
+        getI64Constant(rewriter, op.getLoc(), op.getBufIdAttr().getInt());
+    Value modeValue =
+        getI64Constant(rewriter, op.getLoc(), op.getModeAttr().getInt());
+    auto funcType = rewriter.getFunctionType(
+        TypeRange{rewriter.getI64Type(), rewriter.getI64Type(),
+                  rewriter.getI64Type()},
+        TypeRange{});
+    rewriter.create<func::CallOp>(op.getLoc(), calleeName, TypeRange{},
+                                  ValueRange{pipeValue, bufIdValue, modeValue});
+    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
+template <typename BufDynSyncOp>
+class LowerBufDynSyncOpPattern final
+    : public OpConversionPattern<BufDynSyncOp> {
+public:
+  explicit LowerBufDynSyncOpPattern(TypeConverter &typeConverter,
+                                    MLIRContext *context, LoweringState &state)
+      : OpConversionPattern<BufDynSyncOp>(typeConverter, context),
+        state(state) {}
+
+  LogicalResult
+  matchAndRewrite(BufDynSyncOp op, typename BufDynSyncOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    PIPE pipe = PIPE::PIPE_UNASSIGNED;
+    if (auto pipeAttr = dyn_cast<PipeAttr>(op.getOpTypeAttr())) {
+      pipe = pipeAttr.getPipe();
     } else {
-      Value bufIdDyn = adaptor.getBufIdDyn();
-      if (!bufIdDyn)
+      auto opTypeOr = parseSyncOpTypeLikeAttr(op.getOpTypeAttr());
+      if (failed(opTypeOr))
         return rewriter.notifyMatchFailure(
-            op, "expected static or dynamic buf-id operand");
-      bufIdValue = castIntegerLikeTo(op, bufIdDyn, rewriter.getI64Type());
-      if (!bufIdValue)
-        return rewriter.notifyMatchFailure(
-            op, "failed to cast dynamic buf-id to i64");
-      if constexpr (std::is_same_v<BufSyncOp, pto::GetBufOp>)
-        calleeName = StringAttr::get(op.getContext(), "llvm.hivm.GET.BUF.mode")
-                         .getValue();
-      else
-        calleeName = StringAttr::get(op.getContext(), "llvm.hivm.RLS.BUF.mode")
-                         .getValue();
+            op, "buffer sync expects pipe/sync_op_type/pipe_event_type attr");
+      pipe = mapSyncOpTypeToPipe(*opTypeOr);
     }
+    if (!isConcreteSyncPipe(pipe))
+      return rewriter.notifyMatchFailure(
+          op, "buffer sync op_type cannot map to concrete pipe");
+
+    auto pipeImm = parsePipeImmediate(stringifyPIPE(pipe));
+    if (!pipeImm)
+      return rewriter.notifyMatchFailure(op, "unsupported buffer sync pipe");
+
+    Value pipeValue = getI64Constant(rewriter, op.getLoc(), *pipeImm);
+    Value bufIdDyn = adaptor.getBufId();
+    if (!bufIdDyn)
+      return rewriter.notifyMatchFailure(
+          op, "expected dynamic buf-id operand");
+    Value bufIdValue = castIntegerLikeTo(op, bufIdDyn, rewriter.getI64Type());
+    if (!bufIdValue)
+      return rewriter.notifyMatchFailure(
+          op, "failed to cast dynamic buf-id to i64");
+
+    bool isGetBuf =
+        std::is_same_v<BufDynSyncOp, pto::GetBufDynOp>;
+    StringRef calleeName =
+        buildBufDynSyncCallee(op.getContext(), isGetBuf);
     Value modeValue =
         getI64Constant(rewriter, op.getLoc(), op.getModeAttr().getInt());
     auto funcType = rewriter.getFunctionType(
@@ -10222,6 +10272,8 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
                LowerDcciOpPattern,
                LowerBufSyncOpPattern<pto::GetBufOp>,
                LowerBufSyncOpPattern<pto::RlsBufOp>,
+               LowerBufDynSyncOpPattern<pto::GetBufDynOp>,
+               LowerBufDynSyncOpPattern<pto::RlsBufDynOp>,
                LowerRuntimeQueryOpPattern<pto::GetBlockIdxOp>,
                LowerRuntimeQueryOpPattern<pto::GetSubBlockIdxOp>,
                LowerRuntimeQueryOpPattern<pto::GetBlockNumOp>,
