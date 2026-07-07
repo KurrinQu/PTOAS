@@ -228,26 +228,48 @@ def _emit_llvm_byte_pointer(buffer_value, index_value, elem_type):
     byte_offset = _emit_byte_offset(index_value, elem_type)
     llvm_ptr_type = _as_llvm_ptr_type(buffer_value.type)
     if llvm_ptr_type is not None:
-        return llvm.GEPOp(
+        return _emit_llvm_gep(
             llvm_ptr_type,
             buffer_value,
             [byte_offset],
             [-2147483648],
             IntegerType.get_signless(8),
-        ).res
+        )
 
     pto_ptr_type = _as_pto_ptr_type(buffer_value.type)
     i64 = IntegerType.get_signless(64)
     addr_as_i64 = _pto.CastPtrOp(i64, buffer_value).result
     llvm_ptr_type = llvm.PointerType.get(_pto_ptr_llvm_address_space(pto_ptr_type))
     llvm_base = llvm.IntToPtrOp(llvm_ptr_type, addr_as_i64).res
-    return llvm.GEPOp(
+    return _emit_llvm_gep(
         llvm_ptr_type,
         llvm_base,
         [byte_offset],
         [-2147483648],
         IntegerType.get_signless(8),
-    ).res
+    )
+
+
+def _emit_llvm_gep(result_type, base, dynamic_indices, raw_constant_indices, elem_type):
+    try:
+        return llvm.GEPOp(
+            result_type,
+            base,
+            dynamic_indices,
+            raw_constant_indices,
+            elem_type,
+            None,
+        ).res
+    except TypeError as exc:
+        if "positional" not in str(exc) and "argument" not in str(exc):
+            raise
+        return llvm.GEPOp(
+            result_type,
+            base,
+            dynamic_indices,
+            raw_constant_indices,
+            elem_type,
+        ).res
 
 
 def _as_llvm_ptr_type(type_obj):

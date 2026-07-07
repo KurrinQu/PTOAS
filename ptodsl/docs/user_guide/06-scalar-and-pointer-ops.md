@@ -124,7 +124,7 @@ vector value. `N` must be a positive integer greater than `1`.
 
 | Return Value | Type | Description |
 |--------------|------|-------------|
-| `value` | `pto.vec(T, N)` | Vector value with `N == contiguous` and element type `T` |
+| `value` | `pto.Vec(T, size=N)` | Vector value with `N == contiguous` and element type `T` |
 
 **Example**:
 
@@ -137,14 +137,14 @@ x4 = scalar.load(ptr, offset, contiguous=4)
 #### `scalar.store(value: VecValue, ptr: PtrType, offset: Index, *, contiguous: int | None = None) -> None`
 
 **Description**: Stores a vector value to adjacent elements of a typed pointer.
-The store width is taken from the vector lane count. If `contiguous` is
-provided, it must match that lane count.
+The store width is taken from the vector size. If `contiguous` is
+provided, it must match that size.
 
 **Parameters**:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `value` | `pto.vec(T, N)` | Vector value to write |
+| `value` | `pto.Vec(T, size=N)` | Vector value to write |
 | `ptr` | `PtrType` | Typed destination pointer |
 | `offset` | `Index` | First element to store |
 | `contiguous` | `int` or `None` | Optional width check; when provided, it must equal `N` |
@@ -158,7 +158,7 @@ scalar.store(x4, ptr, offset, contiguous=4)  # optional width check
 
 `scalar.store(scalar_value, ptr, offset, contiguous=N)` is rejected because
 scalar values are not implicitly broadcast for vector stores. To build an
-explicit broadcast vector, use `pto.vec(...)`; see Section 8.4.
+explicit broadcast vector, use `pto.Vec(...)`; see Section 4.9.
 
 ### Scalar value adaptation
 
