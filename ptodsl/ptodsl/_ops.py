@@ -162,6 +162,22 @@ def _require_explicit_mode(surface: str):
         raise explicit_mode_required_with_context_error(surface, current_module_spec)
 
 
+def _require_simt_subkernel(surface: str):
+    try:
+        from ._tracing.active import current_session
+        session = current_session()
+    except Exception:
+        session = None
+    frame = session.current_subkernel if session is not None else None
+    if frame is not None and frame.role == "simt":
+        return
+    current = "top-level @pto.jit body" if frame is None else f"@pto.{frame.role}"
+    raise RuntimeError(
+        f"{surface} may only be used inside a @pto.simt helper or inline pto.simt() scope; "
+        f"current scope is {current}."
+    )
+
+
 def _explicit_mode_only(surface: str):
     def decorator(fn):
         @wraps(fn)
@@ -2335,6 +2351,7 @@ def alloc_buffer(shape, dtype, **kwargs):
             "pto.castptr/pto.addptr and pass the dynamic UB byte count at launch."
         )
     _require_explicit_mode("pto.alloc_buffer(...)")
+    _require_simt_subkernel("pto.alloc_buffer(...)")
     element_type = _resolve(dtype)
     element_count = _static_alloc_buffer_element_count(shape)
     elem_bytes = _element_bytewidth(element_type)

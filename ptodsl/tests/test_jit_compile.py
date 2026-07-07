@@ -930,6 +930,11 @@ def alloc_buffer_local_probe():
     alloc_buffer_local_helper()
 
 
+@pto.jit(target="a5", mode="explicit")
+def alloc_buffer_outside_simt_probe():
+    _ = pto.alloc_buffer((32,), pto.f32)
+
+
 @pto.simt
 def rmsnorm_alloc_buffer_frag_helper(
     w_ub: pto.ptr(pto.f32, pto.MemorySpace.UB),
@@ -1668,7 +1673,7 @@ def scalar_contiguous_vector_probe():
     data_tile = pto.alloc_tile(shape=[1, 16], dtype=pto.f32, valid_shape=[1, 16])
     data_ptr = data_tile.as_ptr()
     x4 = scalar.load(data_ptr, 0, contiguous=4)
-    scale4 = pto.vec(pto.f32, 4, init=1.0)
+    scale4 = pto.Vec(pto.f32, size=4, init=1.0)
     y4 = x4 * scale4
     scalar.store(y4, data_ptr, 4)
 
@@ -1677,7 +1682,7 @@ def scalar_contiguous_vector_probe():
 def scalar_contiguous_local_alloc_buffer_helper():
     data = pto.alloc_buffer((16,), pto.f32)
     x4 = scalar.load(data, 0, contiguous=4)
-    scale4 = pto.vec(pto.f32, 4, init=1.0)
+    scale4 = pto.Vec(pto.f32, 4, init=1.0)
     y4 = x4 * scale4
     scalar.store(y4, data, 4)
 
@@ -4354,6 +4359,11 @@ def main() -> None:
         is not None,
         "alloc_buffer probe should keep allocation inside the SIMT helper body",
     )
+    expect_raises(
+        RuntimeError,
+        alloc_buffer_outside_simt_probe.compile,
+        "pto.alloc_buffer(...) may only be used inside a @pto.simt helper or inline pto.simt() scope",
+    )
     rmsnorm_alloc_buffer_text = rmsnorm_alloc_buffer_layout_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(rmsnorm_alloc_buffer_text, "RMSNorm hand-authored UB layout specialization")
     for expected_offset in (4096, 4224, 12416, 20608):
@@ -5053,7 +5063,7 @@ def main() -> None:
     expect("llvm.load" in scalar_contiguous_text, "scalar.load(..., contiguous=N) should lower to llvm.load")
     expect("llvm.store" in scalar_contiguous_text, "scalar.store(vector, ...) should lower to llvm.store")
     expect("vector<4xf32>" in scalar_contiguous_text, "contiguous=4 over f32 should produce vector<4xf32>")
-    expect("llvm.insertelement" in scalar_contiguous_text, "pto.vec(..., init=scalar) should broadcast with insertelement")
+    expect("llvm.insertelement" in scalar_contiguous_text, "pto.Vec(..., init=scalar) should broadcast with insertelement")
     expect("arith.mulf" in scalar_contiguous_text, "VecValue multiplication should lower to arith.mulf")
     expect(
         "pto.load" not in scalar_contiguous_text and "pto.store" not in scalar_contiguous_text,
@@ -5062,7 +5072,7 @@ def main() -> None:
     expect_raises(
         ValueError,
         lambda: scalar_contiguous_width_mismatch_probe.compile(),
-        "does not match vector lane count",
+        "does not match vector size",
     )
     expect_raises(
         TypeError,

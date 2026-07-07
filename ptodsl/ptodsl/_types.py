@@ -154,32 +154,32 @@ class _MaskDescriptor(_DType):
 
 
 class _VecDescriptor(_DType):
-    def __init__(self, elem, lanes: int):
+    def __init__(self, elem, size: int):
         self._elem = elem
-        self._lanes = _validate_vec_lanes(lanes, context="pto.vec(...)")
+        self._size = _validate_vec_size(size, context="pto.Vec(...)")
 
     def resolve(self) -> Type:
-        elem = _ensure_non_storage_only_dtype(self._elem, context="pto.vec(...)")
-        return VectorType.get([self._lanes], elem)
+        elem = _ensure_non_storage_only_dtype(self._elem, context="pto.Vec(...)")
+        return VectorType.get([self._size], elem)
 
     @property
-    def lanes(self) -> int:
-        return self._lanes
+    def size(self) -> int:
+        return self._size
 
     @property
     def elem(self):
         return self._elem
 
     def __repr__(self):
-        return f"<pto.vec {self._lanes}x{self._elem}>"
+        return f"<pto.Vec {self._size}x{self._elem}>"
 
 
-def _validate_vec_lanes(lanes: int, *, context: str) -> int:
-    if isinstance(lanes, bool) or not isinstance(lanes, int):
-        raise TypeError(f"{context} expects lanes to be a positive Python integer")
-    if lanes <= 0:
-        raise ValueError(f"{context} expects lanes to be positive")
-    return lanes
+def _validate_vec_size(size: int, *, context: str) -> int:
+    if isinstance(size, bool) or not isinstance(size, int):
+        raise TypeError(f"{context} expects size to be a positive Python integer")
+    if size <= 0:
+        raise ValueError(f"{context} expects size to be positive")
+    return size
 
 
 def _resolve(dtype) -> Type:
@@ -426,9 +426,9 @@ def vreg_type(lanes: int, elem) -> _VRegDescriptor:
     return _VRegDescriptor(lanes, elem)
 
 
-def vec_type(elem, lanes: int) -> _VecDescriptor:
-    """Return a lazy descriptor for builtin ``vector<lanes x elem>`` values."""
-    return _VecDescriptor(elem, lanes)
+def vec_type(elem, size: int) -> _VecDescriptor:
+    """Return a lazy descriptor for builtin ``vector<size x elem>`` values."""
+    return _VecDescriptor(elem, size)
 
 
 def mask_type(bits: str = "b32") -> _MaskDescriptor:

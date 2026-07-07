@@ -33,7 +33,7 @@ from ._types import (           # noqa: F401
     ptr, vreg_type, vec_type, mask_type,
     _resolve,
 )
-from ._builtin_vector import vec  # noqa: F401
+from ._builtin_vector import Vec  # noqa: F401
 from ._surface_types import (   # noqa: F401
     const_expr,
     BarrierType,

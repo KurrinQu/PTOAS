@@ -154,10 +154,10 @@ def store(value, ptr_or_ref, offset=None, *, contiguous=None):
     raw_value = unwrap_surface_value(value)
     if hasattr(raw_value, "type") and VectorType.isinstance(raw_value.type):
         vec_value = value if isinstance(value, VecValue) else VecValue(raw_value)
-        width = _normalize_contiguous(contiguous, context="scalar.store(...)", default=vec_value.lanes)
-        if width != vec_value.lanes:
+        width = _normalize_contiguous(contiguous, context="scalar.store(...)", default=vec_value.size)
+        if width != vec_value.size:
             raise ValueError(
-                f"scalar.store(..., contiguous={width}) does not match vector lane count {vec_value.lanes}"
+                f"scalar.store(..., contiguous={width}) does not match vector size {vec_value.size}"
             )
         if vec_value.element_type != elem_type:
             raise TypeError(

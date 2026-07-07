@@ -301,7 +301,7 @@ class VecValue(_SurfaceValue):
         vec_type = VectorType(value.type)
         if vec_type.rank != 1:
             raise TypeError(f"PTODSL builtin vectors must be rank-1, got {value.type}")
-        self.lanes = int(vec_type.shape[0])
+        self.size = int(vec_type.shape[0])
         self.element_type = vec_type.element_type
 
     def __mul__(self, other):
