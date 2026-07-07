@@ -219,13 +219,14 @@ struct LowerPTOToUBufOpsPass
     if (!mod)
       return;
     auto archAttr = mod->getAttrOfType<StringAttr>("pto.target_arch");
-    if (!archAttr || archAttr.getValue() != "a3")
+    if (!archAttr ||
+        (archAttr.getValue() != "a2" && archAttr.getValue() != "a3"))
       return;
 
     MLIRContext *ctx = &getContext();
     OpBuilder builder(ctx);
 
-    // A3: consume planned addresses from PTOPlanMemory / PTOMaterializeTileHandles.
+    // A2/A3: consume planned addresses from PTOPlanMemory / PTOMaterializeTileHandles.
     // Each alloc_tile must carry a planned addr operand.
     DenseMap<Value, SmallVector<int64_t, 2>> tileShapes;
     {
@@ -949,18 +950,20 @@ private:
     };
 
     if (headRepeats > 1 || tailElements > 0) {
-      auto forOp = b.create<scf::ForOp>(loc, idxc0(loc, b),
+      if (headRepeats > 0) {
+        auto forOp = b.create<scf::ForOp>(loc, idxc0(loc, b),
                                           idxc(headRepeats, loc, b), idxc1(loc, b));
-      b.setInsertionPointToStart(forOp.getBody());
-      Value iv = forOp.getInductionVar();
-      Value off = b.create<arith::MulIOp>(loc, iv, idxc(epr, loc, b)).getResult();
-      Value rd = addPtr(loc, b, dst, ptrTy, off);
-      Value r0 = addPtr(loc, b, src, ptrTy, off);
-      b.create<pto::UBSetMaskCountOp>(loc);
-      b.create<pto::UBSetMaskOp>(loc, i64c(epr, loc, b), i64c0(loc, b));
-      emitShift(rd, r0);
-      b.create<pto::UBSetMaskNormOp>(loc);
-      b.setInsertionPointAfter(forOp);
+        b.setInsertionPointToStart(forOp.getBody());
+        Value iv = forOp.getInductionVar();
+        Value off = b.create<arith::MulIOp>(loc, iv, idxc(epr, loc, b)).getResult();
+        Value rd = addPtr(loc, b, dst, ptrTy, off);
+        Value r0 = addPtr(loc, b, src, ptrTy, off);
+        b.create<pto::UBSetMaskCountOp>(loc);
+        b.create<pto::UBSetMaskOp>(loc, i64c(epr, loc, b), i64c0(loc, b));
+        emitShift(rd, r0);
+        b.create<pto::UBSetMaskNormOp>(loc);
+        b.setInsertionPointAfter(forOp);
+      }
       if (tailElements > 0) {
         Value offT = idxc(headRepeats * epr, loc, b);
         Value td = addPtr(loc, b, dst, ptrTy, offT);
@@ -994,18 +997,20 @@ private:
     int64_t tailElements = totalV % epr;
 
     if (headRepeats > 1 || tailElements > 0) {
-      auto forOp = b.create<scf::ForOp>(loc, idxc0(loc, b),
+      if (headRepeats > 0) {
+        auto forOp = b.create<scf::ForOp>(loc, idxc0(loc, b),
                                           idxc(headRepeats, loc, b), idxc1(loc, b));
-      b.setInsertionPointToStart(forOp.getBody());
-      Value iv = forOp.getInductionVar();
-      Value off = b.create<arith::MulIOp>(loc, iv, idxc(epr, loc, b)).getResult();
-      Value rd = addPtr(loc, b, dst, ptrTy, off);
-      Value rs = addPtr(loc, b, src, ptrTy, off);
-      b.create<pto::UBSetMaskCountOp>(loc);
-      b.create<pto::UBSetMaskOp>(loc, i64c(epr, loc, b), i64c0(loc, b));
-      emit(rd, rs);
-      b.create<pto::UBSetMaskNormOp>(loc);
-      b.setInsertionPointAfter(forOp);
+        b.setInsertionPointToStart(forOp.getBody());
+        Value iv = forOp.getInductionVar();
+        Value off = b.create<arith::MulIOp>(loc, iv, idxc(epr, loc, b)).getResult();
+        Value rd = addPtr(loc, b, dst, ptrTy, off);
+        Value rs = addPtr(loc, b, src, ptrTy, off);
+        b.create<pto::UBSetMaskCountOp>(loc);
+        b.create<pto::UBSetMaskOp>(loc, i64c(epr, loc, b), i64c0(loc, b));
+        emit(rd, rs);
+        b.create<pto::UBSetMaskNormOp>(loc);
+        b.setInsertionPointAfter(forOp);
+      }
       if (tailElements > 0) {
         Value offT = idxc(headRepeats * epr, loc, b);
         Value td = addPtr(loc, b, dst, ptrTy, offT);
@@ -1042,17 +1047,19 @@ private:
     int64_t tailElements = totalV % epr;
 
     if (headRepeats > 1 || tailElements > 0) {
-      auto forOp = b.create<scf::ForOp>(loc, idxc0(loc, b),
-                                        idxc(headRepeats, loc, b), idxc1(loc, b));
-      b.setInsertionPointToStart(forOp.getBody());
-      Value iv = forOp.getInductionVar();
-      Value off = b.create<arith::MulIOp>(loc, iv, idxc(epr, loc, b)).getResult();
-      Value rd = addPtr(loc, b, dst, ptrTy, off);
-      b.create<pto::UBSetMaskCountOp>(loc);
-      b.create<pto::UBSetMaskOp>(loc, i64c(epr, loc, b), i64c0(loc, b));
-      emit(rd);
-      b.create<pto::UBSetMaskNormOp>(loc);
-      b.setInsertionPointAfter(forOp);
+      if (headRepeats > 0) {
+        auto forOp = b.create<scf::ForOp>(loc, idxc0(loc, b),
+                                          idxc(headRepeats, loc, b), idxc1(loc, b));
+        b.setInsertionPointToStart(forOp.getBody());
+        Value iv = forOp.getInductionVar();
+        Value off = b.create<arith::MulIOp>(loc, iv, idxc(epr, loc, b)).getResult();
+        Value rd = addPtr(loc, b, dst, ptrTy, off);
+        b.create<pto::UBSetMaskCountOp>(loc);
+        b.create<pto::UBSetMaskOp>(loc, i64c(epr, loc, b), i64c0(loc, b));
+        emit(rd);
+        b.create<pto::UBSetMaskNormOp>(loc);
+        b.setInsertionPointAfter(forOp);
+      }
       if (tailElements > 0) {
         Value offT = idxc(headRepeats * epr, loc, b);
         Value td = addPtr(loc, b, dst, ptrTy, offT);
@@ -1080,19 +1087,21 @@ private:
     int64_t tailElements = totalV % epr;
 
     if (headRepeats > 1 || tailElements > 0) {
-      auto forOp = b.create<scf::ForOp>(loc, idxc0(loc, b),
+      if (headRepeats > 0) {
+        auto forOp = b.create<scf::ForOp>(loc, idxc0(loc, b),
                                           idxc(headRepeats, loc, b), idxc1(loc, b));
-      b.setInsertionPointToStart(forOp.getBody());
-      Value iv = forOp.getInductionVar();
-      Value off = b.create<arith::MulIOp>(loc, iv, idxc(epr, loc, b)).getResult();
-      Value rd = addPtr(loc, b, dst, ptrTy, off);
-      Value r0 = addPtr(loc, b, s0, ptrTy, off);
-      Value r1 = addPtr(loc, b, s1, ptrTy, off);
-      b.create<pto::UBSetMaskCountOp>(loc);
-      b.create<pto::UBSetMaskOp>(loc, i64c(epr, loc, b), i64c0(loc, b));
-      emitUBBinOp<UBop>(loc, b, rd, r0, r1, i64c1(loc, b), i64c8(loc, b));
-      b.create<pto::UBSetMaskNormOp>(loc);
-      b.setInsertionPointAfter(forOp);
+        b.setInsertionPointToStart(forOp.getBody());
+        Value iv = forOp.getInductionVar();
+        Value off = b.create<arith::MulIOp>(loc, iv, idxc(epr, loc, b)).getResult();
+        Value rd = addPtr(loc, b, dst, ptrTy, off);
+        Value r0 = addPtr(loc, b, s0, ptrTy, off);
+        Value r1 = addPtr(loc, b, s1, ptrTy, off);
+        b.create<pto::UBSetMaskCountOp>(loc);
+        b.create<pto::UBSetMaskOp>(loc, i64c(epr, loc, b), i64c0(loc, b));
+        emitUBBinOp<UBop>(loc, b, rd, r0, r1, i64c1(loc, b), i64c8(loc, b));
+        b.create<pto::UBSetMaskNormOp>(loc);
+        b.setInsertionPointAfter(forOp);
+      }
       if (tailElements > 0) {
         Value offT = idxc(headRepeats * epr, loc, b);
         Value td = addPtr(loc, b, dst, ptrTy, offT);

@@ -4602,8 +4602,9 @@ public:
     if (!llvmSourceType || !llvmDestType)
       return rewriter.notifyMatchFailure(op, "expected LLVM pointer copy operands");
 
-    bool useA3NonPadded = (march == "dav-c220-vec") && isGmUb && !hasPadding;
-    bool useA3UbGm = (march == "dav-c220-vec") && !isGmUb;
+    bool isC220 = march == "dav-c220-vec" || march == "dav-c220-cube";
+    bool useA3NonPadded = isC220 && isGmUb && !hasPadding;
+    bool useA3UbGm = isC220 && !isGmUb;
     bool useSingleConfig = useA3NonPadded || useA3UbGm;
 
     FailureOr<Value> config0 = failure();
@@ -11064,7 +11065,7 @@ static LogicalResult lowerVPTOTypes(ModuleOp module, llvm::raw_ostream &diagOS) 
   LoweringState state;
 
   target.addLegalOp<ModuleOp>();
-  target.addLegalOp<pto::AddPtrOp>();([&](func::FuncOp op) {
+  target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
     return typeConverter.isSignatureLegal(op.getFunctionType()) &&
            typeConverter.isLegal(&op.getBody());
   });

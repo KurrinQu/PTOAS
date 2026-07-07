@@ -8097,7 +8097,7 @@ LogicalResult UBVreluOp::verify() {
   return success();
 }
 
-#define PTO_DEFINE_UB_UNARY_VERITY_AND_EFFECTS(OpName)                        \
+#define PTO_DEFINE_UB_UNARY_VERIFY_AND_EFFECTS(OpName)                        \
   void OpName::getEffects(                                                    \
       SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>     \
           &effects) {                                                         \
@@ -8114,14 +8114,14 @@ LogicalResult UBVreluOp::verify() {
     return success();                                                         \
   }
 
-PTO_DEFINE_UB_UNARY_VERITY_AND_EFFECTS(UBVexpOp)
-PTO_DEFINE_UB_UNARY_VERITY_AND_EFFECTS(UBVlnOp)
-PTO_DEFINE_UB_UNARY_VERITY_AND_EFFECTS(UBVsqrtOp)
-PTO_DEFINE_UB_UNARY_VERITY_AND_EFFECTS(UBVrsqrtOp)
+PTO_DEFINE_UB_UNARY_VERIFY_AND_EFFECTS(UBVexpOp)
+PTO_DEFINE_UB_UNARY_VERIFY_AND_EFFECTS(UBVlnOp)
+PTO_DEFINE_UB_UNARY_VERIFY_AND_EFFECTS(UBVsqrtOp)
+PTO_DEFINE_UB_UNARY_VERIFY_AND_EFFECTS(UBVrsqrtOp)
 
-PTO_DEFINE_UB_UNARY_VERITY_AND_EFFECTS(UBVaddSOp)
-PTO_DEFINE_UB_UNARY_VERITY_AND_EFFECTS(UBVmaxSOp)
-PTO_DEFINE_UB_UNARY_VERITY_AND_EFFECTS(UBVminSOp)
+PTO_DEFINE_UB_UNARY_VERIFY_AND_EFFECTS(UBVaddSOp)
+PTO_DEFINE_UB_UNARY_VERIFY_AND_EFFECTS(UBVmaxSOp)
+PTO_DEFINE_UB_UNARY_VERIFY_AND_EFFECTS(UBVminSOp)
 
 void UBVdupOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>

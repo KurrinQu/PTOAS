@@ -94,6 +94,18 @@ constexpr size_t kMarkerRewriteTernaryArgCount = 3;
 using StringRefVector =
     llvm::SmallVector<llvm::StringRef, kStringRefInlineCapacity>;
 
+static std::string normalizeArch(llvm::StringRef arch) {
+  std::string normalized = arch.str();
+  for (char &c : normalized)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return normalized;
+}
+
+static bool isA2A3Arch(llvm::StringRef arch) {
+  std::string normalized = normalizeArch(arch);
+  return normalized == "a2" || normalized == "a3";
+}
+
 } // namespace
 
 int main(int argc, char **argv);
@@ -468,8 +480,8 @@ llvm::cl::opt<bool> mlir::pto::emitMlirIR(
 
 llvm::cl::opt<std::string> mlir::pto::ptoTargetArch(
     "pto-arch",
-    llvm::cl::desc("Target Ascend architecture for codegen: a3 or a5 (default: a3)"),
-    llvm::cl::value_desc("a3|a5"),
+    llvm::cl::desc("Target Ascend architecture for codegen: a2, a3, or a5 (default: a3)"),
+    llvm::cl::value_desc("a2|a3|a5"),
     llvm::cl::init("a3"));
 
 static llvm::cl::opt<std::string> ptoBuildLevel(
@@ -2546,13 +2558,13 @@ static void lowerPTOToVPTOBackend(PassManager &pm, ModuleOp module, int argc,
   auto &kernelModulePM = pm.nest<ModuleOp>();
   auto moduleArchAttr =
       module->getAttrOfType<mlir::StringAttr>("pto.target_arch");
-  const bool isA3 = moduleArchAttr && moduleArchAttr.getValue() == "a3";
+  const bool isA2A3 = moduleArchAttr && isA2A3Arch(moduleArchAttr.getValue());
   const bool enableA5VPTOPostLoweringFusionLifecycle =
       enableOpFusion && moduleArchAttr && moduleArchAttr.getValue() == "a5";
 
   kernelModulePM.addNestedPass<mlir::func::FuncOp>(
       pto::createLowerPTOToUBufOpsPass());
-  if (isA3)
+  if (isA2A3)
     return;
 
   pto::ExpandTileOpOptions expandOpts = resolveExpandTileOpOptions(argc, argv);
@@ -2585,10 +2597,8 @@ buildVPTOEmissionOptions(const pto::CANNVersion &cannVersion) {
   options.dumpVPTOIR = false;
   options.targetTriple = "hiipu64-hisilicon-cce";
   options.cannVersion = cannVersion;
-  std::string arch = ptoTargetArch;
-  for (char &c : arch)
-    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  options.march = (arch == "a3") ? "dav-c220-vec" : "dav-c310-vec";
+  std::string arch = normalizeArch(ptoTargetArch);
+  options.march = isA2A3Arch(arch) ? "dav-c220-vec" : "dav-c310-vec";
   return options;
 }
 
@@ -2908,13 +2918,14 @@ int mlir::pto::compilePTOASModule(
   pm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
   if (!disableInferLayout)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
-  // Local tile planning path.  A5/non-A3 already use this path.  A3 VPTO also
+  // Local tile planning path.  A5 already uses this path. A2/A3 VPTO also
   // enters it so UB tile addresses come from PTOPlanMemory instead of the
   // fallback allocator in LowerPTOToUBufOps.
+  const bool isA2A3 = isA2A3Arch(ptoTargetArch);
   const bool enableLocalTilePlanning =
-      ptoTargetArch != "a3" || effectiveBackend == PTOBackend::VPTO;
+      !isA2A3 || effectiveBackend == PTOBackend::VPTO;
   if (enableLocalTilePlanning) {
-    if (ptoTargetArch != "a3")
+    if (!isA2A3)
       pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOA5NormalizeTMovPass());
     pm.addNestedPass<mlir::func::FuncOp>(
         pto::createPTOValidateIntToPtrUsesPass());
@@ -2929,12 +2940,12 @@ int mlir::pto::compilePTOASModule(
     // so it takes no option here.
     pto::FusionPlanOptions fusionPlanOpts;
     fusionPlanOpts.enableShapeInference = enableShapeInference;
-    if (ptoTargetArch != "a3" && enableA5EmitCFusionPath) {
+    if (!isA2A3 && enableA5EmitCFusionPath) {
       pm.addNestedPass<mlir::func::FuncOp>(
           pto::createFusionPlanPass(fusionPlanOpts));
       pm.addNestedPass<mlir::func::FuncOp>(pto::createOpSchedulingPass());
       pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOMarkLastUsePass());
-    } else if (ptoTargetArch != "a3" && enableA5VPTOFusionPath) {
+    } else if (!isA2A3 && enableA5VPTOFusionPath) {
       pm.addNestedPass<mlir::func::FuncOp>(
           pto::createFusionPlanPass(fusionPlanOpts));
       pm.addNestedPass<mlir::func::FuncOp>(pto::createOpSchedulingPass());
@@ -3048,7 +3059,7 @@ int mlir::pto::compilePTOASModule(
 
   PassManager emitcPM(module->getContext());
   emitcPM.enableVerifier();
-  if (arch == "a3") {
+  if (isA2A3Arch(arch)) {
     emitcPM.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));
   } else {
     emitcPM.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A5));
