@@ -34,7 +34,7 @@ bool mlir::pto::isPTOFloat4PackedType(Type t) {
 
 bool mlir::pto::isPTOPackedFloatVectorType(Type t) {
   auto vecType = dyn_cast<VectorType>(t);
-  if (!vecType || vecType.getRank() != 1 || vecType.getDimSize(0) != 2)
+  if (!vecType || vecType.isScalable() || vecType.getRank() != 1 || vecType.getDimSize(0) != 2)
     return false;
   Type elemType = vecType.getElementType();
   return elemType.isF16() || elemType.isBF16() || elemType.isF32();
