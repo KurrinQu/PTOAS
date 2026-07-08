@@ -1846,6 +1846,7 @@ def TPushToAicOp : PTO_TOp<"tpush_to_aic"> {
 
   let arguments = (ins
       PTOPipeEntryType:$tile,
+      Optional<I64>:$aiv_subblockid,
       DefaultValuedOptionalAttr<I32Attr, "0">:$id,
       I8Attr:$split
   );
@@ -1855,7 +1856,9 @@ def TPushToAicOp : PTO_TOp<"tpush_to_aic"> {
 
   let assemblyFormat = [{
     `(` $tile `:` qualified(type($tile)) `)`
-    `{` (`id` `=` $id^ `,`)? `split` `=` $split `}` attr-dict
+    `{` (`id` `=` $id^ `,`)? `split` `=` $split `}`
+    (`aiv_subblockid` `(` $aiv_subblockid^ `)`)?
+    attr-dict
   }];
 }
 
@@ -1865,6 +1868,7 @@ def TPopFromAicOp : PTO_TOp<"tpop_from_aic", [AttrSizedOperandSegments]> {
   let arguments = (ins
       Optional<Index>:$valid_row,
       Optional<Index>:$valid_col,
+      Optional<I64>:$aiv_subblockid,
       DefaultValuedOptionalAttr<I32Attr, "0">:$id,
       I8Attr:$split
   );
@@ -1873,7 +1877,10 @@ def TPopFromAicOp : PTO_TOp<"tpop_from_aic", [AttrSizedOperandSegments]> {
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    (`(` $valid_row^ `,` $valid_col `)`)? `{` (`id` `=` $id^ `,`)? `split` `=` $split `}` attr-dict
+    (`(` $valid_row^ `,` $valid_col `)`)?
+    `{` (`id` `=` $id^ `,`)? `split` `=` $split `}`
+    (`aiv_subblockid` `(` $aiv_subblockid^ `)`)?
+    attr-dict
     `->` qualified(type($tile))
   }];
 }
@@ -2381,6 +2388,7 @@ def TPushOp : PTO_TOp<"tpush", [
   let arguments = (ins
       PTOPipeEntryType:$tile,
       PipeType:$pipe_handle,
+      Optional<I64>:$aiv_subblockid,
       I8Attr:$split
   );
 
@@ -2389,7 +2397,9 @@ def TPushOp : PTO_TOp<"tpush", [
 
   let assemblyFormat = [{
     `(` $tile `,` $pipe_handle `:` qualified(type($tile)) `,` qualified(type($pipe_handle)) `)`
-    `{` `split` `=` $split `}` attr-dict
+    `{` `split` `=` $split `}`
+    (`aiv_subblockid` `(` $aiv_subblockid^ `)`)?
+    attr-dict
   }];
 
   let extraClassDeclaration = [{
@@ -2631,6 +2641,7 @@ def TPopOp : PTO_TOp<"tpop", [
   let arguments = (ins
       PTOPipeEntryType:$tile,
       PipeType:$pipe_handle,
+      Optional<I64>:$aiv_subblockid,
       I8Attr:$split
   );
 
@@ -2639,7 +2650,9 @@ def TPopOp : PTO_TOp<"tpop", [
 
   let assemblyFormat = [{
     `(` $tile `,` $pipe_handle `:` qualified(type($tile)) `,` qualified(type($pipe_handle)) `)`
-    `{` `split` `=` $split `}` attr-dict
+    `{` `split` `=` $split `}`
+    (`aiv_subblockid` `(` $aiv_subblockid^ `)`)?
+    attr-dict
   }];
 
   let extraClassDeclaration = [{
