@@ -79,6 +79,8 @@ struct PendingReleaseAccess {
   bool drainPending = false;
   bool needsDsbDdr = false;
   bool needsGmCacheCmo = false;
+  bool dsbCovered = false;
+  bool cmoCovered = false;
 };
 
 struct TNotifyReleaseState {
@@ -92,7 +94,9 @@ struct TNotifyReleaseState {
   bool addressedDrainMte3 = false;
   bool addressedDrainFix = false;
   bool addressedNeedsDsbDdr = false;
+  bool addressedNeedsGmCacheCmo = false;
   SmallVector<PendingReleaseAccess, 8> pendingAccesses;
+  SmallVector<Value, 8> addressedCmoPayloads;
 
   void merge(const TNotifyReleaseState &other) {
     drainMte2 |= other.drainMte2;
@@ -105,8 +109,15 @@ struct TNotifyReleaseState {
     addressedDrainMte3 |= other.addressedDrainMte3;
     addressedDrainFix |= other.addressedDrainFix;
     addressedNeedsDsbDdr |= other.addressedNeedsDsbDdr;
+    addressedNeedsGmCacheCmo |= other.addressedNeedsGmCacheCmo;
     pendingAccesses.append(other.pendingAccesses.begin(),
                            other.pendingAccesses.end());
+    addressedCmoPayloads.append(other.addressedCmoPayloads.begin(),
+                                other.addressedCmoPayloads.end());
+    refreshNeedsDsbDdr();
+    refreshNeedsGmCacheCmo();
+    if (hasAddressedCmo)
+      recomputeAddressedState();
   }
 
   void clear() {
@@ -120,7 +131,60 @@ struct TNotifyReleaseState {
     addressedDrainMte3 = false;
     addressedDrainFix = false;
     addressedNeedsDsbDdr = false;
+    addressedNeedsGmCacheCmo = false;
     pendingAccesses.clear();
+    addressedCmoPayloads.clear();
+  }
+
+  bool accessMatchesAddressedCmo(const PendingReleaseAccess &access) const {
+    for (Value payload : addressedCmoPayloads)
+      if (payloadMayAlias(access.payload, payload))
+        return true;
+    return false;
+  }
+
+  void refreshNeedsGmCacheCmo() {
+    needsGmCacheCmo = false;
+    for (const PendingReleaseAccess &access : pendingAccesses) {
+      if (access.needsGmCacheCmo && !access.cmoCovered) {
+        needsGmCacheCmo = true;
+        return;
+      }
+    }
+  }
+
+  void refreshNeedsDsbDdr() {
+    needsDsbDdr = false;
+    for (const PendingReleaseAccess &access : pendingAccesses) {
+      if (access.needsDsbDdr && !access.dsbCovered) {
+        needsDsbDdr = true;
+        return;
+      }
+    }
+  }
+
+  void recomputeAddressedState() {
+    addressedDrainMte2 = false;
+    addressedDrainMte3 = false;
+    addressedDrainFix = false;
+    addressedNeedsDsbDdr = false;
+    addressedNeedsGmCacheCmo = false;
+
+    for (const PendingReleaseAccess &access : pendingAccesses) {
+      if (!accessMatchesAddressedCmo(access))
+        continue;
+      if (access.drainPending) {
+        if (access.pipe == pto::PIPE::PIPE_MTE2)
+          addressedDrainMte2 = true;
+        if (access.pipe == pto::PIPE::PIPE_MTE3)
+          addressedDrainMte3 = true;
+        if (access.pipe == pto::PIPE::PIPE_FIX)
+          addressedDrainFix = true;
+      }
+      addressedNeedsDsbDdr |= access.needsDsbDdr && !access.dsbCovered;
+      if (access.needsGmCacheCmo && !access.cmoCovered)
+        addressedNeedsGmCacheCmo = true;
+    }
   }
 
   void addAccess(pto::PIPE pipe, Value payload, bool needsDsb,
@@ -150,6 +214,8 @@ struct TNotifyReleaseState {
     }
     needsDsbDdr |= needsDsb;
     needsGmCacheCmo |= needsCmo;
+    if (hasAddressedCmo)
+      recomputeAddressedState();
   }
 
   void markPipeDrained(pto::PIPE pipe) {
@@ -172,6 +238,8 @@ struct TNotifyReleaseState {
       drainFix = false;
       addressedDrainFix = false;
     }
+    if (hasAddressedCmo)
+      recomputeAddressedState();
   }
 
   void applyBarrier(pto::PIPE pipe) {
@@ -181,12 +249,22 @@ struct TNotifyReleaseState {
   void applyFenceBarrierAll(pto::FenceScope scope) {
     if (scope != pto::FenceScope::GM && scope != pto::FenceScope::All)
       return;
-    if (hasAddressedCmo) {
-      if (!addressedDrainMte3 && !addressedDrainFix)
-        addressedNeedsDsbDdr = false;
+
+    for (PendingReleaseAccess &access : pendingAccesses) {
+      if (!access.needsDsbDdr)
+        continue;
+      if (hasAddressedCmo && !accessMatchesAddressedCmo(access))
+        continue;
+      if (access.drainPending)
+        continue;
+      if (access.needsGmCacheCmo && !access.cmoCovered)
+        continue;
+      access.dsbCovered = true;
     }
-    if (!drainMte3 && !drainFix && !needsGmCacheCmo)
-      needsDsbDdr = false;
+
+    refreshNeedsDsbDdr();
+    if (hasAddressedCmo)
+      recomputeAddressedState();
   }
 
   void applyCmoCacheInvalid(pto::CmoCacheInvalidOp cmo) {
@@ -195,27 +273,29 @@ struct TNotifyReleaseState {
       return;
     Value addr = cmo.getAddr();
     if (!addr) {
-      needsGmCacheCmo = false;
+      for (PendingReleaseAccess &access : pendingAccesses)
+        if (access.needsGmCacheCmo)
+          access.cmoCovered = true;
+      refreshNeedsGmCacheCmo();
+      if (hasAddressedCmo)
+        recomputeAddressedState();
       cmo->removeAttr(kCmoCacheInvalidSkipLoweringAttrName);
       return;
     }
 
     hasAddressedCmo = true;
+    addressedCmoPayloads.push_back(addr);
     bool needsRealCmo = false;
-    for (const PendingReleaseAccess &access : pendingAccesses) {
+    for (PendingReleaseAccess &access : pendingAccesses) {
       if (!payloadMayAlias(access.payload, addr))
         continue;
-      if (access.drainPending) {
-        if (access.pipe == pto::PIPE::PIPE_MTE2)
-          addressedDrainMte2 = true;
-        if (access.pipe == pto::PIPE::PIPE_MTE3)
-          addressedDrainMte3 = true;
-        if (access.pipe == pto::PIPE::PIPE_FIX)
-          addressedDrainFix = true;
+      if (access.needsGmCacheCmo) {
+        access.cmoCovered = true;
+        needsRealCmo = true;
       }
-      addressedNeedsDsbDdr |= access.needsDsbDdr;
-      needsRealCmo |= access.needsGmCacheCmo;
     }
+    refreshNeedsGmCacheCmo();
+    recomputeAddressedState();
 
     if (needsRealCmo) {
       cmo->removeAttr(kCmoCacheInvalidSkipLoweringAttrName);
@@ -532,6 +612,14 @@ static void diagnoseTNotifyRelease(pto::TNotifyOp op,
                                    const TNotifyReleaseState &state,
                                    bool &hasFailure) {
   if (state.hasAddressedCmo) {
+    if (state.addressedNeedsGmCacheCmo) {
+      op.emitOpError()
+          << "requires explicit `pto.cmo.cacheinvalid %addr "
+             "single_cache_line` after matching cacheable GM scalar stores "
+             "and before `pto.fence.barrier_all #pto.fence_scope<gm>`";
+      hasFailure = true;
+      return;
+    }
     if (state.addressedNeedsDsbDdr) {
       op.emitOpError()
           << "requires explicit `pto.fence.barrier_all #pto.fence_scope<gm>` "
