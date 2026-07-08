@@ -10335,7 +10335,8 @@ static void configureVPTOOpLoweringTarget(ConversionTarget &target,
                       pto::SyncWaitOp, pto::BarrierOp, pto::MemBarOp,
                       pto::CmoCacheInvalidOp, pto::FenceBarrierAllOp,
                       pto::DsbOp, pto::DcciOp,
-                      pto::GetBufOp, pto::RlsBufOp>();
+                      pto::GetBufOp, pto::RlsBufOp,
+                      pto::GetBufDynOp, pto::RlsBufDynOp>();
   target.addIllegalOp<pto::GetBlockIdxOp, pto::GetSubBlockIdxOp,
                       pto::GetBlockNumOp, pto::GetSubBlockNumOp,
                       pto::GetCtrlOp, pto::GetVms4SrOp, pto::GetTidXOp,
