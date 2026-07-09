@@ -611,16 +611,8 @@ static void setTNotifyPipeDrainAttrs(pto::TNotifyOp op,
 static void diagnoseTNotifyRelease(pto::TNotifyOp op,
                                    const TNotifyReleaseState &state,
                                    bool &hasFailure) {
-  if (!state.hasAddressedCmo) {
-    if (!state.pendingAccesses.empty()) {
-      op.emitOpError()
-          << "requires explicit `pto.cmo.cacheinvalid %addr "
-             "single_cache_line` before `pto.comm.tnotify` to identify "
-             "the GM payload covered by the signal release";
-      hasFailure = true;
-    }
+  if (!state.hasAddressedCmo)
     return;
-  }
 
   if (state.addressedNeedsGmCacheCmo) {
     op.emitOpError()
