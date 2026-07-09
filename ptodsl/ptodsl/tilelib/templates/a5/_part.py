@@ -196,11 +196,11 @@ def _emit_copy(dst, src, valid_rows, valid_cols, start_row):
 def pad_min(dtype):
     name = str(dtype)
     if name == "f32":
-        return pto.f32("-inf")
+        return pto.f32(-3.4028234663852886e38)
     if name == "f16":
-        return pto.f16("-inf")
+        return pto.f16(-65504.0)
     if name == "bf16":
-        return pto.bf16("-inf")
+        return pto.bf16(-3.3895313892515355e38)
     if name == "ui32":
         return pto.ui32(0)
     if name == "ui16":
@@ -217,11 +217,11 @@ def pad_min(dtype):
 def pad_max(dtype):
     name = str(dtype)
     if name == "f32":
-        return pto.f32("inf")
+        return pto.f32(3.4028234663852886e38)
     if name == "f16":
-        return pto.f16("inf")
+        return pto.f16(65504.0)
     if name == "bf16":
-        return pto.bf16("inf")
+        return pto.bf16(3.3895313892515355e38)
     if name == "ui32":
         return pto.ui32(4294967295)
     if name == "ui16":
