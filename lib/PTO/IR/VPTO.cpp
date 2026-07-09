@@ -535,18 +535,14 @@ static LogicalResult verifyLdgStgAccess(Operation *op, Type ptrType,
     return success();
   if (pto::isPTOFloat8Type(valueType) || pto::isPTOHiFloat8Type(valueType))
     return success();
-  if (auto vecType = dyn_cast<VectorType>(valueType)) {
-    if (!vecType.isScalable() && vecType.getRank() == 1 && vecType.getDimSize(0) == 2) {
-      Type elemType = vecType.getElementType();
-      if (elemType.isF16() || elemType.isBF16() || elemType.isF32())
-        return success();
-    }
-  }
+  if (pto::isPTOPackedLdgStgVectorType(valueType))
+    return success();
 
   return op->emitOpError()
          << "currently supports 8/16/32/64-bit integer, "
             "f16/bf16/f32/f64/fp8/hif8, "
-            "and vector<2xf16>/vector<2xbf16>/vector<2xf32> value type";
+            "and vector<2xT> where T is "
+            "f16/bf16/f32/fp8/hif8/i8/i16/i32 value type";
 }
 
 LogicalResult PTOLoadOp::verify() {

@@ -19,7 +19,7 @@ bool isPTOHiFloat8Type(Type t);
 bool isPTOF8E8M0Type(Type t);
 bool isPTOHiFloat8x2Type(Type t);
 bool isPTOFloat4PackedType(Type t);
-bool isPTOPackedFloatVectorType(Type t);
+bool isPTOPackedLdgStgVectorType(Type t);
 bool isPTOLowPrecisionType(Type t);
 
 unsigned getPTOStorageElemBitWidth(Type t);

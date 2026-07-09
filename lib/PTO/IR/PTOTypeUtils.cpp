@@ -32,12 +32,25 @@ bool mlir::pto::isPTOFloat4PackedType(Type t) {
   return isa<F4E1M2x2Type, F4E2M1x2Type>(t);
 }
 
-bool mlir::pto::isPTOPackedFloatVectorType(Type t) {
+bool mlir::pto::isPTOPackedLdgStgVectorType(Type t) {
   auto vecType = dyn_cast<VectorType>(t);
   if (!vecType || vecType.isScalable() || vecType.getRank() != 1 || vecType.getDimSize(0) != 2)
     return false;
   Type elemType = vecType.getElementType();
-  return elemType.isF16() || elemType.isBF16() || elemType.isF32();
+  bool validElem =
+      elemType.isF16() || elemType.isBF16() || elemType.isF32() ||
+      isPTOFloat8Type(elemType) || isPTOHiFloat8Type(elemType);
+  if (!validElem) {
+    if (auto intTy = dyn_cast<IntegerType>(elemType)) {
+      unsigned w = intTy.getWidth();
+      validElem = (w == 8 || w == 16 || w == 32);
+    }
+  }
+  if (!validElem)
+    return false;
+  unsigned totalBits =
+      vecType.getDimSize(0) * getPTOStorageElemBitWidth(elemType);
+  return totalBits == 16 || totalBits == 32 || totalBits == 64;
 }
 
 bool mlir::pto::isPTOLowPrecisionType(Type t) {

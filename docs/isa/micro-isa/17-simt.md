@@ -504,7 +504,9 @@ memory[effective_element] = value
 - **outputs:** One value of type `T`.
 - **constraints and limitations:** `pto.ldg` supports 8/16/32/64-bit integer
   values, `f16`, `bf16`, `f32`, `f64`, `fp8`, `hif8`, and packed vectors
-  `vector<2xf16>`, `vector<2xbf16>`, `vector<2xf32>`.  Vector loads from GM
+  `vector<2xf16>`, `vector<2xbf16>`, `vector<2xf32>`, `vector<2xf8E4M3FN>`,
+  `vector<2xf8E5M2>`, `vector<2x!pto.hif8>`, `vector<2xi8>`, `vector<2xi16>`,
+  and `vector<2xi32>`.  Vector loads from GM
   use the same-width load path as scalars (e.g. ``vector<2xf32>`` uses a 64-bit
   GM load) and reinterpret the loaded bits as the requested vector type.  The
   effective address for ``vector<2xf32>`` must satisfy 8-byte alignment
