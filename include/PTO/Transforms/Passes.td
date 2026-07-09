@@ -176,6 +176,22 @@ def InferPTOMemScope : Pass<"pto-infer-mem-scope"> {
   let dependentDialects = ["pto::PTODialect", "memref::MemRefDialect", ];
 }
 
+def PTORematerializeFixpipeVectorQuant
+    : Pass<"pto-rematerialize-fixpipe-vector-quant", "func::FuncOp"> {
+  let summary =
+      "Rematerialize fixpipe vector quant bindings before each producer tpush";
+  let description = [{
+    Rewrites logical fixpipe vector quant state (`pto.set_quant_vector`) into
+    explicit per-`pto.tpush` bindings in the same block. This keeps the
+    scaling-tile read visible to downstream memref passes such as PlanMemory,
+    so the scaling tile's address is not reused before a later fixpipe producer
+    push still needs it.
+  }];
+  let constructor =
+      "mlir::pto::createPTORematerializeFixpipeVectorQuantPass()";
+  let dependentDialects = ["mlir::pto::PTODialect", "mlir::func::FuncDialect"];
+}
+
 def PlanMemory : Pass<"pto-plan-memory", "ModuleOp"> {
   let summary = "Plan memory for PTO Ops";
   let constructor = "mlir::pto::createPlanMemoryPass()";

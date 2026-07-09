@@ -2901,6 +2901,8 @@ int mlir::pto::compilePTOASModule(
   }
 
   pm.addPass(pto::createPTOViewToMemrefPass());
+  pm.addNestedPass<mlir::func::FuncOp>(
+      pto::createPTORematerializeFixpipeVectorQuantPass());
 
   if (effectiveLevel != PTOBuildLevel::Level3) {
     PlanMemoryOptions planMemoryOption;

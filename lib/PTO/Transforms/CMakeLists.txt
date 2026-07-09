@@ -41,6 +41,7 @@ add_mlir_dialect_library(PTOTransforms
   PTOInjectBarrierAllSync.cpp
   InsertSync/InsertSyncDebug.cpp
   PTOViewToMemref.cpp
+  PTORematerializeFixpipeVectorQuant.cpp
   PTOValidateIntToPtrUses.cpp
   ExpandTileOp.cpp
   FoldTileBufIntrinsics.cpp
