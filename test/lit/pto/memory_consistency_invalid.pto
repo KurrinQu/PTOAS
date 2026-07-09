@@ -53,6 +53,38 @@ module {
     return
   }
 
+  func.func @missing_tstore_payload_marker(
+      %dst_ptr: !pto.ptr<f32>,
+      %signal_ptr: !pto.ptr<i32>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c32 = arith.constant 32 : index
+    %v_i32 = arith.constant 1 : i32
+
+    %tile = pto.alloc_tile :
+      !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    %dst_view = pto.make_tensor_view %dst_ptr,
+      shape = [%c1, %c32], strides = [%c32, %c1] : !pto.tensor_view<?x?xf32>
+    %dst = pto.partition_view %dst_view,
+      offsets = [%c0, %c0], sizes = [%c1, %c32]
+      : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<1x32xf32>
+
+    pto.tstore ins(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+               outs(%dst : !pto.partition_tensor_view<1x32xf32>)
+    pto.fence.barrier_all #pto.fence_scope<gm>
+
+    %sig_view = pto.make_tensor_view %signal_ptr,
+      shape = [%c1], strides = [%c1] : !pto.tensor_view<1xi32>
+    %sig = pto.partition_view %sig_view,
+      offsets = [%c0], sizes = [%c1]
+      : !pto.tensor_view<1xi32> -> !pto.partition_tensor_view<1xi32>
+    pto.comm.tnotify(%sig, %v_i32 : !pto.partition_tensor_view<1xi32>, i32)
+        {notifyOp = #pto<notify_op set>}
+    return
+  }
+
   func.func @missing_acquire_invalidate(
       %payload_ptr: !pto.ptr<i32>,
       %signal_ptr: !pto.ptr<i32>)
@@ -99,5 +131,6 @@ module {
 
 // CHECK: requires explicit `pto.fence.barrier_all #pto.fence_scope<gm>` after the matching `pto.cmo.cacheinvalid %addr single_cache_line`
 // CHECK: requires explicit `pto.cmo.cacheinvalid %addr single_cache_line` after matching cacheable GM scalar stores
+// CHECK: requires explicit `pto.cmo.cacheinvalid %addr single_cache_line` before `pto.comm.tnotify` to identify the GM payload
 // CHECK: requires explicit `pto.cmo.cacheinvalid all #pto.address_space<gm>` before a cacheable GM load
 // CHECK: dirty GM cache may exist; insert explicit `pto.cmo.cacheinvalid all #pto.address_space<gm>` before the load
