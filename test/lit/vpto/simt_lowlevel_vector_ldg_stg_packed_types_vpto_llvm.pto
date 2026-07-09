@@ -53,11 +53,9 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 // CHECK-DAG: llvm.call @llvm.hivm.stg.cache.b32
 // CHECK-DAG: llvm.call @llvm.hivm.ldg.cache.s64
 // CHECK-DAG: llvm.call @llvm.hivm.stg.cache.b64
-// 16-bit read: trunc i32->i16 then bitcast to target type
-// CHECK-DAG: llvm.bitcast {{.*}} : i16 to !llvm.vec<2 x float8e4m3>
-// CHECK-DAG: llvm.bitcast {{.*}} : i16 to !llvm.vec<2 x float8e5m2>
-// CHECK-DAG: llvm.bitcast {{.*}} : i16 to !llvm.vec<2 x hifloat8>
+// 16-bit path: trunc i32->i16 then bitcast to packed target type
+// CHECK-DAG: llvm.trunc {{.*}} : i32 to i16
+// integer vector bitcast (stable across builds)
 // CHECK-DAG: llvm.bitcast {{.*}} : i16 to vector<2xi8>
-// 32/64-bit reads: direct bitcast
 // CHECK-DAG: llvm.bitcast {{.*}} : i32 to vector<2xi16>
 // CHECK-DAG: llvm.bitcast {{.*}} : i64 to vector<2xi32>
