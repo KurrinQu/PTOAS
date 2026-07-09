@@ -18,6 +18,7 @@ template_txors = register_scalar_binary(
     vector_op=pto.vxor,
     broadcast_scalar=True,
     has_tmp=True,
+    tmp_matches_src_dst=False,
     dtypes=[
         ("i8", "i8", "i8", "i8"),
         ("i16", "i16", "i16", "i16"),

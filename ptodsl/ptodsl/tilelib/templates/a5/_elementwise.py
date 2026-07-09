@@ -129,12 +129,18 @@ def register_binary(*, op, name, vector_op, dtypes, has_tmp=False):
 
 
 def register_scalar_binary(*, op, name, vector_op, dtypes, broadcast_scalar=False,
-                           has_tmp=False, reverse_name=None):
+                           has_tmp=False, tmp_matches_src_dst=True,
+                           reverse_name=None):
     """Register a tile/scalar traversal using either a vector-scalar or broadcast op."""
 
     constraints = _common_constraints("src", "dst")
     if has_tmp:
-        constraints = _common_constraints("src", "tmp", "dst")
+        if tmp_matches_src_dst:
+            constraints = _common_constraints("src", "tmp", "dst")
+        else:
+            constraints = _common_constraints("src", "dst") + [
+                _ub_or_vec_row_major,
+            ]
 
         @tilelib.tile_template(
             op=op,
