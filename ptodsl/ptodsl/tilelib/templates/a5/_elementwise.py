@@ -127,7 +127,7 @@ def register_binary(*, op, name, vector_op, dtypes, has_tmp=False):
 
 
 def register_scalar_binary(*, op, name, vector_op, dtypes, broadcast_scalar=False,
-                           has_tmp=False):
+                           has_tmp=False, reverse_name=None):
     """Register a tile/scalar traversal using either a vector-scalar or broadcast op."""
 
     constraints = _common_constraints("src", "dst")
@@ -152,6 +152,35 @@ def register_scalar_binary(*, op, name, vector_op, dtypes, broadcast_scalar=Fals
             _ = tmp
             _emit_scalar_binary_body(src, scalar, dst, vector_op, broadcast_scalar)
 
+        if reverse_name:
+
+            @tilelib.tile_template(
+                op=op,
+                target="a5",
+                name=reverse_name,
+                dtypes=dtypes,
+                iteration_axis="none",
+                op_engine="vector",
+                op_class="elementwise",
+                constraints=constraints,
+                id=1,
+                loop_depth=2,
+                is_post_update=False,
+                tags=("elementwise", "scalar"),
+            )
+            def reverse_template(scalar, src: pto.Tile, tmp: pto.Tile, dst: pto.Tile):
+                _ = tmp
+                _emit_scalar_binary_body(
+                    src,
+                    scalar,
+                    dst,
+                    vector_op,
+                    broadcast_scalar=True,
+                    scalar_lhs=True,
+                )
+
+            return template, reverse_template
+
         return template
 
     @tilelib.tile_template(
@@ -170,6 +199,34 @@ def register_scalar_binary(*, op, name, vector_op, dtypes, broadcast_scalar=Fals
     )
     def template(src: pto.Tile, scalar, dst: pto.Tile):
         _emit_scalar_binary_body(src, scalar, dst, vector_op, broadcast_scalar)
+
+    if reverse_name:
+
+        @tilelib.tile_template(
+            op=op,
+            target="a5",
+            name=reverse_name,
+            dtypes=dtypes,
+            iteration_axis="none",
+            op_engine="vector",
+            op_class="elementwise",
+            constraints=constraints,
+            id=1,
+            loop_depth=2,
+            is_post_update=False,
+            tags=("elementwise", "scalar"),
+        )
+        def reverse_template(scalar, src: pto.Tile, dst: pto.Tile):
+            _emit_scalar_binary_body(
+                src,
+                scalar,
+                dst,
+                vector_op,
+                broadcast_scalar=True,
+                scalar_lhs=True,
+            )
+
+        return template, reverse_template
 
     return template
 
@@ -210,7 +267,8 @@ def register_scalar_fill(*, op, name, dtypes):
     return template
 
 
-def _emit_scalar_binary_body(src, scalar, dst, vector_op, broadcast_scalar):
+def _emit_scalar_binary_body(src, scalar, dst, vector_op, broadcast_scalar,
+                             scalar_lhs=False):
     dtype = dst.dtype
     valid_rows, valid_cols = dst.valid_shape
     lanes = pto.elements_per_vreg(dtype)
@@ -221,9 +279,12 @@ def _emit_scalar_binary_body(src, scalar, dst, vector_op, broadcast_scalar):
             col = col_loop.iv
             mask, remained = pto.make_mask(dtype, col_loop.remained)
             value = pto.vlds(src[row, col:])
-            if broadcast_scalar:
+            if broadcast_scalar or scalar_lhs:
                 scalar_value = pto.vbr(scalar)
-                result = vector_op(value, scalar_value, mask)
+                lhs, rhs = (
+                    (scalar_value, value) if scalar_lhs else (value, scalar_value)
+                )
+                result = vector_op(lhs, rhs, mask)
             else:
                 result = vector_op(value, scalar, mask)
             pto.vsts(result, dst[row, col:], mask)

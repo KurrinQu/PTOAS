@@ -58,7 +58,13 @@ CATALOG = {
     "pto.tlrelu": ("template_tlrelu", "pto.vlrelu", ("src", "slope", "dst"), "f32"),
     "pto.tlog": ("template_tlog", "pto.vln", ("src", "dst"), "f32"),
     "pto.tdiv": ("template_tdiv", "pto.vdiv", ("src0", "src1", "dst"), "f32"),
-    "pto.tdivs": ("template_tdivs", "pto.vdiv", ("src", "scalar", "dst"), "f32"),
+    "pto.tdivs": (
+        "template_tdivs_tile_scalar",
+        "pto.vdiv",
+        ("src", "scalar", "dst"),
+        "f32",
+        "template_tdivs_tile_scalar",
+    ),
     "pto.tcvt": ("template_tcvt_f32_to_i32", "pto.vcvt", ("src", "dst"), "f32"),
     "pto.texp": ("template_texp", "pto.vexp", ("src", "dst"), "f32"),
     "pto.tfmod": ("template_tfmod", "pto.vtrc", ("src0", "src1", "dst"), "f32"),
@@ -559,6 +565,17 @@ class TileLibCatalogTest(unittest.TestCase):
                         )
                 selected = select("pto.tmin" if op == "pto.tmin" else op, "a5", specs)
                 self.assertIn(expected_op, selected.specialize(**specs).mlir_text())
+
+    def test_tdivs_scalar_tile_candidate_renders(self):
+        specs = _specs("pto.tdivs", ("scalar", "src", "dst"), "f32")
+        selected = select(
+            "pto.tdivs",
+            "a5",
+            specs,
+            candidate_id="template_tdivs_scalar_tile",
+        )
+        self.assertEqual(selected.param_names, ("scalar", "src", "dst"))
+        self.assertIn("pto.vdiv", selected.specialize(**specs).mlir_text())
 
     def test_column_vec_smoke_shapes_render(self):
         cases = (

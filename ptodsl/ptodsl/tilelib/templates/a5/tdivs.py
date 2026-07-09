@@ -12,13 +12,17 @@ from ptodsl import pto
 from ._elementwise import register_scalar_binary
 
 
-template_tdivs = register_scalar_binary(
+_DTYPES = [
+    ("f16", "f16", "f16"),
+    ("f32", "f32", "f32"),
+]
+
+
+template_tdivs_tile_scalar, template_tdivs_scalar_tile = register_scalar_binary(
     op="pto.tdivs",
-    name="template_tdivs",
+    name="template_tdivs_tile_scalar",
+    reverse_name="template_tdivs_scalar_tile",
     vector_op=pto.vdiv,
+    dtypes=_DTYPES,
     broadcast_scalar=True,
-    dtypes=[
-        ("f16", "f16", "f16"),
-        ("f32", "f32", "f32"),
-    ],
 )
