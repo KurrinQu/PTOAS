@@ -365,7 +365,7 @@ scalar.store(y4, ptr, offset)
 
 ## 4.10 Explicit scratch buffers
 
-A scratch buffer is a lane-local temporary buffer inside SIMT code. Allocate scratch buffers with `pto.alloc_buffer`:
+A scratch buffer is a local temporary buffer inside an explicit kernel or helper body. Allocate scratch buffers with `pto.alloc_buffer`. A buffer allocated outside dimensioned inline SIMT scopes, or passed to SIMT helpers, can be accessed by those scopes or helpers in the enclosing explicit body:
 
 ```text
 pto.alloc_buffer(shape, dtype)

@@ -655,6 +655,8 @@ def wrap_like_surface_value(template, value):
                 for dim in valid_shape
             )
         return TileValue(value, **metadata)
+    if isinstance(template, AllocatedBufferValue):
+        return AllocatedBufferValue(value, **template.surface_metadata)
     if isinstance(template, AddressValue):
         return AddressValue(value)
     return wrap_surface_value(value)

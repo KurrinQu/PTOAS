@@ -2637,21 +2637,20 @@ def _tile_transfer_partition(tv, tile, *, offsets=None, sizes=None, context: str
 
 def alloc_buffer(shape, dtype, **kwargs):
     """
-    Allocate SIMT lane-local scratch storage and return an address-like value.
+    Allocate explicit-body scratch storage and return an address-like value.
 
-    The allocation emits an LLVM stack allocation in the surrounding SIMT
-    helper. UB scratch uses explicit ``pto.castptr`` / ``pto.addptr`` pointer
-    authoring and an appropriate host launch wrapper.
+    The allocation emits an LLVM stack allocation in the surrounding explicit
+    kernel or helper body. UB scratch uses explicit ``pto.castptr`` /
+    ``pto.addptr`` pointer authoring and an appropriate host launch wrapper.
     """
     if kwargs:
         unexpected = ", ".join(sorted(kwargs))
         raise TypeError(
             f"pto.alloc_buffer(...) does not accept keyword argument(s): {unexpected}. "
-            "It only allocates SIMT local buffers; author UB scratch explicitly with "
+            "It only allocates explicit-body local buffers; author UB scratch explicitly with "
             "pto.castptr/pto.addptr and pass the dynamic UB byte count at launch."
         )
     _require_explicit_mode("pto.alloc_buffer(...)")
-    _require_simt_subkernel("pto.alloc_buffer(...)")
     element_type = _resolve(dtype)
     element_count = _static_alloc_buffer_element_count(shape)
     elem_bytes = _element_bytewidth(element_type)

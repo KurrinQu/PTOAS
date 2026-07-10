@@ -4612,11 +4612,8 @@ def main() -> None:
         is not None,
         "alloc_buffer probe should keep allocation inside the SIMT helper body",
     )
-    expect_raises(
-        RuntimeError,
-        alloc_buffer_outside_simt_probe.compile,
-        "pto.alloc_buffer(...) may only be used inside a @pto.simt helper or inline pto.simt() scope",
-    )
+    alloc_buffer_top_level_text = alloc_buffer_outside_simt_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(alloc_buffer_top_level_text, "alloc_buffer top-level specialization")
     rmsnorm_alloc_buffer_text = rmsnorm_alloc_buffer_layout_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(rmsnorm_alloc_buffer_text, "RMSNorm hand-authored UB layout specialization")
     for expected_offset in (4096, 4224, 12416, 20608):
