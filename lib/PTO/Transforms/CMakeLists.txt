@@ -41,6 +41,7 @@ add_mlir_dialect_library(PTOTransforms
   PTOInjectBarrierAllSync.cpp
   InsertSync/InsertSyncDebug.cpp
   PTOViewToMemref.cpp
+  PTORematerializeFixpipeVectorQuant.cpp
   PTOValidateIntToPtrUses.cpp
   ExpandTileOp.cpp
   FoldTileBufIntrinsics.cpp
@@ -56,14 +57,18 @@ add_mlir_dialect_library(PTOTransforms
   PTORemoveRedundantBarrier.cpp
   InferPTOLayout.cpp
   PTOA5NormalizeTMovPass.cpp
+  PTORemoveIdentityTMov.cpp
   PTOCanonicalizeIR.cpp
   PTOMaterializeTileHandles.cpp
+  PTOMemoryConsistency.cpp
   BufferizableOpInterfaceImpl.cpp
   ConvertToPTOOp.cpp
   PTOAssignDefaultFrontendPipeIdPass.cpp
   PTOLowerFrontendPipeOpsPass.cpp
   PTOInferValidatePipeInitPass.cpp
+  PTOResolveBufferSelect.cpp
   PTOResolveReservedBuffersPass.cpp
+  SlotAffineAnalysis.cpp
   PTOWrapFunctionsInSectionsPass.cpp
   PTONormalizeUncoveredTileSections.cpp
   VPTONormalizeContainer.cpp

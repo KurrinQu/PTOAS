@@ -74,6 +74,20 @@ static bool shouldEncodeViaGenericV0CompatibilityShim(mlir::Operation &op) {
     return static_cast<bool>(tci.getTmp());
   if (auto trowexpandadd = llvm::dyn_cast<mlir::pto::TRowExpandAddOp>(&op))
     return static_cast<bool>(trowexpandadd.getTmp());
+  if (llvm::isa<mlir::pto::CmoCacheInvalidOp, mlir::pto::FenceBarrierAllOp>(
+          &op))
+    return true;
+  // The aiv_subblockid operand extends pipe transfer forms after the v0
+  // known-op schemas were fixed. Keep the legacy compact payloads unchanged
+  // and route only the new optional-operand forms through generic encoding.
+  if (auto push = llvm::dyn_cast<mlir::pto::TPushToAicOp>(&op))
+    return static_cast<bool>(push.getAivSubblockid());
+  if (auto pop = llvm::dyn_cast<mlir::pto::TPopFromAicOp>(&op))
+    return static_cast<bool>(pop.getAivSubblockid());
+  if (auto push = llvm::dyn_cast<mlir::pto::TPushOp>(&op))
+    return static_cast<bool>(push.getAivSubblockid());
+  if (auto pop = llvm::dyn_cast<mlir::pto::TPopOp>(&op))
+    return static_cast<bool>(pop.getAivSubblockid());
   return false;
 }
 
@@ -119,6 +133,36 @@ static mlir::DictionaryAttr stripKnownImmediateAttrs(
   default:
     return dict;
   }
+}
+
+static bool isFrontendPipeOpWithDefaultId(mlir::Operation &op) {
+  llvm::StringRef name = op.getName().getStringRef();
+  return name == "pto.aic_initialize_pipe" ||
+         name == "pto.aiv_initialize_pipe" ||
+         name == "pto.talloc_to_aiv" || name == "pto.talloc_to_aic" ||
+         name == "pto.tpush_to_aiv" || name == "pto.tpush_to_aic" ||
+         name == "pto.tpop_from_aic" || name == "pto.tpop_from_aiv" ||
+         name == "pto.tfree_from_aic" || name == "pto.tfree_from_aiv";
+}
+
+static mlir::DictionaryAttr
+dropDefaultZeroPipeIdForV0Encoding(mlir::Operation &op,
+                                   mlir::DictionaryAttr dict) {
+  if (!dict || dict.empty() || !isFrontendPipeOpWithDefaultId(op))
+    return dict;
+
+  auto idAttr = dict.getAs<mlir::IntegerAttr>("id");
+  if (!idAttr || idAttr.getInt() != 0)
+    return dict;
+
+  llvm::SmallVector<mlir::NamedAttribute, kNamedAttributeInlineCapacity> keep;
+  keep.reserve(dict.size());
+  for (auto attr : dict) {
+    if (attr.getName() == "id")
+      continue;
+    keep.push_back(attr);
+  }
+  return mlir::DictionaryAttr::get(op.getContext(), keep);
 }
 
 static uint64_t internAttr(PTOBCFile& f, mlir::DictionaryAttr dict) {
@@ -468,6 +512,8 @@ void Encoder::encodeKnownOpImmediates(
       mask |= 0x1;
     if (at.getValidCol())
       mask |= 0x2;
+    if (at.getAddr())
+      mask |= 0x4;
     out.appendU8(mask);
     imms.push_back(mask);
     return;
@@ -540,7 +586,8 @@ void Encoder::encodeKnownOpOperands(
     if (imms.empty())
       throw std::runtime_error("optmask operands missing immediate");
     uint8_t mask = uint8_t(imms.front());
-    emitOperands(((mask & 0x1) ? 1 : 0) + ((mask & 0x2) ? 1 : 0));
+    emitOperands(((mask & 0x1) ? 1 : 0) + ((mask & 0x2) ? 1 : 0) +
+                 ((mask & 0x4) ? 1 : 0));
     return;
   }
   default:
@@ -557,6 +604,9 @@ void Encoder::encodeKnownOp(mlir::Operation &op, Buffer &out,
   out.appendU16LE(variantInfo.opcode);
   mlir::DictionaryAttr dict = op.getAttrDictionary();
   dict = stripKnownImmediateAttrs(op.getContext(), dict, info);
+  // The assembly printer omits default pipe ids on transfer/free ops. Keep v0
+  // byte roundtrips stable by using the same representation while encoding.
+  dict = dropDefaultZeroPipeIdForV0Encoding(op, dict);
   writeULEB128(internAttr(file, dict), out.bytes);
 
   if (info.has_variant_u8)

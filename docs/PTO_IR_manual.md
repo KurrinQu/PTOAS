@@ -58,7 +58,11 @@ Element types describe the primitive scalar values that can be stored in tensors
 
 Common element categories include:
 
-- **Integers**: signless integers such as `i1/i8/i16/i32`. Signedness is not encoded in the type; it is selected by operation semantics or attributes where required.
+- **Integers**: signless integers such as `i1/i8/i16/i32`, and, where an op
+  surface requires it, explicitly signed/unsigned integers such as
+  `si8/ui8/si16/ui16/si32/ui32`. Whether an operation accepts only signless
+  integers or also accepts explicit signedness is operation-specific and
+  documented per op family.
 - **Floating-point**: IEEE floating-point types such as `f16/f32`. Some targets may also support additional formats (e.g., `bf16` or low-precision exponent/mantissa formats) with stricter constraints.
 - **Index-like**: index values may appear as scalar operands in certain operations (e.g., offsets, sizes, or scalar comparisons).
 
@@ -177,7 +181,53 @@ dimension counts FP4 pairs stored per byte, not logical scalar FP4 elements.
 
 ---
 
-### 2.6 `!pto.local_array<D1 x D2 x ... x Dk x T>`
+### 2.6 `!pto.multi_tile_buf<slotType, count=N>`
+
+A **multi-buffer tile** representing N physically-distinct slots that share
+one `tile_buf` shape. Only the underlying physical address differs across
+slots; rank, valid shape, dtype, memory space, and config are identical.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `slotType` | `!pto.tile_buf<...>` | The per-slot tile_buf type |
+| `count` | unsigned `[2, 16]` | Number of physical slots N |
+
+**Constraints (enforced by the type verifier):**
+- `2 <= count <= 16` (`kPtoMultiBufferMaxNum`)
+- `slotType` follows all the same constraints as a single-slot `tile_buf`
+- `multi_tile_buf` does not appear on function arguments or returns in the
+  initial release; the design's multi-buffer ownership stays inside PTOAS
+
+**Two compatible spellings:**
+
+```mlir
+// Compact (preferred): the slot tile_buf is described inline.
+!pto.multi_tile_buf<vec, 16x16xf16, count=2>
+
+// Verbose: spell out the slot tile_buf explicitly.
+!pto.multi_tile_buf<!pto.tile_buf<vec, 16x16xf16>, count=2>
+```
+
+**Associated ops** (see Section 4 -- multi-buffer expression and slot
+selection):
+
+- `pto.alloc_multi_tile` -- allocate an N-slot multi-buffer tile
+- `pto.multi_tile_get`   -- pick one slot of a multi_tile_buf, yielding a
+  regular `tile_buf` that flows through every existing DMA / compute / view
+  op unchanged
+
+The N-way physical fan-out lives on the `pto.multi_buffer = N : i32`
+attribute that PTOViewToMemref writes onto the lowered `memref.alloc`;
+downstream passes (PlanMemory / InsertSync / GraphSyncSolver) consume that
+attribute. The per-use slot index threaded through `pto.multi_tile_get` is
+forwarded to the memref layer via the internal `pto.slot_marker` view op.
+
+See `docs/designs/ptoas-multi-buffer-explicit-design.md` for the full
+design.
+
+---
+
+### 2.7 `!pto.local_array<D1 x D2 x ... x Dk x T>`
 
 A **C++ stack-local statically-shaped array**. Lowers to a plain `T a[D1][D2]...;`
 declaration in the emitted C++ — the array's address is decided by the host C++
@@ -696,6 +746,98 @@ result = alloc_tile(base_addr, valid_row, valid_col)   // operands are optional
 %tb3 = pto.alloc_tile addr = %ad : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
 ```
 
+##### `pto.alloc_multi_tile` - Allocate N-Slot Multi-Buffer Tile
+
+**Summary:** Declares the lifetime of an N-slot multi-buffer tile. Each slot has the same `tile_buf` shape; only the underlying physical address differs. In the default pipeline (`--pto-level=level1|level2`) the N physical slots are reserved by `PTOPlanMemory` from the `pto.multi_buffer = N` attribute written onto the lowered `memref.alloc`. Under `--pto-level=level3` the caller owns local memory and PlanMemory does not run, so an explicit base `addr` operand is required (mirroring `pto.alloc_tile`); the lowering then fans the base out into the multi-address `pto.pointer_cast` PlanMemory would otherwise produce.
+
+**Semantics:**
+
+```
+result = alloc_multi_tile(addr, valid_row, valid_col)   // operands are optional
+```
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `addr` | `Optional<I64>` | Base physical byte address of the contiguous N-slot region. Required under `--pto-level=level3`, rejected otherwise. Slot `k` lives at `addr + k * slotBytes` where `slotBytes = product(shape) * element_size`; the caller must reserve `N * slotBytes` bytes at `addr`. |
+| `valid_row` | `Optional<Index>` | Dynamic valid row count (required when slot `v_row` is `?`) |
+| `valid_col` | `Optional<Index>` | Dynamic valid column count (required when slot `v_col` is `?`) |
+
+**Results:** `!pto.multi_tile_buf<...>`
+
+**Constraints & Verification:**
+
+- The result type must have `count` in `[2, 16]`.
+- The slot tile type (rank, valid shape, dtype, memory space, config) is verified the same way as `pto.alloc_tile` for a single slot.
+- `addr` is gated by build level: required under `--pto-level=level3`, rejected under level1/level2 (the same rule `pto.alloc_tile` follows). With an explicit `addr` the slot shape and element size must be static so `slotBytes` is known.
+- **Storage-compact slot layout required.** The N physical slots are placed at `product(shape) * element_size` byte intervals (both the level3 lowering and PlanMemory size them this way). A `row_plus_one` compact mode inflates the major stride by one element per row, so the slot's physical strided footprint exceeds `product(shape)` and adjacent slots would silently overlap. `pto.alloc_multi_tile` therefore rejects `compact = row_plus_one` slot layouts. Non-`row_plus_one` compact layouts and boxed fractal `slayout`s pack densely (footprint equals `product(shape)`) and are supported. (This limit can be lifted once the slot stride is derived from the true strided footprint instead of `product(shape)`.)
+
+**Hardware Mapping:**
+
+- No hardware pipeline (allocation/metadata op). In the default pipeline the N-way physical fan-out is realized by PlanMemory; under level3 it is realized directly from the base `addr` during view lowering.
+
+**Basic Example:**
+
+```mlir
+// level1/level2: addresses chosen by PlanMemory.
+%mb = pto.alloc_multi_tile : !pto.multi_tile_buf<vec, 16x16xf16, count=2>
+%mb2 = pto.alloc_multi_tile : !pto.multi_tile_buf<!pto.tile_buf<vec, 16x16xf16>, count=3>
+
+// level3: caller-owned memory; slot 0 at %base, slot 1 at %base + 512 bytes.
+%base = arith.constant 0 : i64
+%mb3 = pto.alloc_multi_tile addr = %base : !pto.multi_tile_buf<vec, 16x16xf16, count=2>
+```
+
+##### `pto.multi_tile_get` - Select One Slot Of A Multi-Buffer Tile
+
+**Summary:** Returns a single-slot view of a `multi_tile_buf`. The frontend is the source of truth for which slot a given use refers to; the slot index `%k` is an `index` value (constant or any SSA expression) in `[0, count)`. PTOAS does NOT synthesize `iv mod N` for users -- the user expression IS the slot selector. Downstream sync and event-id allocation analyze the slot expressions and emit static `set_flag` / `wait_flag` for constant slots or `set_flag_dyn` / `wait_flag_dyn` for runtime slots.
+
+**Semantics:**
+
+```
+result = multi_tile_get(source, slot)
+```
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `source` | `MultiTileBufType` | The N-slot multi-buffer tile |
+| `slot` | `Index` | Slot index in `[0, count)` |
+
+**Results:** `!pto.tile_buf<...>` (must equal `source.slotType`)
+
+**Constraints & Verification:**
+
+- Result `tile_buf` must equal `source.slotType` (rank, valid shape, dtype, memory space, config all identical).
+- If `slot` is a constant, the verifier checks `0 <= slot < count`.
+- Pure view op -- no data movement, no extra address arithmetic.
+- `multi_tile_buf` is not allowed on function arguments or results in the initial release.
+
+**Hardware Mapping:**
+
+- No hardware pipeline (metadata-only view).
+
+**Basic Example:**
+
+```mlir
+%mb = pto.alloc_multi_tile : !pto.multi_tile_buf<vec, 16x16xf16, count=2>
+
+// constant-slot selection
+%c0 = arith.constant 0 : index
+%s0 = pto.multi_tile_get %mb[%c0]
+    : !pto.multi_tile_buf<vec, 16x16xf16, count=2>
+   -> !pto.tile_buf<vec, 16x16xf16>
+
+// dynamic-slot selection (e.g. prefetch with %k from the loop body)
+%s_k = pto.multi_tile_get %mb[%k]
+    : !pto.multi_tile_buf<vec, 16x16xf16, count=2>
+   -> !pto.tile_buf<vec, 16x16xf16>
+```
+
+See `docs/designs/ptoas-multi-buffer-explicit-design.md` for the full design (sync/event-id derivation, downstream pass interplay, and end-to-end usage examples).
+
 ##### `pto.subview` - Tile SubView
 
 **Summary:** Create a logical subview from a parent tile. The subview window is expressed by `offsets + sizes`, and the result tile type shape equals `sizes`.
@@ -1118,7 +1260,19 @@ For each element (i, j) in the tile valid region:
 
 **Type Note (PTO IR):**
 
-- PTO IR uses signless integers. There is no distinct unsigned integer type in verifier rules; documentation strings like `ui8` are represented by signless `i8` in IR type checks.
+- PTO IR is not limited to signless integers. In particular, several current
+  surfaces already use distinct signed/unsigned integer element types such as
+  `ui8`, `si8`, `ui16`, and `ui32`, and verifier rules may depend on that
+  signedness.
+- For this `preQuantScalar` contract, destination element types written below as
+  `i8(ui8)` mean:
+  - signless `i8` remains accepted on legacy surfaces that only constrain width
+    and numeric family
+  - explicit `ui8` is also a first-class PTO IR dtype on surfaces whose
+    semantics depend on unsignedness
+- When a newer contract needs signedness to be user-visible, the manual will
+  call that out explicitly instead of relying on signless `i8` as a synonym for
+  `ui8`.
 
 **Hardware Mapping:**
 

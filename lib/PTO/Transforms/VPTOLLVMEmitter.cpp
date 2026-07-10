@@ -74,10 +74,9 @@ static Type getLowPrecisionLLVMType(Type type, MLIRContext *context) {
     return LLVM::LLVMFloat4E1M2x2Type::get(context);
   if (isa<pto::F4E2M1x2Type>(type))
     return LLVM::LLVMFloat4E2M1x2Type::get(context);
-  if (type.isFloat8E4M3() || type.isFloat8E4M3FN() ||
-      type.isFloat8E4M3FNUZ() || type.isFloat8E4M3B11FNUZ())
+  if (pto::isPTOFloat8E4M3LikeType(type))
     return LLVM::LLVMFloat8E4M3Type::get(context);
-  if (type.isFloat8E5M2() || type.isFloat8E5M2FNUZ())
+  if (pto::isPTOFloat8E5M2LikeType(type))
     return LLVM::LLVMFloat8E5M2Type::get(context);
   return {};
 }
@@ -85,15 +84,13 @@ static Type getLowPrecisionLLVMType(Type type, MLIRContext *context) {
 static Type getLLVMCompatibleVectorType(ArrayRef<int64_t> shape,
                                         Type elementType,
                                         ArrayRef<bool> scalableDims = {}) {
-  if (shape.size() == 1 && !elementType.isIntOrIndexOrFloat())
-    return LLVM::LLVMFixedVectorType::get(elementType, shape.front());
   return VectorType::get(shape, elementType, scalableDims);
 }
 
 static Type normalizePayloadTypeForLLVMLowering(Type type, Builder &builder) {
   if (pto::isPTOHiFloat8x2Type(type))
-    return LLVM::LLVMFixedVectorType::get(
-        LLVM::LLVMHiFloat8Type::get(builder.getContext()), 2);
+    return getLLVMCompatibleVectorType(
+        {2}, LLVM::LLVMHiFloat8Type::get(builder.getContext()));
   if (Type lowpType = getLowPrecisionLLVMType(type, builder.getContext()))
     return lowpType;
 
@@ -136,16 +133,6 @@ static Type normalizeGEPElementTypeForLLVMLowering(Type type,
                                        vecType.getScalableDims());
   }
 
-  if (auto vecType = dyn_cast<LLVM::LLVMFixedVectorType>(type)) {
-    Type normalizedElement =
-        normalizeGEPElementTypeForLLVMLowering(vecType.getElementType(),
-                                               builder);
-    if (normalizedElement == vecType.getElementType())
-      return normalizePayloadTypeForLLVMLowering(type, builder);
-    return LLVM::LLVMFixedVectorType::get(normalizedElement,
-                                         vecType.getNumElements());
-  }
-
   return normalizePayloadTypeForLLVMLowering(type, builder);
 }
 
@@ -177,12 +164,6 @@ static unsigned getNaturalByteAlignment(Type type) {
     for (int64_t dim : vecType.getShape())
       elems *= dim;
     return elemAlign * static_cast<unsigned>(elems);
-  }
-  if (auto vecType = dyn_cast<LLVM::LLVMFixedVectorType>(type)) {
-    unsigned elemAlign = getNaturalByteAlignment(vecType.getElementType());
-    if (!elemAlign)
-      return 0;
-    return elemAlign * vecType.getNumElements();
   }
   if (auto intType = dyn_cast<IntegerType>(type))
     return llvm::divideCeil(unsigned(intType.getWidth()), 8u);
@@ -228,7 +209,6 @@ public:
     });
     addSourceMaterialization(materializeVPTOCast);
     addTargetMaterialization(materializeVPTOCast);
-    addArgumentMaterialization(materializeVPTOCast);
   }
 };
 
@@ -365,12 +345,11 @@ static std::string getMadRhsFragment(Type type) {
 }
 
 static bool isMadE4M3ElementType(Type type) {
-  return type.isFloat8E4M3() || type.isFloat8E4M3FN() ||
-         type.isFloat8E4M3FNUZ() || type.isFloat8E4M3B11FNUZ();
+  return pto::isPTOFloat8E4M3LikeType(type);
 }
 
 static bool isMadE5M2ElementType(Type type) {
-  return type.isFloat8E5M2() || type.isFloat8E5M2FNUZ();
+  return pto::isPTOFloat8E5M2LikeType(type);
 }
 
 static std::string getMadDstFragment(Type type) {
@@ -498,10 +477,9 @@ static std::string getLowPrecisionElementFragment(Type type) {
     return "f4e1m2x2";
   if (isa<pto::F4E2M1x2Type>(type))
     return "f4e2m1x2";
-  if (type.isFloat8E4M3() || type.isFloat8E4M3FN() ||
-      type.isFloat8E4M3FNUZ() || type.isFloat8E4M3B11FNUZ())
+  if (pto::isPTOFloat8E4M3LikeType(type))
     return "f8e4m3";
-  if (type.isFloat8E5M2() || type.isFloat8E5M2FNUZ())
+  if (pto::isPTOFloat8E5M2LikeType(type))
     return "f8e5m2";
   return {};
 }
@@ -527,6 +505,43 @@ getLowpPayloadABI(Type elementType, MLIRContext *context) {
   if (!isLowpPayloadElementType(elementType))
     return std::nullopt;
   return LowpPayloadABI{IntegerType::get(context, 8), "u8"};
+}
+
+static std::string getDirectLowpVLogicElementFragment(Type type) {
+  if (pto::isPTOFloat8E4M3LikeType(type))
+    return "fp8e4m3";
+  if (pto::isPTOFloat8E5M2LikeType(type))
+    return "fp8e5m2";
+  return {};
+}
+
+static FailureOr<StringRef>
+buildDirectLowpVLogicCallee(MLIRContext *context, Type vectorType,
+                            StringRef stem, StringRef mode) {
+  Type elementType = getElementTypeFromVectorLike(vectorType);
+  auto lanes = getElementCountFromVectorLike(vectorType);
+  std::string elem = getDirectLowpVLogicElementFragment(elementType);
+  if (elem.empty() || !lanes)
+    return failure();
+  return StringAttr::get(context, "llvm.hivm." + stem.str() + "." +
+                                      mode.str() + ".v" +
+                                      std::to_string(*lanes) + elem)
+      .getValue();
+}
+
+static FailureOr<StringRef>
+buildLowpPayloadVLogicCallee(MLIRContext *context, Type vectorType,
+                             StringRef stem, StringRef mode) {
+  Type elementType = getElementTypeFromVectorLike(vectorType);
+  auto lanes = getElementCountFromVectorLike(vectorType);
+  std::optional<LowpPayloadABI> abi = getLowpPayloadABI(elementType, context);
+  if (!abi || !lanes)
+    return failure();
+  return StringAttr::get(context, "llvm.hivm." + stem.str() + ".v" +
+                                      std::to_string(*lanes) +
+                                      abi->intrinsicElementFragment.str() +
+                                      "." + mode.str())
+      .getValue();
 }
 
 static Type getLowpPayloadCarrierType(Type vectorLikeType,
@@ -679,8 +694,6 @@ static Type getElementTypeFromVectorLike(Type type) {
     return vecType.getElementType();
   if (auto vecType = dyn_cast<VectorType>(type))
     return vecType.getElementType();
-  if (auto vecType = dyn_cast<LLVM::LLVMFixedVectorType>(type))
-    return vecType.getElementType();
   return {};
 }
 
@@ -692,8 +705,6 @@ static std::optional<int64_t> getElementCountFromVectorLike(Type type) {
       return std::nullopt;
     return vecType.getShape().front();
   }
-  if (auto vecType = dyn_cast<LLVM::LLVMFixedVectorType>(type))
-    return vecType.getNumElements();
   return std::nullopt;
 }
 
@@ -1047,10 +1058,9 @@ static VcvtElemKind classifyVcvtElemType(Type type) {
     return VcvtElemKind::BF16;
   if (type.isF32())
     return VcvtElemKind::F32;
-  if (type.isFloat8E4M3() || type.isFloat8E4M3FN() ||
-      type.isFloat8E4M3FNUZ() || type.isFloat8E4M3B11FNUZ())
+  if (pto::isPTOFloat8E4M3LikeType(type))
     return VcvtElemKind::F8E4M3;
-  if (type.isFloat8E5M2() || type.isFloat8E5M2FNUZ())
+  if (pto::isPTOFloat8E5M2LikeType(type))
     return VcvtElemKind::F8E5M2;
   if (pto::isPTOHiFloat8Type(type))
     return VcvtElemKind::HiF8;
@@ -3615,16 +3625,74 @@ static StringRef buildVsstbPostCallee(MLIRContext *context) {
   return StringAttr::get(context, "llvm.hivm.vsstb.post").getValue();
 }
 
+static Type getVgather2SourceElementType(Type sourceType) {
+  if (auto ptrType = dyn_cast<pto::PtrType>(sourceType))
+    return ptrType.getElementType();
+  if (auto memrefType = dyn_cast<BaseMemRefType>(sourceType))
+    return memrefType.getElementType();
+  return {};
+}
+
 static FailureOr<StringRef> buildVgather2Callee(MLIRContext *context,
+                                                Type sourceType,
                                                 Type resultType) {
-  std::string vec =
-      getElementTypeFragment(getElementTypeFromVectorLike(resultType));
+  Type sourceElemType = getVgather2SourceElementType(sourceType);
+  Type resultElemType = getElementTypeFromVectorLike(resultType);
   auto lanes = getElementCountFromVectorLike(resultType);
-  if (vec.empty() || !lanes)
+  if (!sourceElemType || !resultElemType || !lanes)
     return failure();
+
+  std::string vec;
+  int64_t intrinsicLanes = *lanes;
+  if (pto::getPTOStorageElemBitWidth(sourceElemType) == 8) {
+    vec = getElementTypeFragment(sourceElemType);
+    intrinsicLanes *= 2;
+  } else {
+    vec = getElementTypeFragment(resultElemType);
+  }
+  if (vec.empty())
+    return failure();
+
   return StringAttr::get(context, "llvm.hivm.vgather2.v300.v" +
-                                      std::to_string(*lanes) + vec)
+                                      std::to_string(intrinsicLanes) + vec)
       .getValue();
+}
+
+static std::optional<uint64_t> getFixedVectorBitWidth(Type type) {
+  auto vectorType = dyn_cast<VectorType>(type);
+  if (!vectorType || vectorType.getRank() != 1 || vectorType.isScalable())
+    return std::nullopt;
+  int64_t lanes = vectorType.getDimSize(0);
+  if (lanes <= 0)
+    return std::nullopt;
+  auto elementType = dyn_cast<IntegerType>(vectorType.getElementType());
+  if (!elementType)
+    return std::nullopt;
+  return static_cast<uint64_t>(lanes) * elementType.getWidth();
+}
+
+static FailureOr<Type> getVgather2OffsetsCarrierType(PatternRewriter &rewriter,
+                                                     Type sourceType,
+                                                     Type resultType,
+                                                     Type offsetsType) {
+  Type sourceElemType = getVgather2SourceElementType(sourceType);
+  Type elementType = getElementTypeFromVectorLike(resultType);
+  auto lanes = getElementCountFromVectorLike(resultType);
+  if (!sourceElemType || !elementType || !lanes || *lanes <= 0)
+    return failure();
+
+  Type carrierType = offsetsType;
+  if (pto::getPTOStorageElemBitWidth(elementType) == 16) {
+    if (*lanes % 2 != 0)
+      return failure();
+    carrierType = VectorType::get({*lanes / 2}, rewriter.getI32Type());
+  }
+
+  std::optional<uint64_t> offsetsBits = getFixedVectorBitWidth(offsetsType);
+  std::optional<uint64_t> carrierBits = getFixedVectorBitWidth(carrierType);
+  if (!offsetsBits || !carrierBits || *offsetsBits != *carrierBits)
+    return failure();
+  return carrierType;
 }
 
 static FailureOr<StringRef> buildVgather2BcCallee(MLIRContext *context,
@@ -4019,6 +4087,33 @@ static StringRef buildMemBarCallee(MemBarKind kind, MLIRContext *context) {
   llvm_unreachable("unexpected membar kind");
 }
 
+static uint64_t getDsbMemImmediate(DsbMem kind) {
+  return static_cast<uint64_t>(kind);
+}
+
+static uint64_t getDcciCacheLineImmediate(DcciCacheLine kind) {
+  return static_cast<uint64_t>(kind);
+}
+
+static uint64_t getDcciDstImmediate(DcciDst kind) {
+  return static_cast<uint64_t>(kind);
+}
+
+static StringRef buildDcciCallee(unsigned addressSpace, bool hasDst,
+                                 MLIRContext *context) {
+  if (addressSpace == static_cast<unsigned>(pto::AddressSpace::GM)) {
+    return StringAttr::get(context, hasDst ? "llvm.hivm.DCCI.DST"
+                                           : "llvm.hivm.DCCI")
+        .getValue();
+  }
+  if (addressSpace == static_cast<unsigned>(pto::AddressSpace::VEC)) {
+    return StringAttr::get(context, hasDst ? "llvm.hivm.DCCI.DST.UB"
+                                           : "llvm.hivm.DCCI.UB")
+        .getValue();
+  }
+  llvm_unreachable("unexpected dcci address space");
+}
+
 template <>
 StringRef buildSyncCallee<pto::GetBufOp>(MLIRContext *context) {
   return StringAttr::get(context, "llvm.hivm.GET.BUFI.mode").getValue();
@@ -4307,11 +4402,6 @@ public:
   matchAndRewrite(BinaryOp op, typename BinaryOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     StringRef stem = getBinaryMaskedStem<BinaryOp>();
-    FailureOr<StringRef> calleeName =
-        buildLaneTypedCallee(op.getContext(), op.getResult().getType(), stem, ".x");
-    if (failed(calleeName))
-      return rewriter.notifyMatchFailure(op, "unsupported binary VPTO signature");
-
     Type resultType =
         this->getTypeConverter()->convertType(op.getResult().getType());
     if (!resultType)
@@ -4329,12 +4419,47 @@ public:
           op, "unexpected converted binary VPTO operand types");
     }
 
+    Type callResultType = resultType;
+    Value callLhs = lhs;
+    Value callRhs = rhs;
+    FailureOr<StringRef> calleeName =
+        buildLaneTypedCallee(op.getContext(), op.getResult().getType(), stem, ".x");
+
+    if constexpr (std::is_same_v<BinaryOp, pto::VandOp> ||
+                  std::is_same_v<BinaryOp, pto::VorOp> ||
+                  std::is_same_v<BinaryOp, pto::VxorOp>) {
+      Type elementType = getElementTypeFromVectorLike(op.getResult().getType());
+      if (elementType && pto::isPTOLowPrecisionType(elementType)) {
+        calleeName = buildDirectLowpVLogicCallee(
+            op.getContext(), op.getResult().getType(), stem, "x");
+        if (failed(calleeName)) {
+          Type carrierType = getLowpPayloadCarrierType(
+              op.getResult().getType(), rewriter.getContext());
+          if (!carrierType)
+            return rewriter.notifyMatchFailure(
+                op, "unsupported low-precision binary payload ABI");
+          callResultType = carrierType;
+          callLhs = castToPayloadABI(op.getLoc(), lhs,
+                                     op.getResult().getType(), rewriter);
+          callRhs = castToPayloadABI(op.getLoc(), rhs,
+                                     op.getResult().getType(), rewriter);
+          calleeName = buildLowpPayloadVLogicCallee(
+              op.getContext(), op.getResult().getType(), stem, "x");
+        }
+      }
+    }
+    if (failed(calleeName))
+      return rewriter.notifyMatchFailure(op, "unsupported binary VPTO signature");
+
     auto call = rewriter.create<func::CallOp>(op.getLoc(), *calleeName,
-                                              TypeRange{resultType},
-                                              ValueRange{lhs, rhs, mask});
+                                              TypeRange{callResultType},
+                                              ValueRange{callLhs, callRhs, mask});
     state.plannedDecls.push_back(
         PlannedDecl{calleeName->str(), call.getCalleeType()});
-    rewriter.replaceOp(op, call.getResults());
+    Value result = castFromPayloadABI(op.getLoc(), call.getResult(0),
+                                      op.getResult().getType(), resultType,
+                                      rewriter);
+    rewriter.replaceOp(op, result);
     return success();
   }
 
@@ -7164,17 +7289,28 @@ public:
       return rewriter.notifyMatchFailure(op, "failed to convert vgather2 result type");
 
     FailureOr<StringRef> calleeName =
-        buildVgather2Callee(op.getContext(), op.getResult().getType());
+        buildVgather2Callee(op.getContext(), op.getSource().getType(),
+                            op.getResult().getType());
     if (failed(calleeName))
       return rewriter.notifyMatchFailure(op, "unsupported vgather2 signature");
 
+    Value offsets = adaptor.getOffsets();
+    FailureOr<Type> offsetsCarrierType = getVgather2OffsetsCarrierType(
+        rewriter, op.getSource().getType(), op.getResult().getType(),
+        offsets.getType());
+    if (failed(offsetsCarrierType))
+      return rewriter.notifyMatchFailure(op, "unsupported vgather2 offsets carrier");
+    if (offsets.getType() != *offsetsCarrierType)
+      offsets = rewriter.create<LLVM::BitcastOp>(op.getLoc(), *offsetsCarrierType,
+                                                 offsets);
+
     auto funcType = rewriter.getFunctionType(
-        TypeRange{adaptor.getSource().getType(), adaptor.getOffsets().getType(),
+        TypeRange{adaptor.getSource().getType(), *offsetsCarrierType,
                   adaptor.getMask().getType()},
         TypeRange{resultType});
     auto call = rewriter.create<func::CallOp>(
         op.getLoc(), *calleeName, TypeRange{resultType},
-        ValueRange{adaptor.getSource(), adaptor.getOffsets(), adaptor.getMask()});
+        ValueRange{adaptor.getSource(), offsets, adaptor.getMask()});
     state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
     rewriter.replaceOp(op, call.getResults());
     return success();
@@ -8244,7 +8380,7 @@ public:
         op.getLoc(), TypeRange{}, payloads, asmString,
         appendSimtKeepResumeClobbers(
             buildRepeatedInlineAsmConstraints("R", payloads.size()), clobbers),
-        true, false,
+        true, false, LLVM::tailcallkind::TailCallKind::None,
         LLVM::AsmDialectAttr::get(op.getContext(), LLVM::AsmDialect::AD_ATT),
         ArrayAttr{});
     for (pto::KeepOp keep : llvm::reverse(keepOps))
@@ -8318,7 +8454,7 @@ public:
         op.getLoc(), TypeRange{asmResultType}, ValueRange{}, asmString,
         appendSimtKeepResumeClobbers(
             buildRepeatedInlineAsmConstraints("=R", resumeOps.size()), clobbers),
-        true, false,
+        true, false, LLVM::tailcallkind::TailCallKind::None,
         LLVM::AsmDialectAttr::get(op.getContext(), LLVM::AsmDialect::AD_ATT),
         ArrayAttr{});
 
@@ -8534,6 +8670,13 @@ public:
   matchAndRewrite(pto::BarrierOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     (void)adaptor;
+    if (isTargetArchA5(op.getOperation()) &&
+        op.getPipe().getPipe() == PIPE::PIPE_V) {
+      op.emitError("internal error: A5 PIPE_V barrier should be erased before "
+                   "VPTO LLVM lowering");
+      return failure();
+    }
+
     auto pipe = parsePipeImmediate(stringifyPIPE(op.getPipe().getPipe()));
     if (!pipe)
       return rewriter.notifyMatchFailure(op, "unsupported barrier pipe");
@@ -8567,6 +8710,99 @@ public:
     StringRef calleeName = buildMemBarCallee(op.getKind().getKind(), op.getContext());
     auto funcType = rewriter.getFunctionType(TypeRange{}, TypeRange{});
     rewriter.create<func::CallOp>(op.getLoc(), calleeName, TypeRange{}, ValueRange{});
+    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
+template <typename MemoryConsistencyOp>
+class LowerUnsupportedMemoryConsistencyOpPattern final
+    : public OpConversionPattern<MemoryConsistencyOp> {
+public:
+  explicit LowerUnsupportedMemoryConsistencyOpPattern(
+      TypeConverter &typeConverter, MLIRContext *context,
+      LoweringState &state)
+      : OpConversionPattern<MemoryConsistencyOp>(typeConverter, context) {
+    (void)state;
+  }
+
+  LogicalResult
+  matchAndRewrite(MemoryConsistencyOp op,
+                  typename MemoryConsistencyOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    (void)adaptor;
+    (void)rewriter;
+    op.emitOpError()
+        << "is not supported by the VPTO backend yet; PTOAS validates the "
+           "memory-consistency contract, but high-level CMO/fence ops must be "
+           "lowered to `pto.dcci` or `pto.dsb` before VPTO LLVM lowering";
+    return failure();
+  }
+};
+
+class LowerDsbOpPattern final : public OpConversionPattern<pto::DsbOp> {
+public:
+  explicit LowerDsbOpPattern(TypeConverter &typeConverter, MLIRContext *context,
+                             LoweringState &state)
+      : OpConversionPattern<pto::DsbOp>(typeConverter, context), state(state) {}
+
+  LogicalResult
+  matchAndRewrite(pto::DsbOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    (void)adaptor;
+    StringRef calleeName =
+        StringAttr::get(op.getContext(), "llvm.hivm.DSB").getValue();
+    Type i64Ty = rewriter.getI64Type();
+    auto funcType = rewriter.getFunctionType(TypeRange{i64Ty}, TypeRange{});
+    Value mem =
+        getI64Constant(rewriter, op.getLoc(),
+                       getDsbMemImmediate(op.getMem().getKind()));
+    rewriter.create<func::CallOp>(op.getLoc(), calleeName, TypeRange{},
+                                  ValueRange{mem});
+    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
+class LowerDcciOpPattern final : public OpConversionPattern<pto::DcciOp> {
+public:
+  explicit LowerDcciOpPattern(TypeConverter &typeConverter, MLIRContext *context,
+                              LoweringState &state)
+      : OpConversionPattern<pto::DcciOp>(typeConverter, context), state(state) {}
+
+  LogicalResult
+  matchAndRewrite(pto::DcciOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto ptrType = dyn_cast<LLVM::LLVMPointerType>(adaptor.getPtr().getType());
+    if (!ptrType)
+      return rewriter.notifyMatchFailure(op, "expected LLVM pointer operand");
+
+    bool hasDst = static_cast<bool>(op.getDstAttr());
+    StringRef calleeName =
+        buildDcciCallee(ptrType.getAddressSpace(), hasDst, op.getContext());
+
+    Type i64Ty = rewriter.getI64Type();
+    SmallVector<Type> argTypes{ptrType, i64Ty};
+    SmallVector<Value> args{
+        adaptor.getPtr(),
+        getI64Constant(rewriter, op.getLoc(),
+                       getDcciCacheLineImmediate(op.getCache().getKind()))};
+    if (auto dst = op.getDstAttr()) {
+      argTypes.push_back(i64Ty);
+      args.push_back(getI64Constant(rewriter, op.getLoc(),
+                                    getDcciDstImmediate(dst.getKind())));
+    }
+
+    auto funcType = rewriter.getFunctionType(argTypes, TypeRange{});
+    rewriter.create<func::CallOp>(op.getLoc(), calleeName, TypeRange{}, args);
     state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
     rewriter.eraseOp(op);
     return success();
@@ -9316,6 +9552,41 @@ public:
   }
 };
 
+class ConvertArithSelectOp final : public OpConversionPattern<arith::SelectOp> {
+public:
+  ConvertArithSelectOp(TypeConverter &typeConverter, MLIRContext *context)
+      : OpConversionPattern<arith::SelectOp>(typeConverter, context,
+                                             PatternBenefit(2)) {}
+
+  LogicalResult
+  matchAndRewrite(arith::SelectOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (!hasVPTOConvertibleType(op->getOperandTypes()) &&
+        !hasVPTOConvertibleType(op->getResultTypes()))
+      return failure();
+    if (!op.getCondition().getType().isInteger(1))
+      return rewriter.notifyMatchFailure(
+          op, "only scalar i1 conditions supported for VPTO arith.select");
+
+    Type convertedResultType =
+        getTypeConverter()->convertType(op.getResult().getType());
+    if (!convertedResultType)
+      return rewriter.notifyMatchFailure(op, "failed to convert result type");
+
+    Value trueValue = adaptor.getTrueValue();
+    Value falseValue = adaptor.getFalseValue();
+    if (trueValue.getType() != convertedResultType ||
+        falseValue.getType() != convertedResultType)
+      return rewriter.notifyMatchFailure(
+          op, "converted true/false values must match result type");
+
+    rewriter.replaceOpWithNewOp<arith::SelectOp>(
+        op, convertedResultType, adaptor.getCondition(), trueValue,
+        falseValue);
+    return success();
+  }
+};
+
 class ConvertPtoAddPtrOp final : public OpConversionPattern<pto::AddPtrOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
@@ -9974,6 +10245,10 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
                LowerPipeEventDynSyncOpPattern<pto::SetFlagDynOp>,
                LowerPipeEventDynSyncOpPattern<pto::WaitFlagDynOp>,
                LowerBarrierOpPattern, LowerMemBarOpPattern,
+               LowerUnsupportedMemoryConsistencyOpPattern<pto::CmoCacheInvalidOp>,
+               LowerUnsupportedMemoryConsistencyOpPattern<pto::FenceBarrierAllOp>,
+               LowerDsbOpPattern,
+               LowerDcciOpPattern,
                LowerBufSyncOpPattern<pto::GetBufOp>,
                LowerBufSyncOpPattern<pto::RlsBufOp>,
                LowerRuntimeQueryOpPattern<pto::GetBlockIdxOp>,
@@ -10035,6 +10310,8 @@ static void configureVPTOOpLoweringTarget(ConversionTarget &target,
   target.addLegalOp<UnrealizedConversionCastOp>();
   target.addIllegalOp<pto::SetFlagOp, pto::WaitFlagOp, pto::SetFlagDynOp, pto::WaitFlagDynOp, pto::SyncSetOp,
                       pto::SyncWaitOp, pto::BarrierOp, pto::MemBarOp,
+                      pto::CmoCacheInvalidOp, pto::FenceBarrierAllOp,
+                      pto::DsbOp, pto::DcciOp,
                       pto::GetBufOp, pto::RlsBufOp>();
   target.addIllegalOp<pto::GetBlockIdxOp, pto::GetSubBlockIdxOp,
                       pto::GetBlockNumOp, pto::GetSubBlockNumOp,
@@ -10224,6 +10501,7 @@ static LogicalResult lowerVPTOTypes(ModuleOp module, llvm::raw_ostream &diagOS) 
   patterns.add<ConvertPtoLoadOp, ConvertPtoStoreOp, ConvertPtoLdgOp,
                ConvertPtoStgOp>(
       typeConverter, context, state);
+  patterns.add<ConvertArithSelectOp>(typeConverter, context);
   patterns.add<ConvertVPTOUnrealizedCastOp>(typeConverter, context);
   patterns.add<ConvertVPTOTypedCarrierOp>(typeConverter, context);
 
@@ -10560,7 +10838,7 @@ static LogicalResult runPipeline(ModuleOp module, llvm::raw_ostream &diagOS,
   kernelModulePM.addPass(
       std::make_unique<NormalizeFuncSignaturesForLLVMLoweringPass>());
   kernelModulePM.addPass(arith::createArithExpandOpsPass());
-  kernelModulePM.addPass(createConvertSCFToCFPass());
+  kernelModulePM.addPass(createSCFToControlFlowPass());
   kernelModulePM.addPass(createArithToLLVMConversionPass());
   kernelModulePM.addPass(createConvertIndexToLLVMPass());
   kernelModulePM.addPass(createFinalizeMemRefToLLVMConversionPass());

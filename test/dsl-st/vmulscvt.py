@@ -22,13 +22,7 @@ sequence. That keeps the test close to the C++ authoring style without relying
 on `vsstb.post`, which is not available on the current PTODSL surface yet.
 """
 
-from pathlib import Path
-import sys
-
 import numpy as np
-
-if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from common import auto_main, golden_output_case
 from ptodsl import pto
@@ -88,6 +82,9 @@ def vmulscvt_pack_kernel(
     with pto.simd():
         mask32 = pto.pset_b32(pto.MaskPattern.ALL)
         mask16 = pto.pset_b16(pto.MaskPattern.ALL)
+
+        zero = pto.vbr(pto.ui16(0))
+        pto.vsts(zero, dst_tile.as_ptr(), 0, mask16, dist="NORM_B16")
 
         src = pto.vlds(src_tile[0, 0:])
         packed_f16 = pto.vmulscvt(

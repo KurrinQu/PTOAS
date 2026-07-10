@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 
-from .._diagnostics import inline_subkernel_value_escape_error
+from .._diagnostics import inline_subkernel_value_escape_error, subkernel_kernel_kind_mismatch_error
 from .._kernel_signature import RuntimeScalarParameterSpec
 from .._ops import const
 from .._surface_values import unwrap_surface_value, wrap_like_surface_value
@@ -119,6 +119,7 @@ class InlineSubkernelOutlineFrame:
     owner_symbol_name: str
     wrapper_op: object
     body_block: object
+    simt_launch_dims: tuple | None = None
 
 
 class TraceSession:
@@ -239,16 +240,50 @@ class TraceSession:
         return None
 
     def _create_inline_subkernel_wrapper(self, role: str):
-        wrapper_op = self._create_subkernel_section_op(role)
+        wrapper_op = None
+        if self._subkernel_section_policy(role) != "function_kind":
+            wrapper_op = self._create_subkernel_section_op(role)
         if wrapper_op is None:
             wrapper_op = _pto.VecScopeOp()
         body_block = wrapper_op.body.blocks.append()
         return wrapper_op, body_block
 
+    def _subkernel_role_kernel_kind(self, role: str) -> str | None:
+        if role == "simd":
+            return "vector"
+        if role == "cube":
+            return "cube"
+        return None
+
+    def _current_explicit_kernel_kind(self) -> str | None:
+        module_spec = self.current_function_module_spec
+        if not getattr(module_spec, "kernel_kind_explicit", False):
+            return None
+        kind = getattr(module_spec, "kernel_kind", None)
+        return kind if kind in {"cube", "vector"} else None
+
+    def _subkernel_section_policy(self, role: str) -> str:
+        role_kind = self._subkernel_role_kernel_kind(role)
+        explicit_kind = self._current_explicit_kernel_kind()
+        if role_kind is None or explicit_kind is None:
+            return "section"
+        if explicit_kind != role_kind:
+            raise subkernel_kernel_kind_mismatch_error(role, explicit_kind)
+        return "function_kind"
+
     def _subkernel_helper_attributes(self, role: str) -> tuple[tuple[str, object], ...]:
         attrs: list[tuple[str, object]] = []
         if role in {"simd", "cube"}:
             attrs.append(("pto.ptodsl.subkernel_helper", StringAttr.get(role)))
+            if self._subkernel_section_policy(role) == "function_kind":
+                attrs.append(
+                    (
+                        "pto.kernel_kind",
+                        Attribute.parse(
+                            f"#pto.kernel_kind<{self._subkernel_role_kernel_kind(role)}>"
+                        ),
+                    )
+                )
         if role == "simt":
             attrs.append(("pto.simt_entry", UnitAttr.get()))
         return tuple(attrs)
@@ -275,6 +310,10 @@ class TraceSession:
         )
         self._subkernel_stack.append(frame)
         try:
+            if self._subkernel_section_policy(role) == "function_kind":
+                yield frame
+                return
+
             section_op = self._create_subkernel_section_op(role)
             if section_op is None:
                 yield frame
@@ -289,7 +328,14 @@ class TraceSession:
                 raise RuntimeError("PTODSL trace-session subkernel stack corruption detected")
 
     @contextmanager
-    def enter_inline_subkernel(self, role: str, symbol_name: str, target: str):
+    def enter_inline_subkernel(
+        self,
+        role: str,
+        symbol_name: str,
+        target: str,
+        *,
+        simt_launch_dims: tuple | None = None,
+    ):
         """Capture one inline subkernel scope and outline it into a helper on exit."""
         frame = SubkernelTraceFrame(
             role=role,
@@ -303,6 +349,7 @@ class TraceSession:
             owner_symbol_name=self.current_function_owner_symbol_name,
             wrapper_op=wrapper_op,
             body_block=body_block,
+            simt_launch_dims=simt_launch_dims,
         )
         self._subkernel_stack.append(frame)
         try:
@@ -391,7 +438,8 @@ class TraceSession:
 
     def _outline_inline_subkernel(self, outline_frame: InlineSubkernelOutlineFrame) -> None:
         role = outline_frame.trace_frame.role
-        if role in {"simd", "cube"}:
+        section_policy = self._subkernel_section_policy(role)
+        if role in {"simd", "cube"} and section_policy != "function_kind":
             root_ops = (outline_frame.wrapper_op,)
         else:
             root_ops = tuple(outline_frame.body_block.operations)
@@ -413,16 +461,24 @@ class TraceSession:
             )
 
         with InsertionPoint(outline_frame.wrapper_op.operation):
-            if role == "simt":
-                self._emit_simt_helper_launch_metadata()
-            func.CallOp(helper_fn, list(captures))
+            if role == "simt" and outline_frame.simt_launch_dims is not None:
+                dim_x, dim_y, dim_z = _coerce_simt_launch_dims(outline_frame.simt_launch_dims)
+                Operation.create(
+                    "pto.simt_launch",
+                    attributes={"callee": FlatSymbolRefAttr.get(_symbol_name(helper_fn))},
+                    operands=[dim_x, dim_y, dim_z, *captures],
+                )
+            else:
+                if role == "simt":
+                    self._emit_simt_helper_launch_metadata()
+                func.CallOp(helper_fn, list(captures))
 
         entry_block = helper_fn.add_entry_block()
         with InsertionPoint(entry_block):
             terminator = func.ReturnOp([])
         return_anchor = terminator.operation.opview
 
-        if role in {"simd", "cube"}:
+        if role in {"simd", "cube"} and section_policy != "function_kind":
             outline_frame.wrapper_op.move_before(return_anchor)
             outlined_roots = (outline_frame.wrapper_op,)
         else:

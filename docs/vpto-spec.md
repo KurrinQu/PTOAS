@@ -294,6 +294,8 @@ Within the vector execution scope, the hardware does not track UB address aliasi
 pto.mem_bar "VV_ALL"      // All prior vector ops complete before subsequent
 pto.mem_bar "VST_VLD"     // All prior vector stores visible before subsequent loads
 pto.mem_bar "VLD_VST"     // All prior vector loads complete before subsequent stores
+pto.dcci %gm "ENTIRE_DATA_CACHE", "CACHELINE_OUT" : !pto.ptr<i8, gm>
+pto.dsb "ALL"
 ```
 
 Without proper barriers, loads may see stale data or stores may be reordered incorrectly.
@@ -1337,15 +1339,17 @@ for (int i = 0; i < N; i++)
 **Example — pto.vcgadd (group reduction per VLane) semantics:**
 
 ```c
-int K = N / 8;  // elements per VLane
+int groups = 8;
+int K = 32 / sizeof(T);  // elements per 32-byte VLane
 for (int g = 0; g < 8; g++) {
     T sum = 0;
     for (int i = 0; i < K; i++)
-        sum += src[g*K + i];
-    dst[g*K] = sum;
-    for (int i = 1; i < K; i++)
-        dst[g*K + i] = 0;
+        if (mask[g*K + i])
+            sum += src[g*K + i];
+    dst[g] = sum;
 }
+for (int i = groups; i < N; i++)
+    dst[i] = 0;
 ```
 
 For A5 reduction result types:
@@ -1449,6 +1453,7 @@ This section provides a categorized overview of all PTO micro Instruction operat
 |-----------|-------|-------------|
 | Intra-core Sync | 1 | `pto.set_flag`, `pto.wait_flag` |
 | Pipeline Buffer Sync | 1 | `pto.get_buf`, `pto.rls_buf` |
+| Memory Barrier / Cache Maintenance | 1 | `pto.mem_bar`, `pto.dsb`, `pto.dcci` |
 
 ### Scalar & Control Operations
 

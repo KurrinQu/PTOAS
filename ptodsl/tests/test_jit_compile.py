@@ -12,10 +12,10 @@ import os
 import re
 import sys
 from tempfile import TemporaryDirectory
+from importlib.util import module_from_spec, spec_from_file_location
+from typing import Optional
 from unittest import mock
 
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ptodsl"))
 
 from ptodsl import pto, scalar
 from ptodsl import _types as pto_types
@@ -35,7 +35,7 @@ def expect(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
-def expect_raises(exc_type, func, message_substring: str | None = None) -> Exception:
+def expect_raises(exc_type, func, message_substring: Optional[str] = None) -> Exception:
     try:
         func()
     except exc_type as exc:
@@ -143,6 +143,25 @@ def host_vec_copy_explicit(
     o_view = pto.make_tensor_view(O_ptr, shape=[rows, cols], strides=[cols, 1])
     a_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
     o_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
+    part = pto.partition_view(a_view, offsets=[0, 0], sizes=[rows, cols])
+    out = pto.partition_view(o_view, offsets=[0, 0], sizes=[rows, cols])
+    pto.tile.load(part, a_tile)
+    pto.tile.store(o_tile, out)
+
+
+@pto.jit(target="a5", mode="explicit")
+def host_vec_copy_explicit_addr(
+    A_ptr: pto.ptr(pto.f32, "gm"),
+    O_ptr: pto.ptr(pto.f32, "gm"),
+    rows: pto.i32,
+    cols: pto.i32,
+    *,
+    BLOCK: pto.const_expr = 128,
+):
+    a_view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
+    o_view = pto.make_tensor_view(O_ptr, shape=[rows, cols], strides=[cols, 1])
+    a_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32, addr=0)
+    o_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32, addr=4096)
     part = pto.partition_view(a_view, offsets=[0, 0], sizes=[rows, cols])
     out = pto.partition_view(o_view, offsets=[0, 0], sizes=[rows, cols])
     pto.tile.load(part, a_tile)
@@ -668,11 +687,37 @@ def top_level_simd_probe():
     SUBKERNEL_OBSERVATIONS.append((frame.role, frame.symbol_name, session.subkernel_stack_depth))
 
 
+@pto.simd
+def explicit_vector_simd_probe():
+    pto.pipe_barrier(pto.Pipe.ALL)
+
+
+@pto.cube
+def explicit_vector_cube_probe():
+    pto.pipe_barrier(pto.Pipe.ALL)
+
+
 @pto.jit(target="a5")
 def shared_subkernel_lowering_probe(*, TRACE_TOKEN: pto.const_expr = 0):
     top_level_cube_probe()
     top_level_simd_probe()
     nested_simd_probe()
+
+
+@pto.jit(target="a5", kernel_kind="vector")
+def explicit_vector_calls_simd_probe(*, TRACE_TOKEN: pto.const_expr = 0):
+    explicit_vector_simd_probe()
+
+
+@pto.jit(target="a5", kernel_kind="vector")
+def explicit_vector_calls_cube_probe(*, TRACE_TOKEN: pto.const_expr = 0):
+    explicit_vector_cube_probe()
+
+
+@pto.jit(target="a5", kernel_kind="vector")
+def explicit_vector_inline_simd_probe(*, TRACE_TOKEN: pto.const_expr = 0):
+    with pto.simd():
+        pto.pipe_barrier(pto.Pipe.ALL)
 
 
 @pto.jit(target="a5", mode="explicit")
@@ -692,6 +737,17 @@ def inline_subkernel_scope_probe(*, TRACE_TOKEN: pto.const_expr = 0):
         frame = session.current_subkernel
         INLINE_SUBKERNEL_SCOPE_OBSERVATIONS.append((frame.role, frame.symbol_name, session.subkernel_stack_depth))
         pto.pipe_barrier(pto.Pipe.ALL)
+
+
+@pto.jit(target="a5", mode="explicit")
+def inline_simt_launch_dims_probe(
+    gm: pto.ptr(pto.i32, "gm"),
+    *,
+    TRACE_TOKEN: pto.const_expr = 0,
+):
+    with pto.simt(32, 2, 1):
+        tid = pto.get_tid_x()
+        pto.stg(tid, gm, scalar.index_cast(tid))
 
 
 @pto.simt
@@ -862,6 +918,55 @@ def ast_subkernel_runtime_for_helper(rows: pto.i32):
 def simt_helper_lowering_probe(*, TRACE_TOKEN: pto.const_expr = 0):
     simt_tid_probe()
     simt_tid_probe()
+
+
+@pto.simt
+def alloc_buffer_local_helper():
+    _ = pto.alloc_buffer((32,), pto.f32)
+
+
+@pto.jit(target="a5", mode="explicit")
+def alloc_buffer_local_probe():
+    alloc_buffer_local_helper()
+
+
+@pto.jit(target="a5", mode="explicit")
+def alloc_buffer_outside_simt_probe():
+    _ = pto.alloc_buffer((32,), pto.f32)
+
+
+@pto.simt
+def rmsnorm_alloc_buffer_frag_helper(
+    w_ub: pto.ptr(pto.f32, pto.MemorySpace.UB),
+    x_ub: pto.ptr(pto.f32, pto.MemorySpace.UB),
+):
+    _ = pto.get_tid_x()
+    _ = w_ub
+    _ = x_ub
+    _ = pto.alloc_buffer((32,), pto.f32)
+    _ = pto.alloc_buffer((1,), pto.f32)
+
+
+@pto.jit(target="a5", mode="explicit")
+def rmsnorm_alloc_buffer_layout_probe(
+    X: pto.ptr(pto.f32, "gm"),
+    W: pto.ptr(pto.f32, "gm"),
+    Y: pto.ptr(pto.f32, "gm"),
+    RSTD: pto.ptr(pto.f32, "gm"),
+):
+    ub_base = pto.castptr(pto.const(0, dtype=pto.ui64), pto.ptr(pto.f32, "ub"))
+    w_ub = pto.addptr(ub_base, 0)
+    reduce_scratch = pto.addptr(ub_base, 4096)
+    x_ub = pto.addptr(ub_base, 4224)
+    y_ub = pto.addptr(ub_base, 12416)
+    rstd_ub = pto.addptr(ub_base, 20608)
+
+    pto.mte_gm_ub(W, w_ub, 0, 4096 * 4, nburst=(1, 0, 0))
+    pto.mte_gm_ub(X, x_ub, 0, 4096 * 4, nburst=(1, 0, 0))
+    rmsnorm_alloc_buffer_frag_helper(w_ub, x_ub)
+    pto.mte_ub_gm(y_ub, Y, 4096 * 4, nburst=(1, 0, 0))
+    pto.mte_ub_gm(rstd_ub, RSTD, 4, nburst=(1, 0, 0))
+    _ = reduce_scratch
 
 
 @pto.jit(target="a5")
@@ -1561,6 +1666,45 @@ def scalar_pointer_offset_probe():
     _ = row_start
     _ = row_stop
     _ = valid_cols
+
+
+@pto.jit(target="a5")
+def scalar_contiguous_vector_probe():
+    data_tile = pto.alloc_tile(shape=[1, 16], dtype=pto.f32, valid_shape=[1, 16])
+    data_ptr = data_tile.as_ptr()
+    x4 = scalar.load(data_ptr, 0, contiguous=4)
+    scale4 = pto.Vec(pto.f32, size=4, init=1.0)
+    y4 = x4 * scale4
+    scalar.store(y4, data_ptr, 4)
+
+
+@pto.simt
+def scalar_contiguous_local_alloc_buffer_helper():
+    data = pto.alloc_buffer((16,), pto.f32)
+    x4 = scalar.load(data, 0, contiguous=4)
+    scale4 = pto.Vec(pto.f32, 4, init=1.0)
+    y4 = x4 * scale4
+    scalar.store(y4, data, 4)
+
+
+@pto.jit(target="a5", mode="explicit")
+def scalar_contiguous_local_alloc_buffer_probe():
+    scalar_contiguous_local_alloc_buffer_helper()
+
+
+@pto.jit(target="a5")
+def scalar_contiguous_width_mismatch_probe():
+    data_tile = pto.alloc_tile(shape=[1, 16], dtype=pto.f32, valid_shape=[1, 16])
+    data_ptr = data_tile.as_ptr()
+    x4 = scalar.load(data_ptr, 0, contiguous=4)
+    scalar.store(x4, data_ptr, 4, contiguous=2)
+
+
+@pto.jit(target="a5")
+def scalar_contiguous_scalar_store_probe():
+    data_tile = pto.alloc_tile(shape=[1, 16], dtype=pto.f32, valid_shape=[1, 16])
+    data_ptr = data_tile.as_ptr()
+    scalar.store(1.0, data_ptr, 0, contiguous=4)
 
 
 @pto.jit(target="a5")
@@ -2922,6 +3066,7 @@ def main() -> None:
     fixed_integer_index_coercion_probe.verify()
     integer_loop_bound_probe.verify()
     scalar_pointer_offset_probe.verify()
+    scalar_contiguous_vector_probe.verify()
     addptr_surface_probe.verify()
     simt_pointer_offset_probe.verify()
     scalar_store_element_coercion_probe.verify()
@@ -3117,6 +3262,187 @@ def main() -> None:
         pointer_block64.specialization_key.constexpr_signature == (("BLOCK", 64),),
         "pointer-first specialization key should change only with constexpr bindings",
     )
+    source_native_build_compiled = None
+    source_explicit_native_build_compiled = None
+    source_no_insert_sync_native_build_compiled = None
+    with TemporaryDirectory() as tmpdir:
+        source_path = Path(tmpdir) / "source_kernel.pto"
+        source_text_v1 = (
+            "module {\n"
+            "  func.func @selected_source_entry(%arg0: !pto.ptr<f32, gm>, %arg1: i32) {\n"
+            "    return\n"
+            "  }\n"
+            "  func.func @other_source_entry(%arg0: !pto.ptr<f32, gm>) {\n"
+            "    return\n"
+            "  }\n"
+            "}\n"
+        )
+        source_text_v2 = (
+            "module {\n"
+            "  func.func @selected_source_entry(%arg0: !pto.ptr<f32, gm>, %arg1: i32) {\n"
+            "    %c0 = arith.constant 0 : i32\n"
+            "    return\n"
+            "  }\n"
+            "  func.func @other_source_entry(%arg0: !pto.ptr<f32, gm>) {\n"
+            "    return\n"
+            "  }\n"
+            "}\n"
+        )
+        source_path.write_text(source_text_v1, encoding="utf-8")
+
+        @pto.jit(name="selected_source_entry", target="a5", source=str(source_path))
+        def source_backed_probe(ptr: pto.ptr(pto.f32, "gm"), rows: pto.i32):
+            raise RuntimeError("source-backed JIT should not trace the Python body")
+
+        source_compiled_v1 = source_backed_probe.compile()
+        source_compiled_v1_again = source_backed_probe.compile()
+        expect(source_compiled_v1 is source_compiled_v1_again, "unchanged source-backed JIT should hit specialization cache")
+        expect(
+            source_compiled_v1.mlir_text() == source_text_v1,
+            "source-backed JIT mlir_text() should preserve the authored source text",
+        )
+        expect(
+            source_compiled_v1.ir_function_name == "selected_source_entry",
+            "source-backed JIT should use name= for entry selection and launch wrapper naming",
+        )
+        expect(
+            source_compiled_v1.build_metadata()["source_path"] == str(source_path.resolve()),
+            "source-backed JIT metadata should expose the resolved source path",
+        )
+
+        source_path.write_text(source_text_v2, encoding="utf-8")
+        source_compiled_v2 = source_backed_probe.compile()
+        expect(
+            source_compiled_v2 is not source_compiled_v1,
+            "editing the source file should materialize a new specialization",
+        )
+        expect(
+            source_compiled_v2.specialization_key != source_compiled_v1.specialization_key,
+            "source-backed specialization key should include source content",
+        )
+        expect(
+            source_compiled_v2.mlir_text() == source_text_v2,
+            "source-backed JIT should reload changed source text",
+        )
+        source_auto_path = Path(tmpdir) / "source_auto.pto"
+        source_auto_text = (
+            "module {\n"
+            "  func.func @source_auto_native(%arg0: !pto.ptr<f32, gm>) {\n"
+            "    return\n"
+            "  }\n"
+            "}\n"
+        )
+        source_auto_path.write_text(source_auto_text, encoding="utf-8")
+
+        @pto.jit(name="source_auto_native", target="a5", backend="vpto", source=str(source_auto_path))
+        def source_auto_native(ptr: pto.ptr(pto.f32, "gm")):
+            raise RuntimeError("source-backed JIT should not trace the Python body")
+
+        source_native_build_compiled = source_auto_native.compile()
+
+        source_explicit_path = Path(tmpdir) / "source_explicit.pto"
+        source_explicit_text = (
+            "module {\n"
+            "  func.func @source_explicit_native(%arg0: !pto.ptr<f32, gm>) {\n"
+            "    return\n"
+            "  }\n"
+            "}\n"
+        )
+        source_explicit_path.write_text(source_explicit_text, encoding="utf-8")
+
+        @pto.jit(
+            name="source_explicit_native",
+            target="a5",
+            backend="vpto",
+            mode="explicit",
+            source=str(source_explicit_path),
+        )
+        def source_explicit_native(ptr: pto.ptr(pto.f32, "gm")):
+            raise RuntimeError("source-backed JIT should not trace the Python body")
+
+        source_explicit_native_build_compiled = source_explicit_native.compile()
+
+        source_no_insert_sync_path = Path(tmpdir) / "source_no_insert_sync.pto"
+        source_no_insert_sync_text = (
+            "module {\n"
+            "  func.func @source_no_insert_sync_native(%arg0: !pto.ptr<f32, gm>) {\n"
+            "    return\n"
+            "  }\n"
+            "}\n"
+        )
+        source_no_insert_sync_path.write_text(source_no_insert_sync_text, encoding="utf-8")
+
+        @pto.jit(
+            name="source_no_insert_sync_native",
+            target="a5",
+            backend="vpto",
+            insert_sync=False,
+            source=str(source_no_insert_sync_path),
+        )
+        def source_no_insert_sync_native(ptr: pto.ptr(pto.f32, "gm")):
+            raise RuntimeError("source-backed JIT should not trace the Python body")
+
+        source_no_insert_sync_native_build_compiled = source_no_insert_sync_native.compile()
+
+        relative_case_dir = Path(tmpdir) / "relative_case"
+        relative_case_dir.mkdir()
+        relative_source_path = relative_case_dir / "relative_kernel.pto"
+        relative_source_text = (
+            "module {\n"
+            "  func.func @relative_source_entry(%arg0: !pto.ptr<f32, gm>) {\n"
+            "    return\n"
+            "  }\n"
+            "}\n"
+        )
+        relative_source_path.write_text(relative_source_text, encoding="utf-8")
+        relative_module_path = relative_case_dir / "relative_case.py"
+        relative_module_path.write_text(
+            "from ptodsl import pto\n"
+            "@pto.jit(name='relative_source_entry', target='a5', source='relative_kernel.pto')\n"
+            "def relative_kernel(ptr: pto.ptr(pto.f32, 'gm')):\n"
+            "    raise RuntimeError('source-backed JIT should not trace the Python body')\n",
+            encoding="utf-8",
+        )
+        spec = spec_from_file_location("ptodsl_relative_source_case", relative_module_path)
+        expect(spec is not None and spec.loader is not None, "relative source test module should be importable")
+        relative_module = module_from_spec(spec)
+        spec.loader.exec_module(relative_module)
+        relative_compiled = relative_module.relative_kernel.compile()
+        expect(
+            relative_compiled.mlir_text() == relative_source_text,
+            "relative source paths should resolve against the declaring Python file",
+        )
+        expect(
+            relative_compiled.build_metadata()["source_path"] == str(relative_source_path.resolve()),
+            "relative source-backed metadata should expose the resolved source path",
+        )
+
+        inline_source_text = (
+            "module {\n"
+            "  func.func @inline_source_entry(%arg0: !pto.ptr<f32, gm>, %arg1: i32) {\n"
+            "    return\n"
+            "  }\n"
+            "}\n"
+        )
+
+        @pto.jit(name="inline_source_entry", target="a5", source=inline_source_text)
+        def inline_source_backed_probe(ptr: pto.ptr(pto.f32, "gm"), rows: pto.i32):
+            raise RuntimeError("source-backed JIT should not trace the Python body")
+
+        inline_compiled = inline_source_backed_probe.compile()
+        expect(
+            inline_compiled.mlir_text() == inline_source_text,
+            "inline source-backed JIT mlir_text() should preserve the authored source text",
+        )
+        inline_metadata = inline_compiled.build_metadata()
+        expect(
+            inline_metadata["source_kind"] == "inline",
+            "inline source-backed JIT metadata should mark the source kind as inline",
+        )
+        expect(
+            "source_path" not in inline_metadata,
+            "inline source-backed JIT metadata should not synthesize a filesystem path",
+        )
     pointer_artifacts_default = artifact_paths(
         pointer_default._py_name,
         pointer_default.ir_function_name,
@@ -3279,6 +3605,10 @@ def main() -> None:
         and helper_cache_signature[3] == "helper_device_abi_surface_probe"
         and helper_cache_signature[4] is False,
         "@pto.jit(entry=False) handles should expose an explicit, stable cache-signature protocol",
+    )
+    expect(
+        helper_cache_signature[7] == "vector" and helper_cache_signature[8] is False,
+        "default @pto.jit handles should keep vector as the effective kernel kind while recording that it was not explicit",
     )
     expect_raises(
         RuntimeError,
@@ -3479,8 +3809,12 @@ def main() -> None:
     )
     native_build_variants = (
         ("pure-container", host_vec_copy.compile()),
+        ("explicit-level3-container", host_vec_copy_explicit_addr.compile()),
         ("same-backend-multi-child-container", kernel_module_compiled),
         ("mixed-backend-container", emitc_entry_calls_vpto_kernel_module_probe.compile()),
+        ("source-auto", source_native_build_compiled),
+        ("source-explicit", source_explicit_native_build_compiled),
+        ("source-no-insert-sync", source_no_insert_sync_native_build_compiled),
     )
     native_build_observations = []
 
@@ -3498,13 +3832,15 @@ def main() -> None:
                 manifest_path=cache_dir / "manifest.json",
             )
 
-        def fake_run_ptoas(mlir_path, kernel_object, *, target_arch, insert_sync=None):
+        def fake_run_ptoas(mlir_path, kernel_object, *, target_arch, insert_sync=None, backend=None, pto_level=None):
             native_build_observations.append(
                 {
                     "mlir_path": mlir_path,
                     "kernel_object": kernel_object,
                     "target_arch": target_arch,
                     "insert_sync": insert_sync,
+                    "backend": backend,
+                    "pto_level": pto_level,
                     "mlir_text": mlir_path.read_text(encoding="utf-8"),
                 }
             )
@@ -3561,14 +3897,25 @@ def main() -> None:
             observation["insert_sync"] == expected_insert_sync,
             f"{label} native build should forward the effective insert_sync policy to ptoas",
         )
+        expected_backend = compiled._module_spec.backend if compiled._module_spec.jit_source is not None else None
+        expected_pto_level = "level3" if compiled._module_spec.mode == "explicit" else None
+        expect(
+            observation["backend"] == expected_backend,
+            f"{label} native build should only forward ptoas backend overrides for source-backed kernels",
+        )
+        expect(
+            observation["pto_level"] == expected_pto_level,
+            f"{label} native build should derive the PTOAS level from the authored mode",
+        )
         expect(
             observation["mlir_text"] == compiled.mlir_text(),
             f"{label} native build should hand the backend-partitioned container MLIR to ptoas unchanged",
         )
-        expect(
-            observation["mlir_text"].count("module") >= 2,
-            f"{label} native build should route the unified outer+child container through ptoas",
-        )
+        if compiled._module_spec.jit_source is None:
+            expect(
+                observation["mlir_text"].count("module") >= 2,
+                f"{label} native build should route the unified outer+child container through ptoas",
+            )
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         mlir_path = tmpdir_path / "kernel.mlir"
@@ -3600,7 +3947,7 @@ def main() -> None:
         )
         expect(
             "--pto-level=level3" not in ptoas_cmd,
-            "native build should no longer reconstruct explicit mode through a global pto-level flag",
+            "native build should not pass a global pto-level flag by default",
         )
         expect(
             "--enable-insert-sync" not in ptoas_cmd,
@@ -3624,6 +3971,32 @@ def main() -> None:
         expect(
             "--enable-insert-sync" in ptoas_cmds[0],
             "native build should pass --enable-insert-sync when the compiled module explicitly requests it",
+        )
+        ptoas_cmds.clear()
+        with mock.patch.object(native_build_runtime, "resolve_ptoas_binary", return_value=Path("/tmp/fake-ptoas")), mock.patch.object(
+            native_build_runtime, "_run", side_effect=fake_run_ptoas_cmd
+        ):
+            native_build_runtime._run_ptoas(
+                mlir_path,
+                kernel_object,
+                target_arch="a5",
+                backend="vpto",
+                pto_level=native_build_runtime._effective_pto_level(mode="explicit"),
+                insert_sync=True,
+            )
+        expect(len(ptoas_cmds) == 1, "native build should issue exactly one ptoas command with explicit-mode PTOAS policy")
+        explicit_ptoas_cmd = ptoas_cmds[0]
+        expect(
+            "--pto-backend=vpto" in explicit_ptoas_cmd,
+            "source-backed native build should pass the decorator backend to ptoas",
+        )
+        expect(
+            "--pto-level=level3" in explicit_ptoas_cmd,
+            'native build should pass --pto-level=level3 for mode="explicit"',
+        )
+        expect(
+            "--enable-insert-sync" in explicit_ptoas_cmd,
+            "source-backed native build should still pass explicit/effective insert-sync to ptoas",
         )
     expect("valid=?" not in default_text, "default alloc_tile() should keep full static valid-shape when valid_shape= is omitted")
     auto_mode_violation = expect_raises(
@@ -3858,6 +4231,34 @@ def main() -> None:
         "outlined decorated helper bodies should still preserve their PTO unit sections",
     )
 
+    explicit_vector_simd_text = explicit_vector_calls_simd_probe.compile(TRACE_TOKEN=1).mlir_text()
+    expect_parse_roundtrip_and_verify(
+        explicit_vector_simd_text,
+        "explicit vector jit calling simd subkernel specialization",
+    )
+    expect(
+        "pto.kernel_kind = #pto.kernel_kind<vector>" in explicit_vector_simd_text
+        and "pto.section.vector {" not in explicit_vector_simd_text,
+        "same-kind @pto.simd helpers inside explicit vector kernels should use function/kernel kind metadata without redundant sections",
+    )
+    expect_raises(
+        RuntimeError,
+        lambda: explicit_vector_calls_cube_probe.compile(TRACE_TOKEN=1).mlir_text(),
+        "@pto.cube cannot be lowered inside an explicit @pto.jit(kernel_kind='vector')",
+    )
+    explicit_vector_inline_simd_text = explicit_vector_inline_simd_probe.compile(
+        TRACE_TOKEN=1
+    ).mlir_text()
+    expect_parse_roundtrip_and_verify(
+        explicit_vector_inline_simd_text,
+        "explicit vector jit calling inline simd specialization",
+    )
+    expect(
+        "pto.kernel_kind = #pto.kernel_kind<vector>" in explicit_vector_inline_simd_text
+        and "pto.section.vector {" not in explicit_vector_inline_simd_text,
+        "same-kind inline pto.simd() scopes inside explicit vector kernels should avoid redundant sections",
+    )
+
     INLINE_SUBKERNEL_SCOPE_OBSERVATIONS.clear()
     inline_subkernel_scope_text = inline_subkernel_scope_probe.compile(TRACE_TOKEN=1).mlir_text()
     expect_parse_roundtrip_and_verify(inline_subkernel_scope_text, "inline subkernel scope specialization")
@@ -3885,6 +4286,31 @@ def main() -> None:
         and "pto.section.cube {" in inline_subkernel_scope_text
         and "pto.store" in inline_subkernel_scope_text,
         "outlined inline helpers should preserve the authored SIMD/Cube sections and SIMT scalar ops",
+    )
+
+    inline_simt_launch_text = inline_simt_launch_dims_probe.compile(TRACE_TOKEN=1).mlir_text()
+    expect_parse_roundtrip_and_verify(inline_simt_launch_text, "inline simt launch-dims specialization")
+    expect(
+        re.search(r"pto\.simt_launch @inline_simt_[0-9]+__ptodsl_[0-9a-f]+<<<", inline_simt_launch_text)
+        is not None,
+        "with pto.simt(dim_x, dim_y, dim_z) should emit VPTO simt_launch sugar",
+    )
+    expect(
+        "pto.store_vfsimt_info" not in inline_simt_launch_text,
+        "with pto.simt(dim_x, dim_y, dim_z) should leave launch metadata to simt_launch expansion",
+    )
+    expect(
+        re.search(
+            r"func\.func @inline_simt_[0-9]+__ptodsl_[0-9a-f]+\(%arg0: !pto\.ptr<i32, gm>\) attributes \{[^}]*pto\.simt_entry[^}]*\}",
+            inline_simt_launch_text,
+        )
+        is not None,
+        "inline SIMT launch-dims helper should capture enclosing values as helper arguments",
+    )
+    expect_raises(
+        TypeError,
+        lambda: pto.simt(32, 1),
+        "expects exactly three",
     )
 
     simt_text = simt_helper_lowering_probe.compile(TRACE_TOKEN=1).mlir_text()
@@ -3918,6 +4344,42 @@ def main() -> None:
     expect("pto.get_tid_x" in simt_text, "SIMT helper body should contain pto.get_tid_x")
     expect("pto.get_tid_y" in simt_text, "SIMT helper body should contain pto.get_tid_y")
     expect("pto.get_tid_z" in simt_text, "SIMT helper body should contain pto.get_tid_z")
+
+    alloc_buffer_local_text = alloc_buffer_local_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(alloc_buffer_local_text, "alloc_buffer local specialization")
+    expect(
+        "llvm.alloca" in alloc_buffer_local_text and "x f32" in alloc_buffer_local_text,
+        "alloc_buffer should lower to an LLVM stack allocation in the SIMT helper",
+    )
+    expect(
+        re.search(
+            r"func\.func @alloc_buffer_local_helper__simt_\d+\(\) attributes \{pto\.simt_entry\}",
+            alloc_buffer_local_text,
+        )
+        is not None,
+        "alloc_buffer probe should keep allocation inside the SIMT helper body",
+    )
+    expect_raises(
+        RuntimeError,
+        alloc_buffer_outside_simt_probe.compile,
+        "pto.alloc_buffer(...) may only be used inside a @pto.simt helper or inline pto.simt() scope",
+    )
+    rmsnorm_alloc_buffer_text = rmsnorm_alloc_buffer_layout_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(rmsnorm_alloc_buffer_text, "RMSNorm hand-authored UB layout specialization")
+    for expected_offset in (4096, 4224, 12416, 20608):
+        expect(
+            f"arith.constant {expected_offset} : index" in rmsnorm_alloc_buffer_text,
+            f"RMSNorm hand-authored UB layout should materialize f32 offset {expected_offset}",
+        )
+    expect(
+        rmsnorm_alloc_buffer_text.count("llvm.alloca") == 2,
+        "RMSNorm alloc_buffer fragment helper should allocate x_frag and sum_sq locally",
+    )
+    expect(
+        re.search(r"call @rmsnorm_alloc_buffer_frag_helper__simt_\d+\(", rmsnorm_alloc_buffer_text)
+        is not None,
+        "RMSNorm alloc_buffer layout should pass UB scratch pointers through the existing SIMT helper call path",
+    )
 
     simt_launch_text = simt_explicit_launch_probe.compile(TRACE_TOKEN=1).mlir_text()
     expect_parse_roundtrip_and_verify(simt_launch_text, "explicit simt launch specialization")
@@ -4596,6 +5058,28 @@ def main() -> None:
         "scalar.load(ptr + 2) should lower as element offset 2",
     )
 
+    scalar_contiguous_text = scalar_contiguous_vector_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(scalar_contiguous_text, "scalar contiguous vector specialization")
+    expect("llvm.load" in scalar_contiguous_text, "scalar.load(..., contiguous=N) should lower to llvm.load")
+    expect("llvm.store" in scalar_contiguous_text, "scalar.store(vector, ...) should lower to llvm.store")
+    expect("vector<4xf32>" in scalar_contiguous_text, "contiguous=4 over f32 should produce vector<4xf32>")
+    expect("llvm.insertelement" in scalar_contiguous_text, "pto.Vec(..., init=scalar) should broadcast with insertelement")
+    expect("arith.mulf" in scalar_contiguous_text, "VecValue multiplication should lower to arith.mulf")
+    expect(
+        "pto.load" not in scalar_contiguous_text and "pto.store" not in scalar_contiguous_text,
+        "contiguous vector memory access should not lower through scalar pto.load/store",
+    )
+    expect_raises(
+        ValueError,
+        lambda: scalar_contiguous_width_mismatch_probe.compile(),
+        "does not match vector size",
+    )
+    expect_raises(
+        TypeError,
+        lambda: scalar_contiguous_scalar_store_probe.compile(),
+        "scalar.store(scalar, ..., contiguous=N) is not supported",
+    )
+
     addptr_surface_text = addptr_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(addptr_surface_text, "addptr surface specialization")
     expect(
@@ -5004,6 +5488,9 @@ def main() -> None:
     launch_handle = block64[1, None]
     expect(callable(launch_handle), "compiled[grid, stream] should return a launch callable")
     expect(hasattr(launch_handle, "__call__"), "launch handle should support __call__")
+    source_launch_handle = source_native_build_compiled[1, None]
+    expect(callable(source_launch_handle), "source-backed compiled[grid, stream] should return a launch callable")
+    expect(hasattr(source_launch_handle, "__call__"), "source-backed launch handle should support __call__")
 
     print("ptodsl_jit_compile: PASS")
     os._exit(0)

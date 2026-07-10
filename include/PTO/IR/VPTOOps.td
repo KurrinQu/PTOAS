@@ -72,13 +72,13 @@ def PTO_V2F8E4M3FNType : Type<
   CPred<"::llvm::isa<::mlir::VectorType>($_self) && "
         "::llvm::cast<::mlir::VectorType>($_self).getRank() == 1 && "
         "::llvm::cast<::mlir::VectorType>($_self).getDimSize(0) == 2 && "
-        "::llvm::cast<::mlir::VectorType>($_self).getElementType().isFloat8E4M3FN()">,
+        "::llvm::isa<::mlir::Float8E4M3FNType>(::llvm::cast<::mlir::VectorType>($_self).getElementType())">,
   "vector<2xf8E4M3FN>">;
 def PTO_V2F8E5M2Type : Type<
   CPred<"::llvm::isa<::mlir::VectorType>($_self) && "
         "::llvm::cast<::mlir::VectorType>($_self).getRank() == 1 && "
         "::llvm::cast<::mlir::VectorType>($_self).getDimSize(0) == 2 && "
-        "::llvm::cast<::mlir::VectorType>($_self).getElementType().isFloat8E5M2()">,
+        "::llvm::isa<::mlir::Float8E5M2Type>(::llvm::cast<::mlir::VectorType>($_self).getElementType())">,
   "vector<2xf8E5M2>">;
 def PTO_V2HiF8Type : Type<
   CPred<"::llvm::isa<::mlir::pto::HiF8x2Type>($_self)">,
@@ -306,6 +306,44 @@ def PTO_MemBarOp : PTO_Op<"mem_bar"> {
   let results = (outs);
 
   let hasCustomAssemblyFormat = 1;
+}
+
+def DsbOp : PTO_Op<"dsb"> {
+  let summary = "Issue a low-level DSB memory barrier";
+  let description = [{
+    Lowers to `llvm.hivm.DSB(i64)`. The memory domain maps directly to the CCE
+    `mem_dsb_t` enum values: `ALL`, `DDR`, `UB`, and `SEQ`.
+  }];
+
+  let arguments = (ins PTO_DsbMemAttr:$mem);
+  let results = (outs);
+
+  let assemblyFormat = [{
+    custom<LegacyOrAttrDsbMem>($mem) attr-dict
+  }];
+}
+
+def DcciOp : PTO_Op<"dcci"> {
+  let summary = "Issue a low-level DCCI cache maintenance operation";
+  let description = [{
+    Lowers to the `llvm.hivm.DCCI*` intrinsic family. The pointer address space
+    selects the intrinsic variant: GM pointers use `DCCI` / `DCCI.DST`; UB
+    pointers use `DCCI.UB` / `DCCI.DST.UB`.
+  }];
+
+  let arguments = (ins
+    PTO_BufferType:$ptr,
+    PTO_DcciCacheLineAttr:$cache,
+    OptionalAttr<PTO_DcciDstAttr>:$dst
+  );
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $ptr custom<LegacyOrAttrDcciCacheLine>($cache)
+    custom<OptionalDcciDst>($dst) attr-dict `:` type($ptr)
+  }];
 }
 
 

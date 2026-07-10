@@ -1,9 +1,12 @@
 # ptodsl — PTO Python IR Builders
 
-A lightweight, pip-installable DSL package for building PTO MLIR IR modules
+A lightweight Python DSL package for building PTO MLIR IR modules
 in Python. PTODSL kernels are ordinary Python functions decorated with
 `@pto.jit`. Type annotations carry PTO
 types as lazy descriptors, and control-flow maps 1-to-1 to MLIR operations.
+
+PTODSL is distributed through the repository-root `ptoas` package. Use the
+root install flows described below.
 
 ---
 
@@ -27,30 +30,52 @@ ptodsl/
 │   ├── tadd_dsl.py         # TADD – @pto.jit DSL style
 │   ├── softmax_lowlevel.py # Softmax – raw MLIR Python binding calls
 │   └── softmax_dsl.py      # Softmax – @pto.jit DSL style
-├── pyproject.toml       # pip install -e .
 └── README.md
 ```
 
 ---
 
-## Prerequisites
+## Supported install flows
+
+PTODSL is shipped through the repository-root `ptoas` package. Supported ways
+to make `import ptodsl` available are:
 
 ```bash
-# Install ptoas (first time only)
-cd $PTOAS_REPO_ROOT          # e.g. export PTOAS_REPO_ROOT=/workdir/ptoas_a5
-bash quick_install.sh
+# 1) Released or CI-built wheel: installs PTOAS + PTODSL together
+pip install /path/to/ptoas-*.whl
 
-# Set up environment in every new shell
-source scripts/ptoas_env.sh
+# 2) Non-editable source install from the repository root
+cd $PTOAS_REPO_ROOT
+pip install . --no-build-isolation
+
+# 3) Editable install for PTOAS / PTODSL developers
+cd $PTOAS_REPO_ROOT
+pip install -e . --no-build-isolation
 ```
 
----
-
-## Install the package
+Install verification:
 
 ```bash
-cd $PTOAS_REPO_ROOT/ptodsl
-pip install -e .
+python3 -c "import ptodsl; from ptodsl import pto, scalar; print(ptodsl.__file__)"
+```
+
+Not supported:
+
+- `cd ptodsl && pip install -e .`
+- repo-walk / `PYTHONPATH` / `sys.path` repair just to locate the `ptodsl` package
+
+Artifact boundary:
+
+- `ptoas` wheel: PTODSL-capable Python distribution
+- `ptoas-bin-*.tar.gz`: compiler-only artifact, does **not** imply `import ptodsl`
+
+If you are working from a source checkout and want the repository helper
+scripts (`scripts/sim_dsl.sh`, sample runners, direct CLI debugging) to pick up
+the local build/install tree, you may still source:
+
+```bash
+cd $PTOAS_REPO_ROOT
+source scripts/ptoas_env.sh
 ```
 
 ---
@@ -60,9 +85,13 @@ pip install -e .
 `ptodsl/examples/` contains self-contained `@pto.jit` examples that cover
 both compile-only and end-to-end launch flows.
 
+All examples below assume you already prepared one of the supported install
+flows above. They should not require manual `PYTHONPATH` edits or example-local
+`sys.path` bootstrap.
+
 ### Prerequisites for launch examples
 
-- `ptoas` + `ptodsl` installed as above
+- `ptoas` with bundled PTODSL installed as above
 - CANN 9.0+ with `ASCEND_HOME_PATH` set
 - For end-to-end launch: `torch`, `torch_npu`, `numpy`
 - `bisheng` on `PATH`
@@ -71,6 +100,7 @@ Set up the environment in each new shell:
 
 ```bash
 cd $PTOAS_REPO_ROOT
+pip install -e . --no-build-isolation
 source scripts/ptoas_env.sh
 source "${ASCEND_HOME_PATH}/bin/setenv.bash"
 ```
@@ -82,7 +112,7 @@ setup above is still required.
 ### `tadd_launch.py`
 
 Single script: kernel definition, compile, launch, and accuracy check.
-Equivalent IR to the TileLang ST `tadd.pto` testcase.
+Equivalent IR to the bundled `tadd.pto` regression testcase.
 
 Compile-only:
 
@@ -152,6 +182,37 @@ Direct run on a real NPU:
 python3 ptodsl/examples/flash_attention_softmax_launch.py
 ```
 
+### `rms_norm/rmsnorm_alloc_buffer_simt.py`
+
+Compile-only RMSNorm example for explicit-mode SIMT kernels. It models the
+RMSNorm SIMT-VF token body with a named `@pto.simt` helper launched from the
+main kernel through `helper[threads, 1, 1](...)`.
+
+The example exercises the PTODSL surfaces needed by this style of kernel:
+
+- SIMT-local `pto.alloc_buffer(...)` for per-thread fragment storage
+- hand-authored dynamic UB scratch layout with `pto.castptr` / `pto.addptr`
+- contiguous vector loads through `scalar.load(..., contiguous=N)` and vector
+  stores through `scalar.store(vector, ...)`
+- `pto.Vec(..., init=scalar)` for scalar-to-vector broadcast
+- `pto.simt_allreduce_sum(...)` lowered inline through `pto.redux_add` and
+  `pto.syncthreads`
+- explicit pipe `set_flag` / `wait_flag` synchronization, including dynamic
+  ping-pong event ids inside the token loop
+- a runtime token loop that lowers to `scf.for`
+
+```bash
+python3 ptodsl/examples/rms_norm/rmsnorm_alloc_buffer_simt.py --variant x128 > /tmp/rmsnorm_x128.mlir
+python3 ptodsl/examples/rms_norm/rmsnorm_alloc_buffer_simt.py --variant x64 > /tmp/rmsnorm_x64.mlir
+```
+
+Expected: MLIR containing `@rmsnorm_4096_alloc_buffer_simt_context_kernel`,
+the named SIMT helper `@rmsnorm_simt_token_body__simt_...`, explicit
+`pto.simt_launch`, `scf.for`, `vector<4xf32>`, `llvm.alloca` for local
+fragments, inline `pto.redux_add` / `pto.syncthreads` allreduce operations, and
+dynamic `pto.set_flag_dyn` / `pto.wait_flag_dyn` operations for the ping-pong
+events.
+
 ### Launch artifacts
 
 - `~/.cache/ptodsl/` — JIT-compiled kernel `.so` cache
@@ -160,6 +221,9 @@ python3 ptodsl/examples/flash_attention_softmax_launch.py
 ---
 
 ## Running regression checks
+
+Run these checks from an environment where `import ptodsl` already works via a
+supported `ptoas` install flow.
 
 ```bash
 cd $PTOAS_REPO_ROOT
@@ -184,7 +248,10 @@ ptodsl_docs_as_test: PASS
 
 `ptodsl/tests/` is the canonical home for PTODSL-specific regression scripts.
 The launchable sources under `ptodsl/examples/` remain examples; the
-regressions that protect them live here alongside compile-only and docs checks.
+regressions that protect compile-only behavior live here alongside docs checks.
+Runtime correctness coverage for PTODSL examples belongs under `test/dsl-st/`;
+for example, the RMSNorm alloc-buffer/SIMT example is covered by
+`test/dsl-st/rmsnorm_alloc_buffer_simt.py`.
 
 `test_docs_as_test.py` is the docs-as-test regression for the PTODSL user
 guide under `ptodsl/docs/user_guide/`. It scans every Python fenced code block
@@ -216,7 +283,7 @@ These PTODSL regressions are intentionally complementary:
 - `test_jit_compile.py` protects canonical authored compile probes and
   lowering contracts for the public PTODSL surface.
 - `test_flash_attention_demo_compile.py` protects the bundled
-  `ptodsl/examplesflash_attention_sketch.py` authored demo as a stable end-to-end
+  `ptodsl/examples/flash_attention_sketch.py` authored demo as a stable end-to-end
   contract.
 - `test_ptoas_frontend_verify.py` protects the handoff from PTODSL-emitted
   MLIR into standalone `ptoas` frontend verification.
