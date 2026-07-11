@@ -13,6 +13,7 @@ import ptodsl.tilelib as tilelib
 FLOAT_DTYPES = ("f16", "bf16", "f32")
 SIGNED_DTYPES = ("i8", "i16", "i32")
 UNSIGNED_DTYPES = ("ui8", "ui16", "ui32")
+INT_DTYPES = SIGNED_DTYPES + UNSIGNED_DTYPES
 NUMERIC_DTYPES = ("i8", "i16", "i32", "ui8", "ui16", "ui32", "f16", "bf16", "f32")
 
 

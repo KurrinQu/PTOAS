@@ -11,11 +11,13 @@ For the compiler-side design, see
 Register a template with `tilelib.tile_template`:
 
 ```python
+from ._common import same_dtype_signatures
+
 @tilelib.tile_template(
     op="pto.tadd",
     target="a5",
     name="template_tadd",
-    dtypes=[("f32", "f32", "f32")],
+    dtypes=same_dtype_signatures(3),
     constraints=[
         tilelib.check_memory_space("ub"),
         tilelib.check_layout("row_major"),
@@ -131,8 +133,14 @@ For multi-candidate ops:
 
 Simple binary elementwise ops should use the shared
 `_elementwise.register_binary` helper unless they need a proven TileLangDSL
-version split. The current PTODSL `tadd` and `tmul` templates intentionally use
-one non-post-update candidate and do not set `Tail`.
+version split. For same-dtype arithmetic/min/max families, prefer
+`same_dtype_signatures(...)` over hand-written f32-only lists so integer,
+unsigned integer, and floating-point coverage stays aligned with TileLangDSL.
+For bitwise and shift families, use the shared `INT_DTYPES` group; scalar
+shift counts remain `i16`, matching the legacy TileLangDSL callable form.
+
+The straightforward PTODSL elementwise templates intentionally use one
+non-post-update candidate and do not set `Tail`.
 
 Do not add `Tail` or post-update variants speculatively. Reintroduce those
 versions only with a concrete ST/lit case that needs them and a real selection

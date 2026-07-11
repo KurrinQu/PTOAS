@@ -9,15 +9,13 @@
 
 from ptodsl import pto
 
-from ._common import SIGNED_DTYPES, UNSIGNED_DTYPES
+from ._common import INT_DTYPES
 from ._elementwise import register_binary
 
-
-_INT_DTYPES = SIGNED_DTYPES + UNSIGNED_DTYPES
 
 template_tor = register_binary(
     op="pto.tor",
     name="template_tor",
     vector_op=pto.vor,
-    dtypes=[(dtype, dtype, dtype) for dtype in _INT_DTYPES],
+    dtypes=[(dtype, dtype, dtype) for dtype in INT_DTYPES],
 )

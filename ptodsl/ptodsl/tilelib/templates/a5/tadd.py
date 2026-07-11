@@ -9,6 +9,7 @@
 
 from ptodsl import pto
 
+from ._common import same_dtype_signatures
 from ._elementwise import register_binary
 
 
@@ -20,5 +21,5 @@ template_tadd = register_binary(
     op="pto.tadd",
     name="template_tadd",
     vector_op=_vadd,
-    dtypes=[("f32", "f32", "f32")],
+    dtypes=same_dtype_signatures(3),
 )

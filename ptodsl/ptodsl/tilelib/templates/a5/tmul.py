@@ -9,6 +9,7 @@
 
 from ptodsl import pto
 
+from ._common import same_dtype_signatures
 from ._elementwise import register_binary
 
 
@@ -20,5 +21,5 @@ template_tmul = register_binary(
     op="pto.tmul",
     name="template_tmul",
     vector_op=_vmul,
-    dtypes=[("f32", "f32", "f32")],
+    dtypes=same_dtype_signatures(3),
 )

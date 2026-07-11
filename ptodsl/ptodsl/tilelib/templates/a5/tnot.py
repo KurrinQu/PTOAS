@@ -9,15 +9,13 @@
 
 from ptodsl import pto
 
-from ._common import SIGNED_DTYPES, UNSIGNED_DTYPES
+from ._common import INT_DTYPES
 from ._elementwise import register_unary
 
-
-_INT_DTYPES = SIGNED_DTYPES + UNSIGNED_DTYPES
 
 template_tnot = register_unary(
     op="pto.tnot",
     name="template_tnot",
     vector_op=pto.vnot,
-    dtypes=[(dtype, dtype) for dtype in _INT_DTYPES],
+    dtypes=[(dtype, dtype) for dtype in INT_DTYPES],
 )

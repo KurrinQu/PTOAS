@@ -9,15 +9,13 @@
 
 from ptodsl import pto
 
-from ._common import SIGNED_DTYPES, UNSIGNED_DTYPES
+from ._common import INT_DTYPES
 from ._elementwise import register_binary
 
-
-_INT_DTYPES = SIGNED_DTYPES + UNSIGNED_DTYPES
 
 template_tand = register_binary(
     op="pto.tand",
     name="template_tand",
     vector_op=pto.vand,
-    dtypes=[(dtype, dtype, dtype) for dtype in _INT_DTYPES],
+    dtypes=[(dtype, dtype, dtype) for dtype in INT_DTYPES],
 )

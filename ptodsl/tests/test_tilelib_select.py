@@ -154,7 +154,20 @@ class TileLibSelectTest(unittest.TestCase):
 
         chosen = select("pto.tadd", "a5", _f32_specs())
         self.assertEqual(chosen.name, "template_tadd")
-        self.assertEqual(chosen.metadata.dtypes, (("f32", "f32", "f32"),))
+        self.assertEqual(
+            chosen.metadata.dtypes,
+            (
+                ("i8", "i8", "i8"),
+                ("i16", "i16", "i16"),
+                ("i32", "i32", "i32"),
+                ("ui8", "ui8", "ui8"),
+                ("ui16", "ui16", "ui16"),
+                ("ui32", "ui32", "ui32"),
+                ("f16", "f16", "f16"),
+                ("bf16", "bf16", "bf16"),
+                ("f32", "f32", "f32"),
+            ),
+        )
         self.assertFalse(chosen.metadata.is_post_update)
         self.assertEqual(chosen.metadata.loop_depth, 2)
         self.assertIsNone(chosen.metadata.Tail)
@@ -173,9 +186,10 @@ class TileLibSelectTest(unittest.TestCase):
         self.assertEqual(chosen.name, "template_tadd")
 
     def test_no_matching_dtype_raises(self):
-        spec = TileSpec(shape=(8, 64), dtype=ScalarType("i8"))
+        i8 = TileSpec(shape=(8, 64), dtype=ScalarType("i8"))
+        f32 = TileSpec(shape=(8, 64), dtype=ScalarType("f32"))
         with self.assertRaises(NoMatchingTemplate):
-            select("pto.tadd", "a5", {"src0": spec, "src1": spec, "dst": spec})
+            select("pto.tadd", "a5", {"src0": i8, "src1": f32, "dst": i8})
 
     def test_unknown_op_raises(self):
         with self.assertRaises(NoMatchingTemplate):

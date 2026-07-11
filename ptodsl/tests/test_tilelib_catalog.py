@@ -548,20 +548,35 @@ class TileLibCatalogTest(unittest.TestCase):
     def test_simple_elementwise_vec_smoke_shapes_render(self):
         cases = (
             ("pto.tabs", ("src", "dst"), "f16", "pto.vabs"),
+            ("pto.tadd", ("src0", "src1", "dst"), "ui32", "pto.vadd"),
             ("pto.tand", ("src0", "src1", "dst"), "i32", "pto.vand"),
             ("pto.tands", ("src", "scalar", "dst"), "i16", "pto.vand"),
+            ("pto.tmax", ("src0", "src1", "dst"), "ui16", "pto.vmax"),
+            ("pto.tmaxs", ("src", "scalar", "dst"), "ui16", "pto.vmaxs"),
             ("pto.tnot", ("src", "dst"), "ui8", "pto.vnot"),
             ("pto.tor", ("src0", "src1", "dst"), "i32", "pto.vor"),
             ("pto.tors", ("src", "scalar", "dst"), "i16", "pto.vor"),
             ("pto.tneg", ("src", "dst"), "f16", "pto.vneg"),
             ("pto.tmin", ("src0", "src1", "dst"), "i32", "pto.vmin"),
+            ("pto.tmins", ("src", "scalar", "dst"), "ui8", "pto.vmins"),
+            ("pto.tmul", ("src0", "src1", "dst"), "bf16", "pto.vmul"),
+            ("pto.tmuls", ("src", "scalar", "dst"), "ui32", "pto.vmuls"),
+            ("pto.tshl", ("src0", "src1", "dst"), "ui16", "pto.vshl"),
+            ("pto.tshls", ("src", "scalar", "dst"), "ui32", "pto.vshls"),
+            ("pto.tshr", ("src0", "src1", "dst"), "ui16", "pto.vshr"),
+            ("pto.tshrs", ("src", "scalar", "dst"), "ui32", "pto.vshrs"),
+            ("pto.tsub", ("src0", "src1", "dst"), "i16", "pto.vsub"),
+            ("pto.tsubs", ("src", "scalar", "dst"), "ui16", "pto.vadds"),
+            ("pto.txor", ("src0", "src1", "tmp", "dst"), "ui32", "pto.vxor"),
+            ("pto.txors", ("src", "scalar", "tmp", "dst"), "ui16", "pto.vxor"),
         )
         for op, parameter_names, dtype_name, expected_op in cases:
             with self.subTest(op=op):
                 specs = {}
                 for name in parameter_names:
                     if name == "scalar":
-                        specs[name] = ScalarSpec(dtype=ScalarType(dtype_name), value=1)
+                        scalar_dtype = SPECIAL_SCALAR_DTYPES.get((op, name), dtype_name)
+                        specs[name] = ScalarSpec(dtype=ScalarType(scalar_dtype), value=1)
                     else:
                         specs[name] = TileSpec(
                             shape=(8, 64),

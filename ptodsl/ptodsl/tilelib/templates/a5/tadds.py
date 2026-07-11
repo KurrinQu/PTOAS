@@ -9,6 +9,7 @@
 
 from ptodsl import pto
 
+from ._common import same_dtype_signatures
 from ._elementwise import register_scalar_binary
 
 
@@ -16,12 +17,5 @@ template_tadds = register_scalar_binary(
     op="pto.tadds",
     name="template_tadds",
     vector_op=pto.vadds,
-    dtypes=[
-        ("i8", "i8", "i8"),
-        ("i16", "i16", "i16"),
-        ("i32", "i32", "i32"),
-        ("f16", "f16", "f16"),
-        ("bf16", "bf16", "bf16"),
-        ("f32", "f32", "f32"),
-    ],
+    dtypes=same_dtype_signatures(3),
 )

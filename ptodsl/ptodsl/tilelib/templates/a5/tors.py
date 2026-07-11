@@ -9,16 +9,14 @@
 
 from ptodsl import pto
 
-from ._common import SIGNED_DTYPES, UNSIGNED_DTYPES
+from ._common import INT_DTYPES
 from ._elementwise import register_scalar_binary
 
-
-_INT_DTYPES = SIGNED_DTYPES + UNSIGNED_DTYPES
 
 template_tors = register_scalar_binary(
     op="pto.tors",
     name="template_tors",
     vector_op=pto.vor,
     broadcast_scalar=True,
-    dtypes=[(dtype, dtype, dtype) for dtype in _INT_DTYPES],
+    dtypes=[(dtype, dtype, dtype) for dtype in INT_DTYPES],
 )

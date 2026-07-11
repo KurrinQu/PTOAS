@@ -9,6 +9,7 @@
 
 from ptodsl import pto
 
+from ._common import INT_DTYPES
 from ._elementwise import register_scalar_binary
 
 
@@ -16,9 +17,5 @@ template_tshrs = register_scalar_binary(
     op="pto.tshrs",
     name="template_tshrs",
     vector_op=pto.vshrs,
-    dtypes=[
-        ("i8", "i16", "i8"),
-        ("i16", "i16", "i16"),
-        ("i32", "i16", "i32"),
-    ],
+    dtypes=[(dtype, "i16", dtype) for dtype in INT_DTYPES],
 )
