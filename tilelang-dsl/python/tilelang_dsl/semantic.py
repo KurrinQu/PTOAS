@@ -3891,6 +3891,19 @@ class _SemanticAnalyzer:
                     return
             raise TypeError(f"{context} requires source/destination pointer element dtypes to match")
 
+    def _require_matching_pointer_element_dtypes(
+        self,
+        lhs: SemanticExpr,
+        rhs: SemanticExpr,
+        context: str,
+    ) -> None:
+        lhs_dtype = lhs.type.element_dtype
+        rhs_dtype = rhs.type.element_dtype
+        if lhs_dtype is None or rhs_dtype is None:
+            return
+        if lhs_dtype != rhs_dtype:
+            raise TypeError(f"{context} requires source/destination pointer element dtypes to match")
+
     def _require_cube_i64_tuple(
         self,
         expr: SemanticExpr,
@@ -4218,19 +4231,24 @@ class _SemanticAnalyzer:
         dst = self._require_pointer_expr(args[1], "pto.mte_ub_gm destination", memory_space="gm")
         self._require_matching_pointer_element_dtypes(src, dst, "pto.mte_ub_gm")
         self._require_i64_like_expr(args[2], "pto.mte_ub_gm len_burst")
-        allowed_keywords = {"nburst", "loops"}
+        allowed_keywords = {"nburst", "loops", "l2_cache_ctl"}
         unsupported = sorted(set(keywords) - allowed_keywords)
         if unsupported:
             raise TypeError(
-                "pto.mte_ub_gm only accepts keyword(s) nburst, loops in TileLang DSL v1; "
+                "pto.mte_ub_gm only accepts keyword(s) nburst, loops, l2_cache_ctl in TileLang DSL v1; "
                 f"got unsupported keyword(s): {', '.join(unsupported)}"
             )
+        l2_cache_ctl = keywords.get(
+            "l2_cache_ctl",
+            SemanticLiteralExpr(value=0, type=SemanticScalarType(dtype=ScalarType("i64"))),
+        )
+        self._require_i64_like_expr(l2_cache_ctl, "pto.mte_ub_gm l2_cache_ctl")
         nburst_expr = self._require_grouped_mte_nburst(keywords, "pto.mte_ub_gm")
         loops_expr = self._normalize_cube_loop_groups(keywords.get("loops"), "pto.mte_ub_gm loops")
         return SemanticCallExpr(
             namespace="pto",
             name="mte_ub_gm",
-            args=(args[0], args[1], args[2], nburst_expr, loops_expr),
+            args=(args[0], args[1], args[2], l2_cache_ctl, nburst_expr, loops_expr),
             type=None,
         )
 
