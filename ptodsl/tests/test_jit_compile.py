@@ -2447,7 +2447,8 @@ def public_data_movement_surface_probe():
     pto.mte_gm_ub(gm_src, ub_dst, 0, 256, nburst=(8, 256, 256), loops=[(4, 2048, 2048)])
     pto.mte_gm_ub(gm_src, ub_dst, 0, 200, nburst=(64, 200, 256), pad=(0.0, 0, 0))
     pto.mte_ub_gm(ub_src, gm_dst, 256, nburst=(64, 256, 1024))
-    pto.mte_ub_gm(ub_src, gm_dst, 128, nburst=(1, 128, 128), l2_cache_ctl=7)
+    pto.mte_ub_gm(ub_src, gm_dst, 128, nburst=(1, 128, 128), l2cache="nared")
+    pto.mte_ub_gm(ub_src, gm_dst, 64, nburst=(1, 64, 64), l2_cache_ctl=15)
     pto.mte_ub_ub(ub_src, ub_dst, 8, nburst=(16, 0, 4))
     pto.mte_ub_l1(ub_src, l1_dst, 8, nburst=(16, 0, 4))
     pto.mte_gm_l1(gm_src, l1_dst, 256, nburst=(8, 256, 256), loops=[(2, 2048, 2048)])
@@ -5277,7 +5278,11 @@ def main() -> None:
     expect("pto.mte_ub_gm" in data_movement_surface_text, "public grouped UB->GM wrapper should lower to pto.mte_ub_gm")
     expect(
         re.search(r"pto\.mte_ub_gm [^\n]+ nburst\([^)]+\) l2_cache_ctl\(%c7[^)\n]*\)", data_movement_surface_text) is not None,
-        "mte_ub_gm(..., l2_cache_ctl=7) should pass cache ctl through the l2_cache_ctl group",
+        "mte_ub_gm(..., l2cache='nared') should map the store cache token to control value 7",
+    )
+    expect(
+        re.search(r"pto\.mte_ub_gm [^\n]+ nburst\([^)]+\) l2_cache_ctl\(%c15[^)\n]*\)", data_movement_surface_text) is not None,
+        "mte_ub_gm(..., l2_cache_ctl=15) should preserve the legacy integer compatibility path",
     )
     expect("pto.mte_ub_ub" in data_movement_surface_text, "public grouped UB->UB wrapper should lower to pto.mte_ub_ub")
     expect("pto.mte_ub_l1" in data_movement_surface_text, "public grouped UB->L1 wrapper should lower to pto.mte_ub_l1")

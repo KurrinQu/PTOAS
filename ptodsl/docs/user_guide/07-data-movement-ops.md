@@ -166,7 +166,7 @@ pto.mte_gm_ub(gm_src, ub_dst, 0, 256,
 
 ### 7.2.2 UB → GM: `pto.mte_ub_gm`
 
-#### `pto.mte_ub_gm(ub_src: PtrType, gm_dst: PtrType, len_burst: int, *, nburst: tuple[int, int, int], loops: list[tuple[int, int, int]] | None = None, l2_cache_ctl: int = 0) -> None`
+#### `pto.mte_ub_gm(ub_src: PtrType, gm_dst: PtrType, len_burst: int, *, nburst: tuple[int, int, int], loops: list[tuple[int, int, int]] | None = None, l2cache: str = "nmfv", l2_cache_ctl: int | None = None) -> None`
 
 **Description**: Grouped DMA transfer from Unified Buffer to Global Memory. The MTE reads `len_burst` bytes from each UB row (skipping any padding), writing only valid data to GM.
 
@@ -179,7 +179,13 @@ pto.mte_gm_ub(gm_src, ub_dst, 0, 256,
 | `len_burst` | `int` | Contiguous bytes transferred per burst row |
 | `nburst` | `tuple[int, int, int]` | `(n_burst, src_stride, dst_stride)` — innermost burst group (required) |
 | `loops` | `list[tuple[int, int, int]]` or `None` | Optional outer loop groups, ordered inner to outer |
-| `l2_cache_ctl` | `int` | L2 cache control field, default `0` |
+| `l2cache` | `str` | Store-side L2 cache policy. Defaults to `"nmfv"` |
+| `l2_cache_ctl` | `int` or runtime scalar | Compatibility interface for the raw 4-bit control value; do not combine it with a non-default `l2cache` |
+
+`l2cache` accepts the store/atomic cache tokens `nmfv`, `nmlv`, `nmprs`,
+`nmred`, `naci`, `napw`, `napi`, `nared`, `wbhfv`, `wbhlv`, `wbhprs`,
+`wbhred`, `wtsfv`, `wtslv`, `wtsprs`, and `wtsred`. These map to raw
+control values `0` through `15`, respectively.
 
 **Returns**: None (side-effect operation).
 
@@ -196,7 +202,8 @@ pto.mte_ub_gm(ub_src_f32, gm_dst_f32, 128,
 <!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"data_movement.grouped_dma_ptrs","symbol":"data_movement_grouped_dma_ptrs_probe","compile":{}} -->
 ```python
 pto.mte_ub_gm(ub_src, gm_dst, 256,
-              nburst=(64, 256, 1024))
+              nburst=(64, 256, 1024),
+              l2cache="nmfv")
 # UB: contiguous rows (256-byte stride).
 # GM: rows spaced at 1024-byte intervals (full matrix width).
 ```
