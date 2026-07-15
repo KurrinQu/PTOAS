@@ -140,6 +140,13 @@ def _validate_static_event_id(event_id, *, context: str):
         raise ValueError(f"{context} expects static event_id in [0, 7], got {event_id}")
 
 
+def _validate_static_buf_id(buf_id, *, context: str):
+    if isinstance(buf_id, bool):
+        raise TypeError(f"{context} does not accept bool values")
+    if isinstance(buf_id, int) and not 0 <= buf_id <= 31:
+        raise ValueError(f"{context} expects static buf_id in [0, 31], got {buf_id}")
+
+
 def _validate_sync_pipe(pipe, *, context: str, allowed: tuple[str, ...]):
     canonical = _canonical_pipe_token(pipe)
     if canonical is None:
@@ -5658,43 +5665,46 @@ def pipe_barrier(pipe):
 def get_buf(pipe, buf_id, mode=0):
     """``pto.get_buf(pipe, buf_id, mode=0)`` – acquire a buffer token.
 
-    ``buf_id`` must be a static integer (0–31). For dynamic buf_id,
-    use :func:`get_buf_dyn`.
+    ``buf_id`` accepts a static integer (0–31) or a runtime index-like SSA value.
     """
-    _pto.GetBufOp(_pipe_attr(pipe), buf_id, mode=mode)
-
-
-def get_buf_dyn(pipe, buf_id, mode=0):
-    """``pto.get_buf_dyn(pipe, buf_id, mode=0)`` – acquire a buffer token with dynamic buf_id.
-
-    ``buf_id`` must be an SSA value (e.g. ``iter & 1`` for double-buffering).
-    """
+    buf_id_op, is_static = _buf_id_operand(
+        buf_id,
+        context="get_buf(..., buf_id=...)",
+    )
+    if is_static:
+        _pto.GetBufOp(_pipe_attr(pipe), buf_id_op, mode=mode)
+        return
     _pto.GetBufDynOp(
         _pipe_attr(pipe),
         mode=mode,
-        buf_id=_coerce_index(buf_id, context="get_buf_dyn(..., buf_id=...)"),
+        buf_id=buf_id_op,
     )
 
 
 def rls_buf(pipe, buf_id, mode=0):
     """``pto.rls_buf(pipe, buf_id, mode=0)`` – release a buffer token.
 
-    ``buf_id`` must be a static integer (0–31). For dynamic buf_id,
-    use :func:`rls_buf_dyn`.
+    ``buf_id`` accepts a static integer (0–31) or a runtime index-like SSA value.
     """
-    _pto.RlsBufOp(_pipe_attr(pipe), buf_id, mode=mode)
-
-
-def rls_buf_dyn(pipe, buf_id, mode=0):
-    """``pto.rls_buf_dyn(pipe, buf_id, mode=0)`` – release a buffer token with dynamic buf_id.
-
-    ``buf_id`` must be an SSA value (e.g. ``iter & 1`` for double-buffering).
-    """
+    buf_id_op, is_static = _buf_id_operand(
+        buf_id,
+        context="rls_buf(..., buf_id=...)",
+    )
+    if is_static:
+        _pto.RlsBufOp(_pipe_attr(pipe), buf_id_op, mode=mode)
+        return
     _pto.RlsBufDynOp(
         _pipe_attr(pipe),
         mode=mode,
-        buf_id=_coerce_index(buf_id, context="rls_buf_dyn(..., buf_id=...)"),
+        buf_id=buf_id_op,
     )
+
+
+def _buf_id_operand(buf_id, *, context: str):
+    if isinstance(buf_id, int):
+        _validate_static_buf_id(buf_id, context=context)
+        return buf_id, True
+    return _coerce_index(buf_id, context=context), False
 
 
 def _sync_event_id_operand(event_id, *, context: str):
