@@ -9,7 +9,8 @@
 // A3: mte_gm_ub → copy_gm_to_ubuf expansion (before LLVM lowering)
 // Verifies that on A2A3, no SET.LOOP HW config ops are emitted — all loops use scf.for.
 
-// RUN: ptoas --pto-arch=a3 --pto-backend=vpto --emit-vpto --mlir-print-ir-after=vpto-expand-wrapper-ops %s -o /dev/null 2>&1 | FileCheck %s
+// RUN: ptoas --pto-arch=a3 --pto-backend=vpto --emit-vpto --mlir-print-ir-after=vpto-expand-wrapper-ops %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=BASIC
+// RUN: ptoas --pto-arch=a3 --pto-backend=vpto --emit-vpto --mlir-print-ir-after=vpto-expand-wrapper-ops %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=LOOPS
 
 module attributes {pto.target_arch = "a3", pto.kernel_kind = #pto.kernel_kind<vector>} {
   func.func @mte_gm_ub_a3_expand(%arg0: !pto.ptr<f32, gm>) attributes {pto.aicore} {
@@ -35,13 +36,13 @@ module attributes {pto.target_arch = "a3", pto.kernel_kind = #pto.kernel_kind<ve
   }
 }
 
-// CHECK-LABEL: func.func @mte_gm_ub_a3_expand(
-// CHECK: pto.copy_gm_to_ubuf
-// CHECK-NOT: pto.mte_gm_ub
-// CHECK-NOT: pto.set_loop
+// BASIC-LABEL: func.func @mte_gm_ub_a3_expand(
+// BASIC: pto.copy_gm_to_ubuf
+// BASIC-NOT: pto.mte_gm_ub
+// BASIC-NOT: pto.set_loop
 
-// CHECK-LABEL: func.func @mte_gm_ub_a3_expand_with_loops(
-// CHECK: scf.for
-// CHECK: pto.copy_gm_to_ubuf
-// CHECK-NOT: pto.set_loop
-// CHECK-NOT: pto.mte_gm_ub
+// LOOPS-LABEL: func.func @mte_gm_ub_a3_expand_with_loops(
+// LOOPS: scf.for
+// LOOPS: pto.copy_gm_to_ubuf
+// LOOPS-NOT: pto.set_loop
+// LOOPS-NOT: pto.mte_gm_ub
