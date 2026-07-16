@@ -4605,6 +4605,10 @@ def main() -> None:
         "alloc_buffer should lower to an LLVM stack allocation in the SIMT helper",
     )
     expect(
+        "pto.persistent" not in alloc_buffer_local_text,
+        "alloc_buffer inside a SIMT helper should remain section-local",
+    )
+    expect(
         re.search(
             r"func\.func @alloc_buffer_local_helper__simt_\d+\(\) attributes \{pto\.simt_entry\}",
             alloc_buffer_local_text,
@@ -4614,6 +4618,10 @@ def main() -> None:
     )
     alloc_buffer_top_level_text = alloc_buffer_outside_simt_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(alloc_buffer_top_level_text, "alloc_buffer top-level specialization")
+    expect(
+        "llvm.alloca" in alloc_buffer_top_level_text and "pto.persistent" in alloc_buffer_top_level_text,
+        "alloc_buffer outside a SIMT helper should be marked as a persistent fragment candidate",
+    )
     rmsnorm_alloc_buffer_text = rmsnorm_alloc_buffer_layout_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(rmsnorm_alloc_buffer_text, "RMSNorm hand-authored UB layout specialization")
     for expected_offset in (4096, 4224, 12416, 20608):

@@ -88,6 +88,7 @@ from mlir.ir import (
     Operation,
     Type,
     TypeAttr,
+    UnitAttr,
 )
 
 # Pipe name shorthands → canonical PIPE_* names
@@ -2694,13 +2695,16 @@ def _alloc_local_buffer(shape, dtype, element_type, element_count, byte_size):
     i32 = IntegerType.get_signless(32)
     count = _materialize_integer_literal(i32, element_count)
     llvm_ptr_type = Type.parse("!llvm.ptr")
+    attributes = {
+        "elem_type": TypeAttr.get(element_type),
+    }
+    if _is_outside_simt_subkernel():
+        attributes["pto.persistent"] = UnitAttr.get()
     alloca = Operation.create(
         "llvm.alloca",
         results=[llvm_ptr_type],
         operands=[count],
-        attributes={
-            "elem_type": TypeAttr.get(element_type),
-        },
+        attributes=attributes,
     ).results[0]
     return AllocatedBufferValue(
         alloca,
@@ -2710,6 +2714,16 @@ def _alloc_local_buffer(shape, dtype, element_type, element_count, byte_size):
         element_count=element_count,
         byte_size=byte_size,
     )
+
+
+def _is_outside_simt_subkernel() -> bool:
+    try:
+        from ._tracing.active import current_session
+        session = current_session()
+    except Exception:
+        session = None
+    frame = session.current_subkernel if session is not None else None
+    return frame is None or frame.role != "simt"
 
 
 def _normalize_alloc_buffer_shape_metadata(shape):
