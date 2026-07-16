@@ -14,7 +14,7 @@ from ptodsl._bootstrap import make_context
 from mlir.ir import Module
 
 
-@pto.simt(max_threads=64, max_regs=16, ast_rewrite=False)
+@pto.simt(max_threads=64, ast_rewrite=False)
 def tileop_simt_epilogue(dst: pto.ptr(pto.f32, "vec"), columns: pto.i32):
     pass
 

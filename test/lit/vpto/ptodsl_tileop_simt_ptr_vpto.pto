@@ -35,7 +35,7 @@ module attributes {pto.target_arch = "a5"} {
       return
     }
 
-    func.func @tileop_simt_body(%dst: !pto.ptr<f32, ub>, %columns: i32) attributes {pto.simt_entry, pto.simt_max_regs = 16 : i32, pto.simt_max_threads = 64 : i32} {
+    func.func @tileop_simt_body(%dst: !pto.ptr<f32, ub>, %columns: i32) attributes {pto.simt_entry, pto.simt_max_threads = 64 : i32} {
       return
     }
   }

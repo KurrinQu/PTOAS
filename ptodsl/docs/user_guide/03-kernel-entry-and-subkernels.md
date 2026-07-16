@@ -1196,7 +1196,7 @@ TensorView, memref, vreg, mask, pipe-handle, and host-tensor values cannot cross
 the TileOp public boundary.
 
 ```python
-@pto.simt(max_threads=256, max_regs=32)
+@pto.simt(max_threads=256)
 def simt_epilogue(dst: pto.ptr(pto.f32, "ub"), cols: pto.i32):
     pass
 
@@ -1214,9 +1214,10 @@ instructions cannot be mixed, including in distinct branches or loops.
 
 `@pto.simt` remains a separate ptr/scalar ABI. A Vector tileop may derive a
 pointer from its own Tile and launch a defined SIMT helper with explicit
-`[dim_x, dim_y, dim_z]` dimensions; it does not infer launch or resource
-configuration from Tile shape. A direct `simt_epilogue(...)` call is invalid
-inside a TileOp; use `simt_epilogue[x, y, z](...)` or
+`[dim_x, dim_y, dim_z]` dimensions. `max_threads` remains explicit on the
+SIMT helper; VPTO derives the register budget from it according to the hardware
+resource partition. A direct `simt_epilogue(...)` call is invalid inside a
+TileOp; use `simt_epilogue[x, y, z](...)` or
 `pto.simt_launch(simt_epilogue, ..., dims=(x, y, z))`.
 
 **Sub-kernels are custom tile ops.** Their I/O contract is strict: data enters

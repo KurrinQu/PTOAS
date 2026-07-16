@@ -779,7 +779,7 @@ def simt_tid_probe():
     pto.get_tid_z()
 
 
-@pto.simt(max_threads=1, max_regs=1, ast_rewrite=False)
+@pto.simt(max_threads=1, ast_rewrite=False)
 def tileop_noop_simt_probe():
     pass
 

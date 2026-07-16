@@ -45,8 +45,6 @@ enum TileArgumentEffect : uint8_t {
   WriteEffect = 2,
 };
 
-enum class TileOpKind { Vector, Cube };
-
 static bool isScalarType(Type type) { return type.isIntOrIndexOrFloat(); }
 
 static bool isTileOrScalarType(Type type) {
@@ -58,20 +56,8 @@ static bool isMemoryReferenceType(Type type) {
              PartitionTensorViewType>(type);
 }
 
-static bool isDirectSimtOperation(StringRef name) {
-  return name.starts_with("pto.get_tid") ||
-         name.starts_with("pto.get_block_dim") ||
-         name.starts_with("pto.get_grid_dim") ||
-         name.starts_with("pto.get_block_idx") ||
-         name.starts_with("pto.get_subblock") || name == "pto.get_veccoreid" ||
-         name.starts_with("pto.get_lane") ||
-         name.starts_with("pto.get_clock") || name.starts_with("pto.vote_") ||
-         name.starts_with("pto.shuffle_") || name.starts_with("pto.redux_") ||
-         name.starts_with("pto.atomic_") || name == "pto.ldg" ||
-         name == "pto.stg" || name == "pto.load" || name == "pto.store" ||
-         name == "pto.store_vfsimt_info" || name == "pto.syncthreads" ||
-         name.starts_with("pto.threadfence") || name == "pto.keep" ||
-         name == "pto.resume";
+static bool isDirectSimtOperation(Operation *op) {
+  return isa<SimtOpInterface>(op);
 }
 
 static bool isForbiddenPipeOperation(Operation *op) {
@@ -83,36 +69,14 @@ static bool isForbiddenPipeOperation(Operation *op) {
              TSyncOp, SyncAllOp, DsbOp>(op);
 }
 
-static bool isMteDataMovementOperation(StringRef name) {
-  return name.starts_with("pto.mte_") || name.starts_with("pto.copy_") ||
-         name.starts_with("pto.load_cbuf_to_") ||
-         name.starts_with("pto.mgather") || name.starts_with("pto.mscatter");
+static bool isMteDataMovementOperation(Operation *op) {
+  return isa<MteOpInterface>(op);
 }
 
-static bool isVectorMicroOperation(StringRef name) {
-  if (name == "pto.vecscope" || name == "pto.strict_vecscope")
-    return false;
-  return name.starts_with("pto.v") || name.starts_with("pto.pset_") ||
-         name.starts_with("pto.pge_") || name.starts_with("pto.plt_") ||
-         name.starts_with("pto.pltm_") || name.starts_with("pto.ppack") ||
-         name.starts_with("pto.punpack") || name.starts_with("pto.pbitcast") ||
-         name.starts_with("pto.pnot") || name.starts_with("pto.psel") ||
-         name.starts_with("pto.pand") || name.starts_with("pto.por") ||
-         name.starts_with("pto.pxor") || name.starts_with("pto.plds") ||
-         name.starts_with("pto.pldi") || name.starts_with("pto.psti") ||
-         name.starts_with("pto.psts") || name.starts_with("pto.pdintlv") ||
-         name.starts_with("pto.pintlv") || name.starts_with("pto.pstu");
-}
-
-static bool isCubeMicroOperation(StringRef name) {
-  return name.starts_with("pto.mad");
-}
-
-static bool isForbiddenTileOperation(StringRef name) {
-  return name == "pto.alloc_tile" || name == "pto.alloc_multi_tile" ||
-         name == "pto.materialize_tile" || name == "pto.reserve_buffer" ||
-         (name.starts_with("pto.t") && name != "pto.tile_buf_addr" &&
-          name != "pto.tile_valid_rows" && name != "pto.tile_valid_cols");
+static bool isForbiddenTileOperation(Operation *op) {
+  return isa<TileOpInterface>(op) ||
+         isa<AllocTileOp, AllocMultiTileOp, MaterializeTileOp, ReserveBufferOp,
+             TPrefetchAsyncOp, TAssignOp, TensorViewAddrOp>(op);
 }
 
 static std::optional<unsigned> traceToFunctionArgument(Value value,
@@ -552,7 +516,35 @@ static LogicalResult verifyTileOpABI(func::FuncOp helper) {
   return success();
 }
 
-static LogicalResult inferTileOpKind(func::FuncOp helper, TileOpKind &kind) {
+static bool hasRawVPTOVectorTransientType(Type type) {
+  return isa<VRegType, MaskType, AlignType>(type);
+}
+
+// Raw VPTO compute instructions predate OpPipeInterface. Prefer their ODS
+// instruction-class interfaces, then retain the older semantic/type evidence
+// for dialects or out-of-tree operations that have not adopted the markers.
+static std::optional<PhysicalSectionKind>
+inferRawVPTOComputeKind(Operation *op) {
+  if (isa<CubeMicroOpInterface>(op))
+    return PhysicalSectionKind::Cube;
+  if (isa<VectorMicroOpInterface>(op))
+    return PhysicalSectionKind::Vector;
+  if (isa<MadSemanticOpInterface, MadRawOpInterface>(op))
+    return PhysicalSectionKind::Cube;
+
+  for (Value operand : op->getOperands()) {
+    if (hasRawVPTOVectorTransientType(operand.getType()))
+      return PhysicalSectionKind::Vector;
+  }
+  for (Value result : op->getResults()) {
+    if (hasRawVPTOVectorTransientType(result.getType()))
+      return PhysicalSectionKind::Vector;
+  }
+  return std::nullopt;
+}
+
+static LogicalResult inferTileOpKind(func::FuncOp helper,
+                                     PhysicalSectionKind &kind) {
   Operation *firstVector = nullptr;
   Operation *firstCube = nullptr;
   LogicalResult status = success();
@@ -562,13 +554,12 @@ static LogicalResult inferTileOpKind(func::FuncOp helper, TileOpKind &kind) {
         isa<func::ReturnOp>(op))
       return WalkResult::advance();
 
-    StringRef name = op->getName().getStringRef();
     if (isa<SectionCubeOp, SectionVectorOp>(op)) {
       status = op->emitError(
           "tileop helpers must not contain pre-existing sections");
       return WalkResult::interrupt();
     }
-    if (isMteDataMovementOperation(name)) {
+    if (isMteDataMovementOperation(op)) {
       status =
           op->emitError("tileop helpers must not contain MTE data movement");
       return WalkResult::interrupt();
@@ -578,12 +569,12 @@ static LogicalResult inferTileOpKind(func::FuncOp helper, TileOpKind &kind) {
           op->emitError("tileop helpers must not contain pipe synchronization");
       return WalkResult::interrupt();
     }
-    if (isDirectSimtOperation(name)) {
+    if (isDirectSimtOperation(op)) {
       status = op->emitError("tileop helpers must launch a @pto.simt helper "
                              "instead of containing SIMT operations directly");
       return WalkResult::interrupt();
     }
-    if (isForbiddenTileOperation(name)) {
+    if (isForbiddenTileOperation(op)) {
       status = op->emitError("tileop helpers must not contain Tile allocation "
                              "or high-level TileOps");
       return WalkResult::interrupt();
@@ -597,27 +588,24 @@ static LogicalResult inferTileOpKind(func::FuncOp helper, TileOpKind &kind) {
       firstVector = firstVector ? firstVector : op;
       return WalkResult::advance();
     }
-    if (isVectorMicroOperation(name)) {
-      firstVector = firstVector ? firstVector : op;
-      return WalkResult::advance();
-    }
-    if (isCubeMicroOperation(name)) {
-      firstCube = firstCube ? firstCube : op;
-      return WalkResult::advance();
-    }
-    if (auto pipeOp = dyn_cast<OpPipeInterface>(op)) {
-      switch (pipeOp.getPipe()) {
-      case PIPE::PIPE_V:
-        firstVector = firstVector ? firstVector : op;
-        break;
-      case PIPE::PIPE_M:
-        firstCube = firstCube ? firstCube : op;
-        break;
-      default:
+
+    std::optional<PhysicalSectionKind> opKind;
+    if (isa<OpPipeInterface>(op)) {
+      opKind = inferPhysicalSectionKindFromPipe(op);
+      if (!opKind) {
         status = op->emitError("tileop helpers may only contain Vector or Cube "
                                "compute operations");
         return WalkResult::interrupt();
       }
+    } else {
+      opKind = inferRawVPTOComputeKind(op);
+    }
+
+    if (opKind) {
+      if (*opKind == PhysicalSectionKind::Vector)
+        firstVector = firstVector ? firstVector : op;
+      else
+        firstCube = firstCube ? firstCube : op;
     }
     return WalkResult::advance();
   });
@@ -634,12 +622,12 @@ static LogicalResult inferTileOpKind(func::FuncOp helper, TileOpKind &kind) {
   if (!firstVector && !firstCube)
     return helper.emitOpError("contains no Vector or Cube compute operation "
                               "from which to infer tileop kind");
-  kind = firstVector ? TileOpKind::Vector : TileOpKind::Cube;
+  kind = firstVector ? PhysicalSectionKind::Vector : PhysicalSectionKind::Cube;
   return success();
 }
 
 static LogicalResult materializeTileOpSection(func::FuncOp helper,
-                                              TileOpKind kind) {
+                                              PhysicalSectionKind kind) {
   if (helper.empty() || !helper.getBody().hasOneBlock())
     return helper.emitOpError("requires a single-block helper body");
   Block &entry = helper.front();
@@ -655,7 +643,7 @@ static LogicalResult materializeTileOpSection(func::FuncOp helper,
 
   OpBuilder builder(roots.front());
   Operation *sectionOperation =
-      kind == TileOpKind::Vector
+      kind == PhysicalSectionKind::Vector
           ? builder.create<SectionVectorOp>(roots.front()->getLoc())
                 .getOperation()
           : builder.create<SectionCubeOp>(roots.front()->getLoc())
@@ -669,14 +657,14 @@ static LogicalResult materializeTileOpSection(func::FuncOp helper,
   helper->setAttr(
       kTileOpKindAttr,
       StringAttr::get(helper.getContext(),
-                      kind == TileOpKind::Vector ? "vector" : "cube"));
+                      kind == PhysicalSectionKind::Vector ? "vector" : "cube"));
   return success();
 }
 
 static LogicalResult materializeTileOpHelper(func::FuncOp helper) {
   if (failed(verifyTileOpABI(helper)))
     return failure();
-  TileOpKind kind;
+  PhysicalSectionKind kind;
   if (failed(inferTileOpKind(helper, kind)))
     return failure();
   summarizeTileOpEffects(helper);

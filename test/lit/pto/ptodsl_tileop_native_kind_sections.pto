@@ -45,6 +45,8 @@ module attributes {pto.target_arch = "a5"} {
   func.func private @vector_tileop(
       %src: !pto.tile_buf<vec, 1x16xf32, valid=?x?>,
       %dst: !pto.tile_buf<vec, 1x16xf32, valid=?x?>) attributes {pto.tileop.helper} {
+    // Raw VPTO vector micro-ops do not implement OpPipeInterface; their
+    // VectorMicroOpInterface provides TileOp kind evidence.
     %rows = pto.tile_valid_rows %src
       : !pto.tile_buf<vec, 1x16xf32, valid=?x?> -> index
     %cols = pto.tile_valid_cols %src
@@ -64,6 +66,7 @@ module attributes {pto.target_arch = "a5"} {
   }
 
   func.func private @cube_tileop() attributes {pto.tileop.helper} {
+    // MAD-family operations carry CubeMicroOpInterface rather than a PIPE.
     %zero = arith.constant 0 : i64
     %m = arith.constant 16 : i64
     %lhs = pto.castptr %zero : i64 -> !pto.ptr<f16, l0a>
