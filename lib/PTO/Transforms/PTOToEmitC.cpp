@@ -7433,13 +7433,10 @@ static void emitPipeBarrier(ConversionPatternRewriter &rewriter, Location loc,
                                        ArrayAttr{}, ValueRange{});
 }
 
-// Issue #711: TNOTIFY writes its signal on the scalar pipe, and
-// TNOTIFY_IMPL's trailing pipe_barrier(PIPE_ALL) runs *after* that store.
-// If prior MTE work is still in flight when the signal lands, the receiver's
-// matching TWAIT can return before the producer-side payload operation is
-// complete. MemoryConsistency now validates explicit CMO/fence operations for
-// DDR visibility; lowering only keeps the pipe-drain actions that the pass may
-// still annotate automatically.
+// Historical hook for pre-annotated TNotify release drains. The automatic
+// MemoryConsistency analysis pass that used to produce these attrs has been
+// removed from the default pipeline; keeping the lowering hook is harmless for
+// hand-authored or legacy IR that already carries the internal attrs.
 static void emitTNotifyReleaseActions(ConversionPatternRewriter &rewriter,
                                       Location loc, bool drainMte2,
                                       bool drainMte3) {
