@@ -5616,6 +5616,21 @@ static void emitDsbDdr(ConversionPatternRewriter &rewriter, Location loc) {
                                        ArrayAttr{}, ValueRange{});
 }
 
+static void emitPipeBarrier(ConversionPatternRewriter &rewriter, Location loc,
+                            StringRef pipeTok) {
+  auto *ctx = rewriter.getContext();
+  auto args = rewriter.getArrayAttr({emitc::OpaqueAttr::get(ctx, pipeTok)});
+  rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "pipe_barrier", args,
+                                       ArrayAttr{}, ValueRange{});
+}
+
+static void emitConservativeGmFencePipeDrains(
+    ConversionPatternRewriter &rewriter, Location loc) {
+  emitPipeBarrier(rewriter, loc, "PIPE_MTE2");
+  emitPipeBarrier(rewriter, loc, "PIPE_MTE3");
+  emitPipeBarrier(rewriter, loc, "PIPE_FIX");
+}
+
 struct PTOBarrierToEmitC : public OpConversionPattern<pto::BarrierOp> {
   using OpConversionPattern<pto::BarrierOp>::OpConversionPattern;
 
@@ -5668,6 +5683,7 @@ struct PTOFenceToEmitC : public OpConversionPattern<FenceOp> {
         op.getScope().getScope() != pto::FenceScope::All)
       return rewriter.notifyMatchFailure(op, "unsupported fence scope");
 
+    emitConservativeGmFencePipeDrains(rewriter, op.getLoc());
     emitDsbDdr(rewriter, op.getLoc());
     rewriter.eraseOp(op);
     return success();
@@ -7423,14 +7439,6 @@ static std::string notifyOpTok(pto::NotifyOp op) {
     return "pto::comm::NotifyOp::Set";
   }
   return "pto::comm::NotifyOp::Set";
-}
-
-static void emitPipeBarrier(ConversionPatternRewriter &rewriter, Location loc,
-                            StringRef pipeTok) {
-  auto *ctx = rewriter.getContext();
-  auto args = rewriter.getArrayAttr({emitc::OpaqueAttr::get(ctx, pipeTok)});
-  rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "pipe_barrier", args,
-                                       ArrayAttr{}, ValueRange{});
 }
 
 // Historical hook for pre-annotated TNotify release drains. The automatic

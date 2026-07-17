@@ -8,7 +8,8 @@
 
 // Explicit signal/payload memory-consistency IR lowering. PTOAS no longer runs
 // the historical MemoryConsistency analysis pass, so this test only checks the
-// public CMO/fence ops and user-authored pipe barriers.
+// public CMO/fence ops. The GM fence lowering conservatively drains MTE2,
+// MTE3, and FIX before dsb(DSB_DDR).
 
 // RUN: ptoas --pto-arch=a3 %s -o - 2>&1 | FileCheck %s
 
@@ -104,7 +105,6 @@ module {
               outs(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     pto.tstore ins(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
                outs(%dst : !pto.partition_tensor_view<1x32xf32>)
-    pto.barrier <PIPE_MTE3>
     pto.fence.barrier_all #pto.fence_scope<gm>
 
     %sig_view = pto.make_tensor_view %signal_ptr,
@@ -119,7 +119,10 @@ module {
 }
 
 // CHECK-LABEL: AICORE void explicit_gm_fence(
-// CHECK:      dsb(DSB_DDR);
+// CHECK:      pipe_barrier(PIPE_MTE2);
+// CHECK-NEXT: pipe_barrier(PIPE_MTE3);
+// CHECK-NEXT: pipe_barrier(PIPE_FIX);
+// CHECK-NEXT: dsb(DSB_DDR);
 
 // CHECK-LABEL: AICORE void whole_cache_cmo(
 // CHECK:      dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE);
@@ -130,6 +133,9 @@ module {
 // CHECK-LABEL: AICORE void scalar_release_sequence(
 // CHECK:      {{.*}}[{{.*}}] = {{.*}};
 // CHECK:      PTOAS__DCCI_SINGLE_CACHE_LINE({{.*}});
+// CHECK-NEXT: pipe_barrier(PIPE_MTE2);
+// CHECK-NEXT: pipe_barrier(PIPE_MTE3);
+// CHECK-NEXT: pipe_barrier(PIPE_FIX);
 // CHECK-NEXT: dsb(DSB_DDR);
 // CHECK:      pto::comm::TNOTIFY(
 
@@ -140,6 +146,8 @@ module {
 
 // CHECK-LABEL: AICORE void mte_release_sequence(
 // CHECK:      TSTORE(
-// CHECK:      pipe_barrier(PIPE_MTE3);
+// CHECK:      pipe_barrier(PIPE_MTE2);
+// CHECK-NEXT: pipe_barrier(PIPE_MTE3);
+// CHECK-NEXT: pipe_barrier(PIPE_FIX);
 // CHECK-NEXT: dsb(DSB_DDR);
 // CHECK:      pto::comm::TNOTIFY(
