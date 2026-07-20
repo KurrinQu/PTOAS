@@ -2288,6 +2288,34 @@ def vaxpy(alpha, x, y, mask):
     )
 
 
+def vmula(acc, lhs, rhs, mask):
+    """``pto.vmula`` – fused multiply-add: ``acc + lhs * rhs`` (single rounding)."""
+    _reject_low_precision_vreg_operands(acc, lhs, rhs, context="pto.vmula(...)")
+    return wrap_surface_value(
+        _pto.VmulaOp(
+            unwrap_surface_value(acc).type,
+            unwrap_surface_value(acc),
+            unwrap_surface_value(lhs),
+            unwrap_surface_value(rhs),
+            unwrap_surface_value(mask),
+        ).result
+    )
+
+
+def vmadd(acc, lhs, rhs, mask):
+    """``pto.vmadd`` – fused multiply-add: ``acc * lhs + rhs`` (single rounding)."""
+    _reject_low_precision_vreg_operands(acc, lhs, rhs, context="pto.vmadd(...)")
+    return wrap_surface_value(
+        _pto.VmaddOp(
+            unwrap_surface_value(acc).type,
+            unwrap_surface_value(acc),
+            unwrap_surface_value(lhs),
+            unwrap_surface_value(rhs),
+            unwrap_surface_value(mask),
+        ).result
+    )
+
+
 def vsel(true_v, false_v, mask):
     """``pto.vsel`` – element-wise select under a predicate mask."""
     _reject_low_precision_vreg_operands(true_v, false_v, context="pto.vsel(...)")

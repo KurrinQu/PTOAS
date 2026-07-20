@@ -2836,6 +2836,24 @@ def low_precision_vsel_invalid_probe():
 
 
 @pto.jit(target="a5", mode="explicit")
+def low_precision_vmula_invalid_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    hif8_src = pto.castptr(zero_u64, pto.ptr(pto.hif8, "ub"))
+    mask_b8 = pto.pset_b8(pto.MaskPattern.ALL)
+    hif8 = pto.vlds(hif8_src, pto.const(0))
+    _ = pto.vmula(hif8, hif8, hif8, mask_b8)
+
+
+@pto.jit(target="a5", mode="explicit")
+def low_precision_vmadd_invalid_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    hif8_src = pto.castptr(zero_u64, pto.ptr(pto.hif8, "ub"))
+    mask_b8 = pto.pset_b8(pto.MaskPattern.ALL)
+    hif8 = pto.vlds(hif8_src, pto.const(0))
+    _ = pto.vmadd(hif8, hif8, hif8, mask_b8)
+
+
+@pto.jit(target="a5", mode="explicit")
 def vdup_surface_probe():
     zero_u64 = pto.const(0, dtype=pto.ui64)
     ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
@@ -2869,6 +2887,28 @@ def vmulscvt_surface_probe():
         part=pto.PartMode.EVEN,
     )
     _ = packed
+
+
+@pto.jit(target="a5", mode="explicit")
+def vmula_surface_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    acc = pto.vlds(ub_f32, pto.const(0))
+    lhs = pto.vlds(ub_f32, pto.const(0))
+    rhs = pto.vlds(ub_f32, pto.const(0))
+    _ = pto.vmula(acc, lhs, rhs, mask32_full)
+
+
+@pto.jit(target="a5", mode="explicit")
+def vmadd_surface_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    acc = pto.vlds(ub_f32, pto.const(0))
+    lhs = pto.vlds(ub_f32, pto.const(0))
+    rhs = pto.vlds(ub_f32, pto.const(0))
+    _ = pto.vmadd(acc, lhs, rhs, mask32_full)
 
 
 @pto.jit(target="a5", mode="explicit")
@@ -3275,6 +3315,8 @@ def main() -> None:
     public_vector_conversion_surface_probe.verify()
     vdup_surface_probe.verify()
     vmulscvt_surface_probe.verify()
+    vmula_surface_probe.verify()
+    vmadd_surface_probe.verify()
     vsstb_post_update_surface_probe.verify()
 
     with make_context() as ctx, Location.unknown(ctx):
@@ -5460,6 +5502,10 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(vdup_surface_text, "public vdup surface specialization")
     vmulscvt_surface_text = vmulscvt_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(vmulscvt_surface_text, "public vmulscvt surface specialization")
+    vmula_surface_text = vmula_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(vmula_surface_text, "public vmula surface specialization")
+    vmadd_surface_text = vmadd_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(vmadd_surface_text, "public vmadd surface specialization")
     vsstb_post_update_surface_text = vsstb_post_update_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(vsstb_post_update_surface_text, "vsstb post-update surface specialization")
     fixed_width_integer_text = fixed_width_integer_specialization_probe.compile().mlir_text()
@@ -5620,6 +5666,10 @@ def main() -> None:
     expect('\"A\"' in vmulscvt_surface_text, "vmulscvt(..., rnd=VcvtRoundMode.A) should preserve the authored round token")
     expect('\"EVEN\"' in vmulscvt_surface_text, "vmulscvt(..., part=PartMode.EVEN) should preserve the authored part token")
     expect("!pto.vreg<128xf16>" in vmulscvt_surface_text, "vmulscvt(f32 -> f16) should infer the packed f16 result type")
+    expect("pto.vmula" in vmula_surface_text, "vmula(...) should lower to pto.vmula")
+    expect("!pto.vreg<64xf32>" in vmula_surface_text, "vmula(f32, f32, f32) should infer the f32 vector result type")
+    expect("pto.vmadd" in vmadd_surface_text, "vmadd(...) should lower to pto.vmadd")
+    expect("!pto.vreg<64xf32>" in vmadd_surface_text, "vmadd(f32, f32, f32) should infer the f32 vector result type")
     expect("pto.vsstb" in vsstb_post_update_surface_text, "vsstb(..., post_update=ON) should still lower through pto.vsstb on the current VPTO IR")
     expect("-> !pto.ptr<f32, ub>" in vsstb_post_update_surface_text, "vsstb(..., post_update=ON) should request the updated destination pointer result")
     expect("pto.mte_l1_l0b" in public_surface_text, "mte_l1_l0b(...) should lower to pto.mte_l1_l0b")
@@ -5697,6 +5747,16 @@ def main() -> None:
     expect_raises(
         TypeError,
         lambda: low_precision_vsel_invalid_probe.compile(),
+        "does not support low-precision vreg elements yet",
+    )
+    expect_raises(
+        TypeError,
+        lambda: low_precision_vmula_invalid_probe.compile(),
+        "does not support low-precision vreg elements yet",
+    )
+    expect_raises(
+        TypeError,
+        lambda: low_precision_vmadd_invalid_probe.compile(),
         "does not support low-precision vreg elements yet",
     )
     expect_raises(
