@@ -1059,6 +1059,41 @@ static std::unique_ptr<Pass> createNarrowUnusedMultiResultProvenancePass() {
   return std::make_unique<NarrowUnusedMultiResultProvenancePass>();
 }
 
+namespace {
+struct SerialFrontendPipeLoweringPass
+    : public PassWrapper<SerialFrontendPipeLoweringPass,
+                         OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(
+      SerialFrontendPipeLoweringPass)
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<func::FuncDialect, pto::PTODialect>();
+  }
+
+  void runOnOperation() override {
+    OpPassManager functionPM(func::FuncOp::getOperationName());
+    functionPM.addPass(pto::createPTOAssignDefaultFrontendPipeIdPass());
+    functionPM.addPass(pto::createPTOLowerFrontendPipeOpsPass());
+
+    // Fixpipe frontend verifiers resolve peer contracts by inspecting sibling
+    // functions. Running this function pipeline through a regular nested pass
+    // adaptor allows one function to be verified while another function is
+    // still mutating its pipe ops. Keep these two small passes serial so every
+    // verifier observes either the complete frontend or complete lowered form.
+    for (func::FuncOp funcOp : getOperation().getOps<func::FuncOp>()) {
+      if (failed(runPipeline(functionPM, funcOp))) {
+        signalPassFailure();
+        return;
+      }
+    }
+  }
+};
+} // namespace
+
+static std::unique_ptr<Pass> createSerialFrontendPipeLoweringPass() {
+  return std::make_unique<SerialFrontendPipeLoweringPass>();
+}
+
 static void collectNonEntryBlocksInSourceOrder(
     Operation *op, SmallVectorImpl<Block *> &blocks) {
   for (Region &region : op->getRegions()) {
@@ -2952,10 +2987,7 @@ int mlir::pto::compilePTOASModule(
   // lifted to make it unconditional for all backends.
   if (effectiveBackend == PTOBackend::VPTO)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOCanonicalizeIRPass());
-  pm.addNestedPass<mlir::func::FuncOp>(
-      pto::createPTOAssignDefaultFrontendPipeIdPass());
-  pm.addNestedPass<mlir::func::FuncOp>(
-      pto::createPTOLowerFrontendPipeOpsPass());
+  pm.addPass(createSerialFrontendPipeLoweringPass());
   //pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVerifyTFreePass());
   pm.addPass(pto::createPTOInferValidatePipeInitPass());
   pm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
