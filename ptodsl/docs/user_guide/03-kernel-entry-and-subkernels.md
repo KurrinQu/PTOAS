@@ -1092,8 +1092,8 @@ TileOp and SIMT provide inline context manager forms: `with pto.tileop():`,
 `with pto.simt():`, and `with pto.simt(dim_x, dim_y, dim_z):`. These open
 one-off anonymous sub-kernel bodies without requiring a separate named Python
 function. Inline scopes are supported in top-level `@pto.jit` bodies. The
-dimensioned SIMT form remains in `pto.section.simt` with the authored launch
-dimensions.
+dimensioned SIMT form remains in `pto.section.simt` with the authored static
+launch dimensions. The dimensions must be Python integers known at trace time.
 
 The examples below use `mode="auto"`. Inline TileOps use the same boundary
 contract in explicit callers, but explicit examples normally keep compute in
@@ -1147,7 +1147,8 @@ with pto.tileop():
 - `with pto.simt():` remains in the enclosing kernel as `pto.section.simt`
   with default launch dimensions `(1, 1, 1)`.
 - `with pto.simt(dim_x, dim_y, dim_z):` remains in the enclosing kernel as
-  `pto.section.simt` with the authored launch dimensions.
+  `pto.section.simt` with the authored launch dimensions. The dimensions must
+  be Python integers known at trace time.
 - Inline TileOp captures obey the same ABI as `@pto.tileop`: only `pto.Tile`
   and PTO scalar values may cross into the helper. Pointer, TensorView, memref,
   vreg, and mask captures are rejected.

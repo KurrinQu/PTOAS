@@ -10,16 +10,12 @@
 
 module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
   func.func @section_simt_kernel() attributes {pto.aicore} {
-    %dim_x = arith.constant 32 : i32
-    %dim_y = arith.constant 2 : i32
-    %dim_z = arith.constant 1 : i32
-
-    pto.section.simt <<<%dim_x, %dim_y, %dim_z>>> {
-    } : i32, i32, i32
+    pto.section.simt <<<32, 2, 1>>> {
+    }
 
     return
   }
 }
 
-// CHECK: pto.section.simt<<<{{.*}}, {{.*}}, {{.*}}>>> {
-// CHECK-NEXT: } : i32, i32, i32
+// CHECK: pto.section.simt<<<32, 2, 1>>> {
+// CHECK-NEXT: }

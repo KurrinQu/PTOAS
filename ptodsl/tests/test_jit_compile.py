@@ -773,6 +773,13 @@ def inline_simt_launch_dims_probe(
         pto.stg(tid, gm, scalar.index_cast(tid))
 
 
+@pto.jit(target="a5", mode="explicit")
+def inline_simt_dynamic_launch_dim_probe(*, TRACE_TOKEN: pto.const_expr = 0):
+    dynamic_dim = pto.const(32, dtype=pto.i32)
+    with pto.simt(dynamic_dim, 1, 1):
+        pto.get_tid_x()
+
+
 @pto.simt
 def simt_tid_probe():
     pto.get_tid_x()
@@ -4544,10 +4551,8 @@ def main() -> None:
     inline_simt_launch_text = inline_simt_launch_dims_probe.compile(TRACE_TOKEN=1).mlir_text()
     expect_parse_roundtrip_and_verify(inline_simt_launch_text, "inline simt launch-dims specialization")
     expect(
-        re.search(r"pto\.section\.simt\s*<<<", inline_simt_launch_text) is not None
-        and "arith.constant 32 : i32" in inline_simt_launch_text
-        and "arith.constant 2 : i32" in inline_simt_launch_text,
-        "with pto.simt(dim_x, dim_y, dim_z) should emit inline pto.section.simt with launch dims",
+        "pto.section.simt<<<32, 2, 1>>>" in inline_simt_launch_text,
+        "with pto.simt(dim_x, dim_y, dim_z) should emit static inline pto.section.simt launch dims",
     )
     expect(
         "pto.simt_launch" not in inline_simt_launch_text
@@ -4564,6 +4569,11 @@ def main() -> None:
         TypeError,
         lambda: pto.simt(32, 1),
         "expects exactly three",
+    )
+    expect_raises(
+        TypeError,
+        lambda: inline_simt_dynamic_launch_dim_probe.compile(TRACE_TOKEN=1),
+        "static Python int",
     )
 
     simt_text = simt_helper_lowering_probe.compile(TRACE_TOKEN=1).mlir_text()

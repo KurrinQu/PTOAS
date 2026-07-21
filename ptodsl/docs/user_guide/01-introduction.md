@@ -262,7 +262,9 @@ These are reusable hardware-bound compute helpers:
 - **`@pto.simt`** is a scalar-programmable processor group that executes scalar instructions across many work-items in parallel. Typical operations: `lds`, `sts`, scalar arithmetic and comparison. Well-suited for per-element tile walks, boundary metadata, and pointwise blends.
 
 Named helpers use `@pto.tileop` or `@pto.simt`. One-off unit scopes use
-`with pto.tileop():` or `with pto.simt(...):`.
+`with pto.tileop():`, `with pto.simt():`, or
+`with pto.simt(dim_x, dim_y, dim_z):`; inline SIMT dimensions must be Python
+integers known at trace time.
 
 The boundary contract is strict: transient compute values do not escape, and
 data crosses helper boundaries only through Tiles, permitted scalars, or the

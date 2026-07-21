@@ -2350,6 +2350,10 @@ LogicalResult mlir::pto::SectionSimtOp::verify() {
   if (!func)
     return emitOpError("must be nested under a func.func");
 
+  if (getDimX().getInt() < 0 || getDimY().getInt() < 0 ||
+      getDimZ().getInt() < 0)
+    return emitOpError("requires non-negative i32 launch dimensions");
+
   if (func->hasAttr(pto::kPTOSimtEntryAttrName))
     return emitOpError("must not appear inside a function marked with '")
            << pto::kPTOSimtEntryAttrName << "'";

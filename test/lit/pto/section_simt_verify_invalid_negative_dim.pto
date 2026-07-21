@@ -8,15 +8,13 @@
 
 // RUN: not ptoas --pto-arch=a5 --emit-pto-ir %s -o - 2>&1 | FileCheck %s
 
-module attributes {pto.target_arch = "a5"} {
-  func.func @nested_section_simt_kernel() attributes {pto.kernel} {
-    pto.section.simt <<<32, 2, 1>>> {
-      pto.section.simt <<<32, 2, 1>>> {
-      }
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @section_simt_negative_dim_kernel() attributes {pto.aicore} {
+    pto.section.simt <<<32, -1, 1>>> {
     }
-
     return
   }
 }
 
-// CHECK: nested pto.section.simt is not allowed
+// CHECK: pto.section.simt
+// CHECK-SAME: requires non-negative i32 launch dimensions

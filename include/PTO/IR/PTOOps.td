@@ -1741,14 +1741,14 @@ def SectionSimtOp : PTO_Op<"section.simt", [SingleBlock, NoTerminator]> {
     source-level carrier for transformations that need to observe the lexical
     relationship between surrounding code and SIMT regions.
 
-    The textual launch dimension order matches `pto.simt_launch`:
+    Launch dimensions are explicit static i32 attributes.  The textual launch
+    dimension order matches `pto.simt_launch`:
     `<<<dimX, dimY, dimZ>>>`.
   }];
-  let arguments = (ins I32:$dimX, I32:$dimY, I32:$dimZ);
+  let arguments = (ins I32Attr:$dimX, I32Attr:$dimY, I32Attr:$dimZ);
   let regions = (region SizedRegion<1>:$body);
   let assemblyFormat = [{
     `<` `<` `<` $dimX `,` $dimY `,` $dimZ `>` `>` `>` $body attr-dict
-    `:` type($dimX) `,` type($dimY) `,` type($dimZ)
   }];
   let hasVerifier = 1;
 }

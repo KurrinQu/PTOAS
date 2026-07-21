@@ -10,12 +10,8 @@
 
 module attributes {pto.target_arch = "a5"} {
   func.func @section_simt_in_entry() attributes {pto.simt_entry} {
-    %dim_x = arith.constant 32 : i32
-    %dim_y = arith.constant 2 : i32
-    %dim_z = arith.constant 1 : i32
-
-    pto.section.simt <<<%dim_x, %dim_y, %dim_z>>> {
-    } : i32, i32, i32
+    pto.section.simt <<<32, 2, 1>>> {
+    }
 
     return
   }

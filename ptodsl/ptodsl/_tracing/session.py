@@ -937,7 +937,7 @@ def _coerce_simt_section_dims(dims):
     if not isinstance(dims, (tuple, list)) or len(dims) != 3:
         raise TypeError("pto.simt(...) expects exactly three launch dimensions: dim_x, dim_y, dim_z")
     return tuple(
-        _coerce_i32_dim(dim, context=f"pto.simt(..., dim[{index}])")
+        _coerce_i32_dim_attr(dim, context=f"pto.simt(..., dim[{index}])")
         for index, dim in enumerate(dims)
     )
 
@@ -959,6 +959,20 @@ def _coerce_i32_dim(value, *, context: str):
             raise TypeError(f"{context} expects i32 launch dimension, got {raw_value.type}")
         return _strip_integer_signedness(raw_value)
     raise TypeError(f"{context} expects i32 launch dimension, got {raw_value.type}")
+
+
+def _coerce_i32_dim_attr(value, *, context: str):
+    raw_value = unwrap_surface_value(value)
+    i32 = IntegerType.get_signless(32)
+    if isinstance(raw_value, bool):
+        raise TypeError(f"{context} does not accept bool values")
+    if isinstance(raw_value, int):
+        if raw_value < 0:
+            raise ValueError(f"{context} expects a non-negative i32 launch dimension, got {raw_value}")
+        if raw_value > 0x7FFFFFFF:
+            raise ValueError(f"{context} expects a signed i32 launch dimension, got {raw_value}")
+        return IntegerAttr.get(i32, raw_value)
+    raise TypeError(f"{context} expects a static Python int launch dimension, got {type(value).__name__}")
 
 
 def _symbol_name(ir_fn) -> str:

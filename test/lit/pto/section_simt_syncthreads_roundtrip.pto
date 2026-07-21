@@ -10,13 +10,9 @@
 
 module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
   func.func @section_simt_syncthreads_kernel() attributes {pto.aicore} {
-    %dim_x = arith.constant 32 : i32
-    %dim_y = arith.constant 1 : i32
-    %dim_z = arith.constant 1 : i32
-
-    pto.section.simt <<<%dim_x, %dim_y, %dim_z>>> {
+    pto.section.simt <<<32, 1, 1>>> {
       pto.syncthreads
-    } : i32, i32, i32
+    }
 
     return
   }
