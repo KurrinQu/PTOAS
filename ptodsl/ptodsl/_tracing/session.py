@@ -249,6 +249,12 @@ class TraceSession:
         return None
 
     def _create_inline_subkernel_wrapper(self, role: str):
+        if role == "simt":
+            dim_x, dim_y, dim_z = _coerce_default_simt_section_dims()
+            wrapper_op = _pto.SectionSimtOp(dim_x, dim_y, dim_z)
+            body_block = wrapper_op.body.blocks.append()
+            return wrapper_op, body_block
+
         wrapper_op = None
         if self._subkernel_section_policy(role) != "function_kind":
             wrapper_op = self._create_subkernel_section_op(role)
@@ -359,7 +365,13 @@ class TraceSession:
             self._erase_attached_op(wrapper_op)
             raise
         else:
-            self._outline_inline_subkernel(outline_frame)
+            if role == "simt":
+                self._note_escaped_inline_values(
+                    self._collect_defined_values((wrapper_op,)),
+                    role=role,
+                )
+            else:
+                self._outline_inline_subkernel(outline_frame)
         finally:
             popped = self._subkernel_stack.pop()
             if popped is not frame:
@@ -908,6 +920,13 @@ def _coerce_simt_launch_dims(dims):
     return tuple(
         _coerce_i32_dim(dim, context=f"pto.simt_launch(..., dims[{index}])")
         for index, dim in enumerate(dims)
+    )
+
+
+def _coerce_default_simt_section_dims():
+    return tuple(
+        _coerce_i32_dim(dim, context=f"pto.simt(..., dim[{index}])")
+        for index, dim in enumerate((1, 1, 1))
     )
 
 

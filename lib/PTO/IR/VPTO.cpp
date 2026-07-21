@@ -272,9 +272,10 @@ static bool isVector2F16OrBF16Type(Type type) {
   });
 }
 
-static bool isInsideSimtEntry(Operation *op) {
+static bool isInsideSimtExecutionScope(Operation *op) {
   auto funcOp = op->getParentOfType<func::FuncOp>();
-  return funcOp && funcOp->hasAttr(pto::kPTOSimtEntryAttrName);
+  return (funcOp && funcOp->hasAttr(pto::kPTOSimtEntryAttrName)) ||
+         op->getParentOfType<pto::SectionSimtOp>();
 }
 
 static bool isSupportedConvertType(Type type) {
@@ -505,10 +506,10 @@ static LogicalResult verifyAtomicCommon(Operation *op, Value ptr, Type valueType
     return op->emitOpError()
            << "does not accept signedness for floating-point atomics";
   if (isVector2F16OrBF16Type(valueType)) {
-    if (!isInsideSimtEntry(op))
+    if (!isInsideSimtExecutionScope(op))
       return op->emitOpError()
              << "requires packed atomics to be inside a pto.simt_entry "
-                "function on beta.1";
+                "function or pto.section.simt on beta.1";
     if (!op->getResult(0).use_empty())
       return op->emitOpError()
              << "does not support using the old value result for packed "

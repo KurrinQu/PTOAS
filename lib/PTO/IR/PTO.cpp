@@ -2345,6 +2345,25 @@ static std::optional<int64_t> getConstantIntegerValue(Value value) {
   return std::nullopt;
 }
 
+LogicalResult mlir::pto::SectionSimtOp::verify() {
+  func::FuncOp func = getOperation()->getParentOfType<func::FuncOp>();
+  if (!func)
+    return emitOpError("must be nested under a func.func");
+
+  if (func->hasAttr(pto::kPTOSimtEntryAttrName))
+    return emitOpError("must not appear inside a function marked with '")
+           << pto::kPTOSimtEntryAttrName << "'";
+
+  WalkResult nested = getBody().walk([&](SectionSimtOp nestedOp) {
+    nestedOp.emitOpError("nested pto.section.simt is not allowed");
+    return WalkResult::interrupt();
+  });
+  if (nested.wasInterrupted())
+    return failure();
+
+  return success();
+}
+
 LogicalResult mlir::pto::FusionRegionOp::verify() {
   Region &bodyRegion = getBody();
   if (bodyRegion.empty())
@@ -17691,24 +17710,30 @@ static bool isSupportedSimtKeepResumeType(Type type) {
   return type.isF16() || type.isBF16() || type.isF32();
 }
 
-static LogicalResult verifyInsideSimtEntry(Operation *op) {
+static bool isInsideSimtExecutionScope(Operation *op) {
   func::FuncOp func = getParentFunc(op);
-  if (!func || !func->hasAttr(pto::kPTOSimtEntryAttrName))
+  return (func && func->hasAttr(pto::kPTOSimtEntryAttrName)) ||
+         op->getParentOfType<pto::SectionSimtOp>();
+}
+
+static LogicalResult verifyInsideSimtExecutionScope(Operation *op) {
+  if (!isInsideSimtExecutionScope(op))
     return op->emitOpError("must appear inside a function marked with '")
-           << pto::kPTOSimtEntryAttrName << "'";
+           << pto::kPTOSimtEntryAttrName
+           << "' or inside pto.section.simt";
   return success();
 }
 
 LogicalResult SyncthreadsOp::verify() {
-  return verifyInsideSimtEntry(getOperation());
+  return verifyInsideSimtExecutionScope(getOperation());
 }
 
 LogicalResult ThreadfenceOp::verify() {
-  return verifyInsideSimtEntry(getOperation());
+  return verifyInsideSimtExecutionScope(getOperation());
 }
 
 LogicalResult ThreadfenceBlockOp::verify() {
-  return verifyInsideSimtEntry(getOperation());
+  return verifyInsideSimtExecutionScope(getOperation());
 }
 
 void SyncthreadsOp::getEffects(

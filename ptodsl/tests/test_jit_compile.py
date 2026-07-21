@@ -4524,40 +4524,37 @@ def main() -> None:
         f"unexpected inline subkernel scope observations: {INLINE_SUBKERNEL_SCOPE_OBSERVATIONS!r}",
     )
     expect(
-        inline_subkernel_scope_text.count("pto.store_vfsimt_info") == 1,
-        "inline pto.simt() should materialize one caller-side store_vfsimt_info before the helper call",
+        inline_subkernel_scope_text.count("pto.section.simt") == 1
+        and re.search(r"pto\.section\.simt\s*<<<", inline_subkernel_scope_text) is not None,
+        "inline pto.simt() should lower to one inline pto.section.simt region",
     )
     expect(
-        re.search(r"call @inline_simt_[0-9]+__ptodsl_[0-9a-f]+\([^\\n]*\)", inline_subkernel_scope_text) is not None
+        re.search(r"call @inline_simt_[0-9]+__ptodsl_[0-9a-f]+\([^\\n]*\)", inline_subkernel_scope_text) is None
         and re.search(r"call @inline_tileop_[0-9]+__ptodsl_[0-9a-f]+\([^\\n]*\)", inline_subkernel_scope_text) is not None,
-        "inline pto.simt()/pto.tileop() scopes should each lower to one helper call",
+        "inline pto.simt() should stay in-place while inline pto.tileop() still lowers to one helper call",
     )
     expect(
         "pto.tileop.helper" in inline_subkernel_scope_text
         and "pto.section.vector {" not in inline_subkernel_scope_text
         and "pto.section.cube {" not in inline_subkernel_scope_text
         and "pto.store" in inline_subkernel_scope_text,
-        "outlined inline helpers should mark TileOp helpers and preserve SIMT scalar ops",
+        "outlined inline TileOp helpers should mark TileOp helpers and preserve SIMT scalar ops",
     )
 
     inline_simt_launch_text = inline_simt_launch_dims_probe.compile(TRACE_TOKEN=1).mlir_text()
     expect_parse_roundtrip_and_verify(inline_simt_launch_text, "inline simt launch-dims specialization")
     expect(
-        re.search(r"pto\.simt_launch @inline_simt_[0-9]+__ptodsl_[0-9a-f]+<<<", inline_simt_launch_text)
-        is not None,
-        "with pto.simt(dim_x, dim_y, dim_z) should emit VPTO simt_launch sugar",
+        inline_simt_launch_text.count("pto.section.simt") == 1
+        and re.search(r"pto\.section\.simt\s*<<<", inline_simt_launch_text) is not None,
+        "with pto.simt(dim_x, dim_y, dim_z) should keep one inline pto.section.simt region",
+    )
+    expect(
+        "pto.simt_launch" not in inline_simt_launch_text,
+        "with pto.simt(dim_x, dim_y, dim_z) should not emit a separate pto.simt_launch",
     )
     expect(
         "pto.store_vfsimt_info" not in inline_simt_launch_text,
-        "with pto.simt(dim_x, dim_y, dim_z) should leave launch metadata to simt_launch expansion",
-    )
-    expect(
-        re.search(
-            r"func\.func @inline_simt_[0-9]+__ptodsl_[0-9a-f]+\(%arg0: !pto\.ptr<i32, gm>\) attributes \{[^}]*pto\.simt_entry[^}]*\}",
-            inline_simt_launch_text,
-        )
-        is not None,
-        "inline SIMT launch-dims helper should capture enclosing values as helper arguments",
+        "with pto.simt(dim_x, dim_y, dim_z) should not materialize caller-side launch metadata",
     )
     expect_raises(
         TypeError,
