@@ -21,6 +21,8 @@ from .._diagnostics import (
 from .._kernel_signature import RuntimeScalarParameterSpec
 from .._ops import const
 from .._surface_values import (
+    AddressOffsetValue,
+    AllocatedBufferValue,
     is_runtime_scalar_ir_type,
     is_tile_ir_type,
     unwrap_surface_value,
@@ -602,6 +604,7 @@ class TraceSession:
             raise RuntimeError("@pto.simt helper lowering does not support nested SIMT helper calls")
 
         arg_templates = tuple(args)
+        _reject_simt_helper_alloc_buffer_args(arg_templates)
         arg_types = tuple(unwrap_surface_value(arg).type for arg in arg_templates)
         static_kwargs = _simt_static_kwargs_signature(kwargs)
         owner_symbol_name = self.current_function_owner_symbol_name
@@ -973,6 +976,22 @@ def _coerce_i32_dim_attr(value, *, context: str):
             raise ValueError(f"{context} expects a signed i32 launch dimension, got {raw_value}")
         return IntegerAttr.get(i32, raw_value)
     raise TypeError(f"{context} expects a static Python int launch dimension, got {type(value).__name__}")
+
+
+def _is_alloc_buffer_arg(value) -> bool:
+    if isinstance(value, AllocatedBufferValue):
+        return True
+    return isinstance(value, AddressOffsetValue) and isinstance(value.base, AllocatedBufferValue)
+
+
+def _reject_simt_helper_alloc_buffer_args(args):
+    for index, arg in enumerate(args):
+        if _is_alloc_buffer_arg(arg):
+            raise TypeError(
+                "@pto.simt helpers do not accept pto.alloc_buffer persistent buffers; "
+                "use an inline pto.simt(...) scope or pass an explicitly authored typed pointer"
+                f" (argument {index})"
+            )
 
 
 def _symbol_name(ir_fn) -> str:

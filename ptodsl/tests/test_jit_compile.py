@@ -1031,6 +1031,23 @@ def rmsnorm_alloc_buffer_layout_probe(
     _ = reduce_scratch
 
 
+@pto.simt
+def simt_alloc_buffer_arg_probe(buf: pto.ptr(pto.f32, "ub")):
+    _ = buf
+
+
+@pto.jit(target="a5", mode="explicit")
+def simt_helper_reject_alloc_buffer_probe():
+    scratch = pto.alloc_buffer((32,), pto.f32)
+    pto.simt_launch(simt_alloc_buffer_arg_probe, scratch, dims=(32, 1, 1))
+
+
+@pto.jit(target="a5", mode="explicit")
+def simt_helper_reject_alloc_buffer_offset_probe():
+    scratch = pto.alloc_buffer((32,), pto.f32)
+    pto.simt_launch(simt_alloc_buffer_arg_probe, scratch + 4, dims=(32, 1, 1))
+
+
 @pto.jit(target="a5")
 def simt_explicit_launch_probe(*, TRACE_TOKEN: pto.const_expr = 0):
     pto.simt_launch(simt_query_probe, dims=(32, 2, 1))
@@ -4690,7 +4707,17 @@ def main() -> None:
     expect(
         re.search(r"call @rmsnorm_alloc_buffer_frag_helper__simt_\d+\(", rmsnorm_alloc_buffer_text)
         is not None,
-        "RMSNorm alloc_buffer layout should pass UB scratch pointers through the existing SIMT helper call path",
+        "RMSNorm alloc_buffer layout should pass explicitly authored UB pointers through the existing SIMT helper call path",
+    )
+    expect_raises(
+        TypeError,
+        lambda: simt_helper_reject_alloc_buffer_probe.compile(),
+        "do not accept pto.alloc_buffer",
+    )
+    expect_raises(
+        TypeError,
+        lambda: simt_helper_reject_alloc_buffer_offset_probe.compile(),
+        "do not accept pto.alloc_buffer",
     )
 
     simt_launch_text = simt_explicit_launch_probe.compile(TRACE_TOKEN=1).mlir_text()
