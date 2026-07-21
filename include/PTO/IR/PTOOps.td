@@ -62,7 +62,8 @@ def ScalarType :
 // Op Class
 //===----------------------------------------------------------------------===//
 class PTO_TOp<string mnemonic, list<Trait> traits = []>
-    : Op<PTO_Dialect, mnemonic, !listconcat(traits, [ ])>;
+    : Op<PTO_Dialect, mnemonic,
+         !listconcat(traits, [TileOpInterface])>;
 
 class PTO_DpsOp<string mnemonic, list<Trait> traits = []>
     : Op<PTO_Dialect, mnemonic, traits # [DestinationStyleOpInterface]> {
@@ -1588,7 +1589,11 @@ def SlotMarkerOp : PTO_Op<"slot_marker", [
 // System/Runtime Query Ops
 // =============================================================================
 
-def GetBlockIdxOp : PTO_Op<"get_block_idx", [Pure]> {
+def GetBlockIdxOp : PTO_Op<"get_block_idx", [
+    Pure,
+    MicroOpInterface,
+    SimtOpInterface
+  ]> {
   let summary = "Get the current block index (core ID).";
   let description = [{
     Returns the linear index of the current compute unit (CUBE Core) within the task.
@@ -1601,7 +1606,11 @@ def GetBlockIdxOp : PTO_Op<"get_block_idx", [Pure]> {
   let assemblyFormat = "attr-dict";
 }
 
-def GetSubBlockIdxOp : PTO_Op<"get_subblock_idx", [Pure]> {
+def GetSubBlockIdxOp : PTO_Op<"get_subblock_idx", [
+    Pure,
+    MicroOpInterface,
+    SimtOpInterface
+  ]> {
   let summary = "Get the current vector core ID.";
   let description = [{
     Returns the ID of the current compute unit (Vector Core).
@@ -1614,7 +1623,11 @@ def GetSubBlockIdxOp : PTO_Op<"get_subblock_idx", [Pure]> {
   let assemblyFormat = "attr-dict";
 }
 
-def GetBlockNumOp : PTO_Op<"get_block_num", [Pure]> {
+def GetBlockNumOp : PTO_Op<"get_block_num", [
+    Pure,
+    MicroOpInterface,
+    SimtOpInterface
+  ]> {
   let summary = "Get the total number of blocks (cores).";
   let description = [{
     Returns the total number of compute units (Blocks) configured for the current task.
@@ -1626,7 +1639,11 @@ def GetBlockNumOp : PTO_Op<"get_block_num", [Pure]> {
   let assemblyFormat = "attr-dict";
 }
 
-def GetSubBlockNumOp : PTO_Op<"get_subblock_num", [Pure]> {
+def GetSubBlockNumOp : PTO_Op<"get_subblock_num", [
+    Pure,
+    MicroOpInterface,
+    SimtOpInterface
+  ]> {
   let summary = "Get the number of vector cores.";
   let description = [{
     Returns the total number of vector compute units.
@@ -2496,7 +2513,9 @@ def TAllocOp : PTO_TOp<"talloc", [
   }];
 }
 
-def TAssignOp : PTO_Op<"tassign", [Pure]> {
+def TAssignOp : PTO_Op<"tassign", [
+    Pure
+  ]> {
   let summary = "Rebind a declared tile handle to a runtime address";
   let description = [{
     Rebinds an existing tile handle to a new address. This op is intended for
@@ -3136,7 +3155,7 @@ def PrintOp : PTO_Op<"print", [MemoryEffects<[MemRead, MemWrite]>]> {
   }];
 }
 
-def TrapOp : PTO_Op<"trap"> {
+def TrapOp : PTO_Op<"trap", [MicroOpInterface, SimtOpInterface]> {
   let summary = "Trap: abort execution (no operands).";
   let description = [{
     Inserts a trap to stop execution. No arguments, no results.
@@ -3152,6 +3171,7 @@ def TrapOp : PTO_Op<"trap"> {
 def MGatherOp : PTO_TOp<"mgather", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  MteOpInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Gather-load elements from memory into a tile using per-element indices (tile world, ins/outs).";
@@ -3371,6 +3391,7 @@ def TGetScaleAddrOp : PTO_TOp<"tget_scale_addr", [
 def MScatterOp : PTO_TOp<"mscatter", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  MteOpInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Scatter-store elements from a tile into memory using per-element indices (tile world, ins/outs).";

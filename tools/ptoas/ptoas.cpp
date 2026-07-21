@@ -686,7 +686,17 @@ static bool hasUnexpandedTileOps(ModuleOp module) {
   module.walk([&](Operation *op) {
     if (found)
       return;
-    if (isa<pto::OpPipeInterface>(op))
+    if (isa<pto::OpPipeInterface>(op)) {
+      found = true;
+      return;
+    }
+
+    // A pure PTODSL tileop can contain only low-level compute plus a SIMT
+    // launch, so it has no high-level TileOp interface to trigger this path.
+    // It still needs tile-handle materialization, backend-helper inlining, and
+    // tile_buf_addr folding before VPTO emission.
+    if (auto func = dyn_cast<func::FuncOp>(op);
+        func && func->hasAttr("pto.tileop.helper"))
       found = true;
   });
   return found;
@@ -2947,6 +2957,7 @@ int mlir::pto::compilePTOASModule(
   {
     PassManager preBackendPM(module->getContext());
     preBackendPM.enableVerifier();
+    preBackendPM.addPass(pto::createPTOMaterializeTileOpSectionsPass());
     preBackendPM.addPass(pto::createPTONormalizeUncoveredTileSectionsPass());
     if (failed(preBackendPM.run(module.get()))) {
       llvm::errs() << "Error: failed to normalize uncovered PTO tile sections.\n";
@@ -3050,8 +3061,6 @@ int mlir::pto::compilePTOASModule(
   // `pto.slot_marker` ops and can keep multi-buffer slot identity (const slot
   // K vs slot K' or dynamic slot) for the alias / event-id analysis.
   // solvers, while BufidSync is A5-only get_buf/rls_buf synchronization.
-  pm.addNestedPass<mlir::func::FuncOp>(
-      pto::createPTOVerifySubkernelPipeContractPass());
   if (enableInsertSync)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
   else if (enableBufidSync) {

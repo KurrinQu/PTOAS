@@ -6,27 +6,12 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// RUN: ptoas --pto-arch=a5 --emit-pto-ir %s | FileCheck %s
+// RUN: not ptoas --pto-arch=a5 --emit-pto-ir %s 2>&1 | FileCheck %s
 
-module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
-  func.func @kernel() {
-    func.call @simd_helper() : () -> ()
-    func.return
-  }
-
-  func.func private @simd_helper() attributes {pto.ptodsl.subkernel_helper = "simd"} {
-    pto.section.vector {
-      func.call @local_helper() : () -> ()
-    }
-    func.return
-  }
-
-  func.func private @local_helper() {
-    pto.section.vector {
-    }
-    func.return
+// CHECK: error: tileop helpers must not contain pipe synchronization
+module attributes {pto.target_arch = "a5"} {
+  func.func private @bad_tileop() attributes {pto.tileop.helper} {
+    pto.barrier <PIPE_V>
+    return
   }
 }
-
-// CHECK: func.func private @simd_helper
-// CHECK: func.call @local_helper
