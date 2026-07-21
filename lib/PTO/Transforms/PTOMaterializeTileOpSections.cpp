@@ -34,6 +34,8 @@ namespace {
 constexpr llvm::StringLiteral kTileOpHelperAttr = "pto.tileop.helper";
 constexpr llvm::StringLiteral kTileOpKindAttr = "pto.tileop.kind";
 constexpr llvm::StringLiteral kTileOpEffectsAttr = "pto.tileop.effects";
+constexpr llvm::StringLiteral kTileOpValidShapeReadAttr =
+    "__pto.tileop_valid_shape_abi";
 
 using ValidShapeRequirements = DenseMap<Operation *, SmallVector<unsigned, 2>>;
 using ExpandedValidShapeArguments =
@@ -329,26 +331,11 @@ static LogicalResult expandValidShapeFunctionArguments(
   return success();
 }
 
-static std::pair<Value, Value> findValidShapeOverride(Value tile,
-                                                      Operation *anchor) {
-  std::pair<Value, Value> result;
-  for (Operation *user : tile.getUsers()) {
-    auto setValidShape = dyn_cast<SetValidShapeOp>(user);
-    if (!setValidShape || setValidShape.getSource() != tile)
-      continue;
-    if (user->getBlock() != anchor->getBlock() ||
-        !user->isBeforeInBlock(anchor))
-      continue;
-    result = {setValidShape.getValidRow(), setValidShape.getValidCol()};
-  }
-  return result;
-}
-
 static std::optional<std::pair<Value, Value>>
 resolveCallValidShape(Value tile, Operation *anchor, func::FuncOp caller,
                       const ExpandedValidShapeArguments &expandedArguments,
-                      OpBuilder &builder, unsigned depth = 0) {
-  if (!tile || depth >= 64)
+                      OpBuilder &builder) {
+  if (!tile)
     return std::nullopt;
 
   auto tileType = dyn_cast<TileBufType>(tile.getType());
@@ -361,20 +348,6 @@ resolveCallValidShape(Value tile, Operation *anchor, func::FuncOp caller,
     return std::make_pair(row, col);
   }
 
-  auto override = findValidShapeOverride(tile, anchor);
-  if (override.first && override.second)
-    return override;
-
-  if (auto alloc = tile.getDefiningOp<AllocTileOp>()) {
-    if (alloc.getValidRow() && alloc.getValidCol())
-      return std::make_pair(alloc.getValidRow(), alloc.getValidCol());
-  }
-  if (auto materialize = tile.getDefiningOp<MaterializeTileOp>()) {
-    if (materialize.getValidRow() && materialize.getValidCol())
-      return std::make_pair(materialize.getValidRow(),
-                            materialize.getValidCol());
-  }
-
   if (auto callerArgument = traceToFunctionArgument(tile, caller)) {
     auto function = expandedArguments.find(caller.getOperation());
     if (function != expandedArguments.end()) {
@@ -384,15 +357,16 @@ resolveCallValidShape(Value tile, Operation *anchor, func::FuncOp caller,
     }
   }
 
-  Operation *definingOperation = tile.getDefiningOp();
-  if (!definingOperation)
+  if (!tileType || tileType.getValidShape().size() != 2)
     return std::nullopt;
-  if (auto alias = getOperationAliasInfo(definingOperation)) {
-    if (alias->first == tile)
-      return resolveCallValidShape(alias->second, anchor, caller,
-                                   expandedArguments, builder, depth + 1);
-  }
-  return std::nullopt;
+
+  // set_validshape mutates the Tile metadata in place. Reading it at the call
+  // preserves the executed update across sequential and structured control
+  // flow instead of attempting to infer state from Value users.
+  auto validShape = builder.create<GetValidShapeOp>(anchor->getLoc(), tile);
+  validShape->setAttr(kTileOpValidShapeReadAttr,
+                      UnitAttr::get(tile.getContext()));
+  return std::make_pair(validShape.getValidRow(), validShape.getValidCol());
 }
 
 static LogicalResult expandValidShapeCallOperands(
