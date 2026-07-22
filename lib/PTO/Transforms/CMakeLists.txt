@@ -35,6 +35,10 @@ add_mlir_dialect_library(PTOTransforms
   VPTOBufferMaterialization.cpp
   PTOValidateVPTOIR.cpp
   PTOUnrollSIMTForPass.cpp
+  SIMTPersistentFragmentAnalysis.cpp
+  PTOAnalyzeSIMTPersistentFragment.cpp
+  PTOMaterializeSIMTPersistentFragment.cpp
+  PTOOutlineSIMTSections.cpp
   PTOInferVPTOVecScope.cpp
 
   InsertSync/PTOInsertSync.cpp
