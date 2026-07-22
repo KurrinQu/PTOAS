@@ -971,24 +971,15 @@ def alloc_buffer_outside_simt_probe():
     _ = pto.alloc_buffer((32,), pto.f32)
 
 
-@pto.simd
-def alloc_buffer_simd_helper():
+@pto.tileop
+def alloc_buffer_tileop_helper():
     _ = pto.alloc_buffer((32,), pto.f32)
+    tileop_noop_simt_probe[1, 1, 1]()
 
 
 @pto.jit(target="a5", mode="explicit", kernel_kind="vector")
-def alloc_buffer_simd_helper_probe():
-    alloc_buffer_simd_helper()
-
-
-@pto.cube
-def alloc_buffer_cube_helper():
-    _ = pto.alloc_buffer((32,), pto.f32)
-
-
-@pto.jit(target="a5", mode="explicit", kernel_kind="cube")
-def alloc_buffer_cube_helper_probe():
-    alloc_buffer_cube_helper()
+def alloc_buffer_tileop_helper_probe():
+    alloc_buffer_tileop_helper()
 
 
 @pto.jit(target="a5", mode="explicit")
@@ -4675,17 +4666,12 @@ def main() -> None:
         "llvm.alloca" in alloc_buffer_top_level_text and "pto.persistent" in alloc_buffer_top_level_text,
         "alloc_buffer outside a SIMT helper should be marked as a persistent fragment candidate",
     )
-    alloc_buffer_simd_helper_text = alloc_buffer_simd_helper_probe.compile().mlir_text()
-    expect_parse_roundtrip_and_verify(alloc_buffer_simd_helper_text, "alloc_buffer simd helper specialization")
+    alloc_buffer_tileop_helper_text = alloc_buffer_tileop_helper_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(alloc_buffer_tileop_helper_text, "alloc_buffer tileop helper specialization")
     expect(
-        "llvm.alloca" in alloc_buffer_simd_helper_text and "pto.persistent" not in alloc_buffer_simd_helper_text,
-        "alloc_buffer inside a SIMD helper should remain local",
-    )
-    alloc_buffer_cube_helper_text = alloc_buffer_cube_helper_probe.compile().mlir_text()
-    expect_parse_roundtrip_and_verify(alloc_buffer_cube_helper_text, "alloc_buffer cube helper specialization")
-    expect(
-        "llvm.alloca" in alloc_buffer_cube_helper_text and "pto.persistent" not in alloc_buffer_cube_helper_text,
-        "alloc_buffer inside a Cube helper should remain local",
+        "llvm.alloca" in alloc_buffer_tileop_helper_text
+        and "pto.persistent" not in alloc_buffer_tileop_helper_text,
+        "alloc_buffer inside a TileOp helper should remain local",
     )
     alloc_buffer_inline_simt_text = alloc_buffer_inline_simt_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(alloc_buffer_inline_simt_text, "alloc_buffer inline simt specialization")
