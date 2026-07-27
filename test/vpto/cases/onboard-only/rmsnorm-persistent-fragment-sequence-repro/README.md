@@ -14,6 +14,8 @@ directory (or to `BUILD_DIR` when overridden).
 - `kernels/d*/kernel.ptodsl.py`: TileLang-generated PTODSL source retained for
   frontend comparison. It is not invoked by `build.sh`.
 - `kernels/d*/kernel.pto`: textual PTO IR compiled by the current PTOAS.
+- `kernels/d*/kernel_vpto.ll`: VPTO LLVM IR emitted from the corresponding
+  `kernel.pto` with the current PTOAS.
 - `kernels/d*/launch.cpp`: AOT launch wrapper and dynamic-UB contract.
 - `host/sequence_main.cpp`: one ACL process, one device, one stream, and the
   ordered kernel launches.
@@ -51,6 +53,17 @@ BUILD_DIR=/tmp/rmsnorm-persistent-sequence ./build.sh
 BUILD_DIR=/tmp/rmsnorm-persistent-sequence \
   ASCEND_RT_VISIBLE_DEVICES=0 ACL_DEVICE_ID=0 \
   RMSNORM_SEQUENCE_REPEATS=1 ./run.sh
+```
+
+To regenerate the checked-in LLVM IR without producing device binaries:
+
+```bash
+PTOAS_BIN=/home/qukelin/projects/PTOAS/build/tools/ptoas/ptoas
+for d in 4096 5120 7168; do
+  "${PTOAS_BIN}" --pto-arch=a5 --pto-backend=vpto \
+    --emit-vpto-llvm-ir "kernels/d${d}/kernel.pto" \
+    -o "kernels/d${d}/kernel_vpto.ll"
+done
 ```
 
 ## Run On Hardware
