@@ -13,13 +13,15 @@ BISHENG_CC1="${BISHENG_CC1:-${CANN_HOME}/tools/bisheng_compiler/bin/bisheng}"
 LD_LLD="${LD_LLD:-${CANN_HOME}/bin/ld.lld}"
 CLANG_RES="${CLANG_RES:-${CANN_HOME}/tools/bisheng_compiler/lib/clang/15.0.5}"
 
-# host stub 编译目标跟随当前机器架构（x86_64 / aarch64），可用 HOST_TRIPLE 覆盖
+# host stub 编译目标跟随当前机器架构（x86_64 / aarch64），可用
+# HOST_TRIPLE / HOST_TARGET_CPU 覆盖
 case "$(uname -m)" in
-  x86_64)  DEFAULT_HOST_TRIPLE="x86_64-unknown-linux-gnu" ;;
-  aarch64) DEFAULT_HOST_TRIPLE="aarch64-unknown-linux-gnu" ;;
-  *)       DEFAULT_HOST_TRIPLE="" ;;
+  x86_64)  DEFAULT_HOST_TRIPLE="x86_64-unknown-linux-gnu"; DEFAULT_HOST_CPU="x86-64" ;;
+  aarch64) DEFAULT_HOST_TRIPLE="aarch64-unknown-linux-gnu"; DEFAULT_HOST_CPU="generic" ;;
+  *)       DEFAULT_HOST_TRIPLE=""; DEFAULT_HOST_CPU="" ;;
 esac
 HOST_TRIPLE="${HOST_TRIPLE:-${DEFAULT_HOST_TRIPLE}}"
+HOST_TARGET_CPU="${HOST_TARGET_CPU:-${DEFAULT_HOST_CPU}}"
 
 die() {
   echo "ERROR: $*" >&2
@@ -81,7 +83,7 @@ EOF
   "${BISHENG_CC1}" \
     -cc1 \
     -triple "${HOST_TRIPLE}" \
-    -target-cpu generic \
+    -target-cpu "${HOST_TARGET_CPU}" \
     -fcce-aicpu-legacy-launch \
     -fcce-is-host \
     -cce-enable-mix \
