@@ -13,6 +13,14 @@ BISHENG_CC1="${BISHENG_CC1:-${CANN_HOME}/tools/bisheng_compiler/bin/bisheng}"
 LD_LLD="${LD_LLD:-${CANN_HOME}/bin/ld.lld}"
 CLANG_RES="${CLANG_RES:-${CANN_HOME}/tools/bisheng_compiler/lib/clang/15.0.5}"
 
+# host stub 编译目标跟随当前机器架构（x86_64 / aarch64），可用 HOST_TRIPLE 覆盖
+case "$(uname -m)" in
+  x86_64)  DEFAULT_HOST_TRIPLE="x86_64-unknown-linux-gnu" ;;
+  aarch64) DEFAULT_HOST_TRIPLE="aarch64-unknown-linux-gnu" ;;
+  *)       DEFAULT_HOST_TRIPLE="" ;;
+esac
+HOST_TRIPLE="${HOST_TRIPLE:-${DEFAULT_HOST_TRIPLE}}"
+
 die() {
   echo "ERROR: $*" >&2
   exit 1
@@ -22,6 +30,7 @@ for t in "${BISHENG_BIN}" "${BISHENG_CC1}" "${LD_LLD}"; do
   [[ -x "${t}" ]] || die "not executable: ${t}"
 done
 [[ -f "${CANN_HOME}/set_env.sh" ]] || die "missing CANN environment: ${CANN_HOME}/set_env.sh"
+[[ -n "${HOST_TRIPLE}" ]] || die "unsupported host arch: $(uname -m) (set HOST_TRIPLE manually)"
 
 set +u
 source "${CANN_HOME}/set_env.sh" >/dev/null 2>&1
@@ -71,7 +80,7 @@ extern "C" __global__ AICORE void ${kernel}(__gm__ void * arg0) {}
 EOF
   "${BISHENG_CC1}" \
     -cc1 \
-    -triple aarch64-unknown-linux-gnu \
+    -triple "${HOST_TRIPLE}" \
     -target-cpu generic \
     -fcce-aicpu-legacy-launch \
     -fcce-is-host \

@@ -41,7 +41,8 @@ TID_REPRO_REVERSE=1 ./run.sh
 
 默认 `CANN_HOME=/home/qukelin/tools/CANN_9.1/cann-9.1.T530`。在其他环境运行时，
 通过 `CANN_HOME` 指定 CANN 安装目录；也可单独覆盖 `BISHENG_BIN`、
-`BISHENG_CC1`、`LD_LLD` 和 `CLANG_RES`。
+`BISHENG_CC1`、`LD_LLD` 和 `CLANG_RES`。host stub 的 `-triple` 默认按
+`uname -m` 自动选择（`x86_64` / `aarch64`），可通过 `HOST_TRIPLE` 覆盖。
 
 ## 编码字段检查
 
