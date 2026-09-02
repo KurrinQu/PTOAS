@@ -1637,6 +1637,29 @@ wait_for_sample_batch() {
   done
 }
 
+wait_for_sample_batch() {
+  local summary_file="$1"
+  shift
+
+  local pid dir_name result_file worker_rc
+  while [[ $# -ge 3 ]]; do
+    pid="$1"
+    dir_name="$2"
+    result_file="$3"
+    shift 3
+    if wait "${pid}"; then
+      worker_rc=0
+    else
+      worker_rc=$?
+    fi
+    cat "${result_file}" >>"${summary_file}"
+    if [[ ${worker_rc} -ne 0 ]] && ! grep -q $'\tFAIL\t' "${result_file}"; then
+      printf '%s\tFAIL\tprocess_one_dir exited with status %d\n' \
+        "${dir_name}" "${worker_rc}" >>"${summary_file}"
+    fi
+  done
+}
+
 run_all() {
   local tmp out_dir result_dir result_file summary_rc soc_arch="" dir_name dir_arch
   local dir_index=0
