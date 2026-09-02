@@ -41,11 +41,15 @@ using ValidShapeRequirements = DenseMap<Operation *, SmallVector<unsigned, 2>>;
 using ExpandedValidShapeArguments =
     DenseMap<Operation *, DenseMap<unsigned, std::pair<Value, Value>>>;
 
-enum TileArgumentEffect : uint8_t {
+enum class TileArgumentEffect : uint8_t {
   NoEffect = 0,
   ReadEffect = 1,
   WriteEffect = 2,
 };
+
+constexpr uint8_t kTileReadWrite =
+    static_cast<uint8_t>(TileArgumentEffect::ReadEffect) |
+    static_cast<uint8_t>(TileArgumentEffect::WriteEffect);
 
 static bool isScalarType(Type type) { return type.isIntOrIndexOrFloat(); }
 
@@ -128,7 +132,9 @@ static void applyEffectToAllTileArguments(func::FuncOp function, uint8_t effect,
 
 static SmallVector<uint8_t>
 collectDirectArgumentEffects(func::FuncOp function) {
-  SmallVector<uint8_t> effects(function.getNumArguments(), NoEffect);
+  SmallVector<uint8_t> effects(
+      function.getNumArguments(),
+      static_cast<uint8_t>(TileArgumentEffect::NoEffect));
   function.walk([&](Operation *op) {
     auto memoryEffects = dyn_cast<MemoryEffectOpInterface>(op);
     if (!memoryEffects)
@@ -138,20 +144,23 @@ collectDirectArgumentEffects(func::FuncOp function) {
         instances;
     memoryEffects.getEffects(instances);
     for (const auto &instance : instances) {
-      uint8_t effect = NoEffect;
-      if (isa<MemoryEffects::Read>(instance.getEffect()))
-        effect = ReadEffect;
-      else if (isa<MemoryEffects::Write>(instance.getEffect()))
-        effect = WriteEffect;
-      if (effect == NoEffect || !instance.getValue()) {
+      TileArgumentEffect effect = TileArgumentEffect::NoEffect;
+      if (isa<MemoryEffects::Read>(instance.getEffect())) {
+        effect = TileArgumentEffect::ReadEffect;
+      } else if (isa<MemoryEffects::Write>(instance.getEffect())) {
+        effect = TileArgumentEffect::WriteEffect;
+      }
+      if (effect == TileArgumentEffect::NoEffect || !instance.getValue()) {
         continue;
       }
 
       if (auto argument =
-              traceToFunctionArgument(instance.getValue(), function))
-        effects[*argument] |= effect;
-      else if (isMemoryReferenceType(instance.getValue().getType()))
-        applyEffectToAllTileArguments(function, effect, effects);
+              traceToFunctionArgument(instance.getValue(), function)) {
+        effects[*argument] |= static_cast<uint8_t>(effect);
+      } else if (isMemoryReferenceType(instance.getValue().getType())) {
+        applyEffectToAllTileArguments(function, static_cast<uint8_t>(effect),
+                                      effects);
+      }
     }
     return WalkResult::advance();
   });
@@ -164,20 +173,21 @@ static void summarizeSimtLaunchEffects(func::FuncOp helper, SimtLaunchOp launch,
   auto callee = module ? module.lookupSymbol<func::FuncOp>(launch.getCallee())
                        : func::FuncOp();
   if (!callee || callee.isDeclaration()) {
-    applyEffectToAllTileArguments(helper, ReadEffect | WriteEffect, effects);
+    applyEffectToAllTileArguments(helper, kTileReadWrite, effects);
     return;
   }
 
   SmallVector<uint8_t> calleeEffects = collectDirectArgumentEffects(callee);
   for (auto [argument, calleeEffect] :
        llvm::zip_equal(launch.getArgs(), calleeEffects)) {
-    if (calleeEffect == NoEffect) {
+    if (calleeEffect == static_cast<uint8_t>(TileArgumentEffect::NoEffect)) {
       continue;
     }
-    if (auto helperArgument = traceToFunctionArgument(argument, helper))
+    if (auto helperArgument = traceToFunctionArgument(argument, helper)) {
       effects[*helperArgument] |= calleeEffect;
-    else
+    } else {
       applyEffectToAllTileArguments(helper, calleeEffect, effects);
+    }
   }
 }
 
@@ -193,11 +203,11 @@ static void summarizeTileOpEffects(func::FuncOp helper) {
        llvm::zip_equal(helper.getArgumentTypes(), effects)) {
     StringRef effectName = "none";
     if (isa<TileBufType>(type)) {
-      if (effect == (ReadEffect | WriteEffect))
+      if (effect == kTileReadWrite)
         effectName = "readwrite";
-      else if (effect == ReadEffect)
+      else if (effect == static_cast<uint8_t>(TileArgumentEffect::ReadEffect))
         effectName = "read";
-      else if (effect == WriteEffect)
+      else if (effect == static_cast<uint8_t>(TileArgumentEffect::WriteEffect))
         effectName = "write";
     }
     effectAttrs.push_back(StringAttr::get(helper.getContext(), effectName));
@@ -471,23 +481,27 @@ static LogicalResult
 materializeTileOpValidShapeABI(ModuleOp module,
                                ArrayRef<func::FuncOp> helpers) {
   ValidShapeRequirements requirements;
-  for (func::FuncOp helper : helpers)
-    if (failed(collectTileOpValidShapeRequirements(helper, requirements)))
+  for (func::FuncOp helper : helpers) {
+    if (failed(collectTileOpValidShapeRequirements(helper, requirements))) {
       return failure();
+    }
+  }
   if (requirements.empty()) {
     ExpandedValidShapeArguments emptyArguments;
     return replaceTileOpValidShapeReads(helpers, emptyArguments);
   }
 
-  if (failed(propagateValidShapeRequirements(module, requirements)))
+  if (failed(propagateValidShapeRequirements(module, requirements))) {
     return failure();
+  }
   ExpandedValidShapeArguments expandedArguments;
   if (failed(
           expandValidShapeFunctionArguments(requirements, expandedArguments)) ||
       failed(expandValidShapeCallOperands(module, requirements,
                                           expandedArguments)) ||
-      failed(replaceTileOpValidShapeReads(helpers, expandedArguments)))
+      failed(replaceTileOpValidShapeReads(helpers, expandedArguments))) {
     return failure();
+  }
   return success();
 }
 
@@ -515,12 +529,15 @@ static bool hasRawVPTOVectorTransientType(Type type) {
 // for dialects or out-of-tree operations that have not adopted the markers.
 static std::optional<PhysicalSectionKind>
 inferRawVPTOComputeKind(Operation *op) {
-  if (isa<CubeMicroOpInterface>(op))
+  if (isa<CubeMicroOpInterface>(op)) {
     return PhysicalSectionKind::Cube;
-  if (isa<VectorMicroOpInterface>(op))
+  }
+  if (isa<VectorMicroOpInterface>(op)) {
     return PhysicalSectionKind::Vector;
-  if (isa<MadSemanticOpInterface, MadRawOpInterface>(op))
+  }
+  if (isa<MadSemanticOpInterface, MadRawOpInterface>(op)) {
     return PhysicalSectionKind::Cube;
+  }
 
   for (Value operand : op->getOperands()) {
     if (hasRawVPTOVectorTransientType(operand.getType()))
@@ -657,11 +674,13 @@ static LogicalResult materializeTileOpSection(func::FuncOp helper,
 }
 
 static LogicalResult materializeTileOpHelper(func::FuncOp helper) {
-  if (failed(verifyTileOpABI(helper)))
+  if (failed(verifyTileOpABI(helper))) {
     return failure();
+  }
   PhysicalSectionKind kind;
-  if (failed(inferTileOpKind(helper, kind)))
+  if (failed(inferTileOpKind(helper, kind))) {
     return failure();
+  }
   summarizeTileOpEffects(helper);
   return materializeTileOpSection(helper, kind);
 }
@@ -684,8 +703,9 @@ struct PTOMaterializeTileOpSectionsPass
       return WalkResult::advance();
     });
     if (failed(status) ||
-        failed(materializeTileOpValidShapeABI(module, helpers)))
+        failed(materializeTileOpValidShapeABI(module, helpers))) {
       signalPassFailure();
+    }
   }
 };
 
