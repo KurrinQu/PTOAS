@@ -14,6 +14,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "PTO/Support/CodeConstants.h"
 #include "PTO/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -50,7 +51,7 @@ static bool isNarrowableCounterType(Type type) {
     return true;
   }
   auto integerType = dyn_cast<IntegerType>(type);
-  return integerType && integerType.getWidth() > 16;
+  return integerType && integerType.getWidth() > mlir::pto::kValue16;
 }
 
 static bool fitsSignedI16(int64_t value) {

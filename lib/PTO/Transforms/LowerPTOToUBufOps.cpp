@@ -63,7 +63,7 @@ static unsigned getElementSize(Type elemTy) {
   }
   if (auto intTy = dyn_cast<IntegerType>(elemTy)) {
     unsigned width = intTy.getWidth();
-    if (width == mlir::pto::kValue16 || width == 32) {
+    if (width == mlir::pto::kValue16 || width == mlir::pto::kValue32) {
       return width / mlir::pto::kValue8;
     }
   }
@@ -1094,7 +1094,8 @@ struct LowerPTOToUBufOpsPass
                 i64c8(loc, builder), i64c8(loc, builder));
             builder.create<pto::BarrierOp>(loc, pipeV);
             builder.create<pto::UBVgatherOp>(
-                loc, dstRow, tmpRow, srcAddr, i64c(8, loc, builder),
+                loc, dstRow, tmpRow, srcAddr,
+                i64c(mlir::pto::kValue8, loc, builder),
                 i64c1(loc, builder));
           }
         }
