@@ -166,6 +166,61 @@ isFragmentActiveInSection(const PersistentFragmentAnalysis &fragment,
   });
 }
 
+// Checks one element's access lanes against the analysis plan and records
+// the operation-owned lane mapping.
+static LogicalResult
+validateWorklistElement(const PersistentFragmentAnalysis &fragment,
+                        const ResidentElementPlan &expectedElement,
+                        const PersistentElementWorkItem &element,
+                        unsigned expectedElementIndex,
+                        pto::SectionSimtOp section,
+                        PersistentSectionWorklist &sectionWorklist,
+                        llvm::DenseMap<Operation *, llvm::DenseSet<unsigned>>
+                            &assignedAccessLanes) {
+  const ResidentElementPlan &residentElement = *element.residentElement;
+
+  for (const AccessLane &accessLane : element.accesses) {
+    if (!accessLane.op) {
+      LLVM::AllocaOp allocaOp = fragment.allocaOp;
+      return allocaOp.emitOpError(
+          "persistent fragment worklist contains a null access "
+          "operation");
+    }
+
+    bool isOwnedAccess = llvm::any_of(
+        residentElement.accesses, [&](const AccessLane &candidate) {
+          return candidate.op == accessLane.op &&
+                 candidate.laneIndex == accessLane.laneIndex;
+        });
+    if (!isOwnedAccess) {
+      return accessLane.op->emitOpError(
+          "persistent fragment worklist access lane is owned by a "
+          "different resident element");
+    }
+
+    pto::SectionSimtOp accessSection =
+        accessLane.op->getParentOfType<pto::SectionSimtOp>();
+    if (accessSection != section ||
+        accessLane.op->getBlock() != &section.getBody().front()) {
+      return accessLane.op->emitOpError(
+          "persistent fragment access does not belong to its planned "
+          "SIMT section body");
+    }
+    if (!assignedAccessLanes[accessLane.op]
+             .insert(accessLane.laneIndex)
+             .second) {
+      return accessLane.op->emitOpError(
+          "persistent fragment access lane was assigned to more than one "
+          "transform work item");
+    }
+    // Invert the element-owned access into an operation-owned lane mapping.
+    // elementIndex selects this lane's scalar proxy from elementRewrites.
+    sectionWorklist.laneRewritesByAccess[accessLane.op].push_back(
+        {accessLane.laneIndex, expectedElementIndex});
+  }
+  return success();
+}
+
 // Build and validate all section-local rewrite bindings before touching IR.
 // The analysis result already fixes each fragment's init/carry lifetime. This
 // check only verifies that the temporary worklist faithfully materializes that
@@ -207,46 +262,11 @@ validateSectionWorklist(const PersistentMaterializationPlan &plan,
             "and resident element order");
       }
 
-      const ResidentElementPlan &residentElement = *element.residentElement;
-
-      for (const AccessLane &accessLane : element.accesses) {
-        if (!accessLane.op) {
-          LLVM::AllocaOp allocaOp = fragment.allocaOp;
-          return allocaOp.emitOpError(
-              "persistent fragment worklist contains a null access "
-              "operation");
-        }
-
-        bool isOwnedAccess = llvm::any_of(
-            residentElement.accesses, [&](const AccessLane &candidate) {
-              return candidate.op == accessLane.op &&
-                     candidate.laneIndex == accessLane.laneIndex;
-            });
-        if (!isOwnedAccess) {
-          return accessLane.op->emitOpError(
-              "persistent fragment worklist access lane is owned by a "
-              "different resident element");
-        }
-
-        pto::SectionSimtOp accessSection =
-            accessLane.op->getParentOfType<pto::SectionSimtOp>();
-        if (accessSection != section ||
-            accessLane.op->getBlock() != &section.getBody().front()) {
-          return accessLane.op->emitOpError(
-              "persistent fragment access does not belong to its planned "
-              "SIMT section body");
-        }
-        if (!assignedAccessLanes[accessLane.op]
-                 .insert(accessLane.laneIndex)
-                 .second) {
-          return accessLane.op->emitOpError(
-              "persistent fragment access lane was assigned to more than one "
-              "transform work item");
-        }
-        // Invert the element-owned access into an operation-owned lane mapping.
-        // elementIndex selects this lane's scalar proxy from elementRewrites.
-        sectionWorklist.laneRewritesByAccess[accessLane.op].push_back(
-            {accessLane.laneIndex, expectedElementIndex});
+      if (failed(validateWorklistElement(fragment, expectedElement, element,
+                                          expectedElementIndex, section,
+                                          sectionWorklist,
+                                          assignedAccessLanes))) {
+        return failure();
       }
 
       ++expectedElementIndex;
@@ -260,6 +280,59 @@ validateSectionWorklist(const PersistentMaterializationPlan &plan,
   }
 
   return validateAccessRewritePlan(sectionWorklist.laneRewritesByAccess);
+}
+
+// Appends one fragment's complete resident set (section-local accesses only)
+// to one section worklist.
+static LogicalResult
+appendFragmentToSection(const PersistentFragmentAnalysis &fragment,
+                        pto::SectionSimtOp section,
+                        PersistentSectionWorklist &sectionWorklist) {
+  for (const ResidentElementPlan &residentElement :
+       fragment.residentElements) {
+    SmallVector<AccessLane> localAccesses;
+    for (const AccessLane &accessLane : residentElement.accesses) {
+      pto::SectionSimtOp accessSection =
+          accessLane.op
+              ? accessLane.op->getParentOfType<pto::SectionSimtOp>()
+              : pto::SectionSimtOp();
+      if (accessSection == section) {
+        localAccesses.push_back(accessLane);
+      }
+    }
+    sectionWorklist.elements.push_back(
+        {&fragment, &residentElement, std::move(localAccesses)});
+  }
+  return success();
+}
+
+// Verifies that every access lane in the plan was assigned to exactly one
+// transform work item.
+static LogicalResult checkAllAccessLanesAssigned(
+    const PersistentMaterializationPlan &plan,
+    const llvm::DenseMap<Operation *, llvm::DenseSet<unsigned>>
+        &assignedAccessLanes) {
+  for (const PersistentFragmentAnalysis &fragment : plan.fragments) {
+    for (const ResidentElementPlan &element : fragment.residentElements) {
+      for (const AccessLane &accessLane : element.accesses) {
+        if (!accessLane.op) {
+          LLVM::AllocaOp allocaOp = fragment.allocaOp;
+          return allocaOp.emitOpError(
+              "persistent fragment analysis contains a null access "
+              "operation");
+        }
+        auto assignedIt = assignedAccessLanes.find(accessLane.op);
+        if (assignedIt == assignedAccessLanes.end() ||
+            !assignedIt->second.contains(accessLane.laneIndex)) {
+          accessLane.op->emitOpError(
+              "persistent fragment access lane was not assigned to a "
+              "transform work item");
+          return failure();
+        }
+      }
+    }
+  }
+  return success();
 }
 
 // Construct the complete transform worklist. No operation insertion, erase,
@@ -308,24 +381,7 @@ buildPersistentTransformWorklist(const PersistentMaterializationPlan &plan,
         return allocaOp.emitOpError(
             "persistent fragment init/carry section is not in the plan");
       }
-
-      PersistentSectionWorklist &sectionWorklist = *sectionIt->second;
-      for (const ResidentElementPlan &residentElement :
-           fragment.residentElements) {
-        SmallVector<AccessLane> localAccesses;
-        for (const AccessLane &accessLane : residentElement.accesses) {
-          pto::SectionSimtOp accessSection =
-              accessLane.op
-                  ? accessLane.op->getParentOfType<pto::SectionSimtOp>()
-                  : pto::SectionSimtOp();
-if (accessSection == section) {
-          localAccesses.push_back(accessLane);
-        }
-        }
-        sectionWorklist.elements.push_back(
-            {&fragment, &residentElement, std::move(localAccesses)});
-      }
-      return success();
+      return appendFragmentToSection(fragment, section, *sectionIt->second);
     };
     if (failed(addToSection(fragment.initSection))) {
       return failure();
@@ -345,27 +401,7 @@ if (accessSection == section) {
     }
   }
 
-  for (const PersistentFragmentAnalysis &fragment : plan.fragments) {
-    for (const ResidentElementPlan &element : fragment.residentElements) {
-      for (const AccessLane &accessLane : element.accesses) {
-        if (!accessLane.op) {
-          LLVM::AllocaOp allocaOp = fragment.allocaOp;
-          return allocaOp.emitOpError(
-              "persistent fragment analysis contains a null access "
-              "operation");
-        }
-        auto assignedIt = assignedAccessLanes.find(accessLane.op);
-        if (assignedIt == assignedAccessLanes.end() ||
-            !assignedIt->second.contains(accessLane.laneIndex)) {
-          accessLane.op->emitOpError(
-              "persistent fragment access lane was not assigned to a "
-              "transform work item");
-          return failure();
-        }
-      }
-    }
-  }
-  return success();
+  return checkAllAccessLanesAssigned(plan, assignedAccessLanes);
 }
 
 // Rewrite one analyzed access against its section-local scalar proxies.
@@ -420,31 +456,19 @@ static LogicalResult rewritePersistentAccess(
   return success();
 }
 
-// Materialize all active persistent elements in one inline SIMT section.
-static LogicalResult
-materializeSection(const PersistentSectionWorklist &sectionWorklist,
-                   const DataLayout &dataLayout, DominanceInfo &dominance) {
+// Emits the resume prologue and scalar proxies at the section entry, one
+// rewrite record per element.
+static Value buildSectionEntryRewrites(
+    const PersistentSectionWorklist &sectionWorklist, OpBuilder &entryBuilder,
+    SmallVectorImpl<PersistentElementRewrite> &rewrites) {
   const auto &elements = sectionWorklist.elements;
-  if (elements.empty()) {
-    return success();
-  }
-
   pto::SectionSimtOp section = sectionWorklist.section;
-  Block &body = section.getBody().front();
-  SmallVector<PersistentElementRewrite> rewrites(elements.size());
 
-  // The section-local access/lane bindings were completely validated before
-  // the first section was modified.
-  const auto &laneRewritesByAccess = sectionWorklist.laneRewritesByAccess;
-
-  OpBuilder entryBuilder(section.getContext());
-  entryBuilder.setInsertionPointToStart(&body);
-
-  bool hasLocalAccess = !laneRewritesByAccess.empty();
+  bool hasLocalAccess = !sectionWorklist.laneRewritesByAccess.empty();
   Value proxyArraySize;
   if (hasLocalAccess) {
-    proxyArraySize = entryBuilder.create<arith::ConstantIntOp>(section.getLoc(),
-                                                               1, /*width=*/mlir::pto::kValue32);
+    proxyArraySize = entryBuilder.create<arith::ConstantIntOp>(
+        section.getLoc(), 1, /*width=*/mlir::pto::kValue32);
   }
 
   // Emit the complete resume prologue before proxy setup so the group remains
@@ -487,9 +511,18 @@ materializeSection(const PersistentSectionWorklist &sectionWorklist,
           elementLoc, rewrites[elementIndex].resumeValue, proxy.getRes());
     }
   }
+  return proxyArraySize;
+}
 
-  // Rewrite original accesses only after every section-local proxy exists.
-  // Block order gives vector scalarization a stable operation-level traversal.
+// Rewrites the section's original accesses against the scalar proxies.
+// Block order gives vector scalarization a stable operation-level traversal.
+static LogicalResult rewriteSectionAccesses(
+    const PersistentSectionWorklist &sectionWorklist,
+    MutableArrayRef<PersistentElementRewrite> rewrites) {
+  pto::SectionSimtOp section = sectionWorklist.section;
+  Block &body = section.getBody().front();
+  const auto &laneRewritesByAccess = sectionWorklist.laneRewritesByAccess;
+
   size_t rewrittenAccessCount = 0;
   for (Operation &op : llvm::make_early_inc_range(body)) {
     auto accessIt = laneRewritesByAccess.find(&op);
@@ -505,9 +538,15 @@ materializeSection(const PersistentSectionWorklist &sectionWorklist,
     return section.emitOpError(
         "failed to rewrite every persistent fragment access in block order");
   }
+  return success();
+}
 
-  OpBuilder exitBuilder(section.getContext());
-  exitBuilder.setInsertionPointToEnd(&body);
+// Emits the keep epilogue carrying each element's outgoing value.
+static void emitSectionKeepEpilogue(
+    const PersistentSectionWorklist &sectionWorklist,
+    ArrayRef<PersistentElementRewrite> rewrites, OpBuilder &exitBuilder) {
+  const auto &elements = sectionWorklist.elements;
+  pto::SectionSimtOp section = sectionWorklist.section;
 
   // Compute every outgoing value before emitting keeps so the keep epilogue is
   // one contiguous group.
@@ -516,11 +555,11 @@ materializeSection(const PersistentSectionWorklist &sectionWorklist,
   for (auto [elementIndex, element] : llvm::enumerate(elements)) {
     const PersistentFragmentAnalysis &fragment = *element.fragment;
     LLVM::AllocaOp allocaOp = fragment.allocaOp;
-    if (rewrites[elementIndex].proxy) {
+    if (LLVM::AllocaOp proxy = rewrites[elementIndex].proxy) {
       keepPayloads.push_back(
           exitBuilder
               .create<LLVM::LoadOp>(section.getLoc(), allocaOp.getElemType(),
-                                    rewrites[elementIndex].proxy.getRes())
+                                    proxy.getRes())
               .getResult());
       continue;
     }
@@ -534,9 +573,18 @@ materializeSection(const PersistentSectionWorklist &sectionWorklist,
     exitBuilder.create<pto::KeepOp>(
         section.getLoc(), payload, static_cast<uint64_t>(residentElement.slot));
   }
+}
 
-  // Promote each proxy independently so success guarantees that this specific
-  // temporary allocation and all of its memory traffic were eliminated.
+// Promotes each proxy independently so success guarantees that this specific
+// temporary allocation and all of its memory traffic were eliminated.
+static LogicalResult
+promoteSectionProxies(const PersistentSectionWorklist &sectionWorklist,
+                      ArrayRef<PersistentElementRewrite> rewrites,
+                      const DataLayout &dataLayout, DominanceInfo &dominance) {
+  const auto &elements = sectionWorklist.elements;
+  pto::SectionSimtOp section = sectionWorklist.section;
+  Block &body = section.getBody().front();
+
   OpBuilder promotionBuilder(section.getContext());
   promotionBuilder.setInsertionPointToStart(&body);
   for (auto [elementIndex, element] : llvm::enumerate(elements)) {
@@ -553,6 +601,39 @@ materializeSection(const PersistentSectionWorklist &sectionWorklist,
                 "element offset "
              << element.residentElement->elementOffset;
     }
+  }
+  return success();
+}
+
+// Materialize all active persistent elements in one inline SIMT section.
+static LogicalResult
+materializeSection(const PersistentSectionWorklist &sectionWorklist,
+                   const DataLayout &dataLayout, DominanceInfo &dominance) {
+  const auto &elements = sectionWorklist.elements;
+  if (elements.empty()) {
+    return success();
+  }
+
+  pto::SectionSimtOp section = sectionWorklist.section;
+  Block &body = section.getBody().front();
+  SmallVector<PersistentElementRewrite> rewrites(elements.size());
+
+  OpBuilder entryBuilder(section.getContext());
+  entryBuilder.setInsertionPointToStart(&body);
+  Value proxyArraySize =
+      buildSectionEntryRewrites(sectionWorklist, entryBuilder, rewrites);
+
+  if (failed(rewriteSectionAccesses(sectionWorklist, rewrites))) {
+    return failure();
+  }
+
+  OpBuilder exitBuilder(section.getContext());
+  exitBuilder.setInsertionPointToEnd(&body);
+  emitSectionKeepEpilogue(sectionWorklist, rewrites, exitBuilder);
+
+  if (failed(promoteSectionProxies(sectionWorklist, rewrites, dataLayout,
+                                   dominance))) {
+    return failure();
   }
 
   if (proxyArraySize && proxyArraySize.use_empty()) {
