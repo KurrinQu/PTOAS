@@ -773,7 +773,8 @@ static bool tcvtNeedsTmp(pto::TCvtOp op) {
   Type dstElem = dstTy.getElementType();
   return (srcElem.isF32() && dstElem.isInteger(mlir::pto::kValue16)) ||
          (srcElem.isF16() &&
-          (dstElem.isInteger(mlir::pto::kValue16) || dstElem.isInteger(8)));
+          (dstElem.isInteger(mlir::pto::kValue16) ||
+           dstElem.isInteger(mlir::pto::kValue8)));
 }
 
 static FailureOr<pto::TileBufType> makeTCvtTmpType(MLIRContext *ctx,

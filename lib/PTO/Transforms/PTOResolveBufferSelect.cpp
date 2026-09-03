@@ -50,6 +50,8 @@ constexpr int64_t kSFractal512 = 512;
 constexpr int64_t kSFractal32 = 32;
 constexpr int64_t kFractalInnerDimension = 16;
 constexpr int64_t kSFractal32InnerColumnCount = 2;
+// SLayout::RowMajor value, the only fractal sub-layout handled below.
+constexpr int32_t kFractalSlayoutRowMajor = 2;
 constexpr uint64_t kCubeTileAddressAlignmentBytes = 512;
 constexpr uint64_t kVectorTileAddressAlignmentBytes = 32;
 constexpr unsigned kI64BitWidth = 64;
@@ -112,7 +114,7 @@ static bool getTilePointerStrides(pto::TileBufType type, int64_t &rowStride,
   } else if (fractal == kSFractal512 && sl == 1) {
     innerRows = kFractalInnerDimension;
     innerCols = kSFractal32 / elemBytes;
-  } else if (fractal == kSFractal512 && sl == 2) {
+  } else if (fractal == kSFractal512 && sl == kFractalSlayoutRowMajor) {
     innerRows = kSFractal32 / elemBytes;
     innerCols = kFractalInnerDimension;
   } else {
