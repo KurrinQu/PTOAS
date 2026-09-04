@@ -1,4 +1,4 @@
-name: PR-pipeline_pto-as
+name: PR-pipeline_cann_pto-as
 
 concurrency:
   max: 15
