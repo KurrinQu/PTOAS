@@ -271,8 +271,11 @@ install(
 # Online-compilation fallback: ship the version-sensitive `_core` as source +
 # a self-contained header closure + a standalone CMakeLists, so a matching
 # extension can be compiled at first import against the shipped, Python-
-# independent libPTOASCompiler DSO. The prebuilt abi3 `_core` above stays the
-# fast path; this is only the fallback for non-matching interpreters.
+# independent libPTOASCompiler DSO. The prebuilt `_core` above stays the fast
+# path; this is only the fallback for non-matching interpreters. The online
+# `_core` is full-featured (main / TileLib / SoftLib), NOT dialect-only: it
+# forward-declares runPTOAS and links the shipped DSO, sharing the same real
+# LLVM/MLIR C++ header closure (mlir_include/) as the pybind11 family below.
 # ---------------------------------------------------------------------------
 option(PTOAS_ENABLE_ONLINE_CORE_COMPILE
   "Ship ptoas._core sources + header closure for runtime online compilation" OFF)
@@ -280,13 +283,15 @@ option(PTOAS_ENABLE_ONLINE_CORE_COMPILE
 if(PTOAS_ENABLE_ONLINE_CORE_COMPILE)
   set(_ptoas_online_dst "ptoas/_online")
 
-  # 1. The C-API-only dialect binding TU, its dialect-only module entry, and the
-  #    shared PTOModule.h header. Both .cpp files `#include "PTOModule.h"`, so it
-  #    is staged next to them (quote-include resolves within src/).
+  # 1. The PTO dialect binding TU, the full-featured module entry (NativeModule.cpp,
+  #    compiled with PTOAS_ONLINE_BUILD so it forward-declares runPTOAS instead of
+  #    pulling the heavy ptoas.h driver closure), and the shared PTOModule.h header.
+  #    All .cpp files `#include "PTOModule.h"`, so it is staged next to them
+  #    (quote-include resolves within src/).
   install(FILES
       "${CMAKE_SOURCE_DIR}/lib/Bindings/Python/PTOModule.cpp"
       "${CMAKE_SOURCE_DIR}/lib/Bindings/Python/PTOModule.h"
-      "${CMAKE_CURRENT_SOURCE_DIR}/NativeModuleOnline.cpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/NativeModule.cpp"
     DESTINATION "${_ptoas_online_dst}/src"
     COMPONENT PTOAS_Python)
 
@@ -296,42 +301,110 @@ if(PTOAS_ENABLE_ONLINE_CORE_COMPILE)
     DESTINATION "${_ptoas_online_dst}"
     COMPONENT PTOAS_Python)
 
-  # 3. Project C-API headers.
+  # 3. Repo-owned project headers included by the _core TUs (PTOModule.cpp pulls
+  #    pto-c/Dialect/*; NativeModule.cpp pulls PTO/Transforms/*Service.h and
+  #    PTO/Support/CodeConstants.h). Staged under repo_include/ preserving their
+  #    include subpath. _core reuses the real LLVM/MLIR C++ closure staged under
+  #    mlir_include/ (item 9), the SAME tree the pybind11 family uses -- there is
+  #    no separate patched PybindAdaptors.h / minimal mlir-c list for _core.
   install(FILES
       "${CMAKE_SOURCE_DIR}/include/pto-c/Dialect/PTO.h"
       "${CMAKE_SOURCE_DIR}/include/pto-c/Dialect/PTOEnums.h"
-    DESTINATION "${_ptoas_online_dst}/include/pto-c/Dialect"
+    DESTINATION "${_ptoas_online_dst}/repo_include/pto-c/Dialect"
     COMPONENT PTOAS_Python)
-
-  # 4. Twine-free patched copy of PybindAdaptors.h (keeps the closure to
-  #    mlir-c/* + pto-c/* + pybind11 + Python.h, no LLVM C++ ADT tree).
   install(FILES
-      "${CMAKE_CURRENT_SOURCE_DIR}/online_include/mlir/Bindings/Python/PybindAdaptors.h"
-    DESTINATION "${_ptoas_online_dst}/include/mlir/Bindings/Python"
+      "${CMAKE_SOURCE_DIR}/include/PTO/Transforms/TileLibService.h"
+      "${CMAKE_SOURCE_DIR}/include/PTO/Transforms/SoftLibService.h"
+    DESTINATION "${_ptoas_online_dst}/repo_include/PTO/Transforms"
+    COMPONENT PTOAS_Python)
+  install(FILES
+      "${CMAKE_SOURCE_DIR}/include/PTO/Support/CodeConstants.h"
+    DESTINATION "${_ptoas_online_dst}/repo_include/PTO/Support"
     COMPONENT PTOAS_Python)
 
-  # 5. mlir-c header closure + the generated mlir-config.h, resolved from the
-  #    MLIR include dirs (source tree for mlir-c/*, build tree for
-  #    mlir/Config/mlir-config.h). This list is the exact transitive closure of
-  #    PTOModule.cpp under PTOAS_ONLINE_BUILD; adding an include there means
-  #    extending this list.
-  set(_ptoas_online_mlir_headers
-      mlir-c/AffineExpr.h
-      mlir-c/AffineMap.h
-      mlir-c/Bindings/Python/Interop.h
-      mlir-c/BuiltinAttributes.h
-      mlir-c/BuiltinTypes.h
-      mlir-c/Diagnostics.h
-      mlir-c/ExecutionEngine.h
-      mlir-c/IntegerSet.h
-      mlir-c/IR.h
-      mlir-c/Pass.h
-      mlir-c/Rewrite.h
-      mlir-c/Support.h
-      mlir/Config/mlir-config.h)
-  foreach(_hdr IN LISTS _ptoas_online_mlir_headers)
+  # ---------------------------------------------------------------------------
+  # Family extensions: _mlir (core), _mlirDialectsLLVM, _site_initialize_0.
+  # These are the genuine upstream pybind11 wrappers; like the full-featured
+  # `_core` they need the real PybindAdaptors.h and the full LLVM/MLIR C++ header
+  # closure. Their private sibling headers are staged under `src/mlir`; the
+  # shared real C++ header closure is staged under `mlir_include` (item 9) and is
+  # consumed by BOTH the family and `_core`.
+  # ---------------------------------------------------------------------------
+
+  # 6. Locate the MLIR C++ source tree that ships the python-binding TUs. Derive
+  #    it from the include dir that holds the C++ PybindAdaptors.h (the source
+  #    include root), then strip `/include` -> `<mlir_src>` -> lib/Bindings/Python.
+  set(_ptoas_mlir_src_root "")
+  foreach(_inc IN LISTS MLIR_INCLUDE_DIRS)
+    if(EXISTS "${_inc}/mlir/Bindings/Python/PybindAdaptors.h")
+      get_filename_component(_ptoas_mlir_src_root "${_inc}" DIRECTORY)
+      break()
+    endif()
+  endforeach()
+  if(NOT _ptoas_mlir_src_root)
+    message(FATAL_ERROR
+      "PTOAS_ENABLE_ONLINE_CORE_COMPILE: cannot locate the MLIR source include "
+      "holding mlir/Bindings/Python/PybindAdaptors.h in "
+      "MLIR_INCLUDE_DIRS='${MLIR_INCLUDE_DIRS}'")
+  endif()
+  set(_ptoas_mlir_py_src "${_ptoas_mlir_src_root}/lib/Bindings/Python")
+
+  # 7. Stage the _mlir core TUs (9 .cpp) + their private sibling headers (5 .h,
+  #    quote-included so they must sit next to the .cpp) + the DialectLLVM TU.
+  set(_ptoas_mlir_family_srcs
+      MainModule.cpp
+      IRAffine.cpp
+      IRAttributes.cpp
+      IRCore.cpp
+      IRInterfaces.cpp
+      IRModule.cpp
+      IRTypes.cpp
+      Pass.cpp
+      Rewrite.cpp
+      Globals.h
+      IRModule.h
+      Pass.h
+      PybindUtils.h
+      Rewrite.h
+      DialectLLVM.cpp)
+  set(_ptoas_mlir_family_paths "")
+  foreach(_f IN LISTS _ptoas_mlir_family_srcs)
+    if(NOT EXISTS "${_ptoas_mlir_py_src}/${_f}")
+      message(FATAL_ERROR
+        "PTOAS_ENABLE_ONLINE_CORE_COMPILE: missing MLIR python source "
+        "'${_ptoas_mlir_py_src}/${_f}'")
+    endif()
+    list(APPEND _ptoas_mlir_family_paths "${_ptoas_mlir_py_src}/${_f}")
+  endforeach()
+  install(FILES ${_ptoas_mlir_family_paths}
+    DESTINATION "${_ptoas_online_dst}/src/mlir"
+    COMPONENT PTOAS_Python)
+
+  # 8. Our site-initializer TU (registers the selected upstream dialects). Lives
+  #    in the PTOAS repo, staged alongside the upstream family sources.
+  install(FILES
+      "${CMAKE_SOURCE_DIR}/lib/Bindings/Python/PythonRegistration.cpp"
+    DESTINATION "${_ptoas_online_dst}/src/mlir"
+    COMPONENT PTOAS_Python)
+
+  # 9. Full LLVM/MLIR C++ header closure, driven by the frozen manifest under
+  #    online_manifest/. Regenerate the manifest on an LLVM upgrade with
+  #    online_manifest/gen_mlir_family_headers.sh. Blank/`#` lines are skipped.
+  set(_ptoas_family_manifest
+      "${CMAKE_CURRENT_SOURCE_DIR}/online_manifest/mlir_family_headers.manifest")
+  if(NOT EXISTS "${_ptoas_family_manifest}")
+    message(FATAL_ERROR
+      "PTOAS_ENABLE_ONLINE_CORE_COMPILE: missing header manifest "
+      "'${_ptoas_family_manifest}'")
+  endif()
+  file(STRINGS "${_ptoas_family_manifest}" _ptoas_family_headers)
+  foreach(_hdr IN LISTS _ptoas_family_headers)
+    string(STRIP "${_hdr}" _hdr)
+    if(_hdr STREQUAL "" OR _hdr MATCHES "^#")
+      continue()
+    endif()
     set(_ptoas_found "")
-    foreach(_inc IN LISTS MLIR_INCLUDE_DIRS)
+    foreach(_inc IN LISTS MLIR_INCLUDE_DIRS LLVM_INCLUDE_DIRS)
       if(EXISTS "${_inc}/${_hdr}")
         set(_ptoas_found "${_inc}/${_hdr}")
         break()
@@ -339,13 +412,54 @@ if(PTOAS_ENABLE_ONLINE_CORE_COMPILE)
     endforeach()
     if(NOT _ptoas_found)
       message(FATAL_ERROR
-        "PTOAS_ENABLE_ONLINE_CORE_COMPILE: required header '${_hdr}' not found "
-        "in MLIR_INCLUDE_DIRS='${MLIR_INCLUDE_DIRS}'")
+        "PTOAS_ENABLE_ONLINE_CORE_COMPILE: manifest header '${_hdr}' not found "
+        "in MLIR_INCLUDE_DIRS/LLVM_INCLUDE_DIRS")
     endif()
     get_filename_component(_ptoas_hdr_subdir "${_hdr}" DIRECTORY)
     install(FILES "${_ptoas_found}"
-      DESTINATION "${_ptoas_online_dst}/include/${_ptoas_hdr_subdir}"
+      DESTINATION "${_ptoas_online_dst}/mlir_include/${_ptoas_hdr_subdir}"
       COMPONENT PTOAS_Python)
+  endforeach()
+
+  # 10. Ship the shared LLVMSupport (+ its Demangle dependency) that the family
+  #     extensions dynamically link. The prebuilt libPTOASCompiler DSO exports
+  #     only C-API symbols, so these C++ symbols must travel as their own DSOs
+  #     next to it in ptoas/mlir/_mlir_libs. Requires an LLVM built with shared
+  #     libraries (BUILD_SHARED_LIBS / LLVM_BUILD_LLVM_DYLIB).
+  set(_ptoas_llvm_shared_libs LLVMSupport LLVMDemangle)
+  foreach(_lib IN LISTS _ptoas_llvm_shared_libs)
+    set(_ptoas_lib_link
+        "${LLVM_LIBRARY_DIR}/${CMAKE_SHARED_LIBRARY_PREFIX}${_lib}${CMAKE_SHARED_LIBRARY_SUFFIX}")
+    if(NOT EXISTS "${_ptoas_lib_link}")
+      message(FATAL_ERROR
+        "PTOAS_ENABLE_ONLINE_CORE_COMPILE: shared '${_lib}' not found at "
+        "'${_ptoas_lib_link}'. Build LLVM with shared libraries so the online "
+        "mlir family can link it.")
+    endif()
+    # `${_ptoas_lib_link}` is the unversioned dev symlink (e.g.
+    # libLLVMSupport.so -> libLLVMSupport.so.19.1). `install(FILES)` on it
+    # dereferences the symlink but keeps the *unversioned* name, so the shipped
+    # file is `libLLVMSupport.so` while its embedded SONAME stays
+    # `libLLVMSupport.so.19.1`. A dependent linked by full path records
+    # DT_NEEDED = SONAME, so at load time the dynamic loader searches its rpath
+    # for `libLLVMSupport.so.19.1` -- a name that does not exist on disk -- and
+    # the load only succeeds because the Python loader happens to have preloaded
+    # the file with RTLD_GLOBAL first (a mere warning on failure). Ship the file
+    # under its real SONAME'd name instead so rpath resolution works on its own,
+    # and recreate the unversioned symlink for name-based `-lLLVMSupport`.
+    get_filename_component(_ptoas_lib_real "${_ptoas_lib_link}" REALPATH)
+    get_filename_component(_ptoas_lib_soname "${_ptoas_lib_real}" NAME)
+    get_filename_component(_ptoas_lib_linkname "${_ptoas_lib_link}" NAME)
+    install(FILES "${_ptoas_lib_real}"
+      DESTINATION "ptoas/mlir/_mlir_libs"
+      COMPONENT PTOAS_Python)
+    if(NOT _ptoas_lib_soname STREQUAL _ptoas_lib_linkname)
+      install(CODE
+        "execute_process(COMMAND \"\${CMAKE_COMMAND}\" -E create_symlink \
+          \"${_ptoas_lib_soname}\" \
+          \"\${CMAKE_INSTALL_PREFIX}/ptoas/mlir/_mlir_libs/${_ptoas_lib_linkname}\")"
+        COMPONENT PTOAS_Python)
+    endif()
   endforeach()
 endif()
 

@@ -17,6 +17,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "PTOModule.h"
 #include "mlir-c/BuiltinAttributes.h"
 #include "mlir-c/BuiltinTypes.h"
 #include "mlir-c/IR.h"
@@ -25,10 +26,6 @@
 #include "pto-c/Dialect/PTOEnums.h"
 #include "pybind11/stl.h"
 #include "mlir/Bindings/Python/PybindAdaptors.h"
-#include "mlir/CAPI/IR.h"
-#include "mlir/IR/BuiltinTypes.h"
-#include "PTO/IR/PTO.h"
-#include "PTOModule.h"
 
 namespace py = pybind11;
 using namespace mlir::python::adaptors;

@@ -935,6 +935,7 @@ stage_ptoas_wheel() {
     "${python_bin}" -m pip wheel "${BASE_PATH}" \
       "${wheel_feature_args[@]}" \
       --config-settings=wheel.py-api=cp37 \
+      --config-settings=cmake.define.PTOAS_ENABLE_ONLINE_CORE_COMPILE=ON \
       --no-build-isolation \
       --no-deps \
       --wheel-dir "${wheel_dist}"
@@ -1009,14 +1010,10 @@ package() {
   # default to the packaging version and allow an explicit override.
   PTOAS_PACKAGE_VERSION="${PTOAS_PACKAGE_VERSION:-9.2.0}"
 
-  # The placeholder package intentionally does not invoke pip/auditwheel.  The
-  # native build above is still performed, and CMake/CPack owns generation of
-  # the same .run/RPM/DEB package formats.  Keep the old wheel path available
-  # behind an explicit opt-in for local release builds.
-  rm -rf "${BUILD_OUT_PATH}"
-  mkdir -p "${BUILD_OUT_PATH}"
   # Build and repair the wheel first, then reconfigure with its absolute path
   # so CMake/CPack owns run, RPM, and DEB payload generation uniformly.
+  rm -rf "${BUILD_OUT_PATH}"
+  mkdir -p "${BUILD_OUT_PATH}"
   stage_ptoas_wheel
   ENABLE_PACKAGE=TRUE
   configure_ptoas

@@ -184,6 +184,29 @@ from ptoas.mlir.dialects import pto as mlir_pto
 > - `ptoas-bin-*.tar.gz` 这类 compiler-only 二进制 tarball 只提供 CLI/toolchain，
 >   **不是** PTODSL-capable Python distribution；仅解压 tarball 不能保证
 >   `import ptodsl` 可用。
+> - **跨 Python 版本**：wheel 内的四个版本敏感 pybind11 扩展（`ptoas._core` 与
+>   `ptoas.mlir` 家族的 `_mlir`、`_mlirDialectsLLVM`、`_site_initialize_0`）按
+>   构建时的解释器 ABI 打 tag。在 ABI 匹配的解释器上直接加载预编译产物；在不
+>   匹配的解释器上，首次 `import ptodsl`/`import ptoas.mlir.*` 会由 `sys.meta_path`
+>   finder 触发一次在线 CMake 重编（针对随包发的版本无关 `libPTOASCompiler` +
+>   共享 `libLLVMSupport`），耗时数十秒并缓存到包目录或 `~/.cache/cann/ptoas/<ver>`，
+>   之后二次导入直接命中缓存。在线编出的 `ptoas._core` 是**全功能**（含 `main`
+>   与 TileLib/SoftLib 桥），并非仅 dialect，因此 `ptoas` CLI（如
+>   `ptoas --version`、编译）在 ABI 不匹配的解释器上同样可用。此路径要求 wheel 以
+>   `PTOAS_ENABLE_ONLINE_CORE_COMPILE=ON` 构建（`build.sh` 默认开启，并以 shared
+>   方式产出 `libLLVMSupport`），且目标机上有系统级 `cmake`、`python3-dev` 头与
+>   合适版本的 `pybind11`。具体版本约束：
+>   - **Python**：在线编译驱动要求解释器 **>= 3.9**（更低版本会直接报错）。
+>   - **pybind11（`ptoas._core`）**：**>= 2.13.6**，不限上界，任意 3.x 均可。
+>   - **pybind11（`ptoas.mlir` 家族）**：`2.13.6 <= pybind11 < 3.0.2`。自 3.0.2 起
+>     `def_property` 系列禁用 `keep_alive`，上游 MLIR 绑定因此无法编译；家族因而
+>     不会被自动重编，但仅用 CLI（`_core`）不受影响。
+>   - **Python 3.14**：需要 `pybind11 >= 3.0.0`，与家族上界叠加后，3.14 上家族的
+>     可用窗口仅为 **3.0.0 / 3.0.1**；若目标机只需 `ptoas` CLI（`_core`），则
+>     3.14 上任意 `>= 3.0.0` 的 pybind11 均可。
+>   注意：上面 3.2 的 `pybind11<3` 约束针对的是**从源码构建** LLVM/MLIR 与 PTOAS
+>   的构建机（该场景解释器固定，家族必须能编译）；此处是**目标机在线重编**的运行
+>   期约束，两者场景不同，不要混淆。
 > - release tag 约定：`ptoas-vX.Y` 发布主工具链，`vmi-vA.B.C` 发布
 >   `ptoas-vmi` distribution。创建 VMI release tag 前，应通过发布 PR 将
 >   `packaging/ptoas-vmi/pyproject.toml.patch` 中的版本更新为相同的 `A.B.C`。

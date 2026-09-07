@@ -7,72 +7,244 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 # -----------------------------------------------------------------------------------------------------------
-"""Acquire the ``ptoas._core`` native module.
+"""Acquire the version-sensitive native pybind11 extensions.
 
-Fast path: import the prebuilt abi3 ``_core`` shipped in the wheel. Fallback: on
-ImportError (interpreter/ABI mismatch), compile a matching ``_core`` online from
-the shipped sources under ``ptoas/_online/`` and load it from the build cache.
+Four extensions are shipped prebuilt in the wheel but cannot be abi3 (pybind11 is
+interpreter-specific): ``ptoas._core`` and the ``ptoas.mlir`` family (``_mlir``,
+``_mlirDialectsLLVM``, ``_site_initialize_0``). On a matching interpreter the
+prebuilt binaries load directly (fast path). On a mismatching interpreter a
+``sys.meta_path`` finder redirects those imports to an online CMake build of the
+whole family (see ``_build_online``) and serves the freshly built binaries from
+the build cache.
 
-For the cache case the online ``_core`` lives outside the package dir, so its
-``$ORIGIN`` rpath does NOT point at the shipped ``libPTOASCompiler`` DSO. We
-therefore preload the DSO with ``RTLD_GLOBAL`` first so ``_core`` resolves the
-compiler symbols regardless of where it was cached.
+The online binaries live outside the package dir, so their ``$ORIGIN`` rpath does
+NOT point at the shipped ``libPTOASCompiler`` / ``libLLVMSupport`` DSOs. We
+therefore preload those with ``RTLD_GLOBAL`` first so the extensions resolve the
+compiler and LLVM support symbols regardless of where they were cached.
 """
 
 import ctypes
+import importlib.machinery
+import importlib.util
 import logging
 from pathlib import Path
+import sys
 import threading
-from typing import Optional
+from typing import List, Optional
 
 _log = logging.getLogger(__name__)
 
 _QUALIFIED_MODULE = "ptoas._core"
-_DSO_STEMS = ("libPTOASCompiler",)
+
+# Shared, Python-independent DSOs to preload with RTLD_GLOBAL, low-level first
+# so their symbols land in the global scope before dependents load. libLLVMSupport
+# is only present in wheels built with the online family option (shared LLVM); it
+# is absent on a plain prebuilt build, where the extensions find it via their own
+# rpath. Preload is therefore best-effort per stem.
+_DSO_STEMS = ("libLLVMSupport", "libPTOASCompiler")
+
+# The native modules intercepted by the meta path finder, mapped to their
+# in-package location relative to the ``ptoas`` package dir.
+_MEMBER_PKG_SUBDIR = {
+    "ptoas._core": ".",
+    "ptoas.mlir._mlir_libs._mlir": "mlir/_mlir_libs",
+    "ptoas.mlir._mlir_libs._mlirDialectsLLVM": "mlir/_mlir_libs",
+    "ptoas.mlir._mlir_libs._site_initialize_0": "mlir/_mlir_libs",
+}
 
 _ensure_lock = threading.Lock()
 _ensured_module = None
+
+_preload_lock = threading.Lock()
+_preloaded = False
+
+_finder_lock = threading.Lock()
+_finder_installed = False
 
 
 def _package_dir() -> Path:
     return Path(__file__).parent.resolve()
 
 
-def _find_dso_in_dir(candidate: Path) -> Optional[Path]:
-    """Return the first shipped DSO directly under ``candidate``, if any."""
-    if not candidate.is_dir():
-        return None
+def _probe_in_pkg(stem: str, dirs: List[Path], exts) -> Optional[Path]:
+    """First unmangled ``{stem}{ext}`` under any in-package dir, else ``None``."""
+    for cand in dirs:
+        if not cand.is_dir():
+            continue
+        hit = next((cand / f"{stem}{ext}" for ext in exts if (cand / f"{stem}{ext}").exists()), None)
+        if hit is not None:
+            return hit
+    return None
+
+
+def _probe_relocated(stem: str, dirs: List[Path]) -> Optional[Path]:
+    """First hash-mangled ``{stem}*`` under a wheel-repair relocation dir."""
+    for cand in dirs:
+        if not cand.is_dir():
+            continue
+        globbed = next(
+            (p for pattern in (f"{stem}*.so*", f"{stem}*.dylib") for p in sorted(cand.glob(pattern))),
+            None,
+        )
+        if globbed is not None:
+            return globbed
+    return None
+
+
+def _find_dsos(pkg_dir: Path) -> List[Path]:
+    """Locate the shipped shared DSOs (one per stem, first hit wins).
+
+    Probe the in-package dirs first (unmangled names, e.g. an editable build),
+    then the relocation dirs a wheel repair tool moves external DSOs into
+    (``auditwheel`` -> ``<dist>.libs``; ``delocate`` -> ``<pkg>/.dylibs``), where
+    the file is hash-mangled (e.g. ``libLLVMSupport-<hash>.so.19.1``) and must be
+    matched by glob.
+    """
+    in_pkg = [pkg_dir, pkg_dir / "mlir" / "_mlir_libs"]
+    relocated = [pkg_dir.parent / "ptoas.libs", pkg_dir / ".dylibs"]
+    exts = (".so", ".dylib")
+    found: List[Path] = []
     for stem in _DSO_STEMS:
-        for ext in (".so", ".dylib"):
-            f = candidate / f"{stem}{ext}"
-            if f.exists():
-                return f
-    return None
+        hit = _probe_in_pkg(stem, in_pkg, exts) or _probe_relocated(stem, relocated)
+        if hit is not None:
+            found.append(hit)
+    return found
 
 
-def _find_dso(pkg_dir: Path) -> Optional[Path]:
-    candidates = [pkg_dir, pkg_dir / "mlir" / "_mlir_libs"]
-    for cand in candidates:
-        found = _find_dso_in_dir(cand)
-        if found is not None:
-            return found
-    return None
-
-
-def _load_shared_libs():
-    """Preload the shipped, Python-independent DSO with RTLD_GLOBAL."""
-    dso = _find_dso(_package_dir())
-    if dso is None:
-        _log.debug("libPTOASCompiler DSO not found for preload; relying on rpath")
+def preload_shared_libs():
+    """Preload the shipped, Python-independent DSOs with RTLD_GLOBAL (once)."""
+    global _preloaded
+    if _preloaded:
         return
-    try:
-        ctypes.CDLL(str(dso), mode=ctypes.RTLD_GLOBAL)
-    except OSError as e:
-        _log.warning("Failed to preload %s: %s", dso, e)
+    with _preload_lock:
+        if _preloaded:
+            return
+        for dso in _find_dsos(_package_dir()):
+            try:
+                ctypes.CDLL(str(dso), mode=ctypes.RTLD_GLOBAL)
+            except OSError as e:
+                _log.warning("Failed to preload %s: %s", dso, e)
+        _preloaded = True
+
+
+def _find_prebuilt(fullname: str) -> Optional[Path]:
+    """Return the in-package prebuilt extension for ``fullname`` if its ABI
+    suffix matches this interpreter, else ``None``."""
+    base = _package_dir() / _MEMBER_PKG_SUBDIR[fullname]
+    stem = fullname.rsplit(".", 1)[1]
+    for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+        cand = base / f"{stem}{suffix}"
+        if cand.exists():
+            return cand
+    return None
+
+
+class _ResilientExtensionLoader(importlib.machinery.ExtensionFileLoader):
+    """``ExtensionFileLoader`` that rebuilds from source once on a load failure.
+
+    An in-package prebuilt whose ABI *suffix* matches this interpreter can still
+    fail to *load* (a corrupt file, or a binary built against a subtly different
+    ABI/toolchain than the running interpreter). Rather than surfacing a cryptic
+    ``ImportError``, force a fresh online compile of that member and load the
+    freshly built binary instead -- but only when online sources were shipped,
+    and only once, to avoid an endless rebuild loop.
+    """
+
+    def __init__(self, fullname, path, allow_rebuild: bool):
+        super().__init__(fullname, path)
+        self._allow_rebuild = allow_rebuild
+
+    def create_module(self, spec):
+        try:
+            return super().create_module(spec)
+        except ImportError:
+            rebuilt = self._rebuild()
+            if rebuilt is None:
+                raise
+            self.path = rebuilt
+            spec.origin = rebuilt
+            return super().create_module(spec)
+
+    def _rebuild(self) -> Optional[str]:
+        if not self._allow_rebuild:
+            return None
+        # One shot only.
+        self._allow_rebuild = False
+        if not (_package_dir() / "_online").is_dir():
+            return None
+        _log.warning(
+            "Prebuilt %s failed to load; forcing an online rebuild from source.",
+            self.name,
+        )
+        try:
+            preload_shared_libs()
+            from ._build_online import get_or_build_member
+
+            return str(get_or_build_member(self.name, force_rebuild=True))
+        except Exception:
+            _log.exception("Online rebuild fallback failed for %s", self.name)
+            return None
+
+
+class _OnlineExtensionFinder:
+    """meta_path finder serving the version-sensitive native extensions.
+
+    For each of the four EMBED_CAPI pybind11 extensions it returns the prebuilt
+    in-package binary when the ABI suffix matches this interpreter. On a
+    mismatch it triggers a one-shot online CMake build of the requested group
+    only when online sources were shipped (``_online`` present); otherwise it
+    returns ``None`` and defers to the rest of ``sys.meta_path`` (e.g. an
+    editable scikit-build-core install's own finder).
+
+    Even when a prebuilt's suffix matches, the returned loader falls back to a
+    forced online rebuild if that binary fails to *load* (see
+    ``_ResilientExtensionLoader``).
+    """
+
+    @staticmethod
+    def find_spec(fullname, path=None, target=None):
+        if fullname not in _MEMBER_PKG_SUBDIR:
+            return None
+        so = _find_prebuilt(fullname)
+        # Rebuild-on-failure is only possible when online sources were shipped.
+        allow_rebuild = (_package_dir() / "_online").is_dir()
+        if so is None:
+            # No in-package prebuilt matches this interpreter's ABI. Only take
+            # over the import when online sources were actually shipped (a
+            # prebuilt wheel built with PTOAS_ENABLE_ONLINE_CORE_COMPILE=ON);
+            # otherwise stay transparent and defer to the rest of
+            # sys.meta_path. That lets an editable scikit-build-core install
+            # resolve the extension from its own build/redirect finder instead
+            # of hitting a spurious "no online sources shipped" error.
+            if not allow_rebuild:
+                return None
+            preload_shared_libs()
+            from ._build_online import get_or_build_member
+
+            so = get_or_build_member(fullname)
+        loader = _ResilientExtensionLoader(fullname, str(so), allow_rebuild=allow_rebuild)
+        return importlib.util.spec_from_file_location(fullname, str(so), loader=loader)
+
+
+def install_online_finder():
+    """Install the online-extension finder at the front of ``sys.meta_path``."""
+    global _finder_installed
+    if _finder_installed:
+        return
+    with _finder_lock:
+        if _finder_installed:
+            return
+        sys.meta_path.insert(0, _OnlineExtensionFinder())
+        _finder_installed = True
 
 
 def ensure_core():
-    """Return the ``ptoas._core`` module, using the abi3 fast path when possible.
+    """Return the ``ptoas._core`` module, using the prebuilt binary when possible.
+
+    On an ABI-matching interpreter the finder serves the prebuilt in-package
+    ``_core`` (the fast path); otherwise it serves an online-compiled build. The
+    online ``_core`` is full-featured (``main`` / TileLib / SoftLib), not
+    dialect-only, so the ``ptoas`` CLI works on mismatching interpreters too.
 
     The result is also registered as ``sys.modules['ptoas._core']`` so that
     ``from ptoas import _core`` works uniformly for both the prebuilt and the
@@ -85,20 +257,11 @@ def ensure_core():
         if _ensured_module is not None:
             return _ensured_module
 
-        _load_shared_libs()
-        try:
-            import ptoas._core as core  # prebuilt abi3 fast path
+        preload_shared_libs()
+        install_online_finder()
+        # The finder serves the prebuilt binary on a matching interpreter, or an
+        # online-compiled one otherwise; a genuinely broken install raises here.
+        import ptoas._core as core
 
-            _ensured_module = core
-            return core
-        except ImportError as fast_path_error:
-            _log.info(
-                "Prebuilt ptoas._core unavailable for this interpreter (%s); "
-                "falling back to online compilation.",
-                fast_path_error,
-            )
-
-        from ._build_online import get_or_build_core
-
-        _ensured_module = get_or_build_core()
-        return _ensured_module
+        _ensured_module = core
+        return core

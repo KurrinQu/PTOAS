@@ -197,5 +197,189 @@ class FindCoreSoTests(unittest.TestCase):
             self.assertIsNone(path)
 
 
+class ResolveMemberForceRebuildTests(unittest.TestCase):
+    """`_resolve_member` must distrust the pkg-dir prebuilt on a forced rebuild."""
+
+    def _core_spec(self):
+        return _BUILD_ONLINE._MEMBERS[_BUILD_ONLINE._QUALIFIED_MODULE]
+
+    def _core_name(self) -> str:
+        return f"_core{importlib.machinery.EXTENSION_SUFFIXES[0]}"
+
+    def test_non_forced_returns_pkg_dir_hit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg = Path(tmp)
+            (pkg / self._core_name()).write_bytes(b"\x00")
+            mgr = _fresh_manager()
+            mgr.pkg_dir = pkg
+            got = mgr._resolve_member(self._core_spec(), pkg, force_rebuild=False)
+            self.assertEqual(got, pkg / self._core_name())
+
+    def test_forced_ignores_pkg_dir_when_cache_is_pkg(self):
+        # The only copy lives in pkg_dir and it is the very binary that failed to
+        # load; a forced resolve must report a miss so a recompile is triggered.
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg = Path(tmp)
+            (pkg / self._core_name()).write_bytes(b"\x00")
+            mgr = _fresh_manager()
+            mgr.pkg_dir = pkg
+            got = mgr._resolve_member(self._core_spec(), pkg, force_rebuild=True)
+            self.assertIsNone(got)
+
+    def test_forced_prefers_distinct_cache_build_over_broken_pkg(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pkg = root / "pkg"
+            cache = root / "cache"
+            pkg.mkdir()
+            cache.mkdir()
+            (pkg / self._core_name()).write_bytes(b"\x00")  # broken prebuilt
+            good = cache / self._core_name()
+            good.write_bytes(b"\x00")
+            mgr = _fresh_manager()
+            mgr.pkg_dir = pkg
+            got = mgr._resolve_member(self._core_spec(), cache, force_rebuild=True)
+            self.assertEqual(got, good)
+
+
+class PublishMembersTests(unittest.TestCase):
+    """`_publish_members` atomically moves each built member into place."""
+
+    def _core_name(self) -> str:
+        return f"_core{importlib.machinery.EXTENSION_SUFFIXES[0]}"
+
+    def test_moves_member_from_staging_to_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            group = _BUILD_ONLINE._group_for(_BUILD_ONLINE._QUALIFIED_MODULE)
+            spec = _BUILD_ONLINE._MEMBERS[_BUILD_ONLINE._QUALIFIED_MODULE]
+            staging = target / ".online-staging.test"
+            (staging / spec.subdir).mkdir(parents=True)
+            built = staging / spec.subdir / self._core_name()
+            built.write_bytes(b"\x7fELF")
+            mgr = _fresh_manager()
+            mgr.pkg_dir = target
+            mgr._publish_members(staging, target, group)
+            published = target / spec.subdir / self._core_name()
+            self.assertTrue(published.exists())
+            self.assertEqual(published.read_bytes(), b"\x7fELF")
+            self.assertFalse(built.exists())
+
+    def test_raises_when_member_missing_from_staging(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            group = _BUILD_ONLINE._group_for(_BUILD_ONLINE._QUALIFIED_MODULE)
+            staging = target / ".online-staging.test"
+            staging.mkdir()
+            mgr = _fresh_manager()
+            mgr.pkg_dir = target
+            with self.assertRaises(RuntimeError):
+                mgr._publish_members(staging, target, group)
+
+
+class FamilyGenerationPublishTests(unittest.TestCase):
+    """The ptoas.mlir family publishes atomically as one generation."""
+
+    def _family_group(self):
+        return _BUILD_ONLINE._FAMILY_GROUP
+
+    def _suffix(self) -> str:
+        return importlib.machinery.EXTENSION_SUFFIXES[0]
+
+    def _stage_family(self, staging: Path, payload: bytes):
+        group = self._family_group()
+        for member in group.members:
+            spec = _BUILD_ONLINE._MEMBERS[member]
+            d = staging / spec.subdir
+            d.mkdir(parents=True, exist_ok=True)
+            (d / f"{spec.stem}{self._suffix()}").write_bytes(payload)
+
+    def test_publishes_all_members_and_resolves_from_generation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            group = self._family_group()
+            staging = target / ".online-staging.test"
+            self._stage_family(staging, b"\x7fELFv1")
+            mgr = _fresh_manager()
+            mgr.pkg_dir = target
+            mgr._publish_group(staging, target, group)
+
+            # Every member resolves, all from the same live generation dir.
+            gen = mgr._current_family_gen(target)
+            self.assertIsNotNone(gen)
+            for member in group.members:
+                spec = _BUILD_ONLINE._MEMBERS[member]
+                got = mgr._published_member_in_dir(spec, target)
+                self.assertIsNotNone(got)
+                # got == <gen>/mlir/_mlir_libs/<name>; its 3rd parent is <gen>.
+                self.assertEqual(got.parent.parent.parent, gen)
+                self.assertEqual(got.read_bytes(), b"\x7fELFv1")
+            self.assertTrue(mgr._all_members_present(target, group))
+
+    def test_flat_prebuilt_is_ignored_once_a_generation_is_live(self):
+        # A flat (ABI-mismatched) prebuilt family may coexist with an online
+        # generation; resolution must prefer the generation.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            group = self._family_group()
+            for member in group.members:
+                spec = _BUILD_ONLINE._MEMBERS[member]
+                flat = target / spec.subdir
+                flat.mkdir(parents=True, exist_ok=True)
+                (flat / f"{spec.stem}{self._suffix()}").write_bytes(b"PREBUILT")
+            staging = target / ".online-staging.test"
+            self._stage_family(staging, b"ONLINE")
+            mgr = _fresh_manager()
+            mgr.pkg_dir = target
+            mgr._publish_group(staging, target, group)
+            spec = _BUILD_ONLINE._MEMBERS[group.members[0]]
+            got = mgr._published_member_in_dir(spec, target)
+            self.assertEqual(got.read_bytes(), b"ONLINE")
+
+    def test_republish_supersedes_and_gcs_old_generation(self):
+        # The current + immediately-previous generation are retained (a lock-free
+        # reader mid-import stays safe); older ones are GC'd on the next publish.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            group = self._family_group()
+            mgr = _fresh_manager()
+            mgr.pkg_dir = target
+
+            staging1 = target / ".online-staging.1"
+            self._stage_family(staging1, b"GEN1")
+            mgr._publish_group(staging1, target, group)
+            gen1 = mgr._current_family_gen(target)
+
+            staging2 = target / ".online-staging.2"
+            self._stage_family(staging2, b"GEN2")
+            mgr._publish_group(staging2, target, group)
+            gen2 = mgr._current_family_gen(target)
+
+            self.assertNotEqual(gen1, gen2)
+            self.assertTrue(gen1.exists())  # previous generation retained
+            spec = _BUILD_ONLINE._MEMBERS[group.members[0]]
+            got = mgr._published_member_in_dir(spec, target)
+            self.assertEqual(got.read_bytes(), b"GEN2")
+
+            # A third publish supersedes gen2 and GCs the now-stale gen1.
+            staging3 = target / ".online-staging.3"
+            self._stage_family(staging3, b"GEN3")
+            mgr._publish_group(staging3, target, group)
+            self.assertFalse(gen1.exists())
+            self.assertTrue(gen2.exists())  # still the immediately-previous one
+            got = mgr._published_member_in_dir(spec, target)
+            self.assertEqual(got.read_bytes(), b"GEN3")
+
+    def test_tampered_marker_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            family_root = target / _BUILD_ONLINE._FAMILY_GEN_ROOT
+            family_root.mkdir(parents=True)
+            (family_root / _BUILD_ONLINE._FAMILY_GEN_MARKER).write_text("../evil")
+            mgr = _fresh_manager()
+            mgr.pkg_dir = target
+            self.assertIsNone(mgr._current_family_gen(target))
+
+
 if __name__ == "__main__":
     unittest.main()
