@@ -20519,11 +20519,14 @@ static bool isFixpipeQuantPayloadElemType(Type elemTy, PTOArch arch) {
   if (!elemTy) {
     return false;
   }
-  if (arch == PTOArch::A3) {
-    return elemTy.isUnsignedInteger(64) || elemTy.isSignlessInteger(64) ||
-           elemTy.isSignedInteger(64);
-  }
-  return elemTy.isF16() || elemTy.isBF16() || elemTy.isF32();
+  bool isPackedI64 = elemTy.isUnsignedInteger(64) ||
+                     elemTy.isSignlessInteger(64) ||
+                     elemTy.isSignedInteger(64);
+  // SET_QUANT_VECTOR passes each column to the hardware as a packed 64-bit
+  // control word. The frontend does not convert floating-point elements into
+  // that representation, so accepting f16/bf16/f32 would produce invalid
+  // quantization parameters on both A3 and A5.
+  return (arch == PTOArch::A3 || arch == PTOArch::A5) && isPackedI64;
 }
 
 static bool matchesFixpipeProducerAndConsumerTypes(FixpipeQuant quant,
@@ -21974,10 +21977,10 @@ LogicalResult SetQuantVectorOp::verify() {
   if (!isFixpipeQuantPayloadElemType(scalingElemTy, arch)) {
     if (arch == PTOArch::A3) {
       return emitOpError(
-          "expects 'scaling_tile' element type to be packed i64/ui64 on A3");
+          "expects 'scaling_tile' element type to be packed i64/ui64/si64 on A3");
     }
     return emitOpError(
-        "expects 'scaling_tile' element type to be f16, bf16, or f32 on A5");
+        "expects 'scaling_tile' element type to be packed i64/ui64/si64 on A5");
   }
 
   return success();
