@@ -1261,6 +1261,10 @@ class _VMINamespace:
         )
 
     @staticmethod
+    @deprecated(
+        "pto.vmi.vgatherb is deprecated; prefer pto.vmi.vgather on aligned "
+        "B16/B32 offsets"
+    )
     def vgatherb(source, offsets, mask, *, pmode=None, loc=None, ip=None):
         return _call_value(
             "vgatherb",

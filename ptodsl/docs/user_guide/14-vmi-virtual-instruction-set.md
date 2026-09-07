@@ -1182,6 +1182,9 @@ unspecified value.
 
 ### `pto.vmi.vgatherb(source, offsets, mask, *, pmode=None) -> VRegType`
 
+> **Deprecated**: `pto.vmi.vgatherb` is deprecated and may be removed in a
+> future release. Prefer `pto.vmi.vgather` on aligned B16/B32 offsets.
+
 **Description**: Block gather from a UB pointer. Each participating lane
 gathers one 32-byte block using byte-level offsets.
 
@@ -1377,7 +1380,8 @@ surface no longer asks you to spell the full result type manually.
 - `vcvt` requires `to_dtype`.
 - `vinterpret_cast` requires `to_dtype`; its lane count is derived by
   preserving the source vector's total bit footprint.
-- `vgatherb` is inferred from the source pointer element type and the mask.
+- `vgatherb` *(deprecated)* is inferred from the source pointer element type and
+  the mask.
 
 ---
 
@@ -1458,7 +1462,7 @@ def vmi_elementwise(
 | Conversion | `vcvt`, `vinterpret_cast` |
 | SFU / Fused | `vexpdif`, `vaxpy`, `vlrelu`, `vprelu`, `vmull`, `vmula` |
 | Histogram | `vchist`, `vdhist` |
-| Indexed memory | `vgather`, `vgatherb`, `vscatter` |
+| Indexed memory | `vgather`, `vgatherb` *(deprecated)*, `vscatter` |
 | Predicate construction | `create_mask` |
 | Data rearrangement | `vintlv`, `vdintlv` |
 

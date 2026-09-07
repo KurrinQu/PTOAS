@@ -28,7 +28,7 @@ BACKEND_CAPABILITY = {
         "vrelu vexp vln vsqrt vand vor vxor vnot vshl vshr vadds vmuls "
         "vmaxs vmins vshls vshrs vcmp vcmps vsel vselr vbrc vcadd vcmax "
         "vcmin vcvt vinterpret_cast vexpdif vaxpy vlrelu vprelu vmull "
-        "vmula vchist vdhist vgather vgatherb vscatter create_mask "
+        "vmula vchist vdhist vgather vscatter create_mask "
         "create_group_mask vintlv vdintlv"
     ).split()
 }
@@ -48,9 +48,9 @@ def _indexed_ops():
 
 def main() -> None:
     indexed = _indexed_ops()
-    assert [number for number, _ in indexed] == list(range(1, 56))
+    assert [number for number, _ in indexed] == list(range(1, 55))
     names = [name for _, name in indexed]
-    assert len(names) == len(set(names)) == 55
+    assert len(names) == len(set(names)) == 54
     assert set(BACKEND_CAPABILITY) == set(names)
     assert set(PTODSL_ALIASES) <= set(names)
 
