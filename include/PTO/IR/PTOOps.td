@@ -606,7 +606,8 @@ def TLoadOp  : PTO_TOp<"tload", [
     Optional<Index>:$left_padding_num,
     Optional<AnyType>:$right_padding_num,
     DefaultValuedOptionalAttr<BoolAttr, "false">:$init_out_buffer,
-    Optional<AnyType>:$init_condition
+    Optional<AnyType>:$init_condition,
+    OptionalAttr<PTO_LoadCachePolicyAttr>:$cache_policy
   );
 
   let results = (outs
@@ -621,21 +622,23 @@ def TLoadOp  : PTO_TOp<"tload", [
       build($_builder, $_state, res, src, dst, 
             /*pad_mode=*/nullptr, /*pad_value=*/nullptr, 
             /*left=*/nullptr, /*right=*/nullptr, 
-            /*init_out=*/nullptr, /*init_cond=*/nullptr); 
+            /*init_out=*/nullptr, /*init_cond=*/nullptr,
+            /*cache_policy=*/nullptr);
     }]>,
 
     // 2. With left_padding_num
     OpBuilder<(ins "TypeRange":$res, "Value":$src, "Value":$dst,
                    "Value":$left_padding_num), [{
       build($_builder, $_state, res, src, dst, 
-            nullptr, nullptr, left_padding_num, nullptr, nullptr, nullptr);
+            nullptr, nullptr, left_padding_num, nullptr, nullptr, nullptr,
+            nullptr);
     }]>,
 
     // 3. With pad_mode, pad_value
     OpBuilder<(ins "TypeRange":$res, "Value":$src, "Value":$dst,
                    "pto::PadModeAttr":$pad_mode, "Value":$pad_value), [{
       build($_builder, $_state, res, src, dst, 
-            pad_mode, pad_value, nullptr, nullptr, nullptr, nullptr);
+            pad_mode, pad_value, nullptr, nullptr, nullptr, nullptr, nullptr);
     }]>,
 
     // 4. ... + left
@@ -643,7 +646,8 @@ def TLoadOp  : PTO_TOp<"tload", [
                    "pto::PadModeAttr":$pad_mode, "Value":$pad_value,
                    "Value":$left_padding_num), [{
       build($_builder, $_state, res, src, dst, 
-            pad_mode, pad_value, left_padding_num, nullptr, nullptr, nullptr);
+            pad_mode, pad_value, left_padding_num, nullptr, nullptr, nullptr,
+            nullptr);
     }]>,
 
     // 5. ... + left + right
@@ -651,7 +655,8 @@ def TLoadOp  : PTO_TOp<"tload", [
                    "pto::PadModeAttr":$pad_mode, "Value":$pad_value,
                    "Value":$left_padding_num, "Value":$right_padding_num), [{
       build($_builder, $_state, res, src, dst, 
-            pad_mode, pad_value, left_padding_num, right_padding_num, nullptr, nullptr);
+            pad_mode, pad_value, left_padding_num, right_padding_num, nullptr,
+            nullptr, nullptr);
     }]>,
 
     // 6. ... + left + right + bool
@@ -661,7 +666,7 @@ def TLoadOp  : PTO_TOp<"tload", [
                    "bool":$init_out_buffer), [{
       build($_builder, $_state, res, src, dst, 
             pad_mode, pad_value, left_padding_num, right_padding_num, 
-            init_out_buffer, nullptr);
+            init_out_buffer, nullptr, nullptr);
     }]>
   ];
 

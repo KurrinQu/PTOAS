@@ -43,6 +43,11 @@ typedef enum MlirPTOFenceScope {
   MlirPTOFenceScope_All = 2,
 } MlirPTOFenceScope;
 
+typedef enum MlirPTOLoadCachePolicy {
+  MlirPTOLoadCachePolicy_Default = 0,
+  MlirPTOLoadCachePolicy_L2Bypass = 1,
+} MlirPTOLoadCachePolicy;
+
 typedef enum MlirPTOBLayout {
   MlirPTOBLayout_RowMajor = 0,
   MlirPTOBLayout_ColMajor = 1,

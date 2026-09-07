@@ -58,6 +58,11 @@ PTO_ENUM_MIRROR_EQ(FenceScope, LocalMemory, MlirPTOFenceScope_LocalMemory);
 PTO_ENUM_MIRROR_EQ(FenceScope, GM, MlirPTOFenceScope_GM);
 PTO_ENUM_MIRROR_EQ(FenceScope, All, MlirPTOFenceScope_All);
 
+PTO_ENUM_MIRROR_EQ(LoadCachePolicy, Default,
+                   MlirPTOLoadCachePolicy_Default);
+PTO_ENUM_MIRROR_EQ(LoadCachePolicy, L2Bypass,
+                   MlirPTOLoadCachePolicy_L2Bypass);
+
 PTO_ENUM_MIRROR_EQ(BLayout, RowMajor, MlirPTOBLayout_RowMajor);
 PTO_ENUM_MIRROR_EQ(BLayout, ColMajor, MlirPTOBLayout_ColMajor);
 
@@ -346,6 +351,26 @@ MlirAttribute mlirPTOAddressSpaceAttrGet(MlirContext ctx, int32_t value) {
 int32_t mlirPTOAddressSpaceAttrGetValue(MlirAttribute attr) {
   auto a = mlir::cast<mlir::pto::AddressSpaceAttr>(unwrap(attr));
   return static_cast<int32_t>(a.getAddressSpace());
+}
+
+bool mlirPTOAttrIsALoadCachePolicyAttr(MlirAttribute attr) {
+  return mlir::isa<mlir::pto::LoadCachePolicyAttr>(unwrap(attr));
+}
+
+MlirAttribute mlirPTOLoadCachePolicyAttrGet(MlirContext ctx, int32_t value) {
+  const bool isValidPolicy =
+      value >= static_cast<int32_t>(mlir::pto::LoadCachePolicy::Default) &&
+      value <= static_cast<int32_t>(mlir::pto::LoadCachePolicy::L2Bypass);
+  if (!isValidPolicy) {
+    return MlirAttribute{nullptr};
+  }
+  auto policy = static_cast<mlir::pto::LoadCachePolicy>(value);
+  return wrap(mlir::pto::LoadCachePolicyAttr::get(unwrap(ctx), policy));
+}
+
+int32_t mlirPTOLoadCachePolicyAttrGetValue(MlirAttribute attr) {
+  auto policy = mlir::cast<mlir::pto::LoadCachePolicyAttr>(unwrap(attr));
+  return static_cast<int32_t>(policy.getValue());
 }
 
 //===----------------------------------------------------------------------===//
