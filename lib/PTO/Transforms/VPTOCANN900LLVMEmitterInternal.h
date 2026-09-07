@@ -15,6 +15,7 @@
 #include "PTO/Transforms/Passes.h"
 #include "PTO/Transforms/VPTOLLVMEmitter.h"
 #include "PTO/Transforms/VPTOLLVMEmitterHelper.h"
+#include "VPTOLLVMEmitter/VPTOLLVMEmitterInternal.h"
 
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
@@ -59,15 +60,6 @@ namespace detail {
 inline constexpr llvm::StringLiteral kVectorSuffix = "_mix_aiv";
 inline constexpr llvm::StringLiteral kCubeSuffix = "_mix_aic";
 
-struct PlannedDecl {
-  std::string name;
-  FunctionType type;
-};
-
-struct LoweringState {
-  SmallVector<PlannedDecl> plannedDecls;
-};
-
 enum class VcvtElemKind {
   Invalid,
   F16,
@@ -108,37 +100,6 @@ struct LowpPayloadABI {
   StringRef intrinsicElementFragment;
 };
 
-Type convertVPTOType(Type type, Builder &builder);
-Value materializeVPTOCast(OpBuilder &builder, Type resultType, ValueRange inputs, Location loc);
-
-class VPTOTypeConverter final : public TypeConverter {
-public:
-  explicit VPTOTypeConverter(MLIRContext *context) {
-    addConversion([](Type type) { return type; });
-    addConversion([](Type type) -> Type {
-      Builder builder(type.getContext());
-      return convertVPTOType(type, builder);
-    });
-    addSourceMaterialization(materializeVPTOCast);
-    addTargetMaterialization(materializeVPTOCast);
-  }
-};
-
-Type getLowPrecisionLLVMType(Type type, MLIRContext *context);
-bool isLLVMExtensionVectorElementType(Type type);
-Type getLLVMCompatibleVectorType(ArrayRef<int64_t> shape, Type elementType, ArrayRef<bool> scalableDims);
-Type normalizePayloadTypeForLLVMLowering(Type type, Builder &builder);
-Type normalizeGEPElementTypeForLLVMLowering(Type type, Builder &builder);
-Type convertVPTOType(Type type, Builder &builder);
-unsigned getNaturalByteAlignment(Type type);
-bool hasVPTOConvertibleType(Type type);
-bool hasVPTOConvertibleType(TypeRange types);
-Value materializeVPTOCast(OpBuilder &builder, Type resultType, ValueRange inputs, Location loc);
-LLVM::LLVMStructType getVPTOStructStorageType(pto::StructType structType, Builder &builder);
-FailureOr<Value> getVPTOStructFieldAddress(ConversionPatternRewriter &rewriter, Location loc, Value root,
-                                           pto::StructType rootType, ArrayRef<int64_t> path);
-Value getI64Constant(OpBuilder &builder, Location loc, uint64_t value);
-Value getI32Constant(OpBuilder &builder, Location loc, uint64_t value);
 Value getI1Constant(OpBuilder &builder, Location loc, bool value);
 bool isMxElementType(Type ty);
 std::string getMadMxElementFragment(Type type);
@@ -147,9 +108,7 @@ bool isSignedOrSignlessInteger(IntegerType intType, unsigned width);
 std::string getMadRhsFragment(Type type);
 bool isMadE4M3ElementType(Type type);
 bool isMadE5M2ElementType(Type type);
-std::string getMadDstFragment(Type type);
 ArrayRef<MadCalleeContract> getMadCalleeContracts();
-std::string getMadLhsFragment(Type type);
 FailureOr<StringRef> buildMadTypedCalleeName(MLIRContext *context, Type lhsElem, Type rhsElem, Type dstElem);
 FailureOr<StringRef> buildLaneTypedCallee(MLIRContext *context, Type resultType, StringRef stem, StringRef suffix);
 std::string getCANN900VectorElementFragment(Type type);
@@ -160,9 +119,7 @@ FailureOr<StringRef> buildCANN900SignedModeTypedCallee(MLIRContext *context, Typ
                                                        StringRef mode);
 FailureOr<StringRef> buildCANN900WideningReductionCallee(MLIRContext *context, Type inputType, Type resultType,
                                                          StringRef stem, StringRef mode);
-std::string getElementTypeFragment(Type type);
-std::string getLowPrecisionElementFragment(Type type);
-std::string getMemoryElementTypeFragment(Type type);
+std::string getCANN900MemoryElementTypeFragment(Type type);
 bool isLowpPayloadElementType(Type type);
 std::optional<LowpPayloadABI> getLowpPayloadABI(Type elementType, MLIRContext *context);
 std::string getDirectLowpVLogicElementFragment(Type type);
@@ -178,24 +135,13 @@ std::string getAtomicElementTypeFragment(Type type, Attribute signednessAttr);
 std::string getL0LoadElementFragment(Type type);
 std::string getShuffleIntrinsicTypeFragment(Type type);
 std::string getReduxIntrinsicTypeFragment(Type type, Attribute signednessAttr);
-Type getElementTypeFromVectorLike(Type type);
-std::optional<int64_t> getElementCountFromVectorLike(Type type);
-Value castIntegerLikeTo(Operation *anchor, Value value, Type targetType);
-FailureOr<Value> reinterpretPointerToAddrSpace(Operation *anchor, Value value, unsigned targetAddressSpace);
 FailureOr<Value> normalizeVdupScalarOperand(OpBuilder &builder, Location loc, Value input, Type resultType);
 Value normalizeByteScalarOperandForCANN900VectorCall(OpBuilder &builder, Location loc, Value input,
                                                      Type semanticElementType);
 bool isCompatibleScalarForSemanticType(Type semanticType, Type scalarType);
-std::string getCopyElementFragment(Type elementType);
 std::string getNd2NzCopyElementFragment(Type elementType);
 std::optional<uint64_t> parsePredicatePatternImmediate(StringRef pattern);
 std::optional<uint64_t> parseHiLoPartImmediate(StringRef part);
-std::optional<uint64_t> parseRoundModeImmediate(StringRef roundMode);
-std::optional<uint64_t> parseSaturationImmediate(StringRef sat);
-std::optional<uint64_t> parsePartImmediate(StringRef part);
-std::optional<uint64_t> parseVcvtPartImmediate(StringRef part);
-std::optional<uint64_t> parsePredicateStoreDistImmediate(StringRef dist);
-std::optional<uint64_t> parsePredicateLoadDistImmediate(StringRef dist);
 std::optional<int32_t> parsePostModeImmediate(StringRef mode);
 std::optional<uint64_t> parsePipeImmediate(StringRef pipe);
 std::optional<uint64_t> parseEventImmediate(StringRef event);
@@ -208,13 +154,10 @@ std::optional<uint64_t> parseLoadDistImmediate(StringRef dist, Type elementType)
 FailureOr<Value> packShiftedFields(Operation *anchor, Value base, ArrayRef<std::pair<Value, uint64_t>> fields);
 std::optional<uint64_t> parseLoadX2DistImmediate(StringRef dist, Type elementType);
 std::optional<uint64_t> parseStoreDistImmediate(StringRef dist, Type elementType);
-bool isOnePointStoreDist(StringRef dist);
 bool isMaskOnlyUsedByOnePointStores(Value mask);
 std::optional<uint64_t> parseStoreX2DistImmediate(StringRef dist, Type elementType);
 Value packBlockRepeatStride(Operation *anchor, Value blockStride, Value repeatStride);
 std::optional<uint64_t> parseOrderImmediate(StringRef order);
-FailureOr<Value> packLoopPair(Operation *anchor, Value low, Value high);
-FailureOr<Value> packLoopSize(Operation *anchor, Value loop2, Value loop1);
 FailureOr<Value> packCopyGmToUbConfig0(Operation *anchor, ValueRange operands);
 FailureOr<Value> packCopyGmToUbConfig1(Operation *anchor, ValueRange operands);
 FailureOr<Value> packCopyGmToUbConfig0(Operation *anchor, Value sid, Value nBurst, Value lenBurst, Value leftPadding,
@@ -294,7 +237,6 @@ FailureOr<StringRef> buildOrdinaryMadCallee(MLIRContext *context, pto::MadRawOpI
 FailureOr<StringRef> buildMxMadCallee(MLIRContext *context, pto::MadRawOpInterface op);
 FailureOr<StringRef> buildCopyGmToCbufCallee(MLIRContext *context, Type sourceType);
 FailureOr<StringRef> buildCopyGmToCbufMultiNd2NzCallee(MLIRContext *context, Type sourceType);
-std::string getDn2NzCopyElementFragment(Type type);
 FailureOr<StringRef> buildCopyGmToCbufMultiDn2NzCallee(MLIRContext *context, Type sourceType);
 FailureOr<StringRef> buildLoadCbufToCaCallee(MLIRContext *context, Type sourceType);
 FailureOr<StringRef> buildLoadCbufToCbCallee(MLIRContext *context, Type sourceType);
@@ -351,7 +293,7 @@ FailureOr<StringRef> buildVmrgsort4Callee(MLIRContext *context, pto::Vmrgsort4Op
 FailureOr<Value> packVmrgsort4SourceAddr(Operation *anchor, Value source0, Value source1, Value source2, Value source3,
                                          Type elemType);
 FailureOr<VcvtContract> buildVcvtContract(pto::VcvtOp op);
-bool needsV300CtrlModeForVPTOFunc(func::FuncOp funcOp);
+bool needsV300CtrlModeForCANN900Func(func::FuncOp funcOp);
 FailureOr<Value> encodeMovPadValue(Location loc, Value value, ConversionPatternRewriter &rewriter);
 StringRef buildMemBarCallee(MemBarKind kind, MLIRContext *context);
 uint64_t getDsbMemImmediate(DsbMem kind);

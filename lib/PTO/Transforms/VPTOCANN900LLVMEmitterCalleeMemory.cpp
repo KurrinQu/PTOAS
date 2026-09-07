@@ -89,45 +89,6 @@ FailureOr<StringRef> buildCopyGmToCbufMultiNd2NzCallee(MLIRContext *context, Typ
   return StringAttr::get(context, "llvm.hivm.MOV.OUT.TO.L1.MULTI.ND2NZ." + elem + ".V310").getValue();
 }
 
-std::string getDn2NzCopyElementFragment(Type type) {
-  auto ptrType = dyn_cast<pto::PtrType>(type);
-  if (!ptrType) {
-    return {};
-  }
-
-  Type elementType = ptrType.getElementType();
-  std::string typeText;
-  llvm::raw_string_ostream os(typeText);
-  elementType.print(os);
-  os.flush();
-  std::string lower = StringRef(typeText).lower();
-  if (StringRef(lower).contains("e4m3") || StringRef(lower).contains("e5m2") || StringRef(lower).contains("e8m0") ||
-      StringRef(lower).contains("hif8")) {
-    return "u8";
-  }
-
-  if (elementType.isF16() || elementType.isBF16()) {
-    return "u16";
-  }
-  if (elementType.isF32()) {
-    return "u32";
-  }
-
-  if (auto intType = dyn_cast<IntegerType>(elementType)) {
-    switch (intType.getWidth()) {
-    case 8:
-      return "u8";
-    case 16:
-      return "u16";
-    case 32:
-      return "u32";
-    default:
-      return {};
-    }
-  }
-  return {};
-}
-
 FailureOr<StringRef> buildCopyGmToCbufMultiDn2NzCallee(MLIRContext *context, Type sourceType) {
   auto ptrType = dyn_cast<pto::PtrType>(sourceType);
   if (!ptrType) {
@@ -327,7 +288,7 @@ FailureOr<StringRef> buildVmullCallee(MLIRContext *context, Type resultType) {
 }
 
 FailureOr<StringRef> buildVldsCallee(MLIRContext *context, Type resultType) {
-  std::string vec = getMemoryElementTypeFragment(getElementTypeFromVectorLike(resultType));
+  std::string vec = getCANN900MemoryElementTypeFragment(getElementTypeFromVectorLike(resultType));
   auto lanes = getElementCountFromVectorLike(resultType);
   if (vec.empty() || !lanes) {
     return failure();
@@ -336,7 +297,7 @@ FailureOr<StringRef> buildVldsCallee(MLIRContext *context, Type resultType) {
 }
 
 FailureOr<StringRef> buildVldsx2Callee(MLIRContext *context, Type resultType, bool post) {
-  std::string vec = getMemoryElementTypeFragment(getElementTypeFromVectorLike(resultType));
+  std::string vec = getCANN900MemoryElementTypeFragment(getElementTypeFromVectorLike(resultType));
   auto lanes = getElementCountFromVectorLike(resultType);
   if (vec.empty() || !lanes) {
     return failure();
@@ -359,7 +320,7 @@ FailureOr<StringRef> buildBlockStridedMemoryCallee(MLIRContext *context, Type ve
   } else if (isLowpPayloadElementType(elementType)) {
     element = "i8";
   } else {
-    element = getMemoryElementTypeFragment(elementType);
+    element = getCANN900MemoryElementTypeFragment(elementType);
   }
   if (element.empty()) {
     return failure();
@@ -375,7 +336,7 @@ FailureOr<StringRef> buildVsldbCallee(MLIRContext *context, Type resultType, boo
 }
 
 FailureOr<StringRef> buildVstsCallee(MLIRContext *context, Type valueType) {
-  std::string vec = getMemoryElementTypeFragment(getElementTypeFromVectorLike(valueType));
+  std::string vec = getCANN900MemoryElementTypeFragment(getElementTypeFromVectorLike(valueType));
   auto lanes = getElementCountFromVectorLike(valueType);
   if (vec.empty() || !lanes) {
     return failure();
@@ -390,7 +351,7 @@ FailureOr<StringRef> buildVstsx2Callee(MLIRContext *context, Type valueType) {
     return failure();
   }
 
-  std::string element = getMemoryElementTypeFragment(elementType);
+  std::string element = getCANN900MemoryElementTypeFragment(elementType);
   if (element.empty()) {
     return failure();
   }
@@ -619,7 +580,7 @@ FailureOr<VcvtContract> buildVcvtContract(pto::VcvtOp op) {
   return *contract;
 }
 
-bool needsV300CtrlModeForVPTOFunc(func::FuncOp funcOp) {
+bool needsV300CtrlModeForCANN900Func(func::FuncOp funcOp) {
   if (!pto::isPTOEntryFunction(funcOp) || funcOp.getBlocks().empty()) {
     return false;
   }
