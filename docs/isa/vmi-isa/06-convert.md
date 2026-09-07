@@ -31,7 +31,8 @@
   4. **FpToUi** — `fp → unsigned int`. Supported pairs follow the contract
      table `lookupVMIFpToUIContract`: currently `f16→u8`.
 
-  5. **SiToFp** — `signed int → fp` (e.g. `si32 → f32`, `si8 → f16`).
+  5. **SiToFp** — `signed int → fp`. The currently supported pairs are
+     `si32 → f32` and `si8 → f16` (see the support matrix below).
 
   6. **IntWiden** — `int → int`, `|dst| > |src|`.
 
@@ -60,11 +61,40 @@
   | `rounding` | `"R"` (nearest-even), `"A"` (away-from-zero), `"H"` (half-up), `"Z"` (toward-zero); for the `bf16x2→f4x2` contract pair the allowed set is `"R"`,`"A"`,`"F"` (floor), `"C"` (ceil), `"Z"` (toward-zero) — `"H"` is **rejected** | fp narrowing | Rounding mode |
   | `saturate` | `"SAT"`, `"NOSAT"` | required for fp-narrow / int-narrow; for fp→si / fp→ui the requirement follows the vcvt contract's `requiresSat` (e.g. `f16→si8` required, `f16→si32` **forbidden** — no overflow possible; same-width `bf16→f16` required, same-width `f16→bf16` **forbidden**); the `bf16x2→f4x2` narrow has `requiresSat=false` — any `saturate` is **forbidden**; `si32→si8` int-narrow accepts only `"NOSAT"` | For signed destinations, `SAT` clamps to `[min, max]`; for unsigned or signless destinations, it clamps to `[0, max]`. `NOSAT` performs a direct bit truncation of the result representation. |
 
-- **datatypes:** Source and destination from `{f32, f16, bf16, fp8_e4m3, fp8_e5m2, i32, i16, i8, si32, si16, si8, ui32, ui16, ui8}`; packed carrier types `{!pto.bf16x2, !pto.f4E1M2x2, !pto.f4E2M1x2}` for the bf16x2↔f4x2 fp-to-fp pair (see contract `lookupVMIFpToFpContract`). `bf16x2` is **conversion-only** — it may not appear as a compute element type (`vfadd`/`vfmul`/`vcmp`/...). Signless `iN` is treated as unsigned; use `siN` for signed conversion semantics.
+- **datatypes:** Floating-point source and destination types are
+  `{f32, f16, bf16, fp8_e4m3, fp8_e5m2}`. Integer types are
+  `{si32, si16, si8, i32, i16, i8, ui32, ui16, ui8}`. The explicitly signed
+  `si*` types are required when an integer is converted to floating point
+  (`SiToFp`). Signless `i*` and unsigned `ui*` types cannot be used as
+  `SiToFp` sources. Packed carrier types
+  `{!pto.bf16x2, !pto.f4E1M2x2, !pto.f4E2M1x2}` are valid only for the
+  bf16x2↔f4x2 fp-to-fp pair (see contract `lookupVMIFpToFpContract`).
+  `bf16x2` is **conversion-only** — it may not appear as a compute element
+  type (`vfadd`/`vfmul`/`vcmp`/...).
+
+### SiToFp support matrix
+
+`SiToFp` requires an explicitly signed integer source (`si*`). A signless
+`i*` source is rejected even when it has the same bit width. The current VMI
+contract exposes `si32 → f32` and `si8 → f16`.
+
+The destination type is fixed by the source width: `si32` requires `f32`, and
+`si8` requires `f16`. Other signed-integer widths and floating-point result
+types are rejected by the current `vcvt` contract.
+
+| Source | Destination | Current VMI support |
+|---|---|---|
+| `si32` | `f32` | **Supported** |
+| `si8` | `f16` | **Supported** |
+
+Neither supported pair accepts `rounding` or `saturate` attributes.
+
 - **lowering to `pto.mi`:**
 
   | Conversion | Physical lowering | `#mi` | `dep` |
   |---|---|---|---|
+  | SiToFp (`si32→f32`, current) | same-width `vcvt`, no part | `K` | `1` |
+  | SiToFp (`si8→f16`, current) | widen `vcvt` EVEN/ODD | `2K` | `2` |
   | 16↔32 (radix-2) | `2K × vcvt EVEN/ODD` + predicate `ppack`/`punpack` companion | `2K` | `2` |
   | 8↔32 (radix-4) | widen: `UNPK_B8` + `vintlv` + `vcvt P0` + `punpack`; narrow: `PK4_B32` store (or `vselr` gather) + `ppack` | `2–3` | `2–3` |
   | f32→fp8 quant | `1 cast` + `PK4_B32` | `K` | `1` |
@@ -74,6 +104,10 @@
   | int↔int (same width) | `K × vtrc` or `K × vcvt` | `K` | `1` |
   | `bf16x2→f4x2` narrow (32→8) | source viewed as raw `bf16` lanes (2 bf16/bf16x2); `vcvt{P0}` 1:1, `rnd` set, **no sat**; reuse prior pairing `vbitcast` when present | `K` | `1` |
   | `f4x2→bf16x2` widen (8→32) | `vcvt{P0}` produces `bf16` lanes; result-side `vbitcast` reinterprets them as `bf16x2`; no rnd, no sat | `K` | `1` |
+
+  The width-family rows above do not imply that every source/destination
+  signedness combination is exposed for `SiToFp`; use the support matrix as
+  the normative list for signed-integer-to-floating-point conversions.
 
 - **example:**
   ```mlir
@@ -111,6 +145,14 @@
   // f16 → u8 fp-to-ui (unsigned; contract pair, saturate required)
   %u = pto.vmi.vcvt %x {saturate = "SAT"}
       : !pto.vmi.vreg<128×f16> -> !pto.vmi.vreg<128×ui8>
+
+  // si32 → f32 signed-integer to floating-point
+  %sf = pto.vmi.vcvt %s
+      : !pto.vmi.vreg<64×si32> -> !pto.vmi.vreg<64×f32>
+
+  // si8 → f16 signed-integer to floating-point
+  %hf = pto.vmi.vcvt %b8
+      : !pto.vmi.vreg<128×si8> -> !pto.vmi.vreg<128×f16>
 
   // bf16x2 → f4x2 quantized narrow (rounding required; saturate forbidden;
   // bf16x2 arrives via a physical-noop vinterpret_cast pairing of 2 bf16 lanes)
