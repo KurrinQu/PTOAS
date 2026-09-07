@@ -414,7 +414,31 @@ struct LayoutSolver {
     if (failed(fact)) {
       return {};
     }
-    return fact->layout.resultLayout;
+    VMILayoutAttr directLayout = fact->layout.resultLayout;
+    // A direct E2B packet fills exactly one physical part. When the
+    // contiguous form of this broadcast spans multiple physical chunks, the
+    // direct table can only offer a deinterleaved split layout. Prefer the
+    // generic contiguous lowering (group_slots -> contiguous) so consumers
+    // such as plain elementwise vmul can stay contiguous and avoid
+    // vldsx2/vintlv-style deinterleave materialization.
+    if (fact->kind == VMIGroupBroadcastLoadDirectKind::E2B &&
+        directLayout.isDeinterleaved()) {
+      VMILayoutAttr contiguous = getContiguousLayout();
+      auto contiguousType = VMIVRegType::get(
+          ctx, type.getElementCount(), type.getElementType(), contiguous);
+      FailureOr<int64_t> contiguousArity = getVMIPhysicalArity(contiguousType);
+      if (succeeded(contiguousArity) && *contiguousArity > 1) {
+        FailureOr<
+            SmallVector<VMIGroupBroadcastLayoutFact, mlir::pto::kValue4>>
+            contiguousFacts = supports.getGroupBroadcastLayoutFactsForLayout(
+                type, contiguousType, op.getNumGroupsAttr().getInt(),
+                VMIGroupBroadcastLayoutPort::Result, contiguous);
+        if (succeeded(contiguousFacts) && !contiguousFacts->empty()) {
+          return contiguous;
+        }
+      }
+    }
+    return directLayout;
   }
 
   VMILayoutAttr getPreferredGroupBroadcastSourceLayout(Value value,
@@ -957,6 +981,42 @@ struct LayoutSolver {
     return llvm::TypeSwitch<Operation *, std::optional<WalkResult>>(op)
         .Case<VMIDeinterleaveLoadOp>([this, op](auto load) {
           return addDeinterleaveLoadConstraint(load, op);
+        })
+        .Case<VMILoadOp>([this, op](auto load) {
+          auto type = cast<VMIVRegType>(load.getResult().getType());
+          FailureOr<int64_t> lanesPerPart =
+              getDataLanesPerPart(type.getElementType());
+          // Stock leaves plain VMILoadOp results unconstrained (the layout is
+          // driven by consumer use-requests).  Seed a natural layout ONLY
+          // when the packed/small-load lane-stride heuristic below actually
+          // applies: seeding plain contiguous unconditionally would block
+          // deinterleaved use-requests from propagating back to the load
+          // (e.g. channel_split @128 f16 hitting the ensure-layout gap,
+          // vmi_layout_assignment_store_prefer_lane_stride).
+          // The heuristic is safe for packed float carriers (f4x2 /
+          // hi-float8x2 / bf16x2, whose storage byte holds a pair of values)
+          // and for >=16-bit dense elements (a lane-stride unpack keeps every
+          // real element reachable through the EVEN part; pinned by the
+          // ComputeMropeF16 capability guard).  Dense 8-bit elements are the
+          // proven mine: an unpack-style distribution whose gap lanes read as
+          // zeros (the e4m3 odd-column regression shape; hidden=128 configs
+          // would hit it), so those keep no seed at all.
+          Type loadElemTy = type.getElementType();
+          bool isPackedCarrier = pto::isPTOFloat4PackedType(loadElemTy) ||
+                                 pto::isPTOHiFloat8x2Type(loadElemTy) ||
+                                 pto::isPTOBF16x2Type(loadElemTy);
+          bool laneStrideSeedAllowed =
+              isPackedCarrier ||
+              pto::getPTOStorageElemBitWidth(loadElemTy) != 8;
+          if (!laneStrideSeedAllowed || failed(lanesPerPart) ||
+              type.getElementCount() >= *lanesPerPart ||
+              *lanesPerPart % type.getElementCount() != 0) {
+            return std::optional<WalkResult>(std::nullopt);
+          }
+          int64_t laneStride = *lanesPerPart / type.getElementCount();
+          return constraintResult(setNaturalLayout(
+              load.getResult(), VMILayoutAttr::getContiguous(ctx, laneStride),
+              op));
         })
         .Case<VMIMaskedLoadOp, VMIExpandLoadOp>([this, op](auto load) {
           requestDataUse(load.getPassthruMutable(), getContiguousLayout());

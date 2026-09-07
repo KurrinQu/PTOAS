@@ -183,6 +183,15 @@ static constexpr PreferredCastLayoutPattern kPreferredCastLayoutPatterns[] = {
     // compact lane-stride form is the natural cast layout.
     {bits<16>(), bits<32>(), 64, ls(2), c()},
     {bits<8>(), bits<32>(), 64, ls(4), c()},
+    // fp4 pair-cast row: f4E2M1x2 (8-bit storage) -> bf16x2 (32-bit pair) at
+    // 128 elements, lowered as UNPK4 + a single P0 vcvt.  Restricted to the
+    // exact packed pair so dense 8-bit -> 32-bit casts at 128 elements keep
+    // the stock default row {c(), d(4)}: both forms are value-correct for
+    // dense data (UNPK4/P0 selects exactly the valid lanes), but letting the
+    // dense cast take this row changes solver outcomes and conflict
+    // diagnostics (vmi_layout_assignment_multi_return_conflict_invalid.pto).
+    {bits<8>(), bits<32>(), 128, ls(4), c(),
+     CastTypeClass::F4E2M1x2ToBF16x2},
     {bits<32>(), bits<16>(), 64, c(), ls(2)},
     {bits<32>(), bits<8>(), 64, c(), ls(4)},
     {bits<32>(), bits<8>(), 128, d(2), ls(2)},

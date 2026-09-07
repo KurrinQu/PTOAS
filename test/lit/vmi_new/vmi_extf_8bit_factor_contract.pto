@@ -1,0 +1,55 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: pto-test-opt %s -split-input-file -vmi-lower-unified-to-legacy -vmi-mask-granularity-assignment -vmi-layout-assignment -vmi-to-vpto | FileCheck %s
+
+// Regression pins for the e4m3 "odd columns = 0" bug and the FP4 packed-pair
+// lowering contract:
+//   1. dense f8 -> f32 must keep the stock factor-4 form (P0-P3), never a
+//      sub-byte part selection;
+//   2. packed f4E2M1x2 with a lane-stride source must select the parts that
+//      cover the real bytes (P0/P2 for ls(2)) and never the zero-fill gaps
+//      (P1/P3), which was the original pre-578dec5d 47% FP4 bug shape.
+
+module {
+  func.func @dense_f8_to_f32_stock_factor4(
+      %x: !pto.vmi.vreg<256xf8E4M3FN, #pto.vmi.layout<contiguous>>)
+      -> !pto.vmi.vreg<256xf32, #pto.vmi.layout<deinterleaved = 4>> {
+    %r = pto.vmi.vcvt %x
+        : !pto.vmi.vreg<256xf8E4M3FN, #pto.vmi.layout<contiguous>>
+       -> !pto.vmi.vreg<256xf32, #pto.vmi.layout<deinterleaved = 4>>
+    return %r : !pto.vmi.vreg<256xf32, #pto.vmi.layout<deinterleaved = 4>>
+  }
+}
+
+// -----
+
+module {
+  func.func @fp4_e2m1x2_ls2_to_bf16x2_d2(
+      %x: !pto.vmi.vreg<128x!pto.f4E2M1x2, #pto.vmi.layout<contiguous, lane_stride = 2>>)
+      -> !pto.vmi.vreg<128x!pto.bf16x2, #pto.vmi.layout<deinterleaved = 2>> {
+    %r = pto.vmi.vcvt %x
+        : !pto.vmi.vreg<128x!pto.f4E2M1x2, #pto.vmi.layout<contiguous, lane_stride = 2>>
+       -> !pto.vmi.vreg<128x!pto.bf16x2, #pto.vmi.layout<deinterleaved = 2>>
+    return %r : !pto.vmi.vreg<128x!pto.bf16x2, #pto.vmi.layout<deinterleaved = 2>>
+  }
+}
+
+// CHECK-LABEL: func.func @dense_f8_to_f32_stock_factor4
+// CHECK: pto.vcvt {{.*}} {part = "P0"}
+// CHECK: pto.vcvt {{.*}} {part = "P1"}
+// CHECK: pto.vcvt {{.*}} {part = "P2"}
+// CHECK: pto.vcvt {{.*}} {part = "P3"}
+
+// CHECK-LABEL: func.func @fp4_e2m1x2_ls2_to_bf16x2_d2
+// CHECK: pto.vcvt {{.*}} {part = "P0"}
+// CHECK-NOT: part = "P1"
+// CHECK-NOT: part = "P3"
+// CHECK: pto.vcvt {{.*}} {part = "P2"}
+// CHECK-NOT: part = "P1"
+// CHECK-NOT: part = "P3"

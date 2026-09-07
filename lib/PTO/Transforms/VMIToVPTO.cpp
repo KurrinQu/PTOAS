@@ -8926,6 +8926,22 @@ struct OneToNVMIGroupBroadcastLoadOpPattern
               firstType, VPTOMemoryOpFamily::Load, e2bDist);
     }
 
+    // One E2B packet materializes exactly one physical part. A contiguous
+    // broadcast result that spans multiple physical chunks has no single
+    // reusable packet per part, so keep the direct-E2B path only for the
+    // one-packet-per-part shapes and let the generic group_slots ->
+    // contiguous broadcast fallback handle the rest.
+    if (canUseDirectE2B) {
+      VMILayoutAttr resultLayout = resultVMIType.getLayoutAttr();
+      FailureOr<int64_t> contiguousChunksPerPart =
+          getDataChunksInPart(resultVMIType, 0);
+      if (resultLayout && resultLayout.isContiguous() &&
+          (failed(contiguousChunksPerPart) ||
+           *contiguousChunksPerPart != 1)) {
+        canUseDirectE2B = false;
+      }
+    }
+
     if (failed(directFact) ||
         directFact->kind != VMIGroupBroadcastLoadDirectKind::E2B ||
         !canUseDirectE2B) {
@@ -11306,15 +11322,59 @@ struct OneToNVMIExtFOpPattern : OneToNOpConversionPattern<VMIExtFOp> {
 
     ArrayRef<StringRef> parts;
     int64_t factor = 0;
-    if (sourceBits == 16 && resultTypes.size() == 2 * sourceParts.size()) {
+    if (sourceBits == 16) {
+      // Keep the stock factor-2 contract for 16-bit sources.  The lane-stride
+      // ls(2) -> single EVEN shape is handled by the early path above; the
+      // generic branch only ever lowers dense c() -> d(2) EVEN/ODD pairs.
       static constexpr StringRef kEvenOddParts[] = {"EVEN", "ODD"};
-      parts = kEvenOddParts;
+      if (resultTypes.size() != 2 * sourceParts.size()) {
+        return rewriter.notifyMatchFailure(
+            op, "unsupported physical extf source/result width relation");
+      }
       factor = 2;
-    } else if (sourceBits == 8 &&
-               resultTypes.size() == 4 * sourceParts.size()) {
+      parts = kEvenOddParts;
+    } else if (sourceBits == 8) {
+      // Dense 8-bit sources (f8*/i8/ui8, and packed f4E1M2x2) keep the stock
+      // factor-4 contract: every byte of a dense part is converted by exactly
+      // one of P0-P3.  A sub-byte part selection (factor < 4) would read the
+      // zero-fill gap lanes of an unpack-style distribution and silently emit
+      // wrong output -- the e4m3 "odd columns = 0" regression shape.
+      //
+      // Packed f4E2M1x2 selects parts by source layout:
+      //   - ls(4) (UNPK4): valid bytes sit at lanes 0,4,8,...; P0 covers all
+      //     of them, one vcvt per source part (the FP4 fix shape).
+      //   - ls(2) (UNPK_B8): valid bytes sit at even lanes; P0 (lanes 0 mod 4)
+      //     plus P2 (lanes 2 mod 4) cover them, while P1/P3 are the zero-fill
+      //     gaps.  The pre-578dec5d 47% FP4 bug emitted {P0, P1} here.
+      //   - otherwise (dense c()): all lanes valid, P0-P3.
       static constexpr StringRef kPacked4Parts[] = {"P0", "P1", "P2", "P3"};
-      parts = kPacked4Parts;
-      factor = 4;
+      static constexpr StringRef kPacked2Parts[] = {"P0", "P2"};
+      static constexpr StringRef kPacked1Parts[] = {"P0"};
+      bool isPackedE2M1 =
+          isa<pto::F4E2M1x2Type>(sourceVMIType.getElementType());
+      if (!isPackedE2M1 && resultTypes.size() != 4 * sourceParts.size()) {
+        return rewriter.notifyMatchFailure(
+            op, "unsupported physical extf source/result width relation");
+      }
+      if (!isPackedE2M1) {
+        factor = 4;
+        parts = kPacked4Parts;
+      } else if (sourceLayout && sourceLayout.isContiguous() &&
+                 sourceLayout.getLaneStride() == 4) {
+        factor = 1;
+        parts = kPacked1Parts;
+      } else if (sourceLayout && sourceLayout.isContiguous() &&
+                 sourceLayout.getLaneStride() == 2) {
+        factor = 2;
+        parts = kPacked2Parts;
+      } else {
+        factor = 4;
+        parts = kPacked4Parts;
+      }
+      if (resultTypes.size() != factor * sourceParts.size()) {
+        return rewriter.notifyMatchFailure(
+            op, "FP4 extf physical arity does not match its source layout");
+      }
     } else {
       return rewriter.notifyMatchFailure(
           op, "unsupported physical extf source/result width relation");

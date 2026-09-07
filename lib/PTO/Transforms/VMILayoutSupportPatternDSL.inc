@@ -28,6 +28,12 @@ enum class CastTypeClass {
   Float,
   // Both source and result are integer element types.
   Integer,
+  // Packed E2M1 pairs widened to the register-only BF16-pair carrier.
+  // Deliberately narrower than a generic "packed float" class: the only
+  // 8-bit -> 32-bit packed-float cast in practice is f4E2M1x2 -> bf16x2.
+  // f4E1M2x2 stays on the stock default row {c(), d(4)} (factor 4, still
+  // value-correct, just no compact form), so no wider predicate is needed.
+  F4E2M1x2ToBF16x2,
 };
 
 struct LayoutPattern {
@@ -138,6 +144,14 @@ static bool matchesCastTypeClass(CastTypeClass typeClass, Type sourceType,
             pto::isPTOLowPrecisionType(resultType));
   case CastTypeClass::Integer:
     return isa<IntegerType>(sourceType) && isa<IntegerType>(resultType);
+  case CastTypeClass::F4E2M1x2ToBF16x2:
+    // Only the exact packed pair -> packed pair widening is eligible for the
+    // ls(4)/UNPK4 compact form.  A dense 8-bit cast at 128 elements must keep
+    // the stock {c(), d(4)} preferred row, otherwise the solver flips its
+    // result preference from d(4) to c() and downstream conflict diagnostics
+    // change (see vmi_layout_assignment_multi_return_conflict_invalid.pto).
+    return isa<pto::F4E2M1x2Type>(sourceType) &&
+           pto::isPTOBF16x2Type(resultType);
   }
   llvm_unreachable("unknown cast type class");
 }
