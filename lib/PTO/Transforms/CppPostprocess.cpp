@@ -175,7 +175,7 @@ bool rewriteLastUseMarkersInCpp(std::string &cpp) {
     replacement.append(callee);
     replacement.push_back('(');
     for (size_t i = 0; i < call.args.size(); ++i) {
-      if (i) {
+      if (i != 0) {
         replacement.append(", ");
       }
       replacement.append(call.args[i].str());

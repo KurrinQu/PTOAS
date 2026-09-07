@@ -82,7 +82,7 @@ static std::optional<int64_t> getElementByteSize(Value pointer) {
 
   int64_t byteSize;
   if (llvm::MulOverflow(elementCount, static_cast<int64_t>(bitWidth / kBitsPerByte),
-                        byteSize))
+                        byteSize) != 0)
     return std::nullopt;
   return byteSize;
 }
@@ -105,7 +105,7 @@ static void setStaticIndexedRange(OpTy op, VPTOMemoryAccess &access) {
     return;
   }
   int64_t byteOffset;
-  if (llvm::MulOverflow(*elementOffset, *elementByteSize, byteOffset)) {
+  if (llvm::MulOverflow(*elementOffset, *elementByteSize, byteOffset) != 0) {
     return;
   }
   access.byteOffset = byteOffset;
@@ -124,7 +124,7 @@ static void setStaticVectorRange(Value pointer, Value offset,
     return;
   }
   int64_t byteOffset;
-  if (llvm::MulOverflow(*elementOffset, *elementByteSize, byteOffset)) {
+  if (llvm::MulOverflow(*elementOffset, *elementByteSize, byteOffset) != 0) {
     return;
   }
   access.byteOffset = byteOffset;
@@ -275,7 +275,7 @@ mlir::pto::getDefaultVPTOSchedulingSemantics(Operation *op) {
   if (op->hasAttr("volatile") || op->hasAttr("is_volatile"))
     effects.push_back(
         {VPTOSchedulingEffectKind::VolatileMemory, "memory", Value()});
-  auto addPostUpdate = [&](Value updatedBase) {
+  auto addPostUpdate = [&effects](Value updatedBase) {
     if (updatedBase)
       effects.push_back({VPTOSchedulingEffectKind::PostUpdate,
                          "updated-address", updatedBase});

@@ -327,7 +327,7 @@ mlir::pto::getKnownAddressDifferenceBytes(Value from, Value to) {
     return std::nullopt;
   }
   int64_t result;
-  if (llvm::MulOverflow(difference->constant, fromInfo->elementBytes, result)) {
+  if (llvm::MulOverflow(difference->constant, fromInfo->elementBytes, result) != 0) {
     return std::nullopt;
   }
   return result;
@@ -506,7 +506,7 @@ PTOAddressAnalysis::getDeltaBytes(const PTOAddressExpr &address,
 
 PTOAnalysisResult<PTOTypedExprRef>
 PTOAddressAnalysis::convertDeltaToUnit(const PTOTypedExprRef &deltaBytes,
-                                       int64_t targetUnitBytes) {
+                                       int64_t targetUnitBytes) const {
   return scaleExpression(deltaBytes, 1, targetUnitBytes);
 }
 

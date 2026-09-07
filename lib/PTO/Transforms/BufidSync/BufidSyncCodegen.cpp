@@ -12,7 +12,6 @@
 #include "PTO/IR/PTO.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/IRMapping.h"
-#include "llvm/Support/Debug.h"
 #include "BufidSyncCodegen.h"
 
 
@@ -51,7 +50,7 @@ LogicalResult BufidSyncCodegen::run() {
   MLIRContext *ctx = func_->getContext();
   IRRewriter rewriter(ctx);
 
-  WalkResult walkResult = func_->walk<WalkOrder::PreOrder>([&](Operation *op) {
+  WalkResult walkResult = func_->walk<WalkOrder::PreOrder>([this, &rewriter](Operation *op) {
     auto it = op2BufSync_.find(op);
     if (it == op2BufSync_.end()) {
       return WalkResult::advance();
@@ -62,18 +61,18 @@ LogicalResult BufidSyncCodegen::run() {
                                              build.pipeBefore.end());
     SmallVector<BufSyncOperation> pipeAfter(build.pipeAfter.begin(),
                                             build.pipeAfter.end());
-    auto physicalIdFor = [&](const BufSyncOperation &sync) {
+    auto physicalIdFor = [this](const BufSyncOperation &sync) {
       return idAlloc_.getLogicToPhysical().lookup(sync.logicId);
     };
     std::sort(pipeBefore.begin(), pipeBefore.end(),
-              [&](const BufSyncOperation &a, const BufSyncOperation &b) {
+              [&physicalIdFor](const BufSyncOperation &a, const BufSyncOperation &b) {
                 return std::make_tuple(physicalIdFor(a),
                                        static_cast<int>(a.pipe), a.logicId) <
                        std::make_tuple(physicalIdFor(b),
                                        static_cast<int>(b.pipe), b.logicId);
               });
     std::sort(pipeAfter.begin(), pipeAfter.end(),
-              [&](const BufSyncOperation &a, const BufSyncOperation &b) {
+              [&physicalIdFor](const BufSyncOperation &a, const BufSyncOperation &b) {
                 return std::make_tuple(physicalIdFor(a),
                                        static_cast<int>(a.pipe), a.logicId) >
                        std::make_tuple(physicalIdFor(b),

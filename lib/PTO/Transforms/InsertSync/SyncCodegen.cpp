@@ -194,7 +194,7 @@ void SyncCodegen::Run() {
   AppendAutoSyncTailBarrierIfNeeded(rewriter);
 }
 
-void SyncCodegen::UpdateOpInsertSync(IRRewriter &rewriter) {
+void SyncCodegen::UpdateOpInsertSync(const IRRewriter &rewriter) {
   for (auto &nowElement : syncIR_) {
     if (auto *compoundElement = dyn_cast<CompoundInstanceElement>(nowElement.get())) {
       UpdateCompoundOpInsertSync(compoundElement);
@@ -302,7 +302,7 @@ void SyncCodegen::SyncInsert(IRRewriter &rewriter, Operation *op,
 
 // [核心修改] 加强版 CreateBarrierOp
 void SyncCodegen::CreateBarrierOp(IRRewriter &rewriter, Operation *op,
-                                  SyncOperation *sync, bool beforeInsert) {
+                                  const SyncOperation *sync, bool beforeInsert) {
   // A5: PIPE_V intra-pipe ordering is guaranteed by hardware; do not emit
   // explicit vector barrier (it is also rejected by backend checks).
   if (isTargetArchA5(func_.getOperation()) &&

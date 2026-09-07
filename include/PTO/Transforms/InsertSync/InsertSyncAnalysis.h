@@ -127,17 +127,17 @@ private:
                               DepBaseMemInfoPairVec &depBaseMemInfosVec);
  
   /// 实际创建 SyncOperation 对象并插入列表
-  void InsertSyncOperation(CompoundInstanceElement *nowCompound,
-                           CompoundInstanceElement *frontCompound,
+  void InsertSyncOperation(const CompoundInstanceElement *nowCompound,
+                           const CompoundInstanceElement *frontCompound,
                            DepBaseMemInfoPairVec &depBaseMemInfosVec,
                            const std::optional<unsigned> &forEndIndex);
  
   // --- Utility Methods ---
  
   /// 检查是否已经同步过 (Transitive Dependency Elimination)
-  bool isAlreadySync(CompoundInstanceElement *nowCompound,
+  bool isAlreadySync(const CompoundInstanceElement *nowCompound,
                      CompoundInstanceElement *frontCompound,
-                     SyncRecordList &syncRecordList, 
+                     SyncRecordList &syncRecordList,
                      unsigned recordListIndex);
 
   bool CanPrunePipeVBarrier(
@@ -151,7 +151,7 @@ private:
                          SyncRecordList &syncRecordList,
                          const PipelineType nowPipeValue);
                             
-  void UpdateSyncRecordInfo(CompoundInstanceElement *frontCompound,
+  void UpdateSyncRecordInfo(const CompoundInstanceElement *frontCompound,
                             SyncRecordList &syncRecordList);
  
   void UpdateSyncRecord(const SyncOperation *sync, SyncRecord &syncRecord,

@@ -1210,7 +1210,7 @@ MlirType mlirPTOStructTypeGet(MlirContext ctx, intptr_t numFieldTypes,
     fields.push_back(unwrap(fieldTypes[i]));
   }
   auto structType = mlir::pto::StructType::getChecked(
-      [&]() { return mlir::emitError(mlir::UnknownLoc::get(c)); }, c,
+      [c]() { return mlir::emitError(mlir::UnknownLoc::get(c)); }, c,
       llvm::ArrayRef<mlir::Type>(fields));
   return wrap(structType);
 }

@@ -132,7 +132,7 @@ bool equalPTOLinearExprs(const PTOLinearExpr &lhs,
                          const PTOLinearExpr &rhs);
 bool dividePTOLinearExprExact(PTOLinearExpr &expr, int64_t divisor);
 bool isZeroPTOLinearExpr(const PTOLinearExpr &expr);
-PTOTypedExprRef buildPTOTypedExpr(const PTOLinearExpr &expr, Type type = {});
+PTOTypedExprRef buildPTOTypedExpr(const PTOLinearExpr &linear, Type type = {});
 void collectPTOExprLeaves(const PTOTypedExprRef &expr,
                           SmallVectorImpl<Value> &leaves);
 bool getPTOExprType(const PTOTypedExprRef &expr, Type &type);
@@ -206,7 +206,7 @@ private:
                             Interpretation interpretation,
                             bool sourceProvesNoWrap = false);
   PTOAnalysisResult<PTOTypedExprRef>
-  getPointExpressionImpl(const PTOTypedExprRef &expression);
+  getPointExpressionImpl(const PTOTypedExprRef &expression) const;
 
   func::FuncOp func;
   DenseMap<Value, PTOTypedExprRef> expressionCache;

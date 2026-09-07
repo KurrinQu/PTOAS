@@ -94,8 +94,8 @@ void RemoveRedundantSync::Run() {
   }
 }
 
-bool RemoveRedundantSync::CheckAllSync(SyncOperation *setFlag,
-                                       SyncOperation *waitFlag) {
+bool RemoveRedundantSync::CheckAllSync(const SyncOperation *setFlag,
+                                       const SyncOperation *waitFlag) {
   // syncFinder 用于跟踪在当前范围内，哪些 SyncIndex 的 Set 已经被看到了。
   // 如果随后看到了对应的 Wait，说明找到了一对完整的内部同步。
   SmallVector<bool> syncFinder(syncOperations_.size(), false);
@@ -122,7 +122,7 @@ bool RemoveRedundantSync::CheckAllSync(SyncOperation *setFlag,
 
 bool RemoveRedundantSync::CheckRepeatSync(unsigned int begin, unsigned int end,
                                           SmallVector<bool> &syncFinder,
-                                          SyncOperation *setFlag) {
+                                          const SyncOperation *setFlag) {
   checkCondition(begin <= end, "expected begin <= end");
   checkSyncIRIndex(syncIR_, end);
 
@@ -172,7 +172,7 @@ bool RemoveRedundantSync::CheckRepeatSync(unsigned int begin, unsigned int end,
 
 bool RemoveRedundantSync::CheckBranchBetween(
     BranchInstanceElement *branchElement, SmallVector<bool> syncFinder,
-    SyncOperation *setFlag, unsigned endId, unsigned &i) {
+    const SyncOperation *setFlag, unsigned endId, unsigned &i) {
   // 只处理 IF_BEGIN
   if (branchElement->getBranchKind() != KindOfBranch::IF_BEGIN) {
     i = branchElement->endId;
@@ -215,7 +215,7 @@ bool RemoveRedundantSync::CheckBranchBetween(
 }
 
 bool RemoveRedundantSync::CheckLoopBetween(LoopInstanceElement *loopElement,
-                                           SyncOperation *setFlag,
+                                           const SyncOperation *setFlag,
                                            unsigned &i) {
   // 对于循环，保守起见暂时不深入检查内部是否覆盖外部。
   // 因为循环可能执行 0 次，如果循环内有同步，但循环不执行，外部依赖就没法满足。
@@ -226,7 +226,7 @@ bool RemoveRedundantSync::CheckLoopBetween(LoopInstanceElement *loopElement,
 
 bool RemoveRedundantSync::CanMatchedSync(SmallVector<bool> &syncFinder,
                                          SyncOperation *relatedSync,
-                                         SyncOperation *setFlag) {
+                                         const SyncOperation *setFlag) {
   // STATIC set/wait flags serialize a pipe pair, not a particular root buffer.
   // A complete inner pair on the same pipe pair can cover an outer pair even
   // when the memory dependency roots differ.

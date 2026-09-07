@@ -169,8 +169,62 @@ static CompactModeAttr toCompactModeAttr(MLIRContext *ctx, Attribute a) {
   return {};
 }
 
-Attribute TileBufConfigAttr::parse(AsmParser &p, Type) {
-  MLIRContext *ctx = p.getContext();
+// Parse a single `key = value` field of a tile_buf_config into the matching
+// accumulator. Returns failure() (caller returns {}) on a parse or validation
+// error, including an unknown key.
+static LogicalResult parseTileBufConfigField(AsmParser &odsParser,
+                                             MLIRContext *ctx, StringRef key,
+                                             BLayoutAttr &bl, SLayoutAttr &sl,
+                                             IntegerAttr &sz, PadValueAttr &pv,
+                                             CompactModeAttr &compact) {
+  if (key == "blayout") {
+    Attribute a;
+    if (odsParser.parseAttribute(a)) {
+      return failure();
+    }
+    bl = toBLayoutAttr(ctx, a);
+    return success(static_cast<bool>(bl));
+  }
+  if (key == "slayout") {
+    Attribute a;
+    if (odsParser.parseAttribute(a)) {
+      return failure();
+    }
+    sl = toSLayoutAttr(ctx, a);
+    return success(static_cast<bool>(sl));
+  }
+  if (key == "s_fractal_size") {
+    int32_t v = 0;
+    if (odsParser.parseInteger(v)) {
+      return failure();
+    }
+    sz = IntegerAttr::get(IntegerType::get(ctx, kI32BitWidth), v);
+    return success();
+  }
+  if (key == "pad") {
+    Attribute a;
+    if (odsParser.parseAttribute(a)) {
+      return failure();
+    }
+    pv = toPadValueAttr(ctx, a);
+    return success(static_cast<bool>(pv));
+  }
+  if (key == "compact") {
+    Attribute a;
+    if (odsParser.parseAttribute(a)) {
+      return failure();
+    }
+    compact = toCompactModeAttr(ctx, a);
+    return success(static_cast<bool>(compact));
+  }
+  odsParser.emitError(odsParser.getCurrentLocation(),
+                      "unknown key in tile_buf_config: ")
+      << key;
+  return failure();
+}
+
+Attribute TileBufConfigAttr::parse(AsmParser &odsParser, Type) {
+  MLIRContext *ctx = odsParser.getContext();
   auto def = TileBufConfigAttr::getDefault(ctx);
   BLayoutAttr bl = def.getBLayout();
   SLayoutAttr sl = def.getSLayout();
@@ -178,76 +232,27 @@ Attribute TileBufConfigAttr::parse(AsmParser &p, Type) {
   PadValueAttr pv = def.getPad();
   CompactModeAttr compact = def.getCompactMode();
 
-  if (p.parseLess()) {
+  if (odsParser.parseLess()) {
     return {};
   }
 
-  if (succeeded(p.parseOptionalGreater())) {
+  if (succeeded(odsParser.parseOptionalGreater())) {
     return TileBufConfigAttr::get(ctx, bl, sl, sz, pv, compact);
   }
 
-  bool parsedGreater = false;
-  while (!parsedGreater) {
+  bool closed = false;
+  while (!closed) {
     StringRef key;
-    if (p.parseKeyword(&key)) {
+    if (odsParser.parseKeyword(&key) || odsParser.parseEqual()) {
       return {};
     }
-    if (p.parseEqual()) {
+    if (failed(parseTileBufConfigField(odsParser, ctx, key, bl, sl, sz, pv,
+                                       compact))) {
       return {};
     }
-
-    if (key == "blayout") {
-      Attribute a;
-      if (p.parseAttribute(a)) {
-        return {};
-      }
-      bl = toBLayoutAttr(ctx, a);
-      if (!bl) {
-        return {};
-      }
-    } else if (key == "slayout") {
-      Attribute a;
-      if (p.parseAttribute(a)) {
-        return {};
-      }
-      sl = toSLayoutAttr(ctx, a);
-      if (!sl) {
-        return {};
-      }
-    } else if (key == "s_fractal_size") {
-      int32_t v = 0;
-      if (p.parseInteger(v)) {
-        return {};
-      }
-      sz = IntegerAttr::get(IntegerType::get(ctx, kI32BitWidth), v);
-    } else if (key == "pad") {
-      Attribute a;
-      if (p.parseAttribute(a)) {
-        return {};
-      }
-      pv = toPadValueAttr(ctx, a);
-      if (!pv) {
-        return {};
-      }
-    } else if (key == "compact") {
-      Attribute a;
-      if (p.parseAttribute(a)) {
-        return {};
-      }
-      compact = toCompactModeAttr(ctx, a);
-      if (!compact) {
-        return {};
-      }
-    } else {
-      p.emitError(p.getCurrentLocation(), "unknown key in tile_buf_config: ") << key;
-      return {};
-    }
-
-    parsedGreater = succeeded(p.parseOptionalGreater());
-    if (parsedGreater) {
-      break;
-    }
-    if (p.parseComma()) {
+    if (succeeded(odsParser.parseOptionalGreater())) {
+      closed = true;
+    } else if (odsParser.parseComma()) {
       return {};
     }
   }
@@ -255,12 +260,12 @@ Attribute TileBufConfigAttr::parse(AsmParser &p, Type) {
   return TileBufConfigAttr::get(ctx, bl, sl, sz, pv, compact);
 }
 
-void TileBufConfigAttr::print(AsmPrinter &p) const {
-  p << "<";
-  p << "blayout=" << getBLayout();
-  p << ", slayout=" << getSLayout();
-  p << ", s_fractal_size=" << static_cast<int32_t>(getSFractalSize().getInt());
-  p << ", pad=" << getPad();
-  p << ", compact=" << getCompactMode();
-  p << ">";
+void TileBufConfigAttr::print(AsmPrinter &odsPrinter) const {
+  odsPrinter << "<";
+  odsPrinter << "blayout=" << getBLayout();
+  odsPrinter << ", slayout=" << getSLayout();
+  odsPrinter << ", s_fractal_size=" << static_cast<int32_t>(getSFractalSize().getInt());
+  odsPrinter << ", pad=" << getPad();
+  odsPrinter << ", compact=" << getCompactMode();
+  odsPrinter << ">";
 }

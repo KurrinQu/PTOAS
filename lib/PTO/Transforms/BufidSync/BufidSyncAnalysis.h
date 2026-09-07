@@ -78,7 +78,7 @@ inline void printTileValue(llvm::raw_ostream &os, Value val) {
   val.printAsOperand(os, OpPrintingFlags());
 }
 
-inline llvm::StringRef stringifyAddressSpace(pto::AddressSpace as) {
+inline llvm::StringRef stringifyAddressSpaceShort(pto::AddressSpace as) {
   switch (as) {
   case pto::AddressSpace::GM:      return "gm";
   case pto::AddressSpace::MAT:    return "mat";
@@ -125,17 +125,17 @@ inline void printTileLoc(llvm::raw_ostream &os, Value tileValue) {
   os << " defBy=" << defOp->getName().getStringRef();
   auto locAs = getTileLocFromType(tileValue);
   if (locAs) {
-    os << " typeLoc=" << stringifyAddressSpace(*locAs);
+    os << " typeLoc=" << stringifyAddressSpaceShort(*locAs);
   }
 }
 
 inline void printTileInfo(llvm::raw_ostream &os, const TileInfo &t) {
   printTileValue(os, t.tileValue);
   os << " scope=" << static_cast<int>(t.scope)
-     << "(" << stringifyAddressSpace(t.scope) << ")";
+     << "(" << stringifyAddressSpaceShort(t.scope) << ")";
   auto typeLoc = getTileLocFromType(t.tileValue);
   if (typeLoc && *typeLoc != t.scope) {
-    os << " MISMATCH! typeLoc=" << stringifyAddressSpace(*typeLoc);
+    os << " MISMATCH! typeLoc=" << stringifyAddressSpaceShort(*typeLoc);
   }
   os << " baseAddr=" << t.baseAddr << " size=" << t.size;
   printTileLoc(os, t.tileValue);
@@ -147,7 +147,7 @@ inline void printTileInfo(llvm::raw_ostream &os, const TileInfo &t) {
     } else {
       os << " rootDefBy=BlockArg";
     }
-    os << " rootPtr=" << (const void *)t.rootBuffer.getAsOpaquePointer();
+    os << " rootPtr=" << static_cast<const void *>(t.rootBuffer.getAsOpaquePointer());
   }
 }
 
@@ -228,12 +228,12 @@ inline void printOp2BufSync(llvm::raw_ostream &os,
     sortedOps.push_back(op);
   }
 
-  DenseMap<Operation *, unsigned> opOrder;
+  DenseMap<const Operation *, unsigned> opOrder;
   unsigned orderIdx = 0;
   func.walk([&](Operation *op) { opOrder[op] = orderIdx++; });
 
   std::sort(sortedOps.begin(), sortedOps.end(),
-            [&](Operation *a, Operation *b) {
+            [&](const Operation *a, const Operation *b) {
               return opOrder[a] < opOrder[b];
             });
 
@@ -321,7 +321,8 @@ public:
 
 private:
   bool isGMDependency(const SmallVector<const BaseMemInfo *> &tiles) const;
-  bool isSamePipe(CompoundInstanceElement *a, CompoundInstanceElement *b) const;
+  bool isSamePipe(const CompoundInstanceElement *a,
+                  const CompoundInstanceElement *b) const;
   void collectTilesFromDepPairs();
   int findBestVirtualBufId(const BaseMemInfo *tile) const;
   int findBestVirtualBufId(const DepPair &depPair) const;

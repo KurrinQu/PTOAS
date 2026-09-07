@@ -51,7 +51,7 @@ public:
   void Allocate(uint32_t runNum = 0);
  
 private:
-  void AllocateEventId(InstanceElement *e);
+  void AllocateEventId(const InstanceElement *e);
   size_t GetCompilerAvailableEventIdNum(const SyncOperation *sync);
   void SetEventId(SyncOperation *sync);
  

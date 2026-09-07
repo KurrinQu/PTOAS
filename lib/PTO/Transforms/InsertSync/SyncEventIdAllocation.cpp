@@ -110,7 +110,7 @@ void SyncEventIdAllocation::SetBlockSyncAllEventID(SyncOperation *sync) {
   }
 }
 
-void SyncEventIdAllocation::AllocateEventId(InstanceElement *e) {
+void SyncEventIdAllocation::AllocateEventId(const InstanceElement *e) {
   for (auto &sync : e->pipeBefore) {
     if (sync->uselessSync) {
       continue;

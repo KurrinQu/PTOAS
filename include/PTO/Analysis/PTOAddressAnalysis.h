@@ -83,7 +83,7 @@ public:
 
   PTOAnalysisResult<PTOTypedExprRef>
   convertDeltaToUnit(const PTOTypedExprRef &deltaBytes,
-                     int64_t targetUnitBytes);
+                     int64_t targetUnitBytes) const;
 
   PTOAnalysisResult<PTOTypedExprRef>
   getDeltaInUnit(const PTOAddressExpr &address, scf::ForOp loop,

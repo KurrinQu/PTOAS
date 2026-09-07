@@ -316,7 +316,7 @@ void VPTOSchedBoundary::insertAvailable(VPTOSUnit *unit) {
   states[id] = UnitState::Available;
 }
 
-void VPTOSchedBoundary::eraseAvailable(VPTOSUnit *unit) {
+void VPTOSchedBoundary::eraseAvailable(const VPTOSUnit *unit) {
   unsigned id = unit->getId();
   size_t position = availablePositions[id];
   VPTOSUnit *last = available.back();

@@ -14,7 +14,6 @@
 #include "PTO/IR/PTO.h"
 #include "PTO/Support/CodeConstants.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "llvm/Support/Debug.h"
 #include "BufidSyncAnalysis.h"
 
 
@@ -33,8 +32,8 @@ bool BufidSyncAnalysis::isGMDependency(
   return false;
 }
 
-bool BufidSyncAnalysis::isSamePipe(CompoundInstanceElement *a,
-                                   CompoundInstanceElement *b) const {
+bool BufidSyncAnalysis::isSamePipe(const CompoundInstanceElement *a,
+                                   const CompoundInstanceElement *b) const {
   return a->kPipeValue == b->kPipeValue;
 }
 
@@ -166,7 +165,7 @@ void BufidSyncAnalysis::collectTilesFromDepPairs() {
       continue;
     }
     for (unsigned k = 1; k < indices.size(); ++k) {
-      if (removed.count(indices[k])) {
+      if (removed.contains(indices[k])) {
         continue;
       }
       auto &a = allTiles_[indices[0]];
@@ -180,7 +179,7 @@ void BufidSyncAnalysis::collectTilesFromDepPairs() {
 
   if (!removed.empty()) {
     for (unsigned i = 0; i < allTiles_.size(); ++i) {
-      if (!removed.count(i)) {
+      if (!removed.contains(i)) {
         deduped.push_back(std::move(allTiles_[i]));
       }
     }
@@ -213,7 +212,7 @@ void BufidSyncAnalysis::classifyTiles() {
       parent[i] = i;
     }
 
-    auto find = [&](unsigned x) -> unsigned {
+    auto find = [&parent](unsigned x) -> unsigned {
       while (parent[x] != x) {
         parent[x] = parent[parent[x]];
         x = parent[x];
@@ -221,7 +220,7 @@ void BufidSyncAnalysis::classifyTiles() {
       return x;
     };
 
-    auto unite = [&](unsigned a, unsigned b) {
+    auto unite = [&find, &parent](unsigned a, unsigned b) {
       a = find(a);
       b = find(b);
       if (a != b) {
@@ -587,7 +586,7 @@ void BufidSyncAnalysis::optimizeSamePipeMerge() {
         if (ids.size() > 1) {
           int survivor = *std::min_element(ids.begin(), ids.end());
           for (int id : ids) {
-            if (id != survivor && !mergeMap.count(id)) {
+            if (id != survivor && !mergeMap.contains(id)) {
               mergeMap[id] = survivor;
             }
           }
@@ -604,7 +603,7 @@ void BufidSyncAnalysis::optimizeSamePipeMerge() {
   }
 
   for (auto &[id, target] : mergeMap) {
-    while (mergeMap.count(target)) {
+    while (mergeMap.contains(target)) {
       target = mergeMap[target];
     }
   }
@@ -668,7 +667,7 @@ void BufidSyncAnalysis::mergeGetRls() {
   unsigned cancelCount = 0;
 
   std::function<void(Block *, RlsMap &)> processBlock =
-      [&](Block *block, RlsMap &rlsMap) {
+      [this, &cancelCount, &processBlock](Block *block, RlsMap &rlsMap) {
         for (auto &op : *block) {
           auto it = op2BufSync_.find(&op);
           if (it != op2BufSync_.end()) {
@@ -688,7 +687,7 @@ void BufidSyncAnalysis::mergeGetRls() {
                     rlsPipeAfter.erase(
                         std::remove_if(
                             rlsPipeAfter.begin(), rlsPipeAfter.end(),
-                            [&](const BufSyncOperation &s) {
+                            [&sync](const BufSyncOperation &s) {
                               return s.type == BufSyncType::RLS_BUF &&
                                      s.logicId == sync.logicId &&
                                      s.pipe == sync.pipe;

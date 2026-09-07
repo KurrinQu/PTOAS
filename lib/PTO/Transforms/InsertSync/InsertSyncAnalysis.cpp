@@ -645,7 +645,8 @@ bool InsertSyncAnalysis::CanPrunePipeVBarrier(
 }
 
 void InsertSyncAnalysis::InsertSyncOperation(
-    CompoundInstanceElement *nowCompound, CompoundInstanceElement *frontCompound,
+    const CompoundInstanceElement *nowCompound,
+    const CompoundInstanceElement *frontCompound,
     DepBaseMemInfoPairVec &depBaseMemInfosVec,
     const std::optional<unsigned> &forEndIndex) {
   PipelineType nowPipe = nowCompound->kPipeValue;
@@ -746,7 +747,8 @@ void InsertSyncAnalysis::InsertSyncOperation(
 // ==============================================================================
 
 bool InsertSyncAnalysis::isAlreadySync(
-    CompoundInstanceElement *nowCompound, CompoundInstanceElement *frontCompound,
+    const CompoundInstanceElement *nowCompound,
+    CompoundInstanceElement *frontCompound,
     SyncRecordList &syncRecordList, unsigned recordListIndex) {
   (void)nowCompound;
   const PipelineType frontPipe = frontCompound->kPipeValue;
@@ -823,7 +825,8 @@ void InsertSyncAnalysis::UpdateSyncRecord(const SyncOperation *sync,
 }
 
 void InsertSyncAnalysis::UpdateSyncRecordInfo(
-    CompoundInstanceElement *frontCompound, SyncRecordList &syncRecordList) {
+    const CompoundInstanceElement *frontCompound,
+    SyncRecordList &syncRecordList) {
   (void)frontCompound;
   assert(!syncOperations_.empty());
   auto &syncPair = syncOperations_.back();

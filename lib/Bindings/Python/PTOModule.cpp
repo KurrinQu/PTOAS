@@ -124,7 +124,7 @@ static MlirAttribute optionalAttributeFromPy(py::object attr) {
   return py::cast<MlirAttribute>(attr);
 }
 
-static void populatePTODialectSubmodule(pybind11::module &m) {
+static void populatePTODialectSubmodule(const pybind11::module &m) {
   (void)m;
 }
 

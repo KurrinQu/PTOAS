@@ -139,7 +139,7 @@ static bool sameAtom(const PTOTypedExprRef &lhs,
 
 static bool addLinearConstant(PTOLinearExpr &linear, int64_t value) {
   int64_t result;
-  if (llvm::AddOverflow(linear.constant, value, result)) {
+  if (llvm::AddOverflow(linear.constant, value, result) != 0) {
     return false;
   }
   linear.constant = result;
@@ -156,7 +156,7 @@ static bool addLinearTerm(PTOLinearExpr &linear, PTOTypedExprRef atom,
       continue;
     }
     int64_t result;
-    if (llvm::AddOverflow(term.coefficient, coefficient, result)) {
+    if (llvm::AddOverflow(term.coefficient, coefficient, result) != 0) {
       return false;
     }
     term.coefficient = result;
@@ -178,7 +178,7 @@ static bool accumulateLinear(const PTOTypedExprRef &expr, int64_t scale,
   if (expr->sourceValue) {
     if (auto constant = foldPTOConstant(expr)) {
       int64_t scaled;
-      return !llvm::MulOverflow(*constant, scale, scaled) &&
+      return llvm::MulOverflow(*constant, scale, scaled) == 0 &&
              addLinearConstant(linear, scaled);
     }
     return addLinearTerm(linear, expr, scale);
@@ -187,14 +187,14 @@ static bool accumulateLinear(const PTOTypedExprRef &expr, int64_t scale,
   case PTOTypedExpr::Kind::Constant: {
     auto constant = foldPTOConstant(expr);
     int64_t scaled;
-    return constant && !llvm::MulOverflow(*constant, scale, scaled) &&
+    return constant && llvm::MulOverflow(*constant, scale, scaled) == 0 &&
            addLinearConstant(linear, scaled);
   }
   case PTOTypedExpr::Kind::Opaque:
   case PTOTypedExpr::Kind::Cast:
     if (auto constant = foldPTOConstant(expr)) {
       int64_t scaled;
-      return !llvm::MulOverflow(*constant, scale, scaled) &&
+      return llvm::MulOverflow(*constant, scale, scaled) == 0 &&
              addLinearConstant(linear, scaled);
     }
     return addLinearTerm(linear, expr, scale);
@@ -203,19 +203,19 @@ static bool accumulateLinear(const PTOTypedExprRef &expr, int64_t scale,
            accumulateLinear(expr->rhs, scale, linear);
   case PTOTypedExpr::Kind::Sub: {
     int64_t negativeScale;
-    return !llvm::SubOverflow(int64_t{0}, scale, negativeScale) &&
+    return llvm::SubOverflow(int64_t{0}, scale, negativeScale) == 0 &&
            accumulateLinear(expr->lhs, scale, linear) &&
            accumulateLinear(expr->rhs, negativeScale, linear);
   }
   case PTOTypedExpr::Kind::Mul: {
     if (auto lhsConstant = foldPTOConstant(expr->lhs)) {
       int64_t nextScale;
-      return !llvm::MulOverflow(scale, *lhsConstant, nextScale) &&
+      return llvm::MulOverflow(scale, *lhsConstant, nextScale) == 0 &&
              accumulateLinear(expr->rhs, nextScale, linear);
     }
     if (auto rhsConstant = foldPTOConstant(expr->rhs)) {
       int64_t nextScale;
-      return !llvm::MulOverflow(scale, *rhsConstant, nextScale) &&
+      return llvm::MulOverflow(scale, *rhsConstant, nextScale) == 0 &&
              accumulateLinear(expr->lhs, nextScale, linear);
     }
     return false;
@@ -390,7 +390,7 @@ static std::optional<RecurrenceDecomposition> decomposeRecurrence(
     auto multiplier = getConstantIntValue(multiplierValue);
     int64_t coefficient;
     if (!multiplier || llvm::MulOverflow(variant.coefficient, *multiplier,
-                                         coefficient)) {
+                                         coefficient) != 0) {
       return record(std::nullopt);
     }
     return record(RecurrenceDecomposition{
@@ -803,7 +803,7 @@ PTOTypedExprRef mlir::pto::makePTOAddExpr(PTOTypedExprRef lhs,
   auto rhsConstant = foldPTOConstant(rhs);
   if (lhsConstant && rhsConstant) {
     int64_t result;
-    if (!llvm::AddOverflow(*lhsConstant, *rhsConstant, result)) {
+    if (llvm::AddOverflow(*lhsConstant, *rhsConstant, result) == 0) {
       return makePTOConstantExpr(result, chooseType(type, lhs, rhs));
     }
   }
@@ -828,7 +828,7 @@ PTOTypedExprRef mlir::pto::makePTOSubExpr(PTOTypedExprRef lhs,
   auto rhsConstant = foldPTOConstant(rhs);
   if (lhsConstant && rhsConstant) {
     int64_t result;
-    if (!llvm::SubOverflow(*lhsConstant, *rhsConstant, result)) {
+    if (llvm::SubOverflow(*lhsConstant, *rhsConstant, result) == 0) {
       return makePTOConstantExpr(result, chooseType(type, lhs, rhs));
     }
   }
@@ -850,7 +850,7 @@ PTOTypedExprRef mlir::pto::makePTOMulExpr(PTOTypedExprRef lhs,
   auto rhsConstant = foldPTOConstant(rhs);
   if (lhsConstant && rhsConstant) {
     int64_t result;
-    if (!llvm::MulOverflow(*lhsConstant, *rhsConstant, result)) {
+    if (llvm::MulOverflow(*lhsConstant, *rhsConstant, result) == 0) {
       return makePTOConstantExpr(result, chooseType(type, lhs, rhs));
     }
   }
@@ -1402,7 +1402,7 @@ PTOValueEvolutionAnalysis::getPointExpression(
 
 PTOAnalysisResult<PTOTypedExprRef>
 PTOValueEvolutionAnalysis::getPointExpressionImpl(
-    const PTOTypedExprRef &expression) {
+    const PTOTypedExprRef &expression) const {
   auto proof = analyzePointExpression(expression, false);
   if (!proof) {
     return PTOAnalysisResult<PTOTypedExprRef>::unknown(proof.reason);
@@ -1621,7 +1621,7 @@ PTOValueEvolutionAnalysis::getSyntheticEvolutionImpl(
     int64_t combined;
     result.constantStep =
         llvm::MulOverflow(*result.constantStep,
-                          static_cast<int64_t>(multiplier), combined)
+                          static_cast<int64_t>(multiplier), combined) != 0
             ? std::nullopt
             : std::optional<int64_t>(combined);
   } else {

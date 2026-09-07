@@ -99,7 +99,7 @@ private:
   enum class UnitState { Unavailable, Pending, Available, Scheduled };
 
   void insertAvailable(VPTOSUnit *unit);
-  void eraseAvailable(VPTOSUnit *unit);
+  void eraseAvailable(const VPTOSUnit *unit);
   void insertPending(VPTOSUnit *unit, unsigned readyCycle);
   void releasePending();
 

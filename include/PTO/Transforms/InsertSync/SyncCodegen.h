@@ -45,15 +45,15 @@ private:
                   bool beforeInsert);
  
   // --- 预处理：构建 op2InsertSync 映射 ---
-  void UpdateOpInsertSync(IRRewriter &rewriter);
+  void UpdateOpInsertSync(const IRRewriter &rewriter);
   void UpdateCompoundOpInsertSync(CompoundInstanceElement *nowCompound);
   void updatePlaceHolderOpInsertSync(PlaceHolderInstanceElement *placeHolder);
   void UpdateLoopOpInsertSync(LoopInstanceElement *nowElement);
   void UpdateBranchOpInsertSync(BranchInstanceElement *nowElement);
  
   // --- 指令生成 ---
-  void CreateBarrierOp(IRRewriter &rewriter, Operation *op, SyncOperation *sync,
-                       bool beforeInsert);
+  void CreateBarrierOp(IRRewriter &rewriter, Operation *op,
+                       const SyncOperation *sync, bool beforeInsert);
 
   // Insert the compiler tail-clean barrier right before function return.
   void AppendAutoSyncTailBarrierIfNeeded(IRRewriter &rewriter);

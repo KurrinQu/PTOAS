@@ -500,7 +500,7 @@ static LogicalResult parseCompactTileBufFields(AsmParser &parser,
 static Type buildTileBufType(AsmParser &parser,
                              const ParsedTileBufFields &fields) {
   MLIRContext *ctx = parser.getContext();
-  auto emitError = [&]() -> InFlightDiagnostic {
+  auto emitError = [&parser]() -> InFlightDiagnostic {
     return parser.emitError(parser.getNameLoc());
   };
 
@@ -589,40 +589,40 @@ static Type buildTileBufType(AsmParser &parser,
 // ---- TileBufType custom asm ----
 // !pto.tile_buf<<loc=.., dtype=.., rows=.., cols=.., blayout=.., valid=..x..,
 //                slayout=.., fractal=.., pad=.., compact=..>>
-Type TileBufType::parse(AsmParser &parser) {
-  if (failed(parser.parseLess())) {
+Type TileBufType::parse(AsmParser &odsParser) {
+  if (failed(odsParser.parseLess())) {
     return Type();
   }
 
   std::string firstToken;
-  if (failed(parser.parseKeywordOrString(&firstToken))) {
+  if (failed(odsParser.parseKeywordOrString(&firstToken))) {
     return Type();
   }
 
   ParsedTileBufFields fields;
   const bool isLegacySyntax = firstToken == "loc";
   if (isLegacySyntax) {
-    if (failed(parseLegacyTileBufFields(parser, fields))) {
+    if (failed(parseLegacyTileBufFields(odsParser, fields))) {
       return Type();
     }
   } else {
-    if (failed(parseCompactTileBufFields(parser, firstToken, fields))) {
+    if (failed(parseCompactTileBufFields(odsParser, firstToken, fields))) {
       return Type();
     }
   }
 
-  if (isLegacySyntax && succeeded(parser.parseOptionalComma())) {
-    if (failed(parseTileBufKeyEq(parser, "compact")) ||
-        failed(parseTileBufUInt32Value(parser, "compact", fields.compactInt))) {
+  if (isLegacySyntax && succeeded(odsParser.parseOptionalComma())) {
+    if (failed(parseTileBufKeyEq(odsParser, "compact")) ||
+        failed(parseTileBufUInt32Value(odsParser, "compact", fields.compactInt))) {
       return Type();
     }
   }
 
-  if (failed(parser.parseGreater())) {
+  if (failed(odsParser.parseGreater())) {
     return Type();
   }
 
-  return buildTileBufType(parser, fields);
+  return buildTileBufType(odsParser, fields);
 }
 
 static llvm::StringRef stringifyLocFromMemorySpace(mlir::Attribute memorySpace) {
@@ -682,7 +682,51 @@ static void printTileBufDim(AsmPrinter &printer, int64_t dim) {
 }
 }
 
-void mlir::pto::TileBufType::print(mlir::AsmPrinter &printer) const {
+// Emit the optional `, key=value` clauses of a tile_buf type: each is printed
+// only when it differs from the default config (or, for `valid`, from the
+// declared shape). Factored out of print() to keep that method small.
+static void printTileBufOptionalFields(AsmPrinter &odsPrinter,
+                                       TileBufConfigAttr cfg,
+                                       TileBufConfigAttr defaultCfg,
+                                       int64_t rows, int64_t cols,
+                                       int64_t vrow, int64_t vcol) {
+  auto blayout = llvm::dyn_cast<BLayoutAttr>(cfg.getBLayout());
+  auto slayout = llvm::dyn_cast<SLayoutAttr>(cfg.getSLayout());
+  auto pad = llvm::dyn_cast<PadValueAttr>(cfg.getPad());
+  auto compact = llvm::dyn_cast<CompactModeAttr>(cfg.getCompactMode());
+  auto defaultBLayout = llvm::dyn_cast<BLayoutAttr>(defaultCfg.getBLayout());
+  auto defaultSLayout = llvm::dyn_cast<SLayoutAttr>(defaultCfg.getSLayout());
+  auto defaultPad = llvm::dyn_cast<PadValueAttr>(defaultCfg.getPad());
+  auto defaultCompact =
+      llvm::dyn_cast<CompactModeAttr>(defaultCfg.getCompactMode());
+
+  if (vrow != rows || vcol != cols) {
+    odsPrinter << ", valid=";
+    printTileBufDim(odsPrinter, vrow);
+    odsPrinter << "x";
+    printTileBufDim(odsPrinter, vcol);
+  }
+  if (blayout && defaultBLayout &&
+      blayout.getValue() != defaultBLayout.getValue()) {
+    odsPrinter << ", blayout=" << stringifyBLayout(blayout.getValue());
+  }
+  if (slayout && defaultSLayout &&
+      slayout.getValue() != defaultSLayout.getValue()) {
+    odsPrinter << ", slayout=" << stringifySLayout(slayout.getValue());
+  }
+  if (cfg.getSFractalSize().getInt() != defaultCfg.getSFractalSize().getInt()) {
+    odsPrinter << ", fractal=" << cfg.getSFractalSize().getInt();
+  }
+  if (pad && defaultPad && pad.getValue() != defaultPad.getValue()) {
+    odsPrinter << ", pad=" << stringifyLocFromPad(cfg.getPad());
+  }
+  if (compact && defaultCompact &&
+      compact.getValue() != defaultCompact.getValue()) {
+    odsPrinter << ", compact=" << stringifyCompactModeInt(cfg.getCompactMode());
+  }
+}
+
+void mlir::pto::TileBufType::print(mlir::AsmPrinter &odsPrinter) const {
   auto shape = getShape();
   int64_t rows = shape.size() > 0 ? shape[0] : ShapedType::kDynamic;
   int64_t cols = shape.size() > 1 ? shape[1] : ShapedType::kDynamic;
@@ -694,15 +738,6 @@ void mlir::pto::TileBufType::print(mlir::AsmPrinter &printer) const {
   auto defaultCfg = TileBufConfigAttr::getDefault(getContext());
 
   llvm::StringRef locStr = stringifyLocFromMemorySpace(getMemorySpace());
-  auto blayout = llvm::dyn_cast<BLayoutAttr>(cfg.getBLayout());
-  auto slayout = llvm::dyn_cast<SLayoutAttr>(cfg.getSLayout());
-  auto pad = llvm::dyn_cast<PadValueAttr>(cfg.getPad());
-  auto compact = llvm::dyn_cast<CompactModeAttr>(cfg.getCompactMode());
-  auto defaultBLayout = llvm::dyn_cast<BLayoutAttr>(defaultCfg.getBLayout());
-  auto defaultSLayout = llvm::dyn_cast<SLayoutAttr>(defaultCfg.getSLayout());
-  auto defaultPad = llvm::dyn_cast<PadValueAttr>(defaultCfg.getPad());
-  auto defaultCompact =
-      llvm::dyn_cast<CompactModeAttr>(defaultCfg.getCompactMode());
 
   auto vs = getValidShape();
   int64_t vrow = rows;
@@ -712,49 +747,17 @@ void mlir::pto::TileBufType::print(mlir::AsmPrinter &printer) const {
     vcol = vs[1];
   }
 
-  const bool printValid = vrow != rows || vcol != cols;
-  const bool printBLayout =
-      blayout && defaultBLayout && blayout.getValue() != defaultBLayout.getValue();
-  const bool printSLayout =
-      slayout && defaultSLayout && slayout.getValue() != defaultSLayout.getValue();
-  const bool printFractal =
-      cfg.getSFractalSize().getInt() != defaultCfg.getSFractalSize().getInt();
-  const bool printPad =
-      pad && defaultPad && pad.getValue() != defaultPad.getValue();
-  const bool printCompact =
-      compact && defaultCompact &&
-      compact.getValue() != defaultCompact.getValue();
+  odsPrinter << "<" << locStr << ", ";
+  printTileBufDim(odsPrinter, rows);
+  odsPrinter << "x";
+  printTileBufDim(odsPrinter, cols);
+  odsPrinter << "x";
+  odsPrinter.printType(getElementType());
 
-  printer << "<" << locStr << ", ";
-  printTileBufDim(printer, rows);
-  printer << "x";
-  printTileBufDim(printer, cols);
-  printer << "x";
-  printer.printType(getElementType());
+  printTileBufOptionalFields(odsPrinter, cfg, defaultCfg, rows, cols, vrow,
+                             vcol);
 
-  if (printValid) {
-    printer << ", valid=";
-    printTileBufDim(printer, vrow);
-    printer << "x";
-    printTileBufDim(printer, vcol);
-  }
-  if (printBLayout) {
-    printer << ", blayout=" << stringifyBLayout(blayout.getValue());
-  }
-  if (printSLayout) {
-    printer << ", slayout=" << stringifySLayout(slayout.getValue());
-  }
-  if (printFractal) {
-    printer << ", fractal=" << cfg.getSFractalSize().getInt();
-  }
-  if (printPad) {
-    printer << ", pad=" << stringifyLocFromPad(cfg.getPad());
-  }
-  if (printCompact) {
-    printer << ", compact=" << stringifyCompactModeInt(cfg.getCompactMode());
-  }
-
-  printer << ">";
+  odsPrinter << ">";
 }
 
 // ---- MultiTileBufType custom asm ----
@@ -799,12 +802,12 @@ static LogicalResult parseMultiTileBufCount(AsmParser &parser,
 }
 } // namespace
 
-Type MultiTileBufType::parse(AsmParser &parser) {
-  if (failed(parser.parseLess())) {
+Type MultiTileBufType::parse(AsmParser &odsParser) {
+  if (failed(odsParser.parseLess())) {
     return Type();
   }
 
-  MLIRContext *ctx = parser.getContext();
+  MLIRContext *ctx = odsParser.getContext();
   TileBufType slotType;
   uint32_t count = 0;
   bool countConsumedByCompact = false;
@@ -812,14 +815,14 @@ Type MultiTileBufType::parse(AsmParser &parser) {
   // Verbose form: an explicit `!pto.tile_buf<...>` type token comes next.
   // Compact form: a bare keyword (loc such as `vec`/`mat`/...) comes next.
   Type maybeType;
-  OptionalParseResult typeRes = parser.parseOptionalType(maybeType);
+  OptionalParseResult typeRes = odsParser.parseOptionalType(maybeType);
   if (typeRes.has_value()) {
     if (failed(*typeRes)) {
       return Type();
     }
     slotType = llvm::dyn_cast<TileBufType>(maybeType);
     if (!slotType) {
-      parser.emitError(parser.getCurrentLocation(),
+      odsParser.emitError(odsParser.getCurrentLocation(),
                        "multi_tile_buf slot type must be `!pto.tile_buf<...>`");
       return Type();
     }
@@ -827,16 +830,16 @@ Type MultiTileBufType::parse(AsmParser &parser) {
     // Compact form: parse via the same compact path used by tile_buf, but
     // tell it to consume the trailing `, count=N` on our behalf.
     std::string firstToken;
-    if (failed(parser.parseKeywordOrString(&firstToken))) {
+    if (failed(odsParser.parseKeywordOrString(&firstToken))) {
       return Type();
     }
 
     ParsedTileBufFields fields;
-    if (failed(parseCompactTileBufFields(parser, firstToken, fields, &count))) {
+    if (failed(parseCompactTileBufFields(odsParser, firstToken, fields, &count))) {
       return Type();
     }
 
-    Type built = buildTileBufType(parser, fields);
+    Type built = buildTileBufType(odsParser, fields);
     if (!built) {
       return Type();
     }
@@ -845,22 +848,22 @@ Type MultiTileBufType::parse(AsmParser &parser) {
   }
 
   if (!countConsumedByCompact) {
-    if (failed(parseMultiTileBufCount(parser, count))) {
+    if (failed(parseMultiTileBufCount(odsParser, count))) {
       return Type();
     }
   }
 
-  if (failed(parser.parseGreater())) {
+  if (failed(odsParser.parseGreater())) {
     return Type();
   }
 
   return getChecked(
-      [&]() { return parser.emitError(parser.getNameLoc()); }, ctx, slotType,
+      [&]() { return odsParser.emitError(odsParser.getNameLoc()); }, ctx, slotType,
       count);
 }
 
-void MultiTileBufType::print(AsmPrinter &printer) const {
-  printer << "<";
-  printer.printType(getSlotType());
-  printer << ", count=" << getCount() << ">";
+void MultiTileBufType::print(AsmPrinter &odsPrinter) const {
+  odsPrinter << "<";
+  odsPrinter.printType(getSlotType());
+  odsPrinter << ", count=" << getCount() << ">";
 }
