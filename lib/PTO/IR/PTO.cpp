@@ -7137,8 +7137,22 @@ LogicalResult pto::TCmpOp::verify() {
       return emitOpError("expects dst element type to be i8");
     }
 
-    if (getShapeVec(t0) != getShapeVec(t1) || getShapeVec(t0) != getShapeVec(td)) {
-      return emitOpError("expects src0, src1, and dst to have the same shape");
+    auto src0Shape = getShapeVec(t0);
+    auto src1Shape = getShapeVec(t1);
+    if (src0Shape != src1Shape) {
+      return emitOpError("expects src0 and src1 to have the same shape");
+    }
+
+    // dst carries a packed predicate mask, so its column extent differs from
+    // the source tiles. The valid row extent must still match.
+    auto src0Valid = getValidShapeVec(t0);
+    auto dstValid = getValidShapeVec(td);
+    bool validShapesAreRankTwo = src0Valid.size() == 2 && dstValid.size() == 2;
+    if (!validShapesAreRankTwo) {
+      return emitOpError("expects src0 and dst to have rank-2 valid_shape");
+    }
+    if (!hasCompatibleKnownExtent(src0Valid[0], dstValid[0])) {
+      return emitOpError("expects src0 and dst to have the same valid_shape[0]");
     }
     return success();
   };
