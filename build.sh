@@ -13,9 +13,9 @@
 # layout). This is the entry point used by the gitcode smoke pipeline
 # (./build.sh --build / --pkg). It builds the external LLVM/MLIR 19 dependency
 # (reusing a cached LLVM source/build when available) and then builds and
-# installs PTOAS through the tree's native CMake build. Build parallelism is
-# bounded by the available memory. Both Actions and robot PreSmoke consume
-# a cached or downloaded Compile installer; PreSmoke never builds from source.
+# installs PTOAS through the tree's native CMake build. Both Actions and robot
+# PreSmoke consume a cached or downloaded Compile installer; PreSmoke never
+# builds from source.
 
 set -e
 
@@ -217,63 +217,33 @@ usage() {
   echo "    --pkg                    Build and package through CANN CPack"
   echo "    --pkg-type=<TYPE>        Package type (run/rpm/deb/all); accepted for"
   echo "                             interface compatibility and forwarded to CPack"
-  echo "    -j <N>                   Parallel jobs (default: up to 16; memory bounded)"
+  echo "    -j <N>                   Parallel jobs (default: nproc)"
   echo "    --cann_3rd_lib_path <d>  Override the third-party/LLVM cache root"
   echo ""
   echo "PreSmoke reuses a Compile run installer and never builds from source."
   echo "Downloads use obs_path (Actions) or GIT_PR_NUMBER/pr_id (robot)."
 }
 
-# nproc can expose the host CPU count inside a memory-limited CI container.
-# Account for both host availability and the remaining cgroup memory budget.
-build_memory_available_kib() {
-  local proc_root="${1:-/proc}"
-  local cgroup_root="${2:-/sys/fs/cgroup}"
-  awk '/^MemAvailable:/ { print $2 }' "${proc_root}/meminfo" 2>/dev/null || true
-  local controller limit used limit_file usage_file
-  for controller in "${cgroup_root}" "${cgroup_root}/memory"; do
-    limit_file="${controller}/memory.max"
-    usage_file="${controller}/memory.current"
-    if [ ! -f "${limit_file}" ]; then
-      limit_file="${controller}/memory.limit_in_bytes"
-      usage_file="${controller}/memory.usage_in_bytes"
-    fi
-    [ -r "${limit_file}" ] && [ -r "${usage_file}" ] || continue
-    read -r limit < "${limit_file}" || continue
-    read -r used < "${usage_file}" || continue
-    # Ignore 'max' and the v1 unlimited sentinel without overflowing Bash.
-    [[ "${limit}" =~ ^[0-9]{1,18}$ && "${used}" =~ ^[0-9]{1,18}$ ]] || continue
-    if [ "${limit}" -gt "${used}" ]; then
-      echo "$(( (limit - used) / 1024 ))"
-    else
-      echo 0
-    fi
-  done
-}
-
+# Keep LLVM parallelism at nproc (or an explicit -j). PTOAS applies its
+# separate limit at each native build entry point, including the wheel.
 resolve_build_jobs() {
-  local cpus requested memory_kib memory_jobs
+  local cpus requested
   cpus="$(nproc 2>/dev/null || echo 4)"
   requested="${JOBS:-${cpus}}"
   if [[ ! "${requested}" =~ ^[1-9][0-9]{0,5}$ ]]; then
     echo "ERROR: -j/JOBS must be a positive integer of at most six digits" >&2
     return 1
   fi
-  local selected="${requested}"
-  if [ -z "${JOBS:-}" ] && [ "${selected}" -gt 16 ]; then
-    selected=16
-  fi
-  memory_kib="$(build_memory_available_kib | sort -n | sed -n '1p')"
-  if [[ "${memory_kib}" =~ ^[0-9]+$ ]]; then
-    # Leave 2 GiB for the runner/linker and budget 2 GiB per compiler process.
-    memory_jobs="$(( (memory_kib / 1024 - 2048) / 2048 ))"
-    [ "${memory_jobs}" -gt 0 ] || memory_jobs=1
-    [ "${selected}" -le "${memory_jobs}" ] || selected="${memory_jobs}"
-  fi
-  JOBS="${selected}"
+  JOBS="${requested}"
   export CMAKE_BUILD_PARALLEL_LEVEL="${JOBS}"
-  echo "Build resources: nproc=${cpus}, requested=${requested}," \
-    "available_memory_kib=${memory_kib:-unknown}, jobs=${JOBS}"
+  echo "Build resources: nproc=${cpus}, requested=${requested}, jobs=${JOBS}"
+}
+
+# PTOAS has large TableGen-generated translation units. Bound their
+# concurrency without reducing LLVM parallelism or using cgroup memory
+# estimates. Honor explicit job counts below the limit.
+ptoas_build_jobs() {
+  echo "$(( JOBS > 16 ? 16 : JOBS ))"
 }
 
 report_build_failure() {
@@ -944,7 +914,10 @@ build_only() {
   echo "build ptoas"
   ensure_llvm_build
   configure_ptoas
-  cmake --build "${BUILD_PATH}" -- -j "${JOBS}"
+  local _ptoas_jobs
+  _ptoas_jobs="$(ptoas_build_jobs)"
+  echo "PTOAS build parallelism: jobs=${_ptoas_jobs} (requested=${JOBS})"
+  cmake --build "${BUILD_PATH}" -- -j "${_ptoas_jobs}"
   cmake --install "${BUILD_PATH}"
 
   echo "execute samples success"
@@ -1021,7 +994,7 @@ stage_ptoas_wheel() {
       "--config-settings=cmake.define.CMAKE_MODULE_LINKER_FLAGS=-fuse-ld=lld -lstdc++ ${_wheel_rt_flags}"
     )
   fi
-  CMAKE_BUILD_PARALLEL_LEVEL="${JOBS}" \
+  CMAKE_BUILD_PARALLEL_LEVEL="$(ptoas_build_jobs)" \
   SKBUILD_BUILD_DIR="${BUILD_PATH}" \
   LLVM_BUILD_DIR="${LLVM_BUILD_DIR}" \
     "${python_bin}" -m pip wheel "${BASE_PATH}" \
@@ -1094,8 +1067,11 @@ package() {
   echo $dotted_line
   echo "package ptoas"
   ensure_llvm_build
+  local _ptoas_jobs
+  _ptoas_jobs="$(ptoas_build_jobs)"
+  echo "PTOAS build parallelism: jobs=${_ptoas_jobs} (requested=${JOBS})"
   ENABLE_PACKAGE=FALSE configure_ptoas
-  cmake --build "${BUILD_PATH}" -- -j "${JOBS}"
+  cmake --build "${BUILD_PATH}" -- -j "${_ptoas_jobs}"
 
   # Distill the version used for the .run package name. The CANN product version
   # (9.2.0 for this release train) differs from project(ptoas VERSION 0.57), so
@@ -1111,26 +1087,9 @@ package() {
   configure_ptoas
   # configure_ptoas resets the build tree; rebuild all targets before the
   # install/CPack pass so generated install scripts reference real artifacts.
-  # The devtoolset build compiles several giant TableGen-generated TUs
-  # (PTO.cpp measured at ~4.6GB peak RSS). On CI executors a full
-  # -j $(nproc) wave of those can exceed available memory and the compiler
-  # gets OOM-killed with no diagnostics, failing the build silently. Cap
-  # the parallelism so peak concurrent memory stays bounded; the compile
-  # is cache-accelerated on repeat runs so the wall-clock cost is small.
-  if [ -n "${DEVTOOLSET_TOOLCHAIN_FLAGS}" ]; then
-    local _ptoas_jobs
-    _ptoas_jobs="$(( ${JOBS} > 16 ? 16 : ${JOBS} ))"
-    echo "Note: capping PTOAS build parallelism to -j ${_ptoas_jobs} (giant TUs ~4.6GB RSS each)"
-    cmake --build "${BUILD_PATH}" -- -j "${_ptoas_jobs}"
-  else
-    cmake --build "${BUILD_PATH}" -- -j "${JOBS}"
-  fi
+  cmake --build "${BUILD_PATH}" -- -j "${_ptoas_jobs}"
   cmake --install "${BUILD_PATH}"
-  if [ -n "${DEVTOOLSET_TOOLCHAIN_FLAGS}" ]; then
-    cmake --build "${BUILD_PATH}" --target package -- -j "${_ptoas_jobs}"
-  else
-    cmake --build "${BUILD_PATH}" --target package -- -j "${JOBS}"
-  fi
+  cmake --build "${BUILD_PATH}" --target package -- -j "${_ptoas_jobs}"
   echo "package staged under ${BUILD_OUT_PATH}"
   # Diagnostics: the OBS uploader reads build_out via the host path
   # /opt/cloud/slavespace/.../x86build/build_out; print what we actually
