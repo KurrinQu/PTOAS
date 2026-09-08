@@ -23,13 +23,18 @@ PTO_ISA_ROOT="${PTO_ISA_ROOT:-${BUILD_ROOT}/pto-isa-ci}"
 SUITE_STATUS=0
 SIM_SUITE="${SIM_SUITE:-all}"
 
-[[ -d "${ASCEND_3RD_LIB_PATH}" ]] || {
-  echo "ERROR: ASCEND_3RD_LIB_PATH is unavailable: ${ASCEND_3RD_LIB_PATH}" >&2
-  exit 1
-}
-
 mkdir -p "${BUILD_ROOT}"
 exec > >(tee "${BUILD_ROOT}/vpto-sim.log") 2>&1
+
+skip_simulator() {
+  echo "::warning::Skipping ${SIM_SUITE} simulator validation: $1"
+  echo "Simulator environment is unavailable; no validation was executed."
+  exit 0
+}
+
+[[ -d "${ASCEND_3RD_LIB_PATH}" ]] || {
+  skip_simulator "ASCEND_3RD_LIB_PATH is unavailable: ${ASCEND_3RD_LIB_PATH}"
+}
 
 if [[ -f "${CANN_HOME}/set_env.sh" ]]; then
   # shellcheck disable=SC1091
@@ -39,27 +44,23 @@ fi
 ASCEND_HOME_PATH="${ASCEND_HOME_PATH:-${CANN_HOME}}"
 
 [[ -n "${ASCEND_HOME_PATH:-}" && -d "${ASCEND_HOME_PATH}" ]] || {
-  echo "ERROR: ASCEND_HOME_PATH is required" >&2
-  exit 1
+  skip_simulator "ASCEND_HOME_PATH is unavailable: ${ASCEND_HOME_PATH:-<unset>}"
 }
 
 BISHENG_BIN="${BISHENG_BIN:-${ASCEND_HOME_PATH}/bin/bisheng}"
 MSPROF_BIN="${MSPROF_BIN:-${ASCEND_HOME_PATH}/bin/msprof}"
 command -v "${BISHENG_BIN}" >/dev/null 2>&1 || {
-  echo "ERROR: bisheng is unavailable: ${BISHENG_BIN}" >&2
-  exit 1
+  skip_simulator "bisheng is unavailable: ${BISHENG_BIN}"
 }
 command -v "${MSPROF_BIN}" >/dev/null 2>&1 || {
-  echo "ERROR: msprof is unavailable: ${MSPROF_BIN}" >&2
-  exit 1
+  skip_simulator "msprof is unavailable: ${MSPROF_BIN}"
 }
 
 readarray -t SIM_LIB_DIRS < <(
   find "${ASCEND_HOME_PATH}" -type d -path '*/simulator/dav_3510/lib' 2>/dev/null | sort
 )
 if [[ "${#SIM_LIB_DIRS[@]}" -eq 0 ]]; then
-  echo "ERROR: dav_3510 simulator library is unavailable under ${ASCEND_HOME_PATH}" >&2
-  exit 1
+  skip_simulator "dav_3510 simulator library is unavailable under ${ASCEND_HOME_PATH}"
 fi
 SIM_LIB_DIR="${SIM_LIB_DIRS[0]}"
 
