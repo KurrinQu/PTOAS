@@ -3787,7 +3787,6 @@ def vmi_wrapper_dispatch_probe():
     even, odd = pto.vmi.vdintlv(lo, hi, mask)
     pto.vmi.vscatter(selected, dst_ptr, idx, mask)
     pto.vmi.vstore(lo, dst_ptr, offset, mask)
-    pto.vmi.vsstb(hi, dst_ptr, offset, pto.i16(8), mask)
 
     _ = group_mask
     _ = carry_next
@@ -8290,7 +8289,6 @@ def main() -> None:
     expected_vmi_ops = [
         "pto.vmi.vload",
         "pto.vmi.vstore",
-        "pto.vmi.vsstb",
         "pto.vmi.vci",
         "pto.vmi.vadd",
         "pto.vmi.vaddc",

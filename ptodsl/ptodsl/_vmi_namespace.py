@@ -819,15 +819,6 @@ class _VMINamespace:
         )
 
     @staticmethod
-    def vsstb(value, destination, offset, block_stride, mask, *, pmode=None, loc=None, ip=None):
-        context = "pto.vmi.vsstb(...)"
-        return _generated("vsstb")(
-            _raw(value), _raw(destination), _coerce_index_value(offset),
-            _i16_value(block_stride, context=f"{context} block_stride"),
-            _required_mask(mask, context=context), pmode=pmode, loc=loc, ip=ip,
-        )
-
-    @staticmethod
     def vci(base, *, size, order=None, group=None, loc=None, ip=None):
         context = "pto.vmi.vci(...)"
         if group is not None:
