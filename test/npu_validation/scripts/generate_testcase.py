@@ -3212,6 +3212,8 @@ endif()
     launch_cpp = (
         INCLUDE_REPLACEMENT
         + "\n"
+        "using namespace pto;\n"
+        "\n"
         "#if defined(__CCE_AICORE__)\n"
         f"{kernel_linkage}__global__ AICORE void {kernel_name}({', '.join(raw_params)});\n"
         "#else\n"

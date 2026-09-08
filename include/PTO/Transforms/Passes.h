@@ -86,8 +86,6 @@ std::unique_ptr<Pass> createOpSchedulingPass();
 std::unique_ptr<Pass> createPTOMarkLastUsePass();
 std::unique_ptr<Pass> createPTOFusionRegionGenPass();
 
-LogicalResult validateIntToPtrUses(func::FuncOp func);
-
 std::unique_ptr<Pass> createPTOUnrollLoopsPass();
 /// Backward-compatible alias of createPTOUnrollLoopsPass().
 std::unique_ptr<Pass> createPTOUnrollSIMTForPass();
