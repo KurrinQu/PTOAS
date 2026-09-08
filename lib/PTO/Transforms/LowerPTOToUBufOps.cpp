@@ -923,7 +923,7 @@ struct LowerPTOToUBufOpsPass
         // point at a 32B source block; the instruction copies those 8 blocks.
         int64_t numRepeatPerLine = validCol / epr;
         int64_t numRemainPerLine = validCol % epr;
-        constexpr int64_t REPEAT_MAX = 255;
+        constexpr int64_t REPEAT_MAX = kRepeatMax;
         constexpr int64_t ADDRS_PER_REPEAT = 8;
 
         Location loc = op.getLoc();

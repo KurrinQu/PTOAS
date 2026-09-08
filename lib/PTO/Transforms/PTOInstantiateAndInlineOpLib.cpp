@@ -379,7 +379,6 @@ static LogicalResult inlineMatchingCalls(
       if (failed(inlineCallsInFunc(func, funcModule, shouldInline, debug,
                                    debugTag, inlinedCalls, changedThisFunc))) {
         return failure();
-3 - replace magic numbers with named constants
       }
 
       if (changedThisFunc) {

@@ -41,6 +41,9 @@ constexpr llvm::StringLiteral kTileOpValidShapeReadAttr =
 // Each dynamic valid-shape argument expands to a (row, col) argument pair.
 constexpr unsigned kValidShapeArgsPerTile = mlir::pto::kValue2;
 constexpr unsigned kValidShapeRank = mlir::pto::kValue2;
+// Valid-shape dimension indices: dim0 = row, dim1 = col.
+constexpr unsigned kDim0 = 0;
+constexpr unsigned kDim1 = 1;
 
 using ValidShapeRequirements =
     DenseMap<Operation *, SmallVector<unsigned, mlir::pto::kValue2>>;
@@ -371,11 +374,12 @@ resolveCallValidShape(Value tile, Operation *anchor, func::FuncOp caller,
 
   auto tileType = dyn_cast<TileBufType>(tile.getType());
   if (tileType && tileType.getValidShape().size() == kValidShapeRank &&
-      tileType.getValidShape()[0] >= 0 && tileType.getValidShape()[1] >= 0) {
+      tileType.getValidShape()[kDim0] >= 0 &&
+      tileType.getValidShape()[kDim1] >= 0) {
     Value row = builder.create<arith::ConstantIndexOp>(
-        anchor->getLoc(), tileType.getValidShape()[0]);
+        anchor->getLoc(), tileType.getValidShape()[kDim0]);
     Value col = builder.create<arith::ConstantIndexOp>(
-        anchor->getLoc(), tileType.getValidShape()[1]);
+        anchor->getLoc(), tileType.getValidShape()[kDim1]);
     return std::make_pair(row, col);
   }
 
@@ -478,8 +482,8 @@ static LogicalResult replaceTileOpValidShapeReads(
         if (metadata == function->second.end())
           return read->emitError(
               "missing internal Tile valid-shape ABI arguments");
-        replacement =
-            dimension == 0 ? metadata->second.first : metadata->second.second;
+        replacement = dimension == kDim0 ? metadata->second.first
+                                         : metadata->second.second;
       }
       read->getResult(0).replaceAllUsesWith(replacement);
       read->erase();
