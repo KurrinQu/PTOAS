@@ -136,7 +136,6 @@ def template_tdequant_i8(
             vec_ui8_1, vec_ui8_2 = pto.vintlv(pto.vbitcast(vec_si8_0, pto.ui8), v_zero)
             i32_cur = pto.vcvt(pto.vbitcast(vec_ui8_1, pto.si8), pto.i32, b8_mask, part=pto.VcvtPartMode.P0)
             i32_next = pto.vcvt(pto.vbitcast(vec_ui8_2, pto.si8), pto.i32, b8_mask, part=pto.VcvtPartMode.P0)
-            # i32 -> f32 (rnd=Z, as in C++).
             value_cur = pto.vcvt(i32_cur, pto.f32, mask_b32_cur, rnd=pto.VcvtRoundMode.Z)
             value_next = pto.vcvt(i32_next, pto.f32, mask_b32_next, rnd=pto.VcvtRoundMode.Z)
             scaled_cur = pto.vmul(
