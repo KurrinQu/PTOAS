@@ -103,10 +103,14 @@ static bool getNoneBoxPointerStrides(pto::TileBufType type,
 }
 
 // Fractal inner-matrix dimensions by fractal size and sub-layout. Returns
-// false for combinations the pointer arithmetic below does not model.
+// false for combinations the pointer arithmetic below does not model, or a
+// zero element size.
 static bool getFractalInnerDims(pto::TileBufConfigAttr config, int32_t sl,
                                 unsigned elemBytes, int64_t &innerRows,
                                 int64_t &innerCols) {
+  if (elemBytes == 0) {
+    return false;
+  }
   int32_t fractal = config.getSFractalSize().getInt();
   if (fractal == kSFractal1024) {
     innerRows = kFractalInnerDimension;

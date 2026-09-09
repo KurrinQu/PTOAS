@@ -134,6 +134,91 @@ struct PTOExpandSoftLibPass
     return std::nullopt;
   }
 
+  // SoftLib import callback for materializeCall: clones every function from
+  // the materialized `source` module into `module` under collision-free
+  // names, renames all symbol uses, and reports the imported entry point
+  // through `importedEntry`. Rejects a source that does not belong to
+  // `context`, lacks the requested entry, or collides with existing names.
+  LogicalResult
+  importSoftLibFunctions(ModuleOp module, MLIRContext &context,
+                         StringRef functionName, StringRef entrySymbol,
+                         ModuleOp source,
+                         func::FuncOp &importedEntry) {
+    bool materializeSourceReady =
+        source && source.getContext() == &context;
+    if (!materializeSourceReady) {
+      return failure();
+    }
+    func::FuncOp sourceEntry = source.lookupSymbol<func::FuncOp>(entrySymbol);
+    if (!sourceEntry) {
+      return failure();
+    }
+
+    SymbolTable symbols(module);
+    SmallVector<func::FuncOp> sourceFunctions;
+    for (func::FuncOp fn : source.getOps<func::FuncOp>()) {
+      sourceFunctions.push_back(fn);
+    }
+
+    llvm::StringMap<std::string> renames;
+    if (failed(planSoftLibRenames(symbols, sourceFunctions, sourceEntry,
+                                  functionName, renames))) {
+      return failure();
+    }
+
+    OpBuilder builder(&context);
+    builder.setInsertionPointToEnd(module.getBody());
+    SmallVector<func::FuncOp> cloned;
+    for (func::FuncOp fn : sourceFunctions) {
+      auto copy = cast<func::FuncOp>(builder.clone(*fn));
+      copy.setName(renames.lookup(fn.getSymName()));
+      copy.setVisibility(SymbolTable::Visibility::Private);
+      copy->setAttr(kSoftLibInstanceAttr, UnitAttr::get(&context));
+      cloned.push_back(copy);
+    }
+    if (failed(applySoftLibRenames(context, cloned, renames))) {
+      return failure();
+    }
+    importedEntry = module.lookupSymbol<func::FuncOp>(functionName);
+    return importedEntry ? success() : failure();
+  }
+
+  // Plans the collision-free import name for every source function: the
+  // entry keeps `functionName`, the rest are namespaced under it.
+  static LogicalResult
+  planSoftLibRenames(const SymbolTable &symbols,
+                     ArrayRef<func::FuncOp> sourceFunctions,
+                     func::FuncOp sourceEntry, StringRef functionName,
+                     llvm::StringMap<std::string> &renames) {
+    for (func::FuncOp fn : sourceFunctions) {
+      std::string name = fn == sourceEntry
+                             ? functionName.str()
+                             : functionName.str() + "__" + fn.getSymName().str();
+      if (symbols.lookup(name)) {
+        return failure();
+      }
+      renames[fn.getSymName()] = name;
+    }
+    return success();
+  }
+
+  // Rewrites every symbol use inside the cloned functions to the planned
+  // import names.
+  static LogicalResult
+  applySoftLibRenames(MLIRContext &context, ArrayRef<func::FuncOp> cloned,
+                      const llvm::StringMap<std::string> &renames) {
+    for (func::FuncOp fn : cloned) {
+      for (const auto &rename : renames) {
+        if (failed(SymbolTable::replaceAllSymbolUses(
+                StringAttr::get(&context, rename.getKey()),
+                StringAttr::get(&context, rename.getValue()), fn))) {
+          return failure();
+        }
+      }
+    }
+    return success();
+  }
+
   LogicalResult materializeCall(
       Operation *op, ModuleOp module, MLIRContext &context, StringRef target,
       StringRef requestOp, StringRef requestSpecs, StringRef functionStem,
@@ -156,54 +241,8 @@ struct PTOExpandSoftLibPass
     func::FuncOp importedEntry;
     LogicalResult materializationResult = service->materialize(
         request, context, [&](ModuleOp source, StringRef entrySymbol) {
-          bool materializeSourceReady =
-              source && source.getContext() == &context;
-          if (!materializeSourceReady) {
-            return failure();
-          }
-          func::FuncOp sourceEntry = source.lookupSymbol<func::FuncOp>(entrySymbol);
-          if (!sourceEntry) {
-            return failure();
-          }
-
-          SymbolTable symbols(module);
-          SmallVector<func::FuncOp> sourceFunctions;
-          for (func::FuncOp fn : source.getOps<func::FuncOp>()) {
-            sourceFunctions.push_back(fn);
-          }
-
-          llvm::StringMap<std::string> renames;
-          for (func::FuncOp fn : sourceFunctions) {
-            std::string name = fn == sourceEntry
-                                   ? functionName
-                                   : functionName + "__" + fn.getSymName().str();
-            if (symbols.lookup(name)) {
-              return failure();
-            }
-            renames[fn.getSymName()] = name;
-          }
-
-          OpBuilder builder(&context);
-          builder.setInsertionPointToEnd(module.getBody());
-          SmallVector<func::FuncOp> cloned;
-          for (func::FuncOp fn : sourceFunctions) {
-            auto copy = cast<func::FuncOp>(builder.clone(*fn));
-            copy.setName(renames.lookup(fn.getSymName()));
-            copy.setVisibility(SymbolTable::Visibility::Private);
-            copy->setAttr(kSoftLibInstanceAttr, UnitAttr::get(&context));
-            cloned.push_back(copy);
-          }
-          for (func::FuncOp fn : cloned) {
-            for (const auto &rename : renames) {
-              if (failed(SymbolTable::replaceAllSymbolUses(
-                      StringAttr::get(&context, rename.getKey()),
-                      StringAttr::get(&context, rename.getValue()), fn))) {
-                return failure();
-              }
-            }
-          }
-          importedEntry = module.lookupSymbol<func::FuncOp>(functionName);
-          return importedEntry ? success() : failure();
+          return importSoftLibFunctions(module, context, functionName,
+                                        entrySymbol, source, importedEntry);
         });
     bool softLibReady = succeeded(materializationResult) && importedEntry;
     if (!softLibReady) {
