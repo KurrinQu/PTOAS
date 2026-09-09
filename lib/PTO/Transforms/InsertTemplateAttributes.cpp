@@ -751,15 +751,26 @@ static void appendPtrOperandSpecJson(std::string &json, pto::PtrType ptrType) {
   json += "\"}";
 }
 
+// Reports the unsupported-`kind`-dtype diagnostic for `elemTy` and returns
+// false when `elemTy` has no dtype string.
+static bool checkDtypeSupported(Type elemTy, Operation *operation,
+                                const char *kind) {
+  if (!getDtypeString(elemTy).empty()) {
+    return true;
+  }
+  operation->emitError()
+      << "InsertTemplateAttributes encountered an unsupported " << kind
+      << " dtype";
+  return false;
+}
+
 // Append the operand-spec JSON for one operand. Returns false (after
 // emitting a diagnostic) when the operand type or dtype is unsupported.
 static bool appendOperandSpecJson(std::string &json, Value operand,
                                   Operation *operation) {
   Type type = operand.getType();
   if (auto tileType = dyn_cast<pto::TileBufType>(type)) {
-    if (getDtypeString(tileType.getElementType()).empty()) {
-      operation->emitError(
-          "InsertTemplateAttributes encountered an unsupported tile dtype");
+    if (!checkDtypeSupported(tileType.getElementType(), operation, "tile")) {
       return false;
     }
     appendTileOperandSpecJson(json, tileType);
@@ -767,9 +778,7 @@ static bool appendOperandSpecJson(std::string &json, Value operand,
   }
 
   if (auto memrefType = dyn_cast<MemRefType>(type)) {
-    if (getDtypeString(memrefType.getElementType()).empty()) {
-      operation->emitError(
-          "InsertTemplateAttributes encountered an unsupported view dtype");
+    if (!checkDtypeSupported(memrefType.getElementType(), operation, "view")) {
       return false;
     }
     appendViewOperandSpecJson(json, operand, memrefType);
@@ -777,9 +786,7 @@ static bool appendOperandSpecJson(std::string &json, Value operand,
   }
 
   if (auto viewType = dyn_cast<pto::PartitionTensorViewType>(type)) {
-    if (getDtypeString(viewType.getElementType()).empty()) {
-      operation->emitError(
-          "InsertTemplateAttributes encountered an unsupported view dtype");
+    if (!checkDtypeSupported(viewType.getElementType(), operation, "view")) {
       return false;
     }
     appendViewOperandSpecJson(json, operand, viewType);
@@ -787,9 +794,7 @@ static bool appendOperandSpecJson(std::string &json, Value operand,
   }
 
   if (auto ptrType = dyn_cast<pto::PtrType>(type)) {
-    if (getDtypeString(ptrType.getElementType()).empty()) {
-      operation->emitError(
-          "InsertTemplateAttributes encountered an unsupported pointer dtype");
+    if (!checkDtypeSupported(ptrType.getElementType(), operation, "pointer")) {
       return false;
     }
     appendPtrOperandSpecJson(json, ptrType);
@@ -797,9 +802,8 @@ static bool appendOperandSpecJson(std::string &json, Value operand,
   }
 
   if (auto vectorType = dyn_cast<VectorType>(type)) {
-    if (getDtypeString(vectorType.getElementType()).empty()) {
-      operation->emitError(
-          "InsertTemplateAttributes encountered an unsupported vector dtype");
+    if (!checkDtypeSupported(vectorType.getElementType(), operation,
+                             "vector")) {
       return false;
     }
     appendVectorOperandSpecJson(json, vectorType);
