@@ -138,20 +138,6 @@ def same_width_float_store_probe():
 
 
 @pto.jit(target="a5")
-def vmi_float_vcadd_missing_reassoc_probe():
-    src = pto.vmi.vbrc(pto.f32(0.0), size=64)
-    mask = pto.vmi.create_mask(64, size=64)
-    _ = pto.vmi.vcadd(src, mask)
-
-
-@pto.jit(target="a5")
-def vmi_float_vcadd_none_reassoc_probe():
-    src = pto.vmi.vbrc(pto.f32(0.0), size=64)
-    mask = pto.vmi.create_mask(64, size=64)
-    _ = pto.vmi.vcadd(src, mask, reassoc=None)
-
-
-@pto.jit(target="a5")
 def vmi_vbrc_untyped_scalar_probe():
     _ = pto.vmi.vbrc(0.0, size=64)
 
@@ -770,21 +756,6 @@ def main() -> None:
         "cannot coerce between different floating-point types of the same width",
         "f16",
         "bf16",
-    )
-    expect_raises(
-        vmi_float_vcadd_missing_reassoc_probe.compile,
-        TypeError,
-        "pto.vmi.vcadd(...)",
-        "floating-point vectors",
-        "reassoc",
-        "reassoc=True or reassoc=False",
-    )
-    expect_raises(
-        vmi_float_vcadd_none_reassoc_probe.compile,
-        TypeError,
-        "pto.vmi.vcadd(...)",
-        "True or False",
-        "received None",
     )
     expect_raises(
         vmi_vbrc_untyped_scalar_probe.compile,

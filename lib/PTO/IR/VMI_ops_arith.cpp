@@ -156,10 +156,10 @@ static LogicalResult verifyVMICmpCommon(OpTy op, VMIVRegType dataType,
   }
   if (auto pmode = op.getPmode()) {
     bool unsupportedPmode =
-        pmode.value() != "zeroing" && pmode.value() != "merge";
+        pmode.value() != "zero" && pmode.value() != "merge";
     if (unsupportedPmode) {
       return op.emitOpError("unsupported pmode '")
-             << pmode.value() << "'; expected \"zeroing\" or \"merge\"";
+             << pmode.value() << "'; expected \"zero\" or \"merge\"";
     }
   }
   if (failed(verifyMaskMatchesData(op.getOperation(), seedType, dataType))) {
