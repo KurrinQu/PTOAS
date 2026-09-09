@@ -8,6 +8,7 @@
 
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
+#include "Utils.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/SymbolTable.h"
@@ -41,16 +42,8 @@ constexpr int8_t kBidirectionalDirMask = 3;
 constexpr unsigned kVisitedInitReserveSize = 16;
 constexpr llvm::StringLiteral kFrontendPipeIdAttrName = "__pto.frontend_id";
 
-struct PipePeerKey {
-  std::string ownerFunc;
-  std::string reserveName;
-  int8_t dirMask = 0;
-
-  bool operator<(const PipePeerKey &other) const {
-    return std::tie(ownerFunc, reserveName, dirMask) <
-           std::tie(other.ownerFunc, other.reserveName, other.dirMask);
-  }
-};
+// PipePeerKey and buildPipeInitAdjacency are shared with the
+// reserved-buffer resolve pass through Utils.h.
 
 enum class PipeSplitUsage {
   Unknown,
@@ -288,7 +281,7 @@ using PipeInitGraph = llvm::DenseMap<Operation *, SmallVector<Operation *>>;
 template <typename InitOpT>
 static void collectInitOp(InitOpT initOp, SmallVectorImpl<PipeInitInfo> &initInfos,
                           PipeInitGraph &adjacency,
-                          std::map<PipePeerKey, SmallVector<Operation *>> &keyedInits) {
+                          PipeInitGroups &keyedInits) {
   PipeInitInfo &info = initInfos.emplace_back();
   info.op = initOp.getOperation();
   info.funcOp = initOp->template getParentOfType<func::FuncOp>();
@@ -337,32 +330,6 @@ static void collectInitOp(InitOpT initOp, SmallVectorImpl<PipeInitInfo> &initInf
   recordAddr(getLocalAddrOperand(initOp), info.dirMask);
 }
 
-// Connects peer init ops recorded under the same key into the adjacency
-// graph.
-static void buildPipeInitAdjacency(
-    const std::map<PipePeerKey, SmallVector<Operation *>> &keyedInits,
-    PipeInitGraph &adjacency) {
-  for (const auto &it : keyedInits) {
-    SmallVector<Operation *> uniqueOps;
-    for (Operation *op : it.second) {
-      if (std::find(uniqueOps.begin(), uniqueOps.end(), op) ==
-          uniqueOps.end()) {
-        uniqueOps.push_back(op);
-      }
-    }
-    if (uniqueOps.size() < kMinPeerPipeInitCount) {
-      continue;
-    }
-
-    for (size_t i = 0; i < uniqueOps.size(); ++i) {
-      for (size_t j = i + 1; j < uniqueOps.size(); ++j) {
-        adjacency[uniqueOps[i]].push_back(uniqueOps[j]);
-        adjacency[uniqueOps[j]].push_back(uniqueOps[i]);
-      }
-    }
-  }
-}
-
 // Gathers the connected component reachable from `rootInfo.op` into
 // `component`, marking members in `visited`.
 static void collectComponent(
@@ -389,7 +356,7 @@ struct PTOInferValidatePipeInitPass
     ModuleOp moduleOp = getOperation();
     SmallVector<PipeInitInfo> initInfos;
     PipeInitGraph adjacency;
-    std::map<PipePeerKey, SmallVector<Operation *>> keyedInits;
+    PipeInitGroups keyedInits;
 
     moduleOp.walk([&](InitializeL2LPipeOp initOp) {
       collectInitOp(initOp, initInfos, adjacency, keyedInits);
@@ -398,7 +365,7 @@ struct PTOInferValidatePipeInitPass
       collectInitOp(initOp, initInfos, adjacency, keyedInits);
     });
 
-    buildPipeInitAdjacency(keyedInits, adjacency);
+    buildPipeInitAdjacency(keyedInits, adjacency, kMinPeerPipeInitCount);
 
     llvm::DenseMap<Operation *, PipeInitInfo *> infoByOp;
     for (PipeInitInfo &info : initInfos) {

@@ -53,18 +53,8 @@ constexpr unsigned kBidirectionalFlagWidth = 4;
 constexpr unsigned kVisitedInitReserveSize = 16;
 constexpr llvm::StringLiteral kFrontendPipeIdAttrName = "__pto.frontend_id";
 
-struct PipePeerKey {
-  std::string ownerFunc;
-  std::string reserveName;
-  int8_t dirMask = 0;
-
-  // Provide a stable lexicographic order so PipePeerKey can be used as the
-  // key type of std::map.
-  bool operator<(const PipePeerKey &other) const {
-    return std::tie(ownerFunc, reserveName, dirMask) <
-           std::tie(other.ownerFunc, other.reserveName, other.dirMask);
-  }
-};
+// PipePeerKey and buildPipeInitAdjacency are shared with the pipe-init
+// infer/validate pass through Utils.h.
 
 struct PipeInitInfo {
   Operation *op = nullptr;
@@ -95,7 +85,6 @@ struct FlagInterval {
   int32_t end = 0;
 };
 
-using PipeInitGroups = std::map<PipePeerKey, SmallVector<Operation *>>;
 using PipeFlagUsage = std::map<std::string, SmallVector<FlagInterval>>;
 
 template <typename InitOpT> static Value getLocalAddrOperand(InitOpT op) {
@@ -252,28 +241,6 @@ static bool samePipeInitSignature(const PipeInitInfo &lhs,
                   rhs.globalOnly);
 }
 
-// Connects peer init ops recorded under the same key into the adjacency
-// graph.
-static void buildPipeInitAdjacency(
-    const PipeInitGroups &keyedInits,
-    llvm::DenseMap<Operation *, SmallVector<Operation *>> &adjacency) {
-  for (const auto &it : keyedInits) {
-    SmallVector<Operation *> uniqueOps;
-    for (Operation *op : it.second) {
-      if (std::find(uniqueOps.begin(), uniqueOps.end(), op) ==
-          uniqueOps.end()) {
-        uniqueOps.push_back(op);
-      }
-    }
-    for (size_t i = 0; i < uniqueOps.size(); ++i) {
-      for (size_t j = i + 1; j < uniqueOps.size(); ++j) {
-        adjacency[uniqueOps[i]].push_back(uniqueOps[j]);
-        adjacency[uniqueOps[j]].push_back(uniqueOps[i]);
-      }
-    }
-  }
-}
-
 // Gathers the connected component reachable from `rootInfo.op` into
 // `component.ops`, marking members in `visited`.
 static void collectComponent(
@@ -383,7 +350,7 @@ buildPeerAwareComponents(const SmallVectorImpl<PipeInitInfo> &initInfos,
     adjacency[info.op];
     infoByOp[info.op] = &info;
   }
-  buildPipeInitAdjacency(keyedInits, adjacency);
+  buildPipeInitAdjacency(keyedInits, adjacency, /*minGroupSize=*/1);
 
   SmallVector<PipeComponent> components;
   llvm::SmallPtrSet<Operation *, kVisitedInitReserveSize> visited;
