@@ -599,6 +599,20 @@ emitEscapingVectorScopeValueError(const EscapingMovedValue &escapingValue) {
   return failure();
 }
 
+// Whether any user of `op`'s results (directly or through a parent op) sits
+// inside `cluster`.
+static bool opFeedsCluster(Operation *op,
+                           const llvm::SmallPtrSetImpl<Operation *> &cluster) {
+  for (Value result : op->getResults()) {
+    for (Operation *user : result.getUsers()) {
+      if (isUserInsideCluster(user, cluster)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // Seed the hoist set with safe-scalar ops whose results are used by moved
 // ops, then transitively pull in their safe-scalar producers.
 static llvm::SmallPtrSet<Operation *, mlir::pto::kValue16>
@@ -630,20 +644,7 @@ computeHoistedOpsForResultlessScope(
         continue;
       }
 
-      bool feedsHoistedOp = false;
-      for (Value result : op->getResults()) {
-        for (Operation *user : result.getUsers()) {
-          if (isUserInsideCluster(user, hoistedOps)) {
-            feedsHoistedOp = true;
-            break;
-          }
-        }
-        if (feedsHoistedOp) {
-          break;
-        }
-      }
-
-      if (feedsHoistedOp) {
+      if (opFeedsCluster(op, hoistedOps)) {
         hoistedOps.insert(op);
         changed = true;
       }
