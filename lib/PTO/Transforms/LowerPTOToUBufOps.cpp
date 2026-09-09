@@ -126,6 +126,17 @@ static pto::PtrType getUBPtrType(MLIRContext *ctx, Type elemTy) {
   return pto::PtrType::get(ctx, elemTy, msAttr);
 }
 
+// Gather/pointer lowerings accept either a UB pointer (already materialized)
+// or a tile buffer (take its address). Passes `tile` through when it is
+// already a pointer.
+static Value emitTileOrPtrAddress(OpBuilder &builder, Location loc,
+                                  Value tile, pto::PtrType ptrType) {
+  if (isa<pto::PtrType>(tile.getType())) {
+    return tile;
+  }
+  return builder.create<pto::TileBufAddrOp>(loc, ptrType, tile).getDst();
+}
+
 static std::pair<int64_t, int64_t>
 computeContMaskValues(unsigned nElements) {
   int64_t mask0 = (nElements >= kMaskLen)
@@ -468,12 +479,13 @@ private:
 
   // tnot/tabs/trelu/tneg/trecip/texp/tlog/tsqrt/trsqrt -> pto.ub.<op>.
 
-  // Common skeleton for simple unary tile lowerings: walk one source op
-  // type, validate the dst tile shape, lower dst/src pointers and emit the
-  // matching UB unary op.
-  template <typename SrcOp, typename UBop>
-  void lowerUnaryFamily(func::FuncOp func, MLIRContext *ctx,
-                        OpBuilder &builder, const TileShapeMap &tileShapes) {
+  // Common skeleton for per-op family lowerings: walk one source op type,
+  // validate the dst tile shape, lower the dst/src pointers, then hand the
+  // prepared operands to `lower`, which emits the family-specific UB ops.
+  template <typename SrcOp, typename LowerFn>
+  void forEachTileOpWithPtrs(func::FuncOp func, MLIRContext *ctx,
+                             OpBuilder &builder,
+                             const TileShapeMap &tileShapes, LowerFn lower) {
     SmallVector<SrcOp> ops;
     func.walk([&](SrcOp op) { ops.push_back(op); });
     for (auto op : ops) {
@@ -486,73 +498,69 @@ private:
       if (ptrs.empty()) {
         continue;
       }
-      dispatchUnary<UBop>(op.getLoc(), builder, ptrs[0], ptrs[1], ptrType,
-                          *info);
+      lower(op, ptrs, ptrType, *info);
       op.erase();
     }
+  }
+
+  // tnot → pto.ub.vnot, tabs → pto.ub.vabs, trelu → pto.ub.vrelu,
+  // texp → pto.ub.vexp, tlog → pto.ub.vln, tsqrt → pto.ub.vsqrt,
+  // trsqrt → pto.ub.vrsqrt: a plain dispatch on the prepared operands.
+  template <typename SrcOp, typename UBop>
+  void lowerUnaryFamily(func::FuncOp func, MLIRContext *ctx,
+                        OpBuilder &builder, const TileShapeMap &tileShapes) {
+    forEachTileOpWithPtrs<SrcOp>(
+        func, ctx, builder, tileShapes,
+        [&](SrcOp op, ValueRange ptrs, pto::PtrType ptrType,
+            const TileShapeInfo &info) {
+          dispatchUnary<UBop>(op.getLoc(), builder, ptrs[0], ptrs[1],
+                              ptrType, info);
+        });
   }
 
   // tneg → pto.ub.vmuls(dst, src, -1): needs a typed -1 constant, so it
-  // cannot reuse the plain unary skeleton.
+  // cannot reuse the plain unary dispatch.
   void lowerTNegFamily(func::FuncOp func, MLIRContext *ctx,
                        OpBuilder &builder, const TileShapeMap &tileShapes) {
-    SmallVector<pto::TNegOp> ops;
-    func.walk([&](pto::TNegOp op) { ops.push_back(op); });
-    for (auto op : ops) {
-      auto info = extractTileShapeInfoFromValue(op.getDst(), tileShapes);
-      if (!info) {
-        continue;
-      }
-      auto [ptrs, ptrType] =
-          lowerOpPtrs(builder, ctx, op, op.getDst(), {op.getSrc()});
-      if (ptrs.empty()) {
-        continue;
-      }
-      Type elemTy = ptrType.getElementType();
-      Value minusOneScalar;
-      if (elemTy.isF32() || elemTy.isF16()) {
-        minusOneScalar = builder.create<arith::ConstantOp>(
-            op.getLoc(), builder.getFloatAttr(elemTy, -1.0));
-      } else {
-        minusOneScalar = builder.create<arith::ConstantOp>(
-            op.getLoc(), builder.getIntegerAttr(elemTy, -1));
-      }
-      Value minusOne =
-          convertScalarToI64(builder, op.getLoc(), minusOneScalar);
-      dispatchShift<pto::UBVmulSOp>(op.getLoc(), builder, ptrs[0], ptrs[1],
-                                    minusOne, ptrType, *info);
-      op.erase();
-    }
+    forEachTileOpWithPtrs<pto::TNegOp>(
+        func, ctx, builder, tileShapes,
+        [&](pto::TNegOp op, ValueRange ptrs, pto::PtrType ptrType,
+            const TileShapeInfo &info) {
+          Type elemTy = ptrType.getElementType();
+          Value minusOneScalar;
+          if (elemTy.isF32() || elemTy.isF16()) {
+            minusOneScalar = builder.create<arith::ConstantOp>(
+                op.getLoc(), builder.getFloatAttr(elemTy, -1.0));
+          } else {
+            minusOneScalar = builder.create<arith::ConstantOp>(
+                op.getLoc(), builder.getIntegerAttr(elemTy, -1));
+          }
+          Value minusOne =
+              convertScalarToI64(builder, op.getLoc(), minusOneScalar);
+          dispatchShift<pto::UBVmulSOp>(op.getLoc(), builder, ptrs[0],
+                                        ptrs[1], minusOne, ptrType, info);
+        });
   }
 
   // trecip → vector_dup(dst, 1) + vdiv(dst, dst, src): a two-step sequence,
-  // so it cannot reuse the plain unary skeleton either.
+  // so it cannot reuse the plain unary dispatch either.
   void lowerTRecipFamily(func::FuncOp func, MLIRContext *ctx,
                          OpBuilder &builder, const TileShapeMap &tileShapes) {
-    SmallVector<pto::TRecipOp> ops;
-    func.walk([&](pto::TRecipOp op) { ops.push_back(op); });
-    for (auto op : ops) {
-      auto info = extractTileShapeInfoFromValue(op.getDst(), tileShapes);
-      if (!info) {
-        continue;
-      }
-      auto [ptrs, ptrType] =
-          lowerOpPtrs(builder, ctx, op, op.getDst(), {op.getSrc()});
-      if (ptrs.empty()) {
-        continue;
-      }
-      Type elemTy = ptrType.getElementType();
-      Value oneScalar = builder.create<arith::ConstantOp>(
-          op.getLoc(), builder.getFloatAttr(elemTy, 1.0));
-      Value one = convertScalarToI64(builder, op.getLoc(), oneScalar);
-      dispatchDup(op.getLoc(), builder, ptrs[0], one, ptrType, *info);
-      builder.create<pto::BarrierOp>(op.getLoc(),
-                                     pto::PipeAttr::get(ctx, pto::PIPE::PIPE_V));
-      TileOpContext d{op.getLoc(), builder, ptrs[0], ptrs[0], ptrs[1],
-                      ptrType};
-      dispatch<pto::UBVdivOp>(d, *info);
-      op.erase();
-    }
+    forEachTileOpWithPtrs<pto::TRecipOp>(
+        func, ctx, builder, tileShapes,
+        [&](pto::TRecipOp op, ValueRange ptrs, pto::PtrType ptrType,
+            const TileShapeInfo &info) {
+          Type elemTy = ptrType.getElementType();
+          Value oneScalar = builder.create<arith::ConstantOp>(
+              op.getLoc(), builder.getFloatAttr(elemTy, 1.0));
+          Value one = convertScalarToI64(builder, op.getLoc(), oneScalar);
+          dispatchDup(op.getLoc(), builder, ptrs[0], one, ptrType, info);
+          builder.create<pto::BarrierOp>(
+              op.getLoc(), pto::PipeAttr::get(ctx, pto::PIPE::PIPE_V));
+          TileOpContext d{op.getLoc(), builder, ptrs[0], ptrs[0], ptrs[1],
+                          ptrType};
+          dispatch<pto::UBVdivOp>(d, info);
+        });
   }
 
   void lowerUnaryTileOps(func::FuncOp func, MLIRContext *ctx,
@@ -583,12 +591,13 @@ private:
   // tadds/tmuls/tmaxs/tmins/tshls/tshrs -> pto.ub.<op> (scalar operand).
 
   // Common skeleton for scalar-operand tile lowerings: walk one source op
-  // type, validate the tile shape, lower dst/src pointers, convert the
-  // scalar operand and emit the matching UB shift-style op.
+  // type, validate the tile shape, lower dst/src pointers (from `srcOf`),
+  // convert the scalar operand and emit the matching UB shift-style op.
   template <typename SrcOp, typename UBop>
-  void lowerScalarShiftFamily(func::FuncOp func, MLIRContext *ctx,
-                              OpBuilder &builder,
-                              const TileShapeMap &tileShapes) {
+  void lowerScalarShiftFamily(
+      func::FuncOp func, MLIRContext *ctx, OpBuilder &builder,
+      const TileShapeMap &tileShapes,
+      Value (SrcOp::*srcOf)() = &SrcOp::getSrc) {
     SmallVector<SrcOp> ops;
     func.walk([&](SrcOp op) { ops.push_back(op); });
     for (auto op : ops) {
@@ -597,7 +606,7 @@ private:
         continue;
       }
       auto [ptrs, ptrType] =
-          lowerOpPtrs(builder, ctx, op, op.getDst(), {op.getSrc()});
+          lowerOpPtrs(builder, ctx, op, op.getDst(), {(op.*srcOf)()});
       if (ptrs.empty()) {
         continue;
       }
@@ -619,64 +628,25 @@ private:
                                                          tileShapes);
 
     // tmuls → pto.ub.vmuls: src0 is the tile operand.
-    {
-      SmallVector<pto::TMulSOp> ops;
-      func.walk([&](pto::TMulSOp op) { ops.push_back(op); });
-      for (auto op : ops) {
-        auto info = extractTileShapeInfo(op, tileShapes);
-        if (!info) {
-          continue;
-        }
-        auto [ptrs, ptrType] =
-            lowerOpPtrs(builder, ctx, op, op.getDst(), {op.getSrc0()});
-        if (ptrs.empty()) {
-          continue;
-        }
-        Value scalarI64 = convertScalarToI64(builder, op.getLoc(), op.getScalar());
-        dispatchShift<pto::UBVmulSOp>(op.getLoc(), builder, ptrs[0], ptrs[1],
-                                      scalarI64, ptrType, *info);
-        op.erase();
-      }
-    }
+    lowerScalarShiftFamily<pto::TMulSOp, pto::UBVmulSOp>(
+        func, ctx, builder, tileShapes, &pto::TMulSOp::getSrc0);
 
     // tshls → pto.ub.vshl, tshrs → pto.ub.vshr: the shift amount stays a
     // raw scalar (no i64 conversion).
-    {
-      SmallVector<pto::TShlSOp> ops;
-      func.walk([&](pto::TShlSOp op) { ops.push_back(op); });
-      for (auto op : ops) {
-        auto info = extractTileShapeInfo(op, tileShapes);
-        if (!info) {
-          continue;
-        }
-        auto [ptrs, ptrType] =
-            lowerOpPtrs(builder, ctx, op, op.getDst(), {op.getSrc()});
-        if (ptrs.empty()) {
-          continue;
-        }
-        dispatchShift<pto::UBVshlOp>(op.getLoc(), builder, ptrs[0], ptrs[1],
-                                     op.getScalar(), ptrType, *info);
-        op.erase();
-      }
-    }
-    {
-      SmallVector<pto::TShrSOp> ops;
-      func.walk([&](pto::TShrSOp op) { ops.push_back(op); });
-      for (auto op : ops) {
-        auto info = extractTileShapeInfo(op, tileShapes);
-        if (!info) {
-          continue;
-        }
-        auto [ptrs, ptrType] =
-            lowerOpPtrs(builder, ctx, op, op.getDst(), {op.getSrc()});
-        if (ptrs.empty()) {
-          continue;
-        }
-        dispatchShift<pto::UBVshrOp>(op.getLoc(), builder, ptrs[0], ptrs[1],
-                                     op.getScalar(), ptrType, *info);
-        op.erase();
-      }
-    }
+    forEachTileOpWithPtrs<pto::TShlSOp>(
+        func, ctx, builder, tileShapes,
+        [&](pto::TShlSOp op, ValueRange ptrs, pto::PtrType ptrType,
+            const TileShapeInfo &info) {
+          dispatchShift<pto::UBVshlOp>(op.getLoc(), builder, ptrs[0], ptrs[1],
+                                       op.getScalar(), ptrType, info);
+        });
+    forEachTileOpWithPtrs<pto::TShrSOp>(
+        func, ctx, builder, tileShapes,
+        [&](pto::TShrSOp op, ValueRange ptrs, pto::PtrType ptrType,
+            const TileShapeInfo &info) {
+          dispatchShift<pto::UBVshrOp>(op.getLoc(), builder, ptrs[0], ptrs[1],
+                                       op.getScalar(), ptrType, info);
+        });
   }
 
   // tload -> mte_gm_ub, tstore -> mte_ub_gm.
@@ -725,6 +695,29 @@ private:
     int64_t offsetRowStride;
   };
 
+  // GatherBlockHead/Tail tiling parameters (from pto-isa a2a3/TGatherB.hpp):
+  // vgatherb reads 8 u32 block addresses per repeat, each pointing at a 32B
+  // source block. Derived from the dst/offset tile shapes; nullopt when the
+  // shapes leave a zero divisor.
+  std::optional<GatherBlockTiling>
+  computeGatherBlockTiling(const TileShapeInfo &dstInfo,
+                           const TileShapeInfo &offsetInfo) {
+    GatherBlockTiling t;
+    t.blockSizeElem = dstInfo.blockSizeElem;
+    t.elementsPerRepeat = dstInfo.elementsPerRepeat;
+    t.validRow = dstInfo.vRows;
+    int64_t validCol = dstInfo.vCols;
+    t.dstRowStride = dstInfo.cols;
+    t.offsetRowStride = offsetInfo.cols;
+    if (t.blockSizeElem == 0 || t.elementsPerRepeat == 0 ||
+        validCol == 0) {
+      return std::nullopt;
+    }
+    t.numRepeatPerLine = validCol / t.elementsPerRepeat;
+    t.numRemainPerLine = validCol % t.elementsPerRepeat;
+    return t;
+  }
+
   // tgatherb → pto.ub.vgatherb (GatherBlockHead/Tail tiling).
   // Mirrors the pto-isa a2a3/TGatherB.hpp GatherBlockHead/Tail driver.
   // The CCE vgatherb hardware requires specific repeat counts and pointer
@@ -741,24 +734,10 @@ private:
       if (!dstInfo || !offsetInfo) {
         continue;
       }
-
-      GatherBlockTiling t;
-      t.blockSizeElem = dstInfo->blockSizeElem;
-      t.elementsPerRepeat = dstInfo->elementsPerRepeat;
-      t.validRow = dstInfo->vRows;
-      int64_t validCol = dstInfo->vCols;
-      t.dstRowStride = dstInfo->cols;
-      t.offsetRowStride = offsetInfo->cols;
-      if (t.blockSizeElem == 0 || t.elementsPerRepeat == 0 ||
-          validCol == 0) {
+      auto t = computeGatherBlockTiling(*dstInfo, *offsetInfo);
+      if (!t) {
         continue;
       }
-
-      // GatherBlockHead/Tail parameters (from pto-isa a2a3/TGatherB.hpp).
-      // vgatherb reads 8 u32 block addresses per repeat. Each address must
-      // point at a 32B source block; the instruction copies those 8 blocks.
-      t.numRepeatPerLine = validCol / t.elementsPerRepeat;
-      t.numRemainPerLine = validCol % t.elementsPerRepeat;
 
       Location loc = op.getLoc();
       builder.setInsertionPoint(op);
@@ -770,16 +749,12 @@ private:
       auto dstPtrType = getUBPtrType(ctx, dstElemTy);
       auto offPtrType = getUBPtrType(ctx, builder.getI32Type());
 
-      auto emitAddr = [&](Value tile, pto::PtrType ty) -> Value {
-        if (isa<pto::PtrType>(tile.getType())) {
-          return tile;
-        }
-        return builder.create<pto::TileBufAddrOp>(loc, ty, tile).getDst();
-      };
-
-      Value dstBase = emitAddr(op.getDst(), dstPtrType);
-      Value offBase = emitAddr(op.getOffsets(), offPtrType);
-      Value srcBase = emitAddr(op.getSrc(), dstPtrType);
+      Value dstBase = emitTileOrPtrAddress(builder, loc, op.getDst(),
+                                           dstPtrType);
+      Value offBase = emitTileOrPtrAddress(builder, loc, op.getOffsets(),
+                                           offPtrType);
+      Value srcBase = emitTileOrPtrAddress(builder, loc, op.getSrc(),
+                                           dstPtrType);
 
       auto emitGatherb = [&](Value dst, Value off, int64_t repStride,
                              int64_t repeat) {
@@ -788,9 +763,9 @@ private:
             i64c(1, loc, builder), i64c(repeat, loc, builder));
       };
 
-      emitGatherBlockHead(loc, builder, t, dstBase, offBase, dstPtrType,
+      emitGatherBlockHead(loc, builder, *t, dstBase, offBase, dstPtrType,
                           offPtrType, emitGatherb);
-      emitGatherBlockTail(loc, builder, t, dstBase, offBase, dstPtrType,
+      emitGatherBlockTail(loc, builder, *t, dstBase, offBase, dstPtrType,
                           offPtrType, emitGatherb);
 
       op.erase();
@@ -868,6 +843,99 @@ private:
   // Decomposes element-index gather into byte offsets (vmuls), then passes
   // the source tile address as vgather's offsetAddr config. This mirrors
   // pto-isa a2a3/TGather.hpp.
+  // Emits the per-(row, epr-chunk) sequence for one index-form gather:
+  // count-mode mask, tmp = indices * elemSize (byte offsets), barrier, then
+  // vgather from the source base address. Restores the normal mask
+  // afterwards. Mirrors pto-isa a2a3/TGather.hpp.
+  void emitGatherIndexSequence(Location loc, OpBuilder &builder,
+                               MLIRContext *ctx, Value indicesPtr,
+                               Value tmpPtr, Value dstPtr,
+                               pto::PtrType i32PtrType,
+                               pto::PtrType dstPtrType, Value srcAddr,
+                               const TileShapeInfo &dstInfo,
+                               const TileShapeInfo &indexInfo,
+                               const TileShapeInfo &tmpInfo,
+                               unsigned elemSize) {
+    auto pipeV = pto::PipeAttr::get(ctx, pto::PIPE::PIPE_V);
+    int64_t epr = dstInfo.elementsPerRepeat;
+    for (int64_t i = 0; i < dstInfo.vRows; ++i) {
+      for (int64_t col = 0; col < dstInfo.vCols; col += epr) {
+        int64_t chunkElems =
+            std::min<int64_t>(epr, dstInfo.vCols - col);
+        Value tmpOff =
+            idxc(i * tmpInfo.cols + col, loc, builder);
+        Value indexOff =
+            idxc(i * indexInfo.cols + col, loc, builder);
+        Value dstOff = idxc(i * dstInfo.cols + col, loc, builder);
+        Value tmpRow = addPtr(loc, builder, tmpPtr, i32PtrType, tmpOff);
+        Value idxRow =
+            addPtr(loc, builder, indicesPtr, i32PtrType, indexOff);
+        Value dstRow = addPtr(loc, builder, dstPtr, dstPtrType, dstOff);
+
+        builder.create<pto::UBSetMaskCountOp>(loc);
+        builder.create<pto::UBSetMaskOp>(loc,
+                                         i64c(chunkElems, loc, builder),
+                                         i64c0(loc, builder));
+        // tmp = indices * elemSize (byte offsets). Keep count-mode mask
+        // active for vgather, matching pto-isa a2a3/TGather.hpp.
+        builder.create<pto::UBVmulSOp>(
+            loc, tmpRow, idxRow, i64c(elemSize, loc, builder),
+            i64c1(loc, builder), i64c1(loc, builder), i64c1(loc, builder),
+            i64c8(loc, builder), i64c8(loc, builder));
+        builder.create<pto::BarrierOp>(loc, pipeV);
+        builder.create<pto::UBVgatherOp>(
+            loc, dstRow, tmpRow, srcAddr,
+            i64c(mlir::pto::kValue8, loc, builder),
+            i64c1(loc, builder));
+      }
+    }
+    builder.create<pto::UBSetMaskNormOp>(loc);
+    fullMask(loc, builder);
+  }
+
+  // Resolves one index-form gather's source base address (i64) from the
+  // CastPtrOp that defines the src tile pointer. Only handles
+  // alloc_tile-backed src.
+  FailureOr<Value> getGatherIndexSrcAddr(pto::TGatherOp op) {
+    auto srcCast = op.getSrc().getDefiningOp<pto::CastPtrOp>();
+    if (!srcCast) {
+      op.emitOpError(
+          "requires an alloc_tile-backed src with a planned address");
+      signalPassFailure();
+      return failure();
+    }
+    return srcCast.getInput();
+  }
+
+  // Materializes the i32 index/tmp and typed dst pointers for one
+  // index-form gather. Returns the element size, or nullopt when the dst
+  // element type has no representable size.
+  std::optional<unsigned>
+  emitGatherIndexPointers(pto::TGatherOp op, MLIRContext *ctx,
+                          OpBuilder &builder, pto::PtrType &i32PtrType,
+                          pto::PtrType &dstPtrType, Value &indicesPtr,
+                          Value &tmpPtr, Value &dstPtr) {
+    Location loc = op.getLoc();
+    builder.setInsertionPoint(op);
+
+    i32PtrType = getUBPtrType(ctx, builder.getI32Type());
+    indicesPtr =
+        emitTileOrPtrAddress(builder, loc, op.getIndices(), i32PtrType);
+    tmpPtr = emitTileOrPtrAddress(builder, loc, op.getTmp(), i32PtrType);
+
+    Type dstElemTy = getStoredElemType(op.getDst().getType());
+    if (!dstElemTy) {
+      return std::nullopt;
+    }
+    unsigned elemSize = getElementSize(dstElemTy);
+    if (elemSize == 0) {
+      return std::nullopt;
+    }
+    dstPtrType = getUBPtrType(ctx, dstElemTy);
+    dstPtr = emitTileOrPtrAddress(builder, loc, op.getDst(), dstPtrType);
+    return elemSize;
+  }
+
   LogicalResult lowerTGatherIndexOps(func::FuncOp func, MLIRContext *ctx,
                                      OpBuilder &builder,
                                      const TileShapeMap &tileShapes) {
@@ -884,81 +952,30 @@ private:
       if (!dstInfo || !indexInfo || !tmpInfo) {
         continue;
       }
-      int64_t epr = dstInfo->elementsPerRepeat;
-      if (epr == 0) {
+      if (dstInfo->elementsPerRepeat == 0) {
         continue;
       }
 
-      // Extract the source base address (i64) from the CastPtrOp that
-      // defines the src tile pointer. Only handle alloc_tile-backed src.
-      auto srcCast = op.getSrc().getDefiningOp<pto::CastPtrOp>();
-      if (!srcCast) {
-        op.emitOpError(
-            "requires an alloc_tile-backed src with a planned address");
-        signalPassFailure();
+      FailureOr<Value> srcAddr = getGatherIndexSrcAddr(op);
+      if (failed(srcAddr)) {
         return failure();
       }
-      Value srcAddr = srcCast.getInput();
 
-      Location loc = op.getLoc();
-      builder.setInsertionPoint(op);
-
-      auto i32PtrType = getUBPtrType(ctx, builder.getI32Type());
-      auto emitAddr = [&](Value tile, pto::PtrType ty) -> Value {
-        if (isa<pto::PtrType>(tile.getType())) {
-          return tile;
-        }
-        return builder.create<pto::TileBufAddrOp>(loc, ty, tile).getDst();
-      };
-
-      Value indicesPtr = emitAddr(op.getIndices(), i32PtrType);
-      Value tmpPtr = emitAddr(op.getTmp(), i32PtrType);
-
-      Type dstElemTy = getStoredElemType(op.getDst().getType());
-      if (!dstElemTy) {
+      pto::PtrType i32PtrType;
+      pto::PtrType dstPtrType;
+      Value indicesPtr;
+      Value tmpPtr;
+      Value dstPtr;
+      auto elemSize = emitGatherIndexPointers(op, ctx, builder, i32PtrType,
+                                              dstPtrType, indicesPtr, tmpPtr,
+                                              dstPtr);
+      if (!elemSize) {
         continue;
       }
-      unsigned elemSize = getElementSize(dstElemTy);
-      if (elemSize == 0) {
-        continue;
-      }
-      auto dstPtrType = getUBPtrType(ctx, dstElemTy);
-      Value dstPtr = emitAddr(op.getDst(), dstPtrType);
 
-      auto pipeV = pto::PipeAttr::get(ctx, pto::PIPE::PIPE_V);
-      for (int64_t i = 0; i < dstInfo->vRows; ++i) {
-        for (int64_t col = 0; col < dstInfo->vCols; col += epr) {
-          int64_t chunkElems =
-              std::min<int64_t>(epr, dstInfo->vCols - col);
-          Value tmpOff =
-              idxc(i * tmpInfo->cols + col, loc, builder);
-          Value indexOff =
-              idxc(i * indexInfo->cols + col, loc, builder);
-          Value dstOff = idxc(i * dstInfo->cols + col, loc, builder);
-          Value tmpRow = addPtr(loc, builder, tmpPtr, i32PtrType, tmpOff);
-          Value idxRow =
-              addPtr(loc, builder, indicesPtr, i32PtrType, indexOff);
-          Value dstRow = addPtr(loc, builder, dstPtr, dstPtrType, dstOff);
-
-          builder.create<pto::UBSetMaskCountOp>(loc);
-          builder.create<pto::UBSetMaskOp>(loc,
-                                           i64c(chunkElems, loc, builder),
-                                           i64c0(loc, builder));
-          // tmp = indices * elemSize (byte offsets). Keep count-mode mask
-          // active for vgather, matching pto-isa a2a3/TGather.hpp.
-          builder.create<pto::UBVmulSOp>(
-              loc, tmpRow, idxRow, i64c(elemSize, loc, builder),
-              i64c1(loc, builder), i64c1(loc, builder), i64c1(loc, builder),
-              i64c8(loc, builder), i64c8(loc, builder));
-          builder.create<pto::BarrierOp>(loc, pipeV);
-          builder.create<pto::UBVgatherOp>(
-              loc, dstRow, tmpRow, srcAddr,
-              i64c(mlir::pto::kValue8, loc, builder),
-              i64c1(loc, builder));
-        }
-      }
-      builder.create<pto::UBSetMaskNormOp>(loc);
-      fullMask(loc, builder);
+      emitGatherIndexSequence(op.getLoc(), builder, ctx, indicesPtr, tmpPtr,
+                              dstPtr, i32PtrType, dstPtrType, *srcAddr,
+                              *dstInfo, *indexInfo, *tmpInfo, *elemSize);
       op.erase();
     }
     return success();
@@ -1523,6 +1540,24 @@ private:
     return g;
   }
 
+  // The innermost-burst operands shared by both GM<->UB directions: burst
+  // length and the dense UB row stride.
+  struct BurstPlan {
+    Value lenBurst;
+    Value ubRowStride;
+  };
+
+  BurstPlan buildBurstPlan(Location loc, OpBuilder &b,
+                           const DmaViewInfo &viewInfo,
+                           const BurstGeometry &g) {
+    // The burst length covers one innermost view dim; the UB row stride is
+    // the full UB tile row.
+    Value lenBurst = burstBytes(loc, b, viewInfo.sizes[g.nd - 1], g.elemSize);
+    Value ubRowStride = b.create<arith::MulIOp>(loc, i64c(g.ubCols, loc, b),
+                                                i64c(g.elemSize, loc, b)).getResult();
+    return {lenBurst, ubRowStride};
+  }
+
   LogicalResult emitMteGmUb(Location loc, OpBuilder &b, Value gmPtr,
                              Value ubPtr, const DmaViewInfo &viewInfo,
                              Type elemTy, ArrayRef<int64_t> tileShape) {
@@ -1530,29 +1565,28 @@ private:
     if (!geometry) {
       return failure();
     }
-    int64_t ubCols = geometry->ubCols;
-    unsigned elemSize = geometry->elemSize;
-    unsigned nd = geometry->nd;
+    BurstPlan plan = buildBurstPlan(loc, b, viewInfo, *geometry);
 
     // GM -> UB: the burst reads a contiguous GM run and writes a dense UB row.
-    Value lenBurst = burstBytes(loc, b, viewInfo.sizes[nd - 1], elemSize);
-    Value ubRowStride = b.create<arith::MulIOp>(loc, i64c(ubCols, loc, b),
-                                                i64c(elemSize, loc, b)).getResult();
     pto::DmaLoopConfig nburst{
-        i64Cast(loc, b, viewInfo.sizes[nd - 2]),
-        strideBytes(loc, b, viewInfo.strides[nd - 2], elemSize), ubRowStride};
+        i64Cast(loc, b, viewInfo.sizes[geometry->nd - 2]),
+        strideBytes(loc, b, viewInfo.strides[geometry->nd - 2],
+                    geometry->elemSize),
+        plan.ubRowStride};
 
     SmallVector<pto::DmaLoopConfig> loops;
-    for (int i = nd - 3; i >= 0; --i) {
+    for (int i = geometry->nd - 3; i >= 0; --i) {
       Value count = i64Cast(loc, b, viewInfo.sizes[i]);
-      Value srcStride = strideBytes(loc, b, viewInfo.strides[i], elemSize);
+      Value srcStride = strideBytes(loc, b, viewInfo.strides[i],
+                                    geometry->elemSize);
       Value dstStride = b.create<arith::MulIOp>(
           loc, innerDimElems(loc, b, viewInfo, i),
-          i64c(elemSize, loc, b)).getResult();
+          i64c(geometry->elemSize, loc, b)).getResult();
       loops.push_back({count, srcStride, dstStride});
     }
-    b.create<pto::MteGmUbOp>(loc, gmPtr, ubPtr, i64c0(loc, b), lenBurst,
-        nburst, llvm::ArrayRef(loops), std::nullopt);
+    b.create<pto::MteGmUbOp>(loc, gmPtr, ubPtr, i64c0(loc, b),
+                             plan.lenBurst, nburst,
+                             llvm::ArrayRef(loops), std::nullopt);
     return success();
   }
 
@@ -1563,30 +1597,59 @@ private:
     if (!geometry) {
       return failure();
     }
-    int64_t ubCols = geometry->ubCols;
-    unsigned elemSize = geometry->elemSize;
-    unsigned nd = geometry->nd;
+    BurstPlan plan = buildBurstPlan(loc, b, viewInfo, *geometry);
 
     // UB -> GM: the burst reads a dense UB row and writes a strided GM run.
-    Value lenBurst = burstBytes(loc, b, viewInfo.sizes[nd - 1], elemSize);
-    Value ubRowStride = b.create<arith::MulIOp>(loc, i64c(ubCols, loc, b),
-                                                i64c(elemSize, loc, b)).getResult();
     pto::DmaLoopConfig nburst{
-        i64Cast(loc, b, viewInfo.sizes[nd - 2]), ubRowStride,
-        strideBytes(loc, b, viewInfo.strides[nd - 2], elemSize)};
+        i64Cast(loc, b, viewInfo.sizes[geometry->nd - 2]), plan.ubRowStride,
+        strideBytes(loc, b, viewInfo.strides[geometry->nd - 2],
+                    geometry->elemSize)};
 
     SmallVector<pto::DmaLoopConfig> loops;
-    for (int i = nd - 3; i >= 0; --i) {
+    for (int i = geometry->nd - 3; i >= 0; --i) {
       Value count = i64Cast(loc, b, viewInfo.sizes[i]);
       Value srcStride = b.create<arith::MulIOp>(
           loc, innerDimElems(loc, b, viewInfo, i),
-          i64c(elemSize, loc, b)).getResult();
-      Value dstStride = strideBytes(loc, b, viewInfo.strides[i], elemSize);
+          i64c(geometry->elemSize, loc, b)).getResult();
+      Value dstStride = strideBytes(loc, b, viewInfo.strides[i],
+                                    geometry->elemSize);
       loops.push_back({count, srcStride, dstStride});
     }
-    b.create<pto::MteUbGmOp>(loc, ubPtr, gmPtr, lenBurst, nburst, Value{},
-                             llvm::ArrayRef(loops));
+    b.create<pto::MteUbGmOp>(loc, ubPtr, gmPtr, plan.lenBurst, nburst,
+                             Value{}, llvm::ArrayRef(loops));
     return success();
+  }
+
+  // Shared prologue of lowerTLoad/lowerTStore: validates that the UB-side
+  // tile is well-formed (memory space, element type/size, known tile shape)
+  // and returns its element type and size. `tile` is the UB operand whose
+  // shape drives the DMA.
+  struct TLoadStorePrologue {
+    Type elemTy;
+    unsigned elemSize;
+    llvm::ArrayRef<int64_t> shape;
+  };
+
+  std::optional<TLoadStorePrologue>
+  checkLoadStoreTile(Value tile, const TileShapeMap &tileShapes) {
+    Type tileType = tile.getType();
+    if (!isUBMemorySpace(tileType)) {
+      return std::nullopt;
+    }
+    Type elemTy = getStoredElemType(tileType);
+    if (!elemTy) {
+      return std::nullopt;
+    }
+    unsigned elemSize = getElementSize(elemTy);
+    if (elemSize == 0) {
+      return std::nullopt;
+    }
+    auto it = tileShapes.find(tile);
+    if (it == tileShapes.end()) {
+      return std::nullopt;
+    }
+    return TLoadStorePrologue{elemTy, elemSize,
+                              llvm::ArrayRef(it->second.shape)};
   }
 
   LogicalResult lowerTLoad(pto::TLoadOp op, OpBuilder &b,
@@ -1596,60 +1659,33 @@ private:
     if (failed(viewInfo)) {
       return failure();
     }
-    Type dstType = op.getDst().getType();
-    if (!isUBMemorySpace(dstType)) {
-      return failure();
-    }
-    Type elemTy = getStoredElemType(dstType);
-    if (!elemTy) {
-      return failure();
-    }
-    unsigned elemSize = getElementSize(elemTy);
-    if (elemSize == 0) {
+    auto prologue = checkLoadStoreTile(op.getDst(), tileShapes);
+    if (!prologue) {
       return failure();
     }
 
-    auto it = tileShapes.find(op.getDst());
-    if (it == tileShapes.end()) {
-      return failure();
-    }
-
-    Value byteOff = computeGMByteOffset(loc, b, *viewInfo, elemSize);
+    Value byteOff = computeGMByteOffset(loc, b, *viewInfo, prologue->elemSize);
     Value gmPtr = offsetGMPtrByBytes(loc, b, viewInfo->gmPtr, byteOff);
-    return emitMteGmUb(loc, b, gmPtr, op.getDst(), *viewInfo, elemTy,
-                       llvm::ArrayRef(it->second.shape));
+    return emitMteGmUb(loc, b, gmPtr, op.getDst(), *viewInfo,
+                       prologue->elemTy, prologue->shape);
   }
 
   LogicalResult lowerTStore(pto::TStoreOp op, OpBuilder &b,
                             const TileShapeMap &tileShapes) {
     Location loc = op.getLoc();
-    Type srcType = op.getSrc().getType();
-    if (!isUBMemorySpace(srcType)) {
-      return failure();
-    }
-    Type elemTy = getStoredElemType(srcType);
-    if (!elemTy) {
-      return failure();
-    }
-    unsigned elemSize = getElementSize(elemTy);
-    if (elemSize == 0) {
-      return failure();
-    }
-
-    auto it = tileShapes.find(op.getSrc());
-    if (it == tileShapes.end()) {
-      return failure();
-    }
-
     auto viewInfo = extractDmaViewInfo(op);
     if (failed(viewInfo)) {
       return failure();
     }
+    auto prologue = checkLoadStoreTile(op.getSrc(), tileShapes);
+    if (!prologue) {
+      return failure();
+    }
 
-    Value byteOff = computeGMByteOffset(loc, b, *viewInfo, elemSize);
+    Value byteOff = computeGMByteOffset(loc, b, *viewInfo, prologue->elemSize);
     Value gmPtr = offsetGMPtrByBytes(loc, b, viewInfo->gmPtr, byteOff);
-    return emitMteUbGm(loc, b, op.getSrc(), gmPtr, *viewInfo, elemTy,
-                       llvm::ArrayRef(it->second.shape));
+    return emitMteUbGm(loc, b, op.getSrc(), gmPtr, *viewInfo,
+                       prologue->elemTy, prologue->shape);
   }
 
   //===--------------------------------------------------------------------===//
