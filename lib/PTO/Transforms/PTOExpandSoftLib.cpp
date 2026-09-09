@@ -109,6 +109,31 @@ struct PTOExpandSoftLibPass
 
   llvm::DenseMap<Operation *, llvm::StringMap<func::FuncOp>> materialized;
 
+  // Replaces `op` with a call to the previously materialized `callee` and
+  // erases the original operation. Shared by the cache-hit and
+  // freshly-materialized paths.
+  void replaceWithSoftLibCall(Operation *op, func::FuncOp callee,
+                              ValueRange operands, Value resultValue) {
+    OpBuilder builder(op);
+    auto call = builder.create<func::CallOp>(op->getLoc(), callee, operands);
+    resultValue.replaceAllUsesWith(call.getResult(0));
+    op->erase();
+  }
+
+  // Fast path: reuses a function previously materialized for the same
+  // (target, op, operand specs) key within this module. Returns the callee
+  // on hit, std::nullopt on miss.
+  std::optional<func::FuncOp>
+  findCachedSoftLibFunc(ModuleOp module, const std::string &cacheKey) {
+    auto &moduleCache = materialized[module.getOperation()];
+    auto cached = moduleCache.find(cacheKey);
+    if (cached != moduleCache.end() && cached->second &&
+        cached->second->getParentOp() == module.getOperation()) {
+      return cached->second;
+    }
+    return std::nullopt;
+  }
+
   LogicalResult materializeCall(
       Operation *op, ModuleOp module, MLIRContext &context, StringRef target,
       StringRef requestOp, StringRef requestSpecs, StringRef functionStem,
@@ -122,13 +147,8 @@ struct PTOExpandSoftLibPass
 
     std::string cacheKey = target.str() + ":" + request.op + ":" +
                            request.operandSpecsJson;
-    if (auto cached = moduleCache.find(cacheKey); cached != moduleCache.end() &&
-        cached->second && cached->second->getParentOp() == module.getOperation()) {
-      OpBuilder builder(op);
-      auto call = builder.create<func::CallOp>(
-          op->getLoc(), cached->second, operands);
-      resultValue.replaceAllUsesWith(call.getResult(0));
-      op->erase();
+    if (auto cached = findCachedSoftLibFunc(module, cacheKey)) {
+      replaceWithSoftLibCall(op, *cached, operands, resultValue);
       return success();
     }
 
@@ -192,12 +212,8 @@ struct PTOExpandSoftLibPass
              failure();
     }
 
-    OpBuilder builder(op);
-    auto call = builder.create<func::CallOp>(op->getLoc(), importedEntry,
-                                             operands);
-    resultValue.replaceAllUsesWith(call.getResult(0));
+    replaceWithSoftLibCall(op, importedEntry, operands, resultValue);
     moduleCache[cacheKey] = importedEntry;
-    op->erase();
     return success();
   }
 
@@ -220,6 +236,35 @@ struct PTOExpandSoftLibPass
                            buildVdivRequestJson(op), stem,
                            ValueRange{op.getLhs(), op.getRhs(), op.getMask()},
                            op.getResult(), service);
+  }
+
+  // Validates one integer pto.vdiv against the A5 Software Library contract
+  // (i16 vectors with b16 masks, i32 with b32; all operands same type).
+  bool checkVdivAgainstSoftLibContract(VdivOp vdiv) {
+    auto resultVreg = dyn_cast<VRegType>(vdiv.getResult().getType());
+    if (!resultVreg) {
+      vdiv.emitError("A5 pto.vdiv requires a vector result");
+      return false;
+    }
+    auto integer = dyn_cast<IntegerType>(resultVreg.getElementType());
+    auto expectedMask = integer && integer.getWidth() == 16 ? "b16" : "b32";
+    bool lhsLegal = isSoftLibVdivIntegerVReg(vdiv.getLhs().getType());
+    bool rhsLegal = isSoftLibVdivIntegerVReg(vdiv.getRhs().getType());
+    bool sameType = vdiv.getLhs().getType() == vdiv.getRhs().getType() &&
+                    vdiv.getLhs().getType() == vdiv.getResult().getType();
+    bool maskMatches =
+        vdiv.getMask().getType() == MaskType::get(&getContext(), expectedMask);
+    if (lhsLegal && rhsLegal && sameType && maskMatches) {
+      return true;
+    }
+    vdiv.emitError() << "A5 integer pto.vdiv is not supported for "
+                     << vdiv.getResult().getType() << " with mask "
+                     << vdiv.getMask().getType() << "; only signed or "
+                     << "signless i16 vectors with a b16 mask and i32 "
+                     << "vectors with a b32 mask are materialized through "
+                     << "the A5 Software Library, and f16/f32 pto.vdiv "
+                     << "uses the native vector instruction";
+    return false;
   }
 
   void runOnOperation() override {
@@ -250,30 +295,7 @@ struct PTOExpandSoftLibPass
     }
     for (Operation *op : candidates) {
       if (auto vdiv = dyn_cast<VdivOp>(op)) {
-        auto resultVreg = dyn_cast<VRegType>(vdiv.getResult().getType());
-        if (!resultVreg) {
-          vdiv.emitError("A5 pto.vdiv requires a vector result");
-          signalPassFailure();
-          continue;
-        }
-        auto integer = dyn_cast<IntegerType>(resultVreg.getElementType());
-        auto expectedMask = integer && integer.getWidth() == 16
-                                ? "b16"
-                                : "b32";
-        bool lhsLegal = isSoftLibVdivIntegerVReg(vdiv.getLhs().getType());
-        bool rhsLegal = isSoftLibVdivIntegerVReg(vdiv.getRhs().getType());
-        bool sameType = vdiv.getLhs().getType() == vdiv.getRhs().getType() &&
-                        vdiv.getLhs().getType() == vdiv.getResult().getType();
-        bool maskMatches =
-            vdiv.getMask().getType() == MaskType::get(&getContext(), expectedMask);
-        if (!lhsLegal || !rhsLegal || !sameType || !maskMatches) {
-          vdiv.emitError() << "A5 integer pto.vdiv is not supported for "
-                           << vdiv.getResult().getType() << " with mask "
-                           << vdiv.getMask().getType() << "; only signed or "
-                           << "signless i16 vectors with a b16 mask and i32 "
-                           << "vectors with a b32 mask are materialized through "
-                           << "the A5 Software Library, and f16/f32 pto.vdiv "
-                           << "uses the native vector instruction";
+        if (!checkVdivAgainstSoftLibContract(vdiv)) {
           signalPassFailure();
           continue;
         }
