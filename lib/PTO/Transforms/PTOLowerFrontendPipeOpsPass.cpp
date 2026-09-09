@@ -375,33 +375,28 @@ static FailureOr<FrontendPipeHandles> lowerAndEraseFrontendInit(InitOpT initOp,
 static bool collectFrontendInitOps(func::FuncOp funcOp,
                                    SmallVectorImpl<Operation *> &initOps,
                                    llvm::DenseMap<int32_t, Operation *> &seen) {
-  bool hasDuplicateId = false;
+  // Aic and Aiv initialize ops share the id-uniqueness contract, so both
+  // variants run through one shared record-and-check helper.
+  auto recordInitOp = [&](Operation *op, int32_t id) {
+    initOps.push_back(op);
+    auto [it, inserted] = seen.try_emplace(id, op);
+    (void)it;
+    if (!inserted) {
+      op->emitOpError()
+          << "requires unique initialize_pipe id in function (duplicate id = "
+          << id << ")";
+    }
+    return inserted;
+  };
+  bool allUnique = true;
   funcOp.walk([&](Operation *op) {
     if (auto init = dyn_cast<AicInitializePipeOp>(op)) {
-      initOps.push_back(op);
-      auto [it, inserted] = seen.try_emplace(init.getId(), op);
-      if (!inserted) {
-        op->emitOpError()
-            << "requires unique initialize_pipe id in function (duplicate id = "
-            << init.getId() << ")";
-        hasDuplicateId = true;
-      }
-      return WalkResult::advance();
+      allUnique &= recordInitOp(op, init.getId());
+    } else if (auto init = dyn_cast<AivInitializePipeOp>(op)) {
+      allUnique &= recordInitOp(op, init.getId());
     }
-    if (auto init = dyn_cast<AivInitializePipeOp>(op)) {
-      initOps.push_back(op);
-      auto [it, inserted] = seen.try_emplace(init.getId(), op);
-      if (!inserted) {
-        op->emitOpError()
-            << "requires unique initialize_pipe id in function (duplicate id = "
-            << init.getId() << ")";
-        hasDuplicateId = true;
-      }
-      return WalkResult::advance();
-    }
-    return WalkResult::advance();
   });
-  return !hasDuplicateId;
+  return allUnique;
 }
 
 // Lowers one collected frontend initialize op (aic or aiv variant) and
@@ -571,109 +566,132 @@ static Value createPopDestination(TPopFromAivOp pop,
   return createTilePopDestination(pop, rewriter);
 }
 
+// Shared lowering for the alloc-to-pipe variants: a c2v (cube-to-vec) pipe
+// uses the c2v slot strides and pipe, a v2c pipe the v2c ones. `pipeSel`
+// picks the handle members; `dirName` names the pipe in diagnostics.
+template <typename OpTy>
+static LogicalResult lowerFrontendAllocOp(
+    OpTy op, Value FrontendPipeHandles::*pipeSel,
+    const SmallVector<int64_t> FrontendPipeHandles::*strideSel,
+    const char *dirName, const FrontendDataLowering &ctx, IRRewriter &rewriter) {
+  auto handlesOr = resolveFrontendPipe(op, pipeSel, dirName, ctx);
+  if (failed(handlesOr)) {
+    return failure();
+  }
+  const FrontendPipeHandles &handles = **handlesOr;
+  auto decl =
+      rewriter.create<DeclareGlobalOp>(op.getLoc(), op.getEntry().getType());
+  propagateGlobalTensorStrides(decl, handles.*strideSel, rewriter);
+  rewriter.create<TAllocOp>(op.getLoc(), decl.getEntry(), handles.*pipeSel,
+                            op.getSplitAttr());
+  rewriter.replaceOp(op, decl.getEntry());
+  return success();
+}
+
+// Shared lowering for the push/pop/free data ops: resolves the pipe handle
+// (c2v or v2c via `pipeSel`/`dirName`), then applies `lower` with it.
+template <typename OpTy, typename LowerFn>
+static LogicalResult lowerFrontendDataWithPipe(
+    OpTy op, Value FrontendPipeHandles::*pipeSel, const char *dirName,
+    const FrontendDataLowering &ctx, IRRewriter &rewriter, LowerFn &&lower) {
+  auto handlesOr = resolveFrontendPipe(op, pipeSel, dirName, ctx);
+  if (failed(handlesOr)) {
+    return failure();
+  }
+  return lower(**handlesOr);
+}
+
+// A push lowers to a plain pipe push, with an optional subblock id.
+template <typename OpTy>
+static LogicalResult
+lowerFrontendPushOp(OpTy push, Value FrontendPipeHandles::*pipeSel,
+                    const char *dirName, Value subblockid,
+                    const FrontendDataLowering &ctx, IRRewriter &rewriter) {
+  return lowerFrontendDataWithPipe(
+      push, pipeSel, dirName, ctx, rewriter,
+      [&](const FrontendPipeHandles &handles) {
+        rewriter.replaceOpWithNewOp<TPushOp>(push, push.getTile(),
+                                             handles.*pipeSel, subblockid,
+                                             push.getSplitAttr());
+        return success();
+      });
+}
+
+// A pop allocates its destination tile, then moves it over the pipe.
+template <typename OpTy>
+static LogicalResult
+lowerFrontendPopOp(OpTy pop, Value FrontendPipeHandles::*pipeSel,
+                   const char *dirName, Value subblockid,
+                   const FrontendDataLowering &ctx, IRRewriter &rewriter) {
+  return lowerFrontendDataWithPipe(
+      pop, pipeSel, dirName, ctx, rewriter,
+      [&](const FrontendPipeHandles &handles) {
+        Value entry = createPopDestination(pop, handles, rewriter);
+        rewriter.create<TPopOp>(pop.getLoc(), entry, handles.*pipeSel,
+                                subblockid, pop.getSplitAttr());
+        rewriter.replaceOp(pop, entry);
+        return success();
+      });
+}
+
+// A free releases the pipe slot backing the entry.
+template <typename OpTy>
+static LogicalResult
+lowerFrontendFreeOp(OpTy free, Value FrontendPipeHandles::*pipeSel,
+                    const char *dirName, const FrontendDataLowering &ctx,
+                    IRRewriter &rewriter) {
+  return lowerFrontendDataWithPipe(
+      free, pipeSel, dirName, ctx, rewriter,
+      [&](const FrontendPipeHandles &handles) {
+        rewriter.replaceOpWithNewOp<TFreeOp>(free, free.getEntry(),
+                                             handles.*pipeSel,
+                                             free.getSplitAttr());
+        return success();
+      });
+}
+
 // Replaces one frontend alloc/push/pop/free op with its PTO pipe op. The
 // insertion point must already be set on `rewriter`.
 static LogicalResult lowerOneFrontendDataOp(Operation *op,
                                             const FrontendDataLowering &ctx,
                                             IRRewriter &rewriter) {
+  using PipeSel = Value FrontendPipeHandles::*;
+  using StrideSel = const SmallVector<int64_t> FrontendPipeHandles::*;
+  constexpr PipeSel kC2vPipe = &FrontendPipeHandles::c2vPipe;
+  constexpr PipeSel kV2cPipe = &FrontendPipeHandles::v2cPipe;
+  constexpr StrideSel kC2vStrides = &FrontendPipeHandles::c2vSlotStrides;
+  constexpr StrideSel kV2cStrides = &FrontendPipeHandles::v2cSlotStrides;
+
   return TypeSwitch<Operation *, LogicalResult>(op)
       .Case([&](TAllocToAivOp alloc) {
-        auto handlesOr = resolveFrontendPipe(
-            alloc, &FrontendPipeHandles::c2vPipe, "C2V", ctx);
-        if (failed(handlesOr)) {
-          return failure();
-        }
-        const FrontendPipeHandles &handles = **handlesOr;
-        auto decl = rewriter.create<DeclareGlobalOp>(alloc.getLoc(),
-                                                     alloc.getEntry().getType());
-        propagateGlobalTensorStrides(decl, handles.c2vSlotStrides, rewriter);
-        rewriter.create<TAllocOp>(alloc.getLoc(), decl.getEntry(),
-                                  handles.c2vPipe, alloc.getSplitAttr());
-        rewriter.replaceOp(alloc, decl.getEntry());
-        return success();
+        return lowerFrontendAllocOp(alloc, kC2vPipe, kC2vStrides, "C2V", ctx,
+                                    rewriter);
       })
       .Case([&](TAllocToAicOp alloc) {
-        auto handlesOr = resolveFrontendPipe(
-            alloc, &FrontendPipeHandles::v2cPipe, "V2C", ctx);
-        if (failed(handlesOr)) {
-          return failure();
-        }
-        const FrontendPipeHandles &handles = **handlesOr;
-        auto decl = rewriter.create<DeclareGlobalOp>(alloc.getLoc(),
-                                                     alloc.getEntry().getType());
-        propagateGlobalTensorStrides(decl, handles.v2cSlotStrides, rewriter);
-        rewriter.create<TAllocOp>(alloc.getLoc(), decl.getEntry(),
-                                  handles.v2cPipe, alloc.getSplitAttr());
-        rewriter.replaceOp(alloc, decl.getEntry());
-        return success();
+        return lowerFrontendAllocOp(alloc, kV2cPipe, kV2cStrides, "V2C", ctx,
+                                    rewriter);
       })
       .Case([&](TPushToAivOp push) {
-        auto handlesOr = resolveFrontendPipe(
-            push, &FrontendPipeHandles::c2vPipe, "C2V", ctx);
-        if (failed(handlesOr)) {
-          return failure();
-        }
-        rewriter.replaceOpWithNewOp<TPushOp>(push, push.getTile(),
-                                             (**handlesOr).c2vPipe, Value{},
-                                             push.getSplitAttr());
-        return success();
+        return lowerFrontendPushOp(push, kC2vPipe, "C2V", Value{}, ctx,
+                                   rewriter);
       })
       .Case([&](TPushToAicOp push) {
-        auto handlesOr = resolveFrontendPipe(
-            push, &FrontendPipeHandles::v2cPipe, "V2C", ctx);
-        if (failed(handlesOr)) {
-          return failure();
-        }
-        rewriter.replaceOpWithNewOp<TPushOp>(
-            push, push.getTile(), (**handlesOr).v2cPipe,
-            push.getAivSubblockid(), push.getSplitAttr());
-        return success();
+        return lowerFrontendPushOp(push, kV2cPipe, "V2C",
+                                   push.getAivSubblockid(), ctx, rewriter);
       })
       .Case([&](TPopFromAicOp pop) {
-        auto handlesOr = resolveFrontendPipe(
-            pop, &FrontendPipeHandles::c2vPipe, "C2V", ctx);
-        if (failed(handlesOr)) {
-          return failure();
-        }
-        Value entry = createPopDestination(pop, **handlesOr, rewriter);
-        rewriter.create<TPopOp>(pop.getLoc(), entry, (**handlesOr).c2vPipe,
-                                pop.getAivSubblockid(), pop.getSplitAttr());
-        rewriter.replaceOp(pop, entry);
-        return success();
+        return lowerFrontendPopOp(pop, kC2vPipe, "C2V",
+                                  pop.getAivSubblockid(), ctx, rewriter);
       })
       .Case([&](TPopFromAivOp pop) {
-        auto handlesOr = resolveFrontendPipe(
-            pop, &FrontendPipeHandles::v2cPipe, "V2C", ctx);
-        if (failed(handlesOr)) {
-          return failure();
-        }
-        Value entry = createPopDestination(pop, **handlesOr, rewriter);
-        rewriter.create<TPopOp>(pop.getLoc(), entry, (**handlesOr).v2cPipe,
-                                Value{}, pop.getSplitAttr());
-        rewriter.replaceOp(pop, entry);
-        return success();
+        return lowerFrontendPopOp(pop, kV2cPipe, "V2C", Value{}, ctx,
+                                  rewriter);
       })
       .Case([&](TFreeFromAicOp free) {
-        auto handlesOr = resolveFrontendPipe(
-            free, &FrontendPipeHandles::c2vPipe, "C2V", ctx);
-        if (failed(handlesOr)) {
-          return failure();
-        }
-        rewriter.replaceOpWithNewOp<TFreeOp>(free, free.getEntry(),
-                                             (**handlesOr).c2vPipe,
-                                             free.getSplitAttr());
-        return success();
+        return lowerFrontendFreeOp(free, kC2vPipe, "C2V", ctx, rewriter);
       })
       .Case([&](TFreeFromAivOp free) {
-        auto handlesOr = resolveFrontendPipe(
-            free, &FrontendPipeHandles::v2cPipe, "V2C", ctx);
-        if (failed(handlesOr)) {
-          return failure();
-        }
-        rewriter.replaceOpWithNewOp<TFreeOp>(free, free.getEntry(),
-                                             (**handlesOr).v2cPipe,
-                                             free.getSplitAttr());
-        return success();
+        return lowerFrontendFreeOp(free, kV2cPipe, "V2C", ctx, rewriter);
       })
       .Default([](Operation *) { return success(); });
 }
