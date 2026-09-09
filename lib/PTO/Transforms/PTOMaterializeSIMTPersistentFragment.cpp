@@ -461,45 +461,41 @@ buildPersistentTransformWorklist(const PersistentMaterializationPlan &plan,
 }
 
 // Rewrite one analyzed access against its section-local scalar proxies.
-static LogicalResult rewritePersistentAccess(
-    Operation *access, ArrayRef<PersistentLaneRewrite> laneRewrites,
-    MutableArrayRef<PersistentElementRewrite> elementRewrites) {
-  FailureOr<Type> accessType = getPersistentAccessType(access);
-  if (failed(accessType)) {
-    return failure();
-  }
-
-  if (!isa<VectorType>(*accessType)) {
-    assert(laneRewrites.size() == 1 && laneRewrites.front().laneIndex == 0 &&
-           "scalar access must map to exactly one scalar lane");
-    LLVM::AllocaOp proxy =
-        elementRewrites[laneRewrites.front().elementIndex].proxy;
-    assert(proxy && "locally accessed element must have a scalar proxy");
-    return rewireScalarAccess(access, proxy);
-  }
-
-  OpBuilder builder(access);
-  Location loc = access->getLoc();
-  if (auto store = dyn_cast<LLVM::StoreOp>(access)) {
-    for (const PersistentLaneRewrite &laneRewrite : laneRewrites) {
-      LLVM::AllocaOp proxy = elementRewrites[laneRewrite.elementIndex].proxy;
-      assert(proxy && "vector store lane must have a scalar proxy");
-      Value laneIndex = builder.create<arith::ConstantIntOp>(
-          loc, laneRewrite.laneIndex, /*width=*/32);
-      Value laneValue = builder.create<LLVM::ExtractElementOp>(
-          loc, store.getValue(), laneIndex);
-      builder.create<LLVM::StoreOp>(loc, laneValue, proxy.getRes());
+// Rewrites a vector store lane-by-lane against its scalar proxies.
+static LogicalResult rewriteVectorPersistentStore(
+    LLVM::StoreOp store, ArrayRef<PersistentLaneRewrite> laneRewrites,
+    MutableArrayRef<PersistentElementRewrite> elementRewrites,
+    OpBuilder &builder) {
+  Location loc = store.getLoc();
+  for (const PersistentLaneRewrite &laneRewrite : laneRewrites) {
+    LLVM::AllocaOp proxy = elementRewrites[laneRewrite.elementIndex].proxy;
+    if (!proxy) {
+      return store.emitOpError("vector store lane must have a scalar proxy");
     }
-    store.erase();
-    return success();
+    Value laneIndex = builder.create<arith::ConstantIntOp>(
+        loc, laneRewrite.laneIndex, /*width=*/32);
+    Value laneValue = builder.create<LLVM::ExtractElementOp>(
+        loc, store.getValue(), laneIndex);
+    builder.create<LLVM::StoreOp>(loc, laneValue, proxy.getRes());
   }
+  store.erase();
+  return success();
+}
 
-  auto load = cast<LLVM::LoadOp>(access);
-  auto vectorType = cast<VectorType>(*accessType);
+// Rewrites a vector load lane-by-lane, rebuilding the vector from its
+// scalar proxies.
+static LogicalResult rewriteVectorPersistentLoad(
+    LLVM::LoadOp load, VectorType vectorType,
+    ArrayRef<PersistentLaneRewrite> laneRewrites,
+    MutableArrayRef<PersistentElementRewrite> elementRewrites,
+    OpBuilder &builder) {
+  Location loc = load.getLoc();
   Value rebuiltVector = builder.create<LLVM::PoisonOp>(loc, vectorType);
   for (const PersistentLaneRewrite &laneRewrite : laneRewrites) {
     LLVM::AllocaOp proxy = elementRewrites[laneRewrite.elementIndex].proxy;
-    assert(proxy && "vector load lane must have a scalar proxy");
+    if (!proxy) {
+      return load.emitOpError("vector load lane must have a scalar proxy");
+    }
     Value laneValue = builder.create<LLVM::LoadOp>(
         loc, vectorType.getElementType(), proxy.getRes());
     Value laneIndex = builder.create<arith::ConstantIntOp>(
@@ -512,9 +508,43 @@ static LogicalResult rewritePersistentAccess(
   return success();
 }
 
+// Rewrite one analyzed access against its section-local scalar proxies.
+static LogicalResult rewritePersistentAccess(
+    Operation *access, ArrayRef<PersistentLaneRewrite> laneRewrites,
+    MutableArrayRef<PersistentElementRewrite> elementRewrites) {
+  FailureOr<Type> accessType = getPersistentAccessType(access);
+  if (failed(accessType)) {
+    return failure();
+  }
+
+  if (!isa<VectorType>(*accessType)) {
+    if (laneRewrites.size() != 1 || laneRewrites.front().laneIndex != 0) {
+      return access->emitOpError(
+          "scalar access must map to exactly one scalar lane");
+    }
+    LLVM::AllocaOp proxy =
+        elementRewrites[laneRewrites.front().elementIndex].proxy;
+    if (!proxy) {
+      return access->emitOpError(
+          "locally accessed element must have a scalar proxy");
+    }
+    return rewireScalarAccess(access, proxy);
+  }
+
+  OpBuilder builder(access);
+  if (auto store = dyn_cast<LLVM::StoreOp>(access)) {
+    return rewriteVectorPersistentStore(store, laneRewrites, elementRewrites,
+                                        builder);
+  }
+
+  auto load = cast<LLVM::LoadOp>(access);
+  return rewriteVectorPersistentLoad(load, cast<VectorType>(*accessType),
+                                     laneRewrites, elementRewrites, builder);
+}
+
 // Emits the resume prologue and scalar proxies at the section entry, one
 // rewrite record per element.
-static Value buildSectionEntryRewrites(
+static FailureOr<Value> buildSectionEntryRewrites(
     const PersistentSectionWorklist &sectionWorklist, OpBuilder &entryBuilder,
     SmallVectorImpl<PersistentElementRewrite> &rewrites) {
   const auto &elements = sectionWorklist.elements;
@@ -561,8 +591,10 @@ static Value buildSectionEntryRewrites(
     rewrites[elementIndex].proxy = proxy;
 
     if (section != fragment.initSection) {
-      assert(rewrites[elementIndex].resumeValue &&
-             "carry element must have a resume value");
+      if (!rewrites[elementIndex].resumeValue) {
+        return section.emitOpError(
+            "carry element must have a resume value");
+      }
       entryBuilder.create<LLVM::StoreOp>(
           elementLoc, rewrites[elementIndex].resumeValue, proxy.getRes());
     }
@@ -598,7 +630,7 @@ static LogicalResult rewriteSectionAccesses(
 }
 
 // Emits the keep epilogue carrying each element's outgoing value.
-static void emitSectionKeepEpilogue(
+static LogicalResult emitSectionKeepEpilogue(
     const PersistentSectionWorklist &sectionWorklist,
     ArrayRef<PersistentElementRewrite> rewrites, OpBuilder &exitBuilder) {
   const auto &elements = sectionWorklist.elements;
@@ -619,8 +651,10 @@ static void emitSectionKeepEpilogue(
               .getResult());
       continue;
     }
-    assert(rewrites[elementIndex].resumeValue &&
-           "an element without local accesses must pass through resume");
+    if (!rewrites[elementIndex].resumeValue) {
+      return section.emitOpError(
+          "an element without local accesses must pass through resume");
+    }
     keepPayloads.push_back(rewrites[elementIndex].resumeValue);
   }
 
@@ -629,6 +663,7 @@ static void emitSectionKeepEpilogue(
     exitBuilder.create<pto::KeepOp>(
         section.getLoc(), payload, static_cast<uint64_t>(residentElement.slot));
   }
+  return success();
 }
 
 // Promotes each proxy independently so success guarantees that this specific
@@ -676,8 +711,11 @@ materializeSection(const PersistentSectionWorklist &sectionWorklist,
 
   OpBuilder entryBuilder(section.getContext());
   entryBuilder.setInsertionPointToStart(&body);
-  Value proxyArraySize =
+  FailureOr<Value> proxyArraySize =
       buildSectionEntryRewrites(sectionWorklist, entryBuilder, rewrites);
+  if (failed(proxyArraySize)) {
+    return failure();
+  }
 
   if (failed(rewriteSectionAccesses(sectionWorklist, rewrites))) {
     return failure();
@@ -685,15 +723,17 @@ materializeSection(const PersistentSectionWorklist &sectionWorklist,
 
   OpBuilder exitBuilder(section.getContext());
   exitBuilder.setInsertionPointToEnd(&body);
-  emitSectionKeepEpilogue(sectionWorklist, rewrites, exitBuilder);
+  if (failed(emitSectionKeepEpilogue(sectionWorklist, rewrites, exitBuilder))) {
+    return failure();
+  }
 
   if (failed(promoteSectionProxies(sectionWorklist, rewrites, dataLayout,
                                    dominance))) {
     return failure();
   }
 
-  if (proxyArraySize && proxyArraySize.use_empty()) {
-    proxyArraySize.getDefiningOp()->erase();
+  if (*proxyArraySize && proxyArraySize->use_empty()) {
+    proxyArraySize->getDefiningOp()->erase();
   }
   return success();
 }
