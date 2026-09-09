@@ -221,23 +221,16 @@ validateWorklistElement(const PersistentFragmentAnalysis &fragment,
   return success();
 }
 
-// Build and validate all section-local rewrite bindings before touching IR.
-// The analysis result already fixes each fragment's init/carry lifetime. This
-// check only verifies that the temporary worklist faithfully materializes that
-// immutable result.
+// Walks the plan in (fragment, resident element) order and verifies that the
+// section worklist reproduces exactly that order, validating each element on
+// the way. Returns the number of validated elements via validatedElementCount.
 static LogicalResult
-validateSectionWorklist(const PersistentMaterializationPlan &plan,
-                        PersistentSectionWorklist &sectionWorklist,
-                        llvm::DenseMap<Operation *, llvm::DenseSet<unsigned>>
-                            &assignedAccessLanes) {
-  pto::SectionSimtOp section = sectionWorklist.section;
-  if (!section || !section.getBody().hasOneBlock()) {
-    return section ? section.emitOpError(
-                         "persistent fragment transform requires a single-"
-                         "block SIMT section")
-                   : failure();
-  }
-
+verifySectionElementOrder(const PersistentMaterializationPlan &plan,
+                          pto::SectionSimtOp section,
+                          PersistentSectionWorklist &sectionWorklist,
+                          llvm::DenseMap<Operation *, llvm::DenseSet<unsigned>>
+                              &assignedAccessLanes,
+                          unsigned &validatedElementCount) {
   unsigned expectedElementIndex = 0;
   for (const PersistentFragmentAnalysis &fragment : plan.fragments) {
     if (!isFragmentActiveInSection(fragment, section)) {
@@ -272,8 +265,35 @@ validateSectionWorklist(const PersistentMaterializationPlan &plan,
       ++expectedElementIndex;
     }
   }
+  validatedElementCount = expectedElementIndex;
+  return success();
+}
 
-  if (expectedElementIndex != sectionWorklist.elements.size()) {
+// Build and validate all section-local rewrite bindings before touching IR.
+// The analysis result already fixes each fragment's init/carry lifetime. This
+// check only verifies that the temporary worklist faithfully materializes that
+// immutable result.
+static LogicalResult
+validateSectionWorklist(const PersistentMaterializationPlan &plan,
+                        PersistentSectionWorklist &sectionWorklist,
+                        llvm::DenseMap<Operation *, llvm::DenseSet<unsigned>>
+                            &assignedAccessLanes) {
+  pto::SectionSimtOp section = sectionWorklist.section;
+  if (!section || !section.getBody().hasOneBlock()) {
+    return section ? section.emitOpError(
+                         "persistent fragment transform requires a single-"
+                         "block SIMT section")
+                   : failure();
+  }
+
+  unsigned validatedElementCount = 0;
+  if (failed(verifySectionElementOrder(plan, section, sectionWorklist,
+                                       assignedAccessLanes,
+                                       validatedElementCount))) {
+    return failure();
+  }
+
+  if (validatedElementCount != sectionWorklist.elements.size()) {
     return section.emitOpError(
         "persistent fragment section worklist contains an unexpected "
         "resident element");
@@ -335,18 +355,12 @@ static LogicalResult checkAllAccessLanesAssigned(
   return success();
 }
 
-// Construct the complete transform worklist. No operation insertion, erase,
-// or operand replacement is allowed before this function succeeds.
+// Builds the section->worklist index over the freshly populated section
+// vector, rejecting null sections and sections that appear more than once.
 static LogicalResult
-buildPersistentTransformWorklist(const PersistentMaterializationPlan &plan,
-                                 PersistentTransformWorklist &worklist) {
-  worklist.sections.clear();
-  worklist.sections.reserve(plan.sections.size());
-  for (pto::SectionSimtOp section : plan.sections) {
-    worklist.sections.emplace_back(section);
-  }
-
-  llvm::DenseMap<Operation *, PersistentSectionWorklist *> worklistBySection;
+buildSectionWorklistIndex(
+    PersistentTransformWorklist &worklist,
+    llvm::DenseMap<Operation *, PersistentSectionWorklist *> &worklistBySection) {
   for (PersistentSectionWorklist &sectionWorklist : worklist.sections) {
     if (!sectionWorklist.section) {
       return failure();
@@ -359,10 +373,40 @@ buildPersistentTransformWorklist(const PersistentMaterializationPlan &plan,
           "persistent fragment section appears more than once in the plan");
     }
   }
+  return success();
+}
 
-  // Append each fragment's complete resident set to its init and carry
-  // sections. The outer section vector remains in function walk order;
-  // appending fragments in alloca order preserves function-wide slot order.
+// Appends one fragment's resident set to one of its sections, rejecting
+// sections outside the plan or listed twice by the same fragment.
+static LogicalResult
+appendFragmentToOneSection(const PersistentFragmentAnalysis &fragment,
+                           pto::SectionSimtOp section,
+                           llvm::DenseSet<Operation *> &addedSections,
+                           const llvm::DenseMap<Operation *,
+                                                PersistentSectionWorklist *>
+                               &worklistBySection) {
+  LLVM::AllocaOp allocaOp = fragment.allocaOp;
+  if (!addedSections.insert(section.getOperation()).second) {
+    return allocaOp.emitOpError(
+        "persistent fragment init/carry sections contain a duplicate");
+  }
+  auto sectionIt = worklistBySection.find(section.getOperation());
+  if (sectionIt == worklistBySection.end()) {
+    return allocaOp.emitOpError(
+        "persistent fragment init/carry section is not in the plan");
+  }
+  return appendFragmentToSection(fragment, section, *sectionIt->second);
+}
+
+// Appends each fragment's complete resident set to its init and carry
+// sections. The outer section vector remains in function walk order;
+// appending fragments in alloca order preserves function-wide slot order.
+static LogicalResult
+distributeFragmentsToSections(
+    const PersistentMaterializationPlan &plan,
+    const llvm::DenseMap<Operation *, PersistentSectionWorklist *>
+        &worklistBySection,
+    PersistentTransformWorklist &worklist) {
   for (const PersistentFragmentAnalysis &fragment : plan.fragments) {
     LLVM::AllocaOp allocaOp = fragment.allocaOp;
     if (!fragment.initSection) {
@@ -371,26 +415,38 @@ buildPersistentTransformWorklist(const PersistentMaterializationPlan &plan,
     }
 
     llvm::DenseSet<Operation *> addedSections;
-    auto addToSection = [&](pto::SectionSimtOp section) -> LogicalResult {
-      if (!addedSections.insert(section.getOperation()).second) {
-        return allocaOp.emitOpError(
-            "persistent fragment init/carry sections contain a duplicate");
-      }
-      auto sectionIt = worklistBySection.find(section.getOperation());
-      if (sectionIt == worklistBySection.end()) {
-        return allocaOp.emitOpError(
-            "persistent fragment init/carry section is not in the plan");
-      }
-      return appendFragmentToSection(fragment, section, *sectionIt->second);
-    };
-    if (failed(addToSection(fragment.initSection))) {
+    if (failed(appendFragmentToOneSection(fragment, fragment.initSection,
+                                          addedSections, worklistBySection))) {
       return failure();
     }
     for (pto::SectionSimtOp section : fragment.carrySections) {
-      if (failed(addToSection(section))) {
+      if (failed(appendFragmentToOneSection(fragment, section, addedSections,
+                                            worklistBySection))) {
         return failure();
       }
     }
+  }
+  return success();
+}
+
+// Construct the complete transform worklist. No operation insertion, erase,
+// or operand replacement is allowed before this function succeeds.
+static LogicalResult
+buildPersistentTransformWorklist(const PersistentMaterializationPlan &plan,
+                                 PersistentTransformWorklist &worklist) {
+  worklist.sections.clear();
+  worklist.sections.reserve(plan.sections.size());
+  for (pto::SectionSimtOp section : plan.sections) {
+    worklist.sections.emplace_back(section);
+  }
+
+  llvm::DenseMap<Operation *, PersistentSectionWorklist *> worklistBySection;
+  if (failed(buildSectionWorklistIndex(worklist, worklistBySection))) {
+    return failure();
+  }
+  if (failed(distributeFragmentsToSections(plan, worklistBySection,
+                                           worklist))) {
+    return failure();
   }
 
   llvm::DenseMap<Operation *, llvm::DenseSet<unsigned>> assignedAccessLanes;

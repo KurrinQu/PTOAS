@@ -940,14 +940,17 @@ static ArrayAttr buildCandidatesAttr(
   return builder.getArrayAttr(attributes);
 }
 
-static FailureOr<ArrayAttr>
-parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
+// Parses the metadata JSON document and returns its non-empty "candidates"
+// array. Emits a diagnostic on the operation and returns std::nullopt when
+// the JSON is invalid or carries no candidates.
+static std::optional<llvm::json::Array>
+parseCandidatesJson(Operation *operation, StringRef metadataJson) {
   auto parsed = llvm::json::parse(metadataJson);
   if (!parsed) {
     llvm::consumeError(parsed.takeError());
     operation->emitError(
         "InsertTemplateAttributes received invalid metadata JSON");
-    return failure();
+    return std::nullopt;
   }
 
   auto *root = parsed->getAsObject();
@@ -956,29 +959,49 @@ parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
     operation->emitError("InsertTemplateAttributes found no legal template "
                          "candidates for ")
         << operation->getName();
-    return failure();
+    return std::nullopt;
   }
+  return std::move(*candidates);
+}
 
+// Converts each JSON candidate entry to CandidateMetadata. Returns
+// std::nullopt when an entry is malformed or a candidate id repeats.
+static std::optional<SmallVector<CandidateMetadata>>
+parseCandidateEntries(Operation *operation,
+                      const llvm::json::Array &candidates) {
   SmallVector<CandidateMetadata> parsedCandidates;
-  parsedCandidates.reserve(candidates->size());
+  parsedCandidates.reserve(candidates.size());
   llvm::DenseSet<int64_t> candidateIds;
-  for (const llvm::json::Value &entry : *candidates) {
+  for (const llvm::json::Value &entry : candidates) {
     auto *metadata = entry.getAsObject();
     if (!metadata) {
       operation->emitError(
           "InsertTemplateAttributes candidate metadata must be an object");
-      return failure();
+      return std::nullopt;
     }
     auto candidate =
-        parseCandidateEntry(operation, metadata, candidates->size(),
+        parseCandidateEntry(operation, metadata, candidates.size(),
                             candidateIds);
     if (!candidate) {
-      return failure();
+      return std::nullopt;
     }
     parsedCandidates.push_back(std::move(*candidate));
   }
+  return parsedCandidates;
+}
 
-  llvm::sort(parsedCandidates,
+static FailureOr<ArrayAttr>
+parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
+  auto candidates = parseCandidatesJson(operation, metadataJson);
+  if (!candidates) {
+    return failure();
+  }
+  auto parsedCandidates = parseCandidateEntries(operation, *candidates);
+  if (!parsedCandidates) {
+    return failure();
+  }
+
+  llvm::sort(*parsedCandidates,
              [](const CandidateMetadata &left,
                 const CandidateMetadata &right) {
                if (left.priority != right.priority) {
@@ -986,11 +1009,11 @@ parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
                }
                return left.name < right.name;
              });
-  if (!checkNoPriorityTie(operation, parsedCandidates)) {
+  if (!checkNoPriorityTie(operation, *parsedCandidates)) {
     return failure();
   }
 
-  return buildCandidatesAttr(operation, parsedCandidates);
+  return buildCandidatesAttr(operation, *parsedCandidates);
 }
 
 struct InsertTemplateAttributesPass
