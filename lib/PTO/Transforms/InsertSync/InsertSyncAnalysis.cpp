@@ -648,6 +648,23 @@ bool InsertSyncAnalysis::CanPrunePipeVBarrier(
   return true;
 }
 
+void InsertSyncAnalysis::InsertPipeBarrierSync(
+    const CompoundInstanceElement *nowCompound,
+    const CompoundInstanceElement *frontCompound,
+    const std::optional<unsigned> &forEndIndex) {
+  unsigned insertBarrierId = nowCompound->GetIndex();
+  auto barrierOp = std::make_unique<SyncOperation>(
+      SyncOperation::TYPE::PIPE_BARRIER, frontCompound->kPipeValue,
+      nowCompound->kPipeValue, syncIndex_, insertBarrierId, forEndIndex);
+  barrierOp->SetDepSyncIRIndex(frontCompound->GetIndex());
+  syncIR_[insertBarrierId]->pipeBefore.push_back(barrierOp.get());
+  barrierOp->SetSyncIRIndex(insertBarrierId);
+
+  SmallVector<std::unique_ptr<SyncOperation>> newSync;
+  newSync.emplace_back(std::move(barrierOp));
+  syncOperations_.emplace_back(std::move(newSync));
+}
+
 // Resolve one unambiguous producer/consumer slot SSA pair for the whole
 // dependency group and configure a dynamic set/wait pair with it. Returns the
 // effective event-id count: when the group decomposes into a single slot
@@ -696,6 +713,43 @@ static int configureDynEventSlots(
   return eventIdNum;
 }
 
+void InsertSyncAnalysis::InsertCrossPipeEventSync(
+    const CompoundInstanceElement *nowCompound,
+    const CompoundInstanceElement *frontCompound,
+    DepBaseMemInfoPairVec &depBaseMemInfosVec,
+    const std::optional<unsigned> &forEndIndex) {
+  unsigned insertWaitId = nowCompound->GetIndex();
+  unsigned insertSetId = frontCompound->GetIndex();
+  auto setOp = std::make_unique<SyncOperation>(
+      SyncOperation::TYPE::SET_EVENT, frontCompound->kPipeValue,
+      nowCompound->kPipeValue, syncIndex_, insertSetId, forEndIndex);
+  auto waitOp = setOp->GetMatchSync(insertWaitId);
+  SmallVector<Value> depRoots = GetMemInfoBuffers(depBaseMemInfosVec);
+  setOp->depRootBuffers = depRoots;
+  waitOp->depRootBuffers = depRoots;
+  setOp->SetDepSyncIRIndex(frontCompound->GetIndex());
+  waitOp->SetDepSyncIRIndex(frontCompound->GetIndex());
+
+  // Back-edge dependencies may require multi-buffer event IDs. When N
+  // dyn event IDs are warranted, also plumb the per-side slot SSA so
+  // codegen can lower into `pto.set_flag_dyn` / `pto.wait_flag_dyn`.
+  if (forEndIndex.has_value()) {
+    int eventIdNum = configureDynEventSlots(
+        setOp.get(), waitOp.get(), depBaseMemInfosVec,
+        GetEventIdNum(depBaseMemInfosVec));
+    setOp->eventIdNum = eventIdNum;
+    waitOp->eventIdNum = eventIdNum;
+  }
+
+  syncIR_[insertSetId]->pipeAfter.push_back(setOp.get());
+  syncIR_[insertWaitId]->pipeBefore.push_back(waitOp.get());
+
+  SmallVector<std::unique_ptr<SyncOperation>> newSync;
+  newSync.emplace_back(std::move(setOp));
+  newSync.emplace_back(std::move(waitOp));
+  syncOperations_.emplace_back(std::move(newSync));
+}
+
 void InsertSyncAnalysis::InsertSyncOperation(
     const CompoundInstanceElement *nowCompound,
     const CompoundInstanceElement *frontCompound,
@@ -704,48 +758,10 @@ void InsertSyncAnalysis::InsertSyncOperation(
   PipelineType nowPipe = nowCompound->kPipeValue;
   PipelineType frontPipe = frontCompound->kPipeValue;
   if (nowPipe == frontPipe) {
-    unsigned insertBarrierId = nowCompound->GetIndex();
-    auto barrierOp = std::make_unique<SyncOperation>(
-        SyncOperation::TYPE::PIPE_BARRIER, frontPipe, nowPipe, syncIndex_,
-        insertBarrierId, forEndIndex);
-    barrierOp->SetDepSyncIRIndex(frontCompound->GetIndex());
-    syncIR_[insertBarrierId]->pipeBefore.push_back(barrierOp.get());
-    barrierOp->SetSyncIRIndex(insertBarrierId);
-
-    SmallVector<std::unique_ptr<SyncOperation>> newSync;
-    newSync.emplace_back(std::move(barrierOp));
-    syncOperations_.emplace_back(std::move(newSync));
+    InsertPipeBarrierSync(nowCompound, frontCompound, forEndIndex);
   } else {
-    unsigned insertWaitId = nowCompound->GetIndex();
-    unsigned insertSetId = frontCompound->GetIndex();
-    auto setOp = std::make_unique<SyncOperation>(
-        SyncOperation::TYPE::SET_EVENT, frontPipe, nowPipe, syncIndex_,
-        insertSetId, forEndIndex);
-    auto waitOp = setOp->GetMatchSync(insertWaitId);
-    SmallVector<Value> depRoots = GetMemInfoBuffers(depBaseMemInfosVec);
-    setOp->depRootBuffers = depRoots;
-    waitOp->depRootBuffers = depRoots;
-    setOp->SetDepSyncIRIndex(frontCompound->GetIndex());
-    waitOp->SetDepSyncIRIndex(frontCompound->GetIndex());
-
-    // Back-edge dependencies may require multi-buffer event IDs. When N dyn
-    // event IDs are warranted, also plumb the per-side slot SSA so codegen can
-    // lower into `pto.set_flag_dyn` / `pto.wait_flag_dyn`.
-    if (forEndIndex.has_value()) {
-      int eventIdNum = configureDynEventSlots(
-          setOp.get(), waitOp.get(), depBaseMemInfosVec,
-          GetEventIdNum(depBaseMemInfosVec));
-      setOp->eventIdNum = eventIdNum;
-      waitOp->eventIdNum = eventIdNum;
-    }
-
-    syncIR_[insertSetId]->pipeAfter.push_back(setOp.get());
-    syncIR_[insertWaitId]->pipeBefore.push_back(waitOp.get());
-
-    SmallVector<std::unique_ptr<SyncOperation>> newSync;
-    newSync.emplace_back(std::move(setOp));
-    newSync.emplace_back(std::move(waitOp));
-    syncOperations_.emplace_back(std::move(newSync));
+    InsertCrossPipeEventSync(nowCompound, frontCompound, depBaseMemInfosVec,
+                             forEndIndex);
   }
   syncIndex_++;
   assert(syncOperations_.size() == syncIndex_);

@@ -266,85 +266,116 @@ static LogicalResult validateInlineableCalleesHaveBodies(
   return success();
 }
 
+static FailureOr<func::CallOp> stageCallWithConcreteOperands(func::CallOp call,
+                                                             func::FuncOp callee) {
+  SmallVector<Value, 4> concreteOperands;
+  concreteOperands.reserve(call.getNumOperands());
+  for (auto [operand, expectedTy] :
+       llvm::zip(call.getOperands(), callee.getFunctionType().getInputs())) {
+    concreteOperands.push_back(
+        maybeUnwrapCastToExpected(operand, expectedTy));
+  }
+
+  OpBuilder builder(call);
+  auto newCall = builder.create<func::CallOp>(call.getLoc(), callee,
+                                              concreteOperands);
+  if (call.getNumResults() != newCall.getNumResults()) {
+    call.emitOpError("call result arity mismatch during inline staging");
+    return failure();
+  }
+  for (auto [oldResult, newResult] :
+       llvm::zip(call.getResults(), newCall.getResults()))
+    oldResult.replaceAllUsesWith(newResult);
+  call.erase();
+  return newCall;
+}
+
+enum class InlineOneCallResult { Skipped, Inlined, Failed };
+
+template <typename InlinePredicate>
+static InlineOneCallResult tryInlineOneCall(
+    func::CallOp oldCall, ModuleOp funcModule, InlinePredicate &&shouldInline,
+    llvm::StringRef funcName, bool debug, llvm::StringRef debugTag) {
+  if (!oldCall || !oldCall->getBlock()) {
+    return InlineOneCallResult::Skipped;
+  }
+
+  auto calleeAttr = oldCall.getCalleeAttr();
+  if (!calleeAttr) {
+    return InlineOneCallResult::Skipped;
+  }
+
+  func::FuncOp callee =
+      funcModule.lookupSymbol<func::FuncOp>(calleeAttr.getValue());
+  if (!callee || !shouldInline(callee)) {
+    return InlineOneCallResult::Skipped;
+  }
+
+  if (callee.isExternal()) {
+    oldCall.emitOpError("callee must have a body before inlining");
+    return InlineOneCallResult::Failed;
+  }
+
+  FailureOr<func::CallOp> newCall =
+      stageCallWithConcreteOperands(oldCall, callee);
+  if (failed(newCall)) {
+    return InlineOneCallResult::Failed;
+  }
+
+  if (failed(inlineCall(*newCall, callee))) {
+    return InlineOneCallResult::Failed;
+  }
+
+  if (debug) {
+    llvm::errs() << debugTag << ": inlined @" << callee.getSymName()
+                 << " into @" << funcName << "\n";
+  }
+  return InlineOneCallResult::Inlined;
+}
+
+template <typename InlinePredicate>
+static LogicalResult inlineCallsInFunc(
+    func::FuncOp func, ModuleOp funcModule, InlinePredicate &&shouldInline,
+    bool debug, llvm::StringRef debugTag, int &inlinedCalls,
+    bool &changedThisFunc) {
+  bool madeProgress = true;
+  while (madeProgress) {
+    madeProgress = false;
+
+    SmallVector<func::CallOp, 16> calls;
+    func.walk([&](func::CallOp call) { calls.push_back(call); });
+
+    for (func::CallOp oldCall : calls) {
+      InlineOneCallResult result =
+          tryInlineOneCall(oldCall, funcModule, shouldInline, func.getSymName(),
+                           debug, debugTag);
+      if (result == InlineOneCallResult::Failed) {
+        return failure();
+      }
+      if (result == InlineOneCallResult::Inlined) {
+        ++inlinedCalls;
+        changedThisFunc = true;
+        madeProgress = true;
+      }
+    }
+  }
+  return success();
+}
+
 template <typename InlinePredicate>
 static LogicalResult inlineMatchingCalls(
     ModuleOp module, InlinePredicate &&shouldInline, bool debug,
     llvm::StringRef debugTag, int &inlinedCalls, int &touchedFuncs) {
   for (ModuleOp funcModule : collectFuncModules(module)) {
     for (func::FuncOp func : funcModule.getOps<func::FuncOp>()) {
-      if (func.isExternal()) {
-        continue;
-      }
-      if (isInstanceFunc(func)) {
-        continue;
-      }
-      if (func.empty()) {
+      if (func.isExternal() || isInstanceFunc(func) || func.empty()) {
         continue;
       }
 
       bool changedThisFunc = false;
-      bool madeProgress = true;
-      while (madeProgress) {
-        madeProgress = false;
-
-        SmallVector<func::CallOp, 16> calls;
-        func.walk([&](func::CallOp call) { calls.push_back(call); });
-
-        for (func::CallOp oldCall : calls) {
-          if (!oldCall || !oldCall->getBlock()) {
-            continue;
-          }
-
-          auto calleeAttr = oldCall.getCalleeAttr();
-          if (!calleeAttr) {
-            continue;
-          }
-
-          func::FuncOp callee =
-              funcModule.lookupSymbol<func::FuncOp>(calleeAttr.getValue());
-          if (!callee || !shouldInline(callee)) {
-            continue;
-          }
-
-          if (callee.isExternal()) {
-            oldCall.emitOpError("callee must have a body before inlining");
-            return failure();
-          }
-
-          func::CallOp call = oldCall;
-          SmallVector<Value, 4> concreteOperands;
-          concreteOperands.reserve(call.getNumOperands());
-          for (auto [operand, expectedTy] :
-               llvm::zip(call.getOperands(),
-                         callee.getFunctionType().getInputs())) {
-            concreteOperands.push_back(
-                maybeUnwrapCastToExpected(operand, expectedTy));
-          }
-
-          OpBuilder builder(call);
-          auto newCall = builder.create<func::CallOp>(call.getLoc(), callee,
-                                                      concreteOperands);
-          if (call.getNumResults() != newCall.getNumResults()) {
-            call.emitOpError("call result arity mismatch during inline staging");
-            return failure();
-          }
-          for (auto [oldResult, newResult] :
-               llvm::zip(call.getResults(), newCall.getResults()))
-            oldResult.replaceAllUsesWith(newResult);
-          call.erase();
-
-          if (failed(inlineCall(newCall, callee))) {
-            return failure();
-          }
-
-          ++inlinedCalls;
-          changedThisFunc = true;
-          madeProgress = true;
-          if (debug) {
-            llvm::errs() << debugTag << ": inlined @" << callee.getSymName()
-                         << " into @" << func.getSymName() << "\n";
-          }
-        }
+      if (failed(inlineCallsInFunc(func, funcModule, shouldInline, debug,
+                                   debugTag, inlinedCalls, changedThisFunc))) {
+        return failure();
       }
 
       if (changedThisFunc) {

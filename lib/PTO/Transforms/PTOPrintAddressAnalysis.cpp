@@ -136,6 +136,72 @@ static void printConvertedDelta(llvm::raw_ostream &os,
   pto::printPTOTypedExpr(*converted.value, os);
 }
 
+static void printAnalyzedAddress(llvm::raw_ostream &os,
+                                 pto::PTOAddressAnalysis &addressAnalysis,
+                                 Operation *operation,
+                                 const pto::PTOAddressExpr &address,
+                                 scf::ForOp loop) {
+  os << "  op=" << operation->getName() << " root=";
+  printValue(os, address.rootOrBase);
+  os << " element-offset=";
+  pto::printPTOTypedExpr(address.elementOffset, os);
+  os << " current-offset=";
+  if (!address.offset) {
+    os << "none";
+  } else {
+    os << pto::stringifyVPTOAddressUnit(address.offset->unit) << ":";
+    printValue(os, address.offset->sourceValue);
+  }
+  os << " delta-bytes=";
+  auto delta = addressAnalysis.getDeltaBytes(address, loop);
+  if (!delta) {
+    os << "unknown("
+       << pto::stringifyPTOAnalysisUnknownReason(delta.reason)
+       << ")";
+  } else {
+    pto::printPTOTypedExpr(*delta.value, os);
+    for (int64_t unitBytes : {int64_t{1}, int64_t{2}, int64_t{4},
+                              int64_t{32}}) {
+      printConvertedDelta(os, addressAnalysis, *delta.value,
+                          unitBytes);
+    }
+  }
+  os << " self-difference-bytes=";
+  auto selfDifference =
+      addressAnalysis.getDifferenceBytes(address, address);
+  if (!selfDifference) {
+    os << "unknown("
+       << pto::stringifyPTOAnalysisUnknownReason(
+              selfDifference.reason)
+       << ")";
+  } else {
+    pto::printPTOTypedExpr(*selfDifference.value, os);
+  }
+  os << "\n";
+}
+
+static void printLoopOpAddressInfo(
+    llvm::raw_ostream &os, pto::PTOValueEvolutionAnalysis &valueAnalysis,
+    pto::PTOAddressAnalysis &addressAnalysis, Operation *operation,
+    scf::ForOp loop) {
+  if (operation->getParentOp() != loop.getOperation()) {
+    return;
+  }
+  if (isa<arith::AddIOp, arith::SubIOp, arith::MulIOp,
+          arith::IndexCastOp, arith::IndexCastUIOp, arith::TruncIOp,
+          arith::ExtSIOp, arith::ExtUIOp>(operation)) {
+    printEvolution(os, valueAnalysis, operation->getResult(0), loop);
+  }
+
+  auto addresses = addressAnalysis.getAddresses(operation);
+  if (!addresses) {
+    return;
+  }
+  for (const pto::PTOAddressExpr &address : *addresses.value) {
+    printAnalyzedAddress(os, addressAnalysis, operation, address, loop);
+  }
+}
+
 struct PTOPrintAddressAnalysisPass
     : public pto::impl::PTOPrintAddressAnalysisBase<
           PTOPrintAddressAnalysisPass> {
@@ -159,59 +225,8 @@ struct PTOPrintAddressAnalysisPass
         printEvolution(os, valueAnalysis, iterArg, loop);
       }
       loop.getBody()->walk([&](Operation *operation) {
-        if (
-            operation->getParentOp() != loop.getOperation()) {
-          return;
-        }
-        if (isa<arith::AddIOp, arith::SubIOp, arith::MulIOp,
-                arith::IndexCastOp, arith::IndexCastUIOp, arith::TruncIOp,
-                arith::ExtSIOp, arith::ExtUIOp>(operation)) {
-          printEvolution(os, valueAnalysis, operation->getResult(0), loop);
-        }
-
-        auto addresses = addressAnalysis.getAddresses(operation);
-        if (!addresses) {
-          return;
-        }
-        for (const pto::PTOAddressExpr &address : *addresses.value) {
-          os << "  op=" << operation->getName() << " root=";
-          printValue(os, address.rootOrBase);
-          os << " element-offset=";
-          pto::printPTOTypedExpr(address.elementOffset, os);
-          os << " current-offset=";
-          if (!address.offset) {
-            os << "none";
-          } else {
-            os << pto::stringifyVPTOAddressUnit(address.offset->unit) << ":";
-            printValue(os, address.offset->sourceValue);
-          }
-          os << " delta-bytes=";
-          auto delta = addressAnalysis.getDeltaBytes(address, loop);
-          if (!delta) {
-            os << "unknown("
-               << pto::stringifyPTOAnalysisUnknownReason(delta.reason)
-               << ")";
-          } else {
-            pto::printPTOTypedExpr(*delta.value, os);
-            for (int64_t unitBytes : {int64_t{1}, int64_t{2}, int64_t{4},
-                                      int64_t{32}}) {
-              printConvertedDelta(os, addressAnalysis, *delta.value,
-                                  unitBytes);
-            }
-          }
-          os << " self-difference-bytes=";
-          auto selfDifference =
-              addressAnalysis.getDifferenceBytes(address, address);
-          if (!selfDifference) {
-            os << "unknown("
-               << pto::stringifyPTOAnalysisUnknownReason(
-                      selfDifference.reason)
-               << ")";
-          } else {
-            pto::printPTOTypedExpr(*selfDifference.value, os);
-          }
-          os << "\n";
-        }
+        printLoopOpAddressInfo(os, valueAnalysis, addressAnalysis, operation,
+                               loop);
       });
     });
     llvm::errs() << storage;
